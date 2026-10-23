@@ -18,12 +18,14 @@ ENV_NAMES: dict[str, str] = {
     "agent_whatsapp": "AGENT_WHATSAPP",
     "agent_email": "AGENT_EMAIL",
     "dry_run_to": "DRY_RUN_TO",
+    "daily_api_budget_usd": "DAILY_API_BUDGET_USD",
 }
 
 DEFAULTS: dict[str, str] = {
     "reacher_url": "http://127.0.0.1:8080",
     "parser_2gis_bin": ".venv-2gis/Scripts/parser-2gis.exe",
     "llm_log_path": "logs/llm_calls.jsonl",
+    "daily_api_budget_usd": "1.00",
 }
 
 
@@ -44,6 +46,7 @@ class Settings:
     agent_whatsapp: str = ""
     agent_email: str = ""
     dry_run_to: str = ""
+    daily_api_budget_usd: str = ""
 
     def require(self, name: str) -> str:
         """Вернуть значение поля или остановиться с понятной ошибкой, если оно пустое."""

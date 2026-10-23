@@ -51,6 +51,11 @@ maybe, если похоже, но данных мало; no, если учит�
 """
 
 
+def as_data(text: object) -> str:
+    """Чужой текст для промпта: без угловых скобок, чтобы он не закрыл тег <site> и не открыл свой."""
+    return str(text).replace("<", "‹").replace(">", "›")
+
+
 def _card_extras(raw: dict | None) -> list[str]:
     raw = raw or {}
     lines = []
@@ -76,7 +81,8 @@ def build_input(company: dict) -> str:
         *_card_extras(company.get("raw")),
     ]
     site_text = (company.get("site_text") or "").strip()[:MAX_SITE_CHARS] or "сайт не найден или пуст"
-    return "<company>\n" + "\n".join(card) + "\n</company>\n\n<site>\n" + site_text + "\n</site>"
+    return ("<company>\n" + as_data("\n".join(card)) + "\n</company>\n\n<site>\n" + as_data(site_text)
+            + "\n</site>")
 
 
 def parse_answer(data: dict) -> dict:
@@ -98,6 +104,7 @@ def qualify_company(conn: psycopg.Connection, company_id: int, *, client, owner_
     """Квалифицировать одну компанию: строка в qualifications, статус qualified или rejected."""
     with conn.cursor(row_factory=dict_row) as cursor:
         company = cursor.execute("SELECT * FROM companies WHERE id = %s", (company_id,)).fetchone()
+    model = llm.task_config("qualify").model
     data = llm.complete_json(client, "qualify", instructions=INSTRUCTIONS, user_content=build_input(company),
                              schema=SCHEMA, cached_context=owner_doc, on_usage=on_usage)
     answer = parse_answer(data)
@@ -105,8 +112,7 @@ def qualify_company(conn: psycopg.Connection, company_id: int, *, client, owner_
     with conn.transaction():
         conn.execute(
             "INSERT INTO qualifications (company_id, fit, score, reason, segment, model) VALUES (%s, %s, %s, %s, %s, %s)",
-            (company_id, answer["fit"], answer["score"], answer["reason"], answer["segment"],
-             llm.task_config("qualify").model),
+            (company_id, answer["fit"], answer["score"], answer["reason"], answer["segment"], model),
         )
         conn.execute("UPDATE companies SET status = %s, last_error = NULL WHERE id = %s", (status, company_id))
     return answer

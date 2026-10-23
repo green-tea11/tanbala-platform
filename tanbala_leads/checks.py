@@ -311,8 +311,33 @@ def check_style(subject: str, body: str) -> CheckResult:
     return _result("style", problems)
 
 
-def run_all(subject: str, body: str) -> list[CheckResult]:
-    """Прогнать все проверки (тема учитывается там, где у правил есть требования к теме)."""
+# --- контакты ---
+
+_ANY_PHONE = re.compile(r"(?<![\d+])(?:\+7|8)[\s(‒–-]*\d{3}[\s)‒–-]*\d{3}[\s‒–-]*\d{2}[\s‒–-]*\d{2}(?!\d)")
+_WA_NUMBER = re.compile(r"(?:wa\.me/|api\.whatsapp\.com/send/?\?phone=)\+?(\d{10,15})", _FLAGS)
+
+
+def _phone_digits(phone: str) -> str:
+    """Номер без форматирования, 8 в начале приводится к 7."""
+    digits = re.sub(r"\D", "", phone)
+    return "7" + digits[1:] if len(digits) == 11 and digits.startswith("8") else digits
+
+
+def check_contacts(body: str, whatsapp: str) -> CheckResult:
+    """В письме только наш номер WhatsApp: чужой номер или ссылка wa.me могли прийти из текста сайта."""
+    own = _phone_digits(whatsapp)
+    text = _client_text(body)
+    problems = [f"чужой номер: «{m.group(0)}»" for m in _ANY_PHONE.finditer(text) if _phone_digits(m.group(0)) != own]
+    problems += [f"чужой WhatsApp: «{m.group(0)}»" for m in _WA_NUMBER.finditer(text)
+                 if _phone_digits(m.group(1)) != own]
+    return _result("contacts", problems)
+
+
+def run_all(subject: str, body: str, *, whatsapp: str | None = None) -> list[CheckResult]:
+    """Прогнать все проверки (тема учитывается там, где у правил есть требования к теме).
+
+    whatsapp: наш номер; если он известен, в письме не должно быть других номеров и ссылок wa.me.
+    """
     with_subject = _with_subject(subject, body)
     notes = check_notes(body)
     subject_brackets = check_notes(subject)
@@ -320,7 +345,7 @@ def run_all(subject: str, body: str) -> list[CheckResult]:
         notes = CheckResult(
             "notes", False, notes.details + tuple(f"тема, {d}" for d in subject_brackets.details)
         )
-    return [
+    results = [
         check_dashes(with_subject),
         check_prices(with_subject),
         check_stop_words(subject, body),
@@ -331,3 +356,6 @@ def run_all(subject: str, body: str) -> list[CheckResult]:
         check_jargon(with_subject),
         check_style(subject, body),
     ]
+    if whatsapp:
+        results.append(check_contacts(body, whatsapp))
+    return results

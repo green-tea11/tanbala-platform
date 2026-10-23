@@ -99,3 +99,30 @@ def test_same_phone_counts_as_duplicate(db_conn):
     result = collect.load_companies(db_conn, FIXTURE)
 
     assert result.duplicates == 1
+
+
+def test_parser_timeout_kills_whole_process_tree(tmp_path, monkeypatch):
+    killed = []
+
+    class HangingProcess:
+        pid = 4242
+        returncode = None
+
+        def communicate(self, timeout=None):
+            raise collect.subprocess.TimeoutExpired("parser-2gis", timeout)
+
+        def kill(self):
+            killed.append("kill")
+
+        def wait(self, timeout=None):
+            return -9
+
+    binary = tmp_path / "parser-2gis.exe"
+    binary.write_text("")
+    monkeypatch.setattr(collect.subprocess, "Popen", lambda *a, **k: HangingProcess())
+    monkeypatch.setattr(collect, "_kill_tree", lambda pid: killed.append(pid))
+
+    with pytest.raises(collect.ParserError, match="не уложился"):
+        collect.run_parser("https://2gis.kz/almaty/search/x", tmp_path / "out.json", 5, str(binary))
+
+    assert killed[0] == 4242

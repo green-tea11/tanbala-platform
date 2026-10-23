@@ -11,10 +11,12 @@ class DraftNotFound(LookupError):
 
 
 def check_results_json(subject: str, body: str) -> list[dict]:
-    """Проверки кодом в виде, который хранится в drafts.check_result."""
+    """Проверки кодом в виде, который хранится в drafts.check_result. Номер WhatsApp берётся из настроек."""
     from tanbala_leads.checks import run_all
+    from tanbala_leads.settings import load_settings
 
-    return [asdict(result) for result in run_all(subject, body)]
+    whatsapp = load_settings().agent_whatsapp or None
+    return [asdict(result) for result in run_all(subject, body, whatsapp=whatsapp)]
 
 
 def approve(conn: psycopg.Connection, draft_id: int, approved_by: str) -> None:
@@ -31,11 +33,11 @@ def approve(conn: psycopg.Connection, draft_id: int, approved_by: str) -> None:
 
 
 def reject(conn: psycopg.Connection, draft_id: int, reviewer: str) -> None:
-    """Отклонить черновик. Компания возвращается к статусу verified, можно написать новый черновик."""
+    """Отклонить черновик. Компания возвращается к статусу verified; новый черновик сам не пишется."""
     with conn.transaction():
         row = conn.execute(
             "UPDATE drafts SET review_status = 'rejected', approved_by = NULL, approved_at = NULL"
-            " WHERE id = %s AND sent_at IS NULL RETURNING company_id",
+            " WHERE id = %s AND sent_at IS NULL AND review_status <> 'rejected' RETURNING company_id",
             (draft_id,),
         ).fetchone()
         if row is None:

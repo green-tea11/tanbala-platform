@@ -18,6 +18,16 @@ MODELS_CONFIG = Path(__file__).resolve().parents[1] / "config" / "models.yaml"
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 # Без стриминга SDK держит ответы до этого размера в пределах HTTP-таймаута.
 MAX_TOKENS_LIMIT = 16_000
+# Зависший вызов не должен держать единственный запуск: таймаут на запрос, SDK повторит его дважды.
+API_TIMEOUT_SECONDS = 120.0
+API_MAX_RETRIES = 2
+
+# Цены на 06.10.2026, примерно. Доллары за миллион токенов; запись в кэш по цене 5-минутного кэша.
+MODEL_PRICES_USD_PER_MTOK: dict[str, dict[str, float]] = {
+    "claude-haiku-5-5": {"input": 0.10, "output": 0.50, "cache_read": 0.01, "cache_write": 0.125},
+    "claude-sonnet-5-5": {"input": 2.00, "output": 10.00, "cache_read": 0.20, "cache_write": 2.50},
+}
+TOKENS_PER_MTOK = 1_000_000
 
 
 class ModelsConfigError(ValueError):
@@ -74,7 +84,19 @@ def make_client(settings: Settings) -> Anthropic:
     Ключ передаётся явно: тогда SDK не ищет учётные данные в окружении и профилях.
     Без ключа останавливаемся сразу, иначе SDK сам подобрал бы чужие учётные данные.
     """
-    return Anthropic(api_key=settings.require("anthropic_key"), base_url=API_BASE_URL)
+    return Anthropic(api_key=settings.require("anthropic_key"), base_url=API_BASE_URL,
+                     timeout=API_TIMEOUT_SECONDS, max_retries=API_MAX_RETRIES)
+
+
+def call_cost_usd(model: str, input_tokens: int, output_tokens: int,
+                  cache_read_tokens: int = 0, cache_write_tokens: int = 0) -> float | None:
+    """Примерная цена вызовов одной модели в долларах. Неизвестная модель: None."""
+    prices = MODEL_PRICES_USD_PER_MTOK.get(model)
+    if prices is None:
+        return None
+    total = (input_tokens * prices["input"] + output_tokens * prices["output"]
+             + cache_read_tokens * prices["cache_read"] + cache_write_tokens * prices["cache_write"])
+    return total / TOKENS_PER_MTOK
 
 
 class LLMError(RuntimeError):

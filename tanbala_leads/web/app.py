@@ -37,6 +37,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from tanbala_leads import __version__, db, pipeline
+from tanbala_leads.llm import call_cost_usd
 from tanbala_leads.settings import load_settings
 from tanbala_leads.steps import approve as approve_step
 from tanbala_leads.steps.collect import CITIES
@@ -71,13 +72,8 @@ NOTE_PREFIXES = ("[Проверить:", "[Ответить лично:")
 APPROX_CALLS_PER_COMPANY = 2
 APPROX_USD_PER_COMPANY = 0.002
 
-# Цены на 06.10.2026, примерно. Доллары за миллион токенов; запись в кэш по цене 5-минутного кэша.
-MODEL_PRICES_USD_PER_MTOK: dict[str, dict[str, float]] = {
-    "claude-haiku-5-5": {"input": 0.10, "output": 0.50, "cache_read": 0.01, "cache_write": 0.125},
-    "claude-sonnet-5-5": {"input": 2.00, "output": 10.00, "cache_read": 0.20, "cache_write": 2.50},
-}
+# Цены моделей и расчёт стоимости общие с суточным лимитом в pipeline: llm.MODEL_PRICES_USD_PER_MTOK.
 TOKEN_KINDS = ("input", "output", "cache_read", "cache_write")
-TOKENS_PER_MTOK = 1_000_000
 
 # Коды этапов в runs.stage, их названия и счётчики из строки runs.
 STAGES: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
@@ -208,17 +204,6 @@ class Cost:
     @property
     def priced(self) -> bool:
         return self.unpriced_tokens == 0
-
-
-def call_cost_usd(model: str, input_tokens: int, output_tokens: int,
-                  cache_read_tokens: int = 0, cache_write_tokens: int = 0) -> float | None:
-    """Примерная цена вызовов одной модели. Неизвестная модель: None."""
-    prices = MODEL_PRICES_USD_PER_MTOK.get(model)
-    if prices is None:
-        return None
-    total = (input_tokens * prices["input"] + output_tokens * prices["output"]
-             + cache_read_tokens * prices["cache_read"] + cache_write_tokens * prices["cache_write"])
-    return total / TOKENS_PER_MTOK
 
 
 def cost_from_rows(rows: Iterable[dict[str, Any]]) -> Cost:

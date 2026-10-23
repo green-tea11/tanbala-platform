@@ -4,9 +4,11 @@
 (checks.py); если они нашли нарушения, модель получает одну попытку исправить их.
 """
 
+import logging
 from collections.abc import Callable
 from dataclasses import asdict
 
+import anthropic
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
@@ -14,6 +16,8 @@ from psycopg.types.json import Jsonb
 from tanbala_leads import checks, contact_policy, llm
 from tanbala_leads.settings import Settings
 from tanbala_leads.steps.qualify import build_input
+
+logger = logging.getLogger(__name__)
 
 COMPANY_LINE = "Tanbala, направление ТОО «VenMart»"
 VERIFY_RANK = {"safe": 0, "unknown": 1, "risky": 2}
@@ -104,14 +108,13 @@ def _problems_text(failed: list[checks.CheckResult]) -> str:
     return "\n".join(f"- {result.name}: {'; '.join(result.details)}" for result in failed)
 
 
-def _write(client, user_content: str, owner_doc: str, settings: Settings, on_usage) -> tuple[dict, str]:
-    instructions = INSTRUCTIONS.format(name=settings.require("agent_name"),
-                                       whatsapp=settings.require("agent_whatsapp"))
+def _write(client, user_content: str, owner_doc: str, instructions: str, signature: str,
+           on_usage) -> tuple[dict, str]:
     answer = llm.complete_json(client, "first_email", instructions=instructions, user_content=user_content,
                                schema=SCHEMA, cached_context=owner_doc, on_usage=on_usage)
     if not answer.get("subject", "").strip() or not answer.get("body", "").strip():
         raise llm.LLMError("first_email: пустая тема или текст")
-    return answer, compose_body(answer, build_signature(settings))
+    return answer, compose_body(answer, signature)
 
 
 def draft_first_email(conn: psycopg.Connection, company_id: int, *, client, owner_doc: str, settings: Settings,
@@ -123,6 +126,11 @@ def draft_first_email(conn: psycopg.Connection, company_id: int, *, client, owne
     ).fetchone()
     if existing:
         return existing[0]
+    # Всё, что может упасть без API, проверяется до платного вызова.
+    signature = build_signature(settings)
+    whatsapp = settings.require("agent_whatsapp")
+    instructions = INSTRUCTIONS.format(name=settings.require("agent_name"), whatsapp=whatsapp)
+    model = llm.task_config("first_email").model
     contact = choose_contact(conn, company_id)
     if contact is None:
         raise NoUsableContact("нет почты, на которую можно писать")
@@ -138,21 +146,26 @@ def draft_first_email(conn: psycopg.Connection, company_id: int, *, client, owne
         f"{qualification.get('reason')}\n</qualification>"
     )
 
-    answer, body = _write(client, user_content, owner_doc, settings, on_usage)
-    results = checks.run_all(answer["subject"], body)
+    answer, body = _write(client, user_content, owner_doc, instructions, signature, on_usage)
+    results = checks.run_all(answer["subject"], body, whatsapp=whatsapp)
     if _failed(results):
         retry_content = RETRY_TEMPLATE.format(input=user_content, subject=answer["subject"], body=answer["body"],
                                               problems=_problems_text(_failed(results)))
-        retry_answer, retry_body = _write(client, retry_content, owner_doc, settings, on_usage)
-        retry_results = checks.run_all(retry_answer["subject"], retry_body)
-        if len(_failed(retry_results)) <= len(_failed(results)):
-            answer, body, results = retry_answer, retry_body, retry_results
+        try:
+            retry_answer, retry_body = _write(client, retry_content, owner_doc, instructions, signature, on_usage)
+        except (llm.LLMError, anthropic.APIError):
+            # Первый вариант уже оплачен: сохраняем его с найденными нарушениями, человек увидит их.
+            logger.warning("Компания %s: повторная попытка письма не удалась", company_id, exc_info=True)
+        else:
+            retry_results = checks.run_all(retry_answer["subject"], retry_body, whatsapp=whatsapp)
+            if len(_failed(retry_results)) <= len(_failed(results)):
+                answer, body, results = retry_answer, retry_body, retry_results
 
     with conn.transaction():
         draft_id = conn.execute(
             "INSERT INTO drafts (company_id, contact_id, subject, body, model, check_result)"
             " VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
-            (company_id, contact[0], answer["subject"].strip(), body, llm.task_config("first_email").model,
+            (company_id, contact[0], answer["subject"].strip(), body, model,
              Jsonb([asdict(result) for result in results])),
         ).fetchone()[0]
         conn.execute("UPDATE companies SET status = 'drafted', last_error = NULL WHERE id = %s", (company_id,))

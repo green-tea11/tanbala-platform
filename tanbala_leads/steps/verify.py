@@ -16,6 +16,10 @@ REACHER_TIMEOUT_SECONDS = 90
 MAX_EMAILS_PER_COMPANY = 3
 
 
+class ReacherUnavailable(RuntimeError):
+    """Reacher не ответил ни по одному адресу компании: проверим в следующий запуск."""
+
+
 @dataclass(frozen=True)
 class EmailCheck:
     email: str
@@ -24,6 +28,8 @@ class EmailCheck:
     is_role: bool
     note: str | None
     raw: dict
+    # Сбой самого Reacher, а не ответ про адрес: результат не сохраняется.
+    failed: bool = False
 
 
 def _parse(email: str, data: dict) -> EmailCheck:
@@ -50,30 +56,40 @@ def check_email(email: str, *, base_url: str, secret: str, client: httpx.Client 
                                headers={"x-reacher-secret": secret})
         response.raise_for_status()
         return _parse(email, response.json())
-    except (httpx.HTTPError, ValueError) as exc:
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError) as exc:
         note = f"Reacher недоступен или ответил ошибкой: {type(exc).__name__}"
         return EmailCheck(email=email, result="unknown", is_catch_all=None, is_role=False, note=note,
-                          raw={"error": note})
+                          raw={"error": note}, failed=True)
     finally:
         if own_client:
             client.close()
 
 
 def verify_company(conn: psycopg.Connection, company_id: int, checker: Callable[[str], EmailCheck]) -> int:
-    """Проверить ещё не проверенные почты компании. Вернуть число годных (не invalid)."""
+    """Проверить ещё не проверенные почты компании. Вернуть число годных (не invalid).
+
+    Сбой Reacher не записывается: адрес остаётся непроверенным до следующего запуска.
+    """
     rows = conn.execute(
         "SELECT id, email FROM contacts WHERE company_id = %s AND verify_result IS NULL ORDER BY id LIMIT %s",
         (company_id, MAX_EMAILS_PER_COMPANY),
     ).fetchall()
+    failures = 0
     for contact_id, email in rows:
         check = checker(email)
+        if check.failed:
+            failures += 1
+            continue
         raw = {**check.raw, "note": check.note} if check.note else check.raw
         conn.execute(
             "UPDATE contacts SET verify_result = %s, is_catch_all = %s, is_role = is_role OR %s,"
             " verify_raw = %s, verified_at = now() WHERE id = %s",
             (check.result, check.is_catch_all, check.is_role, Jsonb(raw), contact_id),
         )
-    return conn.execute(
+    usable = conn.execute(
         "SELECT count(*) FROM contacts WHERE company_id = %s AND verify_result IN ('safe', 'risky', 'unknown')",
         (company_id,),
     ).fetchone()[0]
+    if usable == 0 and failures:
+        raise ReacherUnavailable("Reacher не ответил, почты проверим в следующий запуск")
+    return usable

@@ -4,6 +4,7 @@ import pytest
 
 from tanbala_leads import checks
 from tanbala_leads.checks import (
+    check_contacts,
     check_dashes,
     check_jargon,
     check_length,
@@ -578,3 +579,45 @@ def test_check_result_is_frozen_dataclass():
     assert result.details == ()
     with pytest.raises(AttributeError):
         result.passed = False  # type: ignore[misc]
+
+
+# --- контакты: только наш номер WhatsApp ---
+
+OWN_WHATSAPP = "+77479597238"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Пишите в WhatsApp: +7 701 555 44 33.",
+        "Звоните 8 (701) 555-44-33.",
+        "Ссылка: https://wa.me/77015554433.",
+    ],
+)
+def test_foreign_phone_or_whatsapp_fails(text):
+    result = check_contacts(make_body(text, *NEUTRAL), OWN_WHATSAPP)
+
+    assert not result.passed
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Напишите нам в WhatsApp: +77479597238.",
+        "Напишите нам в WhatsApp: +7 747 959 72 38.",
+        "Ссылка: https://wa.me/77479597238.",
+        "Учёт идёт в 1С, ридер видит до 20 метров.",
+    ],
+)
+def test_own_number_passes(text):
+    assert check_contacts(make_body(text, *NEUTRAL), OWN_WHATSAPP).passed
+
+
+def test_run_all_checks_contacts_only_when_number_is_known():
+    body = make_body("Пишите: +7 701 555 44 33.", *NEUTRAL)
+
+    names_without = {result.name for result in run_all(SUBJECT, body)}
+    with_number = {result.name: result.passed for result in run_all(SUBJECT, body, whatsapp=OWN_WHATSAPP)}
+
+    assert "contacts" not in names_without
+    assert with_number["contacts"] is False

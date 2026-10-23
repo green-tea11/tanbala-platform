@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+import anthropic
 import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
@@ -38,8 +39,33 @@ class RunAlreadyActive(RuntimeError):
     """Уже идёт другой запуск."""
 
 
-def create_run(conn: psycopg.Connection, city: str, query: str, max_companies: int) -> int:
-    """Проверить параметры и создать запись запуска со статусом queued."""
+class BudgetExceeded(ValueError):
+    """Суточный лимит расходов на Claude API исчерпан."""
+
+
+# Сутки считаются по времени Алматы.
+SPENT_TODAY_SQL = """
+SELECT model, sum(input_tokens), sum(output_tokens), sum(cache_read_tokens), sum(cache_write_tokens)
+FROM llm_calls
+WHERE created_at >= date_trunc('day', now() AT TIME ZONE 'Asia/Almaty') AT TIME ZONE 'Asia/Almaty'
+GROUP BY model
+"""
+
+
+def spent_today_usd(conn: psycopg.Connection) -> float:
+    """Примерный расход на Claude API за сегодня. Модель без цены считаем по самой дорогой известной."""
+    most_expensive = max(llm.MODEL_PRICES_USD_PER_MTOK, key=lambda m: llm.MODEL_PRICES_USD_PER_MTOK[m]["output"])
+    total = 0.0
+    for model, *tokens in conn.execute(SPENT_TODAY_SQL).fetchall():
+        counts = [int(value or 0) for value in tokens]
+        cost = llm.call_cost_usd(model, *counts)
+        total += cost if cost is not None else llm.call_cost_usd(most_expensive, *counts)
+    return total
+
+
+def create_run(conn: psycopg.Connection, city: str, query: str, max_companies: int, *,
+               daily_budget_usd: float | None = None) -> int:
+    """Проверить параметры и лимит расходов, создать запись запуска со статусом queued."""
     query = query.strip()
     if city not in CITIES:
         raise ValueError(f"Неизвестный город: {city}")
@@ -47,6 +73,13 @@ def create_run(conn: psycopg.Connection, city: str, query: str, max_companies: i
         raise ValueError(f"Запрос должен быть от 1 до {MAX_QUERY_LENGTH} символов")
     if not 1 <= max_companies <= MAX_COMPANIES_LIMIT:
         raise ValueError(f"Число компаний должно быть от 1 до {MAX_COMPANIES_LIMIT}")
+    if daily_budget_usd is not None:
+        spent = spent_today_usd(conn)
+        if spent >= daily_budget_usd:
+            raise BudgetExceeded(
+                f"Дневной лимит расходов на API ${daily_budget_usd:.2f} исчерпан: сегодня потрачено ${spent:.2f}."
+                " Поднимите DAILY_API_BUDGET_USD в .env или продолжите завтра."
+            )
     try:
         row = conn.execute(
             "INSERT INTO runs (city, query, max_companies) VALUES (%s, %s, %s) RETURNING id",
@@ -57,13 +90,35 @@ def create_run(conn: psycopg.Connection, city: str, query: str, max_companies: i
     return row[0]
 
 
+def daily_budget(settings: Settings) -> float:
+    """Суточный лимит из DAILY_API_BUDGET_USD."""
+    try:
+        return float(settings.daily_api_budget_usd)
+    except ValueError as exc:
+        raise ValueError("DAILY_API_BUDGET_USD должен быть числом, например 1.00") from exc
+
+
 def start_run(dsn: str, city: str, query: str, max_companies: int) -> int:
     """Создать запуск и выполнить его в фоновом потоке. Вернуть id запуска."""
+    budget = daily_budget(load_settings())
     with db.connect(dsn) as conn:
-        run_id = create_run(conn, city, query, max_companies)
+        run_id = create_run(conn, city, query, max_companies, daily_budget_usd=budget)
     thread = threading.Thread(target=execute_run, args=(dsn, run_id), name=f"run-{run_id}", daemon=True)
-    thread.start()
+    try:
+        thread.start()
+    except RuntimeError as exc:
+        _fail_with_new_connection(dsn, run_id, exc)
+        raise
     return run_id
+
+
+def _fail_with_new_connection(dsn: str, run_id: int, exc: BaseException) -> None:
+    """Пометить запуск упавшим через отдельное соединение: иначе он навсегда занял бы место активного."""
+    try:
+        with db.connect(dsn) as conn:
+            _set(conn, run_id, status="failed", error=safe_error(exc), finished_at=datetime.now(timezone.utc))
+    except psycopg.Error:
+        logger.exception("Запуск %s: не удалось пометить упавшим", run_id)
 
 
 def recover_stale_runs(conn: psycopg.Connection) -> int:
@@ -141,11 +196,42 @@ def _ids_with_status(conn: psycopg.Connection, company_ids: tuple[int, ...], sta
 
 
 def _usage_recorder(conn: psycopg.Connection, run_id: int, company_id: int, log_path: Path):
+    """Учёт токенов. Его сбой не должен выбросить уже оплаченный ответ модели."""
+
     def record(usage: llm.LLMUsage) -> None:
-        llm.save_usage(conn, usage, run_id=run_id, company_id=company_id)
-        llm.append_usage_log(log_path, usage, run_id=run_id, company_id=company_id)
+        try:
+            llm.save_usage(conn, usage, run_id=run_id, company_id=company_id)
+        except psycopg.Error:
+            logger.exception("Запуск %s: вызов API не записан в llm_calls", run_id)
+        try:
+            llm.append_usage_log(log_path, usage, run_id=run_id, company_id=company_id)
+        except OSError:
+            logger.exception("Запуск %s: вызов API не записан в %s", run_id, log_path)
 
     return record
+
+
+# Компании прошлых запусков, у которых шаг упал: дообрабатываем их в пределах лимита запуска.
+UNFINISHED_SQL = """
+SELECT c.id FROM companies c
+WHERE c.id <> ALL(%(exclude)s)
+  AND NOT EXISTS (SELECT 1 FROM drafts d WHERE d.company_id = c.id)
+  AND (
+      c.status IN ('new', 'crawled')
+      OR (c.status = 'qualified'
+          AND EXISTS (SELECT 1 FROM contacts ct WHERE ct.company_id = c.id AND ct.verify_result IS NULL))
+      OR c.status = 'verified'
+  )
+ORDER BY c.id
+LIMIT %(limit)s
+"""
+
+
+def _unfinished(conn: psycopg.Connection, exclude: tuple[int, ...], limit: int) -> tuple[int, ...]:
+    if limit <= 0:
+        return ()
+    rows = conn.execute(UNFINISHED_SQL, {"exclude": list(exclude), "limit": limit}).fetchall()
+    return tuple(company_id for (company_id,) in rows)
 
 
 def _collect(conn: psycopg.Connection, run_id: int, run: dict, deps: Deps) -> tuple[int, ...]:
@@ -156,7 +242,11 @@ def _collect(conn: psycopg.Connection, run_id: int, run: dict, deps: Deps) -> tu
     deps.run_parser(url, export, max_records)
     result = collect.load_companies(conn, export, run_id=run_id, limit=run["max_companies"])
     _set(conn, run_id, found=result.found, new_companies=len(result.new_ids))
-    return result.new_ids
+    return result.new_ids + _unfinished(conn, result.new_ids, run["max_companies"] - len(result.new_ids))
+
+
+# Ошибки, при которых следующие компании упадут так же: ключ, доступ, баланс. Запуск останавливается.
+FATAL_API_ERRORS = (anthropic.AuthenticationError, anthropic.PermissionDeniedError)
 
 
 def _each(conn, run_id, company_ids, action: Callable[[int], str | None]) -> None:
@@ -164,11 +254,17 @@ def _each(conn, run_id, company_ids, action: Callable[[int], str | None]) -> Non
     for company_id in company_ids:
         try:
             counter = action(company_id)
+        except FATAL_API_ERRORS:
+            raise
         except Exception as exc:  # noqa: BLE001  шаг не должен ронять весь запуск
             _company_failed(conn, run_id, company_id, exc)
             continue
         if counter:
             _bump(conn, run_id, counter)
+
+
+def _has_contacts(conn: psycopg.Connection, company_id: int) -> bool:
+    return conn.execute("SELECT EXISTS (SELECT 1 FROM contacts WHERE company_id = %s)", (company_id,)).fetchone()[0]
 
 
 def _steps(conn: psycopg.Connection, run_id: int, company_ids: tuple[int, ...], deps: Deps) -> None:
@@ -177,14 +273,23 @@ def _steps(conn: psycopg.Connection, run_id: int, company_ids: tuple[int, ...], 
     _set(conn, run_id, stage="Сайты")
 
     def do_crawl(cid: int) -> str:
-        crawl.crawl_company(conn, cid, deps.crawl)
+        try:
+            crawl.crawl_company(conn, cid, deps.crawl)
+        except Exception as exc:  # noqa: BLE001  сайт не открылся: дальше по карточке 2ГИС и её почтам
+            _company_failed(conn, run_id, cid, exc)
+            conn.execute("UPDATE companies SET status = 'crawled' WHERE id = %s AND status = 'new'", (cid,))
         return "crawled"
 
-    _each(conn, run_id, company_ids, do_crawl)
+    _each(conn, run_id, _ids_with_status(conn, company_ids, "new"), do_crawl)
 
     _set(conn, run_id, stage="Квалификация")
 
     def do_qualify(cid: int) -> str:
+        if not _has_contacts(conn, cid):
+            # Писать некуда: не тратим вызов модели.
+            conn.execute("UPDATE companies SET status = 'rejected',"
+                         " last_error = 'Почта не найдена ни в 2ГИС, ни на сайте' WHERE id = %s", (cid,))
+            return "rejected"
         answer = qualify.qualify_company(conn, cid, client=deps.client, owner_doc=deps.owner_doc,
                                          on_usage=_usage_recorder(conn, run_id, cid, log_path))
         return "rejected" if answer["fit"] == "no" else "qualified"
@@ -214,7 +319,13 @@ def _steps(conn: psycopg.Connection, run_id: int, company_ids: tuple[int, ...], 
 
 def execute_run(dsn: str, run_id: int, deps: Deps | None = None) -> None:
     """Выполнить все шаги запуска: 2ГИС → сайты → квалификация → проверка почт → письма."""
-    with db.connect(dsn) as conn:
+    try:
+        conn = db.connect(dsn)
+    except psycopg.Error as exc:
+        logger.exception("Запуск %s: нет соединения с базой", run_id)
+        _fail_with_new_connection(dsn, run_id, exc)
+        return
+    with conn:
         try:
             _set(conn, run_id, status="running", started_at=datetime.now(timezone.utc), stage="Подготовка")
             deps = deps or default_deps(load_settings())
@@ -225,5 +336,7 @@ def execute_run(dsn: str, run_id: int, deps: Deps | None = None) -> None:
             _set(conn, run_id, status="done", stage="Готово", finished_at=datetime.now(timezone.utc))
         except Exception as exc:  # noqa: BLE001  любая ошибка запуска видна в интерфейсе
             logger.exception("Запуск %s упал", run_id)
-            _set(conn, run_id, status="failed", error=safe_error(exc),
-                 finished_at=datetime.now(timezone.utc))
+            try:
+                _set(conn, run_id, status="failed", error=safe_error(exc), finished_at=datetime.now(timezone.utc))
+            except psycopg.Error:
+                _fail_with_new_connection(dsn, run_id, exc)

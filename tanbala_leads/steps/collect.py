@@ -71,17 +71,28 @@ def run_parser(search_url: str, output_path: Path, max_records: int, parser_bin:
         str(binary), "-i", search_url, "-o", str(output_path), "-f", "json",
         "--parser.max-records", str(max_records),
     ]
+    process = subprocess.Popen(
+        command, env=parser_env(tmp_dir), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        encoding="utf-8", errors="replace",
+    )
     try:
-        result = subprocess.run(
-            command, env=parser_env(tmp_dir), capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=PARSER_TIMEOUT_SECONDS,
-        )
+        stdout, stderr = process.communicate(timeout=PARSER_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as exc:
+        _kill_tree(process.pid)
+        process.wait(timeout=30)
         raise ParserError(f"parser-2gis не уложился в {PARSER_TIMEOUT_SECONDS} с") from exc
-    if result.returncode != 0 or not output_path.exists():
-        tail = (result.stderr or result.stdout).strip()[-500:]
-        raise ParserError(f"parser-2gis завершился с кодом {result.returncode}: {tail}")
+    if process.returncode != 0 or not output_path.exists():
+        tail = (stderr or stdout or "").strip()[-500:]
+        raise ParserError(f"parser-2gis завершился с кодом {process.returncode}: {tail}")
     return output_path
+
+
+def _kill_tree(pid: int) -> None:
+    """Остановить parser-2gis вместе с его Chrome: обычный kill на Windows оставляет браузер жить."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, check=False)
+    else:
+        os.kill(pid, 9)
 
 
 @dataclass(frozen=True)

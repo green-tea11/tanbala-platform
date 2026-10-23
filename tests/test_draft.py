@@ -130,3 +130,24 @@ def test_no_usable_contact_is_an_error(db_conn, company):
 
     with pytest.raises(draft.NoUsableContact):
         draft.draft_first_email(db_conn, company, client=fake_client(CLEAN), owner_doc="Д", settings=SETTINGS)
+
+
+@pytest.mark.db
+def test_failed_retry_keeps_first_paid_draft(db_conn, company):
+    add_contact(db_conn, company, "info@pel.kz", "safe")
+    client = fake_client(WITH_DASH, {"subject": "", "body": "", "notes": []})
+
+    draft_id = draft.draft_first_email(db_conn, company, client=client, owner_doc="Д", settings=SETTINGS)
+
+    body = db_conn.execute("SELECT body FROM drafts WHERE id = %s", (draft_id,)).fetchone()[0]
+    assert "—" in body
+
+
+@pytest.mark.db
+def test_missing_signature_settings_stop_before_paid_call(db_conn, company):
+    add_contact(db_conn, company, "info@pel.kz", "safe")
+    client = fake_client(CLEAN)
+
+    with pytest.raises(Exception, match="AGENT_NAME"):
+        draft.draft_first_email(db_conn, company, client=client, owner_doc="Д", settings=load_settings({}))
+    assert client.calls == []

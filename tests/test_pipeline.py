@@ -104,9 +104,9 @@ def test_one_broken_site_does_not_stop_the_run(db_conn, dsn, tmp_path):
 
     status, errors, drafted = db_conn.execute("SELECT status, errors, drafted FROM runs WHERE id = %s",
                                               (run_id,)).fetchone()
-    assert (status, errors, drafted) == ("done", 1, 3)
-    assert "сайт не ответил" in db_conn.execute(
-        "SELECT last_error FROM companies WHERE name LIKE 'Аксенгер%%'").fetchone()[0]
+    # Сайт Аксенгера не открылся, но почта из 2ГИС есть: письмо всё равно написано по карточке.
+    assert (status, errors, drafted) == ("done", 1, 4)
+    assert db_conn.execute("SELECT site_text FROM companies WHERE name LIKE 'Аксенгер%%'").fetchone()[0] is None
 
 
 def test_parser_failure_fails_the_run_with_message(db_conn, dsn, tmp_path):
@@ -151,3 +151,97 @@ def test_error_text_hides_secrets(secret):
 
     assert secret not in text
     assert "[скрыто]" in text and "не вышло" in text
+
+
+def add_spent(conn, input_tokens):
+    conn.execute("INSERT INTO llm_calls (task, model, input_tokens, output_tokens) VALUES ('qualify', 'claude-haiku-5-5', %s, 0)",
+                 (input_tokens,))
+
+
+def test_daily_budget_blocks_new_run(db_conn):
+    add_spent(db_conn, 20_000_000)  # 20 млн входных токенов Haiku = $2
+
+    with pytest.raises(pipeline.BudgetExceeded, match="лимит"):
+        pipeline.create_run(db_conn, "almaty", "склад", 3, daily_budget_usd=1.0)
+
+
+def test_spending_under_budget_allows_run(db_conn):
+    add_spent(db_conn, 1_000_000)  # $0.10
+
+    assert pipeline.create_run(db_conn, "almaty", "склад", 3, daily_budget_usd=1.0)
+
+
+def test_company_without_any_email_is_not_sent_to_claude(db_conn, dsn, tmp_path):
+    def parser_without_asklad_emails(url, out, max_records):
+        items = json.loads(FIXTURE.read_text(encoding="utf-8-sig"))
+        for item in items:
+            if item["name"].startswith("Asklad"):
+                for group in item["contact_groups"]:
+                    group["contacts"] = [c for c in group["contacts"] if c["type"] != "email"]
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
+        return out
+
+    def site_without_emails(url):
+        return SiteCrawl(start_url=url, pages=(PageText(url=url, text="Склад."),), emails=frozenset(), error=None)
+
+    client = FakeClient()
+    run_id = pipeline.create_run(db_conn, "almaty", "склад", 4)
+
+    pipeline.execute_run(dsn, run_id, make_deps(tmp_path, client, run_parser=parser_without_asklad_emails,
+                                                crawl=site_without_emails))
+
+    qualify_calls = sum("fit" in call["output_config"]["format"]["schema"]["properties"] for call in client.calls)
+    status, error = db_conn.execute("SELECT status, last_error FROM companies WHERE name LIKE 'Asklad%%'").fetchone()
+    assert qualify_calls == 3
+    assert status == "rejected" and "почта" in error.lower()
+
+
+def test_usage_log_failure_does_not_lose_paid_answer(db_conn, dsn, tmp_path):
+    run_id = pipeline.create_run(db_conn, "almaty", "склад", 1)
+    deps = make_deps(tmp_path)
+    deps = pipeline.Deps(**{**deps.__dict__, "log_path": tmp_path})  # каталог вместо файла: запись в лог упадёт
+
+    pipeline.execute_run(dsn, run_id, deps)
+
+    assert db_conn.execute("SELECT drafted, errors FROM runs WHERE id = %s", (run_id,)).fetchone() == (1, 0)
+
+
+def test_auth_error_stops_the_run(db_conn, dsn, tmp_path):
+    import anthropic
+    import httpx
+
+    class BrokenKeyClient(FakeClient):
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+            raise anthropic.AuthenticationError("invalid x-api-key", response=httpx.Response(401, request=request),
+                                                body=None)
+
+    client = BrokenKeyClient()
+    run_id = pipeline.create_run(db_conn, "almaty", "склад", 4)
+
+    pipeline.execute_run(dsn, run_id, make_deps(tmp_path, client))
+
+    status, error = db_conn.execute("SELECT status, error FROM runs WHERE id = %s", (run_id,)).fetchone()
+    assert status == "failed" and "AuthenticationError" in error
+    assert len(client.calls) == 1
+
+
+def test_unfinished_companies_are_finished_by_next_run(db_conn, dsn, tmp_path):
+    import anthropic
+    import httpx
+
+    class OfflineClient(FakeClient):
+        def create(self, **kwargs):
+            raise anthropic.APIConnectionError(request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"))
+
+    first = pipeline.create_run(db_conn, "almaty", "склад", 4)
+    pipeline.execute_run(dsn, first, make_deps(tmp_path, OfflineClient()))
+    assert {status for (status,) in db_conn.execute("SELECT status FROM companies")} == {"crawled"}
+
+    second = pipeline.create_run(db_conn, "almaty", "склад", 4)
+    pipeline.execute_run(dsn, second, make_deps(tmp_path))
+
+    assert {status for (status,) in db_conn.execute("SELECT status FROM companies")} == {"drafted"}
+    assert db_conn.execute("SELECT new_companies, drafted FROM runs WHERE id = %s", (second,)).fetchone() == (0, 4)

@@ -40,3 +40,12 @@ def test_edit_resets_approval(db_conn, draft_id):
     approve.update_draft(db_conn, draft_id, "Новая тема", "Новый текст")
 
     assert db_conn.execute("SELECT review_status, subject FROM drafts").fetchone() == ("pending", "Новая тема")
+
+
+def test_second_reject_does_not_touch_company(db_conn, draft_id):
+    approve.reject(db_conn, draft_id, "владелец")
+    db_conn.execute("UPDATE companies SET status = 'drafted'")
+
+    with pytest.raises(approve.DraftNotFound):
+        approve.reject(db_conn, draft_id, "владелец")
+    assert db_conn.execute("SELECT status FROM companies").fetchone()[0] == "drafted"

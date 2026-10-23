@@ -827,3 +827,9 @@ def test_http_is_kept_when_https_does_not_open():
     assert crawl.error is None
     assert crawler.calls == ["https://pel.kz", "http://pel.kz"]
     assert crawl.pages[0].text == "Только http."
+
+
+def test_nat64_addresses_are_not_public():
+    resolver = fake_resolver({"nat.example.kz": ["64:ff9b::7f00:1"]})
+
+    assert not is_public_url("https://nat.example.kz/", resolver=resolver)

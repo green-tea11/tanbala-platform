@@ -99,3 +99,22 @@ def test_usage_is_saved_to_llm_calls(db_conn):
 
     row = db_conn.execute("SELECT task, input_tokens, output_tokens, cache_read_tokens FROM llm_calls").fetchone()
     assert row == ("first_email", 900, 300, 8000)
+
+
+def test_cost_of_haiku_call():
+    cost = llm.call_cost_usd("claude-haiku-5-5", input_tokens=1_000_000, output_tokens=1_000_000,
+                             cache_read_tokens=1_000_000, cache_write_tokens=0)
+
+    assert cost == pytest.approx(0.10 + 0.50 + 0.01)
+
+
+def test_unknown_model_has_no_price():
+    assert llm.call_cost_usd("claude-unknown", input_tokens=10, output_tokens=10) is None
+
+
+def test_client_has_timeout():
+    from tanbala_leads.settings import load_settings
+
+    client = llm.make_client(load_settings({"VENMART_ANTHROPIC_KEY": "sk-test"}))
+
+    assert client.timeout == llm.API_TIMEOUT_SECONDS

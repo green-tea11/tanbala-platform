@@ -26,11 +26,11 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _search(dsn: str, city: str, query: str, limit: int) -> int:
+def _search(dsn: str, city: str, query: str, limit: int, budget: float) -> int:
     with db.connect(dsn) as conn:
         db.migrate(conn)
         pipeline.recover_stale_runs(conn)
-        run_id = pipeline.create_run(conn, city, query, limit)
+        run_id = pipeline.create_run(conn, city, query, limit, daily_budget_usd=budget)
     pipeline.execute_run(dsn, run_id)
     with db.connect(dsn) as conn:
         status, error, found, drafted = conn.execute(
@@ -48,13 +48,14 @@ def main(argv: list[str] | None = None) -> int:
         serve(port=args.port)
         return 0
     try:
-        dsn = load_settings().require("database_url")
+        settings = load_settings()
+        dsn = settings.require("database_url")
         if args.command == "migrate":
             with db.connect(dsn) as conn:
                 applied = db.migrate(conn)
             print(f"Применены миграции: {applied}" if applied else "Схема актуальна, миграций нет.")
             return 0
-        return _search(dsn, args.city, args.query, args.limit)
+        return _search(dsn, args.city, args.query, args.limit, pipeline.daily_budget(settings))
     except (SettingsError, ValueError, pipeline.RunAlreadyActive) as exc:
         print(exc, file=sys.stderr)
         return 1
