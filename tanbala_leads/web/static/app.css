@@ -206,6 +206,16 @@ select.input { padding-right: 28px; }
 .score { font-size: 15px; font-weight: 600; }
 .sub-city { display: none; }
 .cell-cost { white-space: nowrap; color: var(--muted); }
+/* Строка компании нажимается целиком: ссылка растянута на всю ячейку. */
+.table .link-row td, .table .link-row td:first-child, .table .link-row td:last-child { padding: 0; }
+.cell-score .sub { white-space: nowrap; }
+.cell-fill { display: block; padding: 12px; color: inherit; }
+.link-row td:first-child .cell-fill { padding-left: var(--card-pad); }
+.link-row td:last-child .cell-fill { padding-right: var(--card-pad); }
+.cell-fill:hover .row-link, .letter-link:hover .letter-subject-line { text-decoration: underline; text-underline-offset: 3px; }
+.cell-draft { width: 24%; }
+.letter-subject-line { display: block; max-width: 30ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.letter-link .sub { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; margin-top: 4px; }
 
 /* ---------- компании: карточки-счётчики как фильтр по статусу ---------- */
 .count-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: var(--gap); }
@@ -219,6 +229,41 @@ select.input { padding-right: 28px; }
 .filters .field-inline:first-child { flex: 1 1 260px; max-width: 340px; }
 .filters .field-inline { flex: 0 1 240px; }
 .pager { display: flex; justify-content: flex-end; gap: 8px; padding-top: 16px; border-top: 1px solid var(--rule); margin: 0 calc(-1 * var(--card-pad)); padding: 12px var(--card-pad); }
+
+/* ---------- очередь писем ---------- */
+.tab-badge { display: inline-grid; place-items: center; min-width: 18px; height: 18px; margin-left: 6px; padding: 0 5px; border-radius: 9px; background: var(--accent-ink); color: #ffffff; font-size: 11px; font-weight: 600; line-height: 1; }
+.btn.review { background: var(--accent-ink); border-color: var(--accent-ink); color: #ffffff; }
+.btn.review:hover { background: #08525b; border-color: #08525b; }
+.run-actions { display: inline-flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px 20px; }
+.filter-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; margin-bottom: var(--gap); }
+.filter-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.filter-chip { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px; border: 1.5px solid var(--border); border-radius: var(--radius-control); background: var(--surface); color: var(--muted); white-space: nowrap; transition: border-color var(--t-hover) ease, color var(--t-hover) ease; }
+.filter-chip .num { color: var(--text); font-weight: 600; }
+.filter-chip:hover { border-color: var(--control); color: var(--text); }
+.filter-chip[aria-current="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.run-filter { color: var(--muted); }
+.queue { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: var(--gap); align-items: start; }
+.queue-list { grid-column: span 4; position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow: auto; padding: var(--card-pad) 0 0; }
+.queue-list > header { padding: 0 var(--card-pad); margin-bottom: 8px; }
+.queue-list > .empty { margin: 0 var(--card-pad) var(--card-pad); }
+.letter-list { display: grid; }
+.letter-item { display: grid; gap: 3px; padding: 12px var(--card-pad); border-top: 1px solid var(--rule); transition: background-color var(--t-hover) ease; }
+.letter-item:hover { background: var(--raised); }
+.letter-item[aria-current="true"] { background: var(--active); }
+.letter-item-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.letter-item-company { font-weight: 600; overflow-wrap: anywhere; }
+.letter-item-subject { display: -webkit-box; overflow: hidden; color: var(--muted); font-size: 13px; line-height: 18px; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.letter-item-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.letter-pane { grid-column: span 8; scroll-margin-top: 16px; }
+.letter-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.letter-head h2 { font-size: 18px; line-height: 24px; overflow-wrap: anywhere; }
+.brief { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 16px; margin-bottom: 16px; padding: 12px 16px; border-radius: var(--radius-card); background: var(--raised); }
+.brief-score { display: grid; align-content: start; gap: 2px; }
+.brief .reason { margin-bottom: 6px; }
+.brief-links { display: flex; flex-wrap: wrap; gap: 4px 20px; }
+.queue-empty { max-width: 760px; padding: 28px var(--card-pad); }
+.queue-empty h2 { margin-bottom: 8px; font-size: 20px; line-height: 26px; }
+.empty-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 
 /* ---------- карточка компании ---------- */
 .detail { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: var(--gap); align-items: start; }
@@ -242,14 +287,24 @@ select.input { padding-right: 28px; }
 .check.failed .check-mark { color: var(--negative); }
 .check.failed .check-name { font-weight: 600; }
 .check-details { grid-column: 2; display: grid; gap: 2px; margin-top: 2px; color: var(--muted); font-size: 13px; line-height: 18px; overflow-wrap: anywhere; }
-.actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--rule); }
-.actions form { margin: 0; }
-.actions-note { order: 5; margin-left: auto; }
-.edit[open] { order: 10; flex-basis: 100%; }
-.edit > summary { list-style: none; }
-.edit > summary::-webkit-details-marker { display: none; }
-.edit[open] > summary { background: var(--active); border-color: var(--control); }
-.edit-form { margin-top: 12px; }
+/* Действия с письмом: прилипают к низу окна, пока читаешь длинное письмо. */
+.action-bar { position: sticky; bottom: 0; z-index: 1; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 20px calc(-1 * var(--card-pad)) calc(-1 * var(--card-pad)); padding: 12px var(--card-pad); border-top: 1px solid var(--border); border-radius: 0 0 var(--radius-card) var(--radius-card); background: var(--surface); }
+.action-bar form { margin: 0; }
+.action-note { margin-left: auto; }
+p.action-note { margin-top: 16px; }
+.edit-form { margin-top: 4px; }
+.edit-actions { display: flex; gap: 8px; }
+.queue-link { margin-bottom: 8px; }
+.letter .letter-foot { margin: 0 0 16px; }
+.notes-box { margin-bottom: 16px; padding: 12px 16px; border-radius: var(--radius-card); background: var(--note-bg); color: var(--note-ink); }
+.notes-box h3 { margin-bottom: 6px; font-size: var(--fs-body); line-height: 20px; font-weight: 600; }
+.notes-box ul { display: grid; gap: 4px; }
+.notes-box .meta { margin-top: 6px; color: var(--note-ink); }
+.checks-mini { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: var(--fs-small); white-space: nowrap; }
+.checks-mini .check-mark { width: 14px; height: 14px; margin: 0; }
+.checks-mini.failed { color: var(--negative); }
+.check-mark.passed { color: var(--positive); }
+.check-mark.failed { color: var(--negative); }
 .site-text > summary { cursor: pointer; color: var(--accent-ink); font-weight: 500; }
 .site-text > summary:hover { text-decoration: underline; text-underline-offset: 3px; }
 .site-text-body { max-height: 480px; margin-top: 12px; padding: 12px; overflow: auto; border-radius: var(--radius-control); background: var(--raised); color: var(--muted); font-size: 13px; line-height: 20px; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -275,6 +330,8 @@ select.input { padding-right: 28px; }
 /* ---------- планшет ---------- */
 @media (max-width: 1000px) {
   .spend-tokens { display: none; }
+  .queue-list, .letter-pane { grid-column: 1 / -1; }
+  .queue-list { position: static; max-height: 360px; }
   .topbar-inner { gap: 24px; }
   .search-form, .run-panel { grid-column: 1 / -1; }
   .detail-main, .detail-side { grid-column: 1 / -1; }
@@ -309,7 +366,21 @@ select.input { padding-right: 28px; }
   .detail .panel { margin-bottom: var(--gap); }
   .order-why { order: 1; } .order-letter { order: 2; } .order-emails { order: 3; } .order-card { order: 4; } .order-site { order: 5; }
   .detail { display: flex; flex-direction: column; align-items: stretch; }
-  .actions .btn { height: 44px; }
+  .action-bar .btn { height: 44px; }
+  /* На телефоне действия — компактная сетка 2×2 у нижнего края; про выключенную отправку сказано в заголовке. */
+  .action-bar { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 8px var(--card-pad); }
+  .action-bar .btn { width: 100%; }
+  .action-bar .action-note { display: none; }
+  .run-foot { flex-direction: column-reverse; align-items: stretch; gap: 12px; }
+  .run-actions { display: grid; grid-template-columns: minmax(0, 1fr); justify-content: stretch; justify-items: start; gap: 12px; }
+  .run-actions .btn.review { order: -1; width: 100%; }
+  /* Строка прошлого запуска: номер и статус, потом запрос и город, потом числа. */
+  .history .stacked tr::after { content: ""; order: 2; flex-basis: 100%; height: 0; }
+  .brief { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .queue-list { max-height: 320px; }
+  .table.stacked .cell-fill, .link-row td:first-child .cell-fill, .link-row td:last-child .cell-fill { padding: 0; }
+  .letter-subject-line { max-width: none; white-space: normal; }
+  .tabs a { gap: 0; }
   .stage { grid-template-columns: 16px minmax(0, 1fr) 52px; row-gap: 2px; }
   .stage-counts { grid-row: 2; grid-column: 2 / 3; justify-content: flex-start; }
   .stage-state { grid-row: 1; grid-column: 3; }

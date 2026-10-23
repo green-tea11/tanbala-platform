@@ -89,6 +89,14 @@
 
   function noop() {}
 
+  /* Значок на вкладке «Письма»: сколько писем ждут проверки. */
+  function updateBadge(count) {
+    var badge = document.querySelector("[data-letters-badge]");
+    if (!badge || typeof count !== "number") return;
+    badge.textContent = numbers.format(count);
+    badge.hidden = count === 0;
+  }
+
   /* Опрос /api/runs/<id>, пока запуск не закончится. 404: запуска нет, опрос прекращается. */
   function pollRun(runId, interval, handlers) {
     var failures = 0;
@@ -180,6 +188,9 @@
         error.textContent = run.error || "";
         error.hidden = !run.error;
       }
+      var review = panel.querySelector("[data-run-review]");
+      if (review) review.hidden = run.show_review !== true;
+      updateBadge(run.pending_total);
     }
 
     pollRun(runId, interval, {
@@ -204,6 +215,44 @@
     if (panel && panel.getAttribute("data-run-id") === activeId) return;
     var interval = (panel && parseInt(panel.getAttribute("data-poll-ms"), 10)) || 2000;
     pollRun(activeId, interval, { onUpdate: noop, onFinish: enableStart, onGone: enableStart, onError: noop });
+  }
+
+  /* «Скопировать»: тема и текст клиенту, без заметок для владельца. Кнопка видна, только если буфер доступен. */
+  function setupCopy() {
+    each(document, "[data-copy-letter]", function (button) {
+      var pane = button.closest("article, section");
+      var subject = pane && pane.querySelector("[data-letter-subject]");
+      var body = pane && pane.querySelector("[data-letter-body]");
+      if (!subject || !body || !navigator.clipboard || !window.isSecureContext) return;
+      var status = pane.querySelector("[data-copy-status]");
+      var original = status ? status.textContent : "";
+      var timer = null;
+
+      var label = button.textContent;
+
+      /* Ответ виден и в строке рядом, и на самой кнопке: на телефоне строки нет. */
+      function say(message, short) {
+        if (status) status.textContent = message;
+        button.textContent = short;
+        window.clearTimeout(timer);
+        timer = window.setTimeout(function () {
+          if (status) status.textContent = original;
+          button.textContent = label;
+        }, 3000);
+      }
+
+      button.hidden = false;
+      button.addEventListener("click", function () {
+        var lines = Array.prototype.map.call(body.querySelectorAll(".line"), function (line) {
+          return line.textContent;
+        });
+        var text = subject.textContent.trim() + "\n\n" + lines.join("\n");
+        navigator.clipboard.writeText(text).then(
+          function () { say("Тема и текст скопированы.", "Скопировано"); },
+          function () { say("Не удалось скопировать: выделите текст вручную.", "Не вышло"); }
+        );
+      });
+    });
   }
 
   /* Фильтры списка применяются сразу при выборе. */
@@ -233,5 +282,6 @@
     setupActiveWatch();
     setupAutosubmit();
     setupConfirm();
+    setupCopy();
   });
 })();

@@ -12,6 +12,7 @@ from __future__ import annotations
 import sys
 import threading
 import time
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -33,7 +34,8 @@ FAKE_STEP_SECONDS = 3.0
 SIGNATURE = "С уважением,\nАрман\nTanbala, направление ТОО «VenMart»\nWhatsApp: +7 747 959 72 38"
 CHECKS_OK = [
     {"name": name, "passed": True, "details": []}
-    for name in ("dashes", "prices", "stop_words", "links", "signature", "notes", "jargon", "style")
+    for name in ("dashes", "prices", "stop_words", "links", "length", "signature", "notes", "jargon", "style",
+                 "contacts")
 ]
 
 
@@ -51,11 +53,12 @@ COMPANIES = [
      [("info@step-sklad.example.kz", "/kontakty", "safe", False, True),
       ("sales@step-sklad.example.kz", "/", "risky", True, True)],
      ("Инвентаризация 12 000 паллетомест за часы",
+      "[Проверить: число паллетомест взято с главной страницы сайта, уточнить актуальность]\n"
+      "[Проверить: на этот адрес и в эту компанию раньше не писали]\n"
       "Здравствуйте!\n\nПишу по поводу ответственного хранения на Бекмаханова. На вашем сайте видно, что остатки "
       "пересчитывают вручную. Мы ставим RFID-метки на паллеты и считываем весь склад за один проход с ручным "
       "считывателем. Обычно инвентаризация, которая занимала два дня, проходит за 3–4 часа. Можем показать на "
-      "одном ряду стеллажей у вас, без оплаты. Удобно ли созвониться на этой неделе?\n\n"
-      "[Проверить: число паллетомест взято с главной страницы сайта, уточнить актуальность]\n\n" + SIGNATURE,
+      "одном ряду стеллажей у вас, без оплаты. Удобно ли созвониться на этой неделе?\n\n" + SIGNATURE,
       checks_with({"dashes": ["тире: «–» в «…проходит за 3–4 часа. Можем…»"]})), None),
     ("ТОО «Жетысу Логистик»", "Грузоперевозки, логистика", "Алматы, Илийский тракт, 20/1", "zhetysu-log.example.kz",
      "drafted", 74, "yes", "логистика",
@@ -63,11 +66,32 @@ COMPANIES = [
      "Отслеживание тары по RFID на воротах.",
      [("office@zhetysu-log.example.kz", "/about", "safe", False, True)],
      ("Где ваши паллеты после отгрузки",
+      "[Ответить лично: в письме обращение по имени из 2ГИС, проверить имя]\n"
       "Здравствуйте, Ержан!\n\nУвидел, что вы работаете с возвратной тарой между Алматы и Астаной. Часто паллеты "
       "и контейнеры теряются на чужих складах, и это прямые потери. RFID-метка на таре и считыватель на воротах "
       "показывают, где каждая единица и кто её не вернул. Внедрение начинается с одних ворот. Расскажу подробнее "
-      "за 15 минут, когда вам удобно?\n\n[Ответить лично: в письме обращение по имени из 2ГИС, проверить имя]\n\n"
-      + SIGNATURE, CHECKS_OK), None),
+      "за 15 минут, когда вам удобно?\n\n" + SIGNATURE,
+      checks_with({"stop_words": ["стоп-слово: «за 15 минут» в «…подробнее за 15 минут, когда…»"]})), None),
+    ("ТОО «Алтын Тара Пласт»", "Оборотная тара, производство", "Алматы, ул. Казыбаева, 26", "altyn-tara.example.kz",
+     "drafted", 79, "yes", "оборотная тара",
+     "Производят и сдают в аренду пластиковые ящики сетям. Ящики не возвращаются из магазинов, учёт в Excel.",
+     [("sales@altyn-tara.example.kz", "/contacts", "safe", False, True)],
+     ("Сколько ящиков не вернулось из магазинов",
+      "[Проверить: что аренда ящиков сетям есть на сайте, а не только производство]\n"
+      "Здравствуйте!\n\nВы сдаёте ящики в аренду сетям, и часть из них не возвращается. RFID-метка на ящике и "
+      "считыватель на воротах склада показывают, сколько ящиков ушло к каждой сети и сколько вернулось. Сверка "
+      "занимает минуты, а не дни в Excel. Можем начать с одной партии ящиков. Интересно обсудить?\n\n" + SIGNATURE,
+      CHECKS_OK), None),
+    ("ТОО «Медикал Сток»", "Медицинский склад", "Алматы, ул. Жансугурова, 112", "med-stock.example.kz",
+     "drafted", 72, "maybe", "медицинский склад",
+     "Склад медизделий с учётом сроков годности. RFID поможет видеть партии и сроки без пересчёта.",
+     [("info@med-stock.example.kz", "/", "risky", True, True)],
+     ("Сроки годности без пересчёта коробок",
+      "Здравствуйте!\n\nУ медицинского склада главная боль: партии и сроки годности. RFID-метки на коробках "
+      "читаются без вскрытия, и список партий с датами собирается за один обход. Можем показать на одной "
+      "стойке. Позвоните, когда удобно: +7 701 000 00 00.\n\n" + SIGNATURE,
+      checks_with({"contacts": ["чужой номер: «+7 701 000 00 00»"], "length": ["5 предложений, нужно от 5 до 8"]})),
+     None),
     ("ТОО «Kaz Textile Group»", "Магазин одежды", "Алматы, пр. Абая, 44", "kaztextile.example.kz",
      "approved", 81, "yes", "ритейл одежды",
      "Сеть из 6 магазинов одежды, единый склад. RFID-метки на одежде ускоряют инвентаризацию и защищают от краж.",
@@ -144,7 +168,7 @@ def insert_company(conn, run_id: int, item: tuple, minutes_ago: int) -> None:
         "INSERT INTO companies (name, city, rubric, address, phones, website, source_id, source_url, branches_count,"
         " site_text, status, last_error, run_id, created_at) VALUES (%s, 'almaty', %s, %s, %s, %s, %s, %s, %s, %s,"
         " %s, %s, %s, now() - make_interval(mins => %s)) RETURNING id",
-        (name, rubric, address, ["+7 727 355 10 20", "+7 701 555 44 33"], website, f"demo-{minutes_ago}",
+        (name, rubric, address, ["+7 727 355 10 20", "+7 701 555 44 33"], website, f"demo-{uuid.uuid4().hex[:12]}",
          f"https://2gis.kz/almaty/firm/demo{minutes_ago}", 1 if status != "approved" else 6,
          SITE_TEXT if website else None, status, error, run_id, minutes_ago),
     ).fetchone()[0]
@@ -185,7 +209,7 @@ def seed(dsn: str) -> None:
                             {"stage": "Готово", "found": 10, "new": 9, "crawled": 8, "qualified": 5, "rejected": 2,
                              "verified": 4, "drafted": 3, "errors": 1}, 95)
         for index, item in enumerate(COMPANIES):
-            insert_company(conn, second if index < 7 else first, item, 90 - index if index < 7 else 60 * 26 - index)
+            insert_company(conn, second if index < 9 else first, item, 90 - index if index < 9 else 60 * 26 - index)
         conn.execute("INSERT INTO llm_calls (task, model, run_id, input_tokens, output_tokens)"
                      " VALUES ('check', 'claude-experimental-x', %s, 1200, 90)", (second,))
 
@@ -196,6 +220,18 @@ def fake_start_run(dsn: str, city: str, query: str, max_companies: int) -> int:
         run_id = pipeline.create_run(conn, city, query, max_companies)
     threading.Thread(target=_fake_progress, args=(dsn, run_id, max_companies), daemon=True).start()
     return run_id
+
+
+def fake_letter_item(run_id: int, index: int) -> tuple:
+    """Выдуманная компания с черновиком, ждущим проверки: письмо поддельного запуска."""
+    name = f"ТОО «Демо-склад {run_id}-{index + 1}»"
+    body = ("[Проверить: письмо из поддельного запуска, данные выдуманы]\n"
+            "Здравствуйте!\n\nПишу по поводу вашего склада. RFID-метки на паллетах позволяют пересчитать склад за "
+            "один обход. Можем показать на одном ряду стеллажей. Удобно ли созвониться?\n\n" + SIGNATURE)
+    return (name, "Складские услуги", "Алматы, ул. Демо, 1", None, "drafted", 70, "yes", "склады",
+            "Выдуманная компания для показа очереди писем.",
+            [(f"info@demo-{run_id}-{index + 1}.example.kz", "/", "safe", False, True)],
+            ("Пересчёт склада за один обход", body, CHECKS_OK), None)
 
 
 def _fake_progress(dsn: str, run_id: int, n: int) -> None:
@@ -215,6 +251,9 @@ def _fake_progress(dsn: str, run_id: int, n: int) -> None:
             for stage, counters in plan:
                 conn.execute("UPDATE runs SET stage = %s WHERE id = %s", (stage, run_id))
                 time.sleep(FAKE_STEP_SECONDS)
+                if stage == "Письма":
+                    for index in range(counters["drafted"]):
+                        insert_company(conn, run_id, fake_letter_item(run_id, index), 0)
                 sets = ", ".join(f"{field} = %s" for field in counters)
                 conn.execute(f"UPDATE runs SET {sets} WHERE id = %s", (*counters.values(), run_id))
             conn.execute("UPDATE runs SET status = 'done', stage = 'Готово', finished_at = now() WHERE id = %s",

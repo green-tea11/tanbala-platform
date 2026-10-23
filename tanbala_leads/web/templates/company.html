@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_letter.html" as lu with context %}
 {% block content %}
 <nav class="crumbs" aria-label="Путь"><a href="/companies">Компании</a>{% if run_url %} <span aria-hidden="true">/</span> <a href="{{ run_url }}">запуск №{{ company.run_id }}</a>{% endif %}</nav>
 <div class="title-row">
@@ -19,81 +20,18 @@
 
 <div class="detail">
   <div class="detail-main">
-    <section class="panel letter order-letter" aria-labelledby="letter-title">
+    <section class="panel letter order-letter" id="letter" aria-labelledby="letter-title">
       <header>
         <h2 id="letter-title">Письмо</h2>
-        {% if draft %}<span class="pill {{ 'pos' if draft.review_status == 'approved' else ('muted' if draft.review_status == 'rejected' else 'accent') }}">{{ draft.review_label }}</span>{% endif %}
+        {% if draft %}<span class="pill {{ draft.review_tone }}">{{ draft.review_label }}</span>{% endif %}
       </header>
       {% if draft %}
-      <dl class="letter-meta">
-        <div><dt>Кому</dt><dd>{{ draft.to_email or '—' }}</dd></div>
-        <div><dt>Тема</dt><dd class="letter-subject">{{ draft.subject }}</dd></div>
-      </dl>
-      <div class="letter-body" aria-label="Текст письма">
-        {% for line in draft.lines %}<p class="line{% if line.note %} note{% endif %}">{{ line.text }}</p>{% endfor %}
-      </div>
+      <p class="queue-link"><a class="card-link" href="{{ draft.queue_url }}">Открыть в очереди писем</a></p>
       <p class="meta letter-foot">
         {% if draft.kind == 'reply' %}Ответ клиенту · {% endif %}написал {{ draft.model or '—' }} · {{ draft.created_at|fmt_dt }}
         {% if draft.approved_at %} · одобрил {{ draft.approved_by }} {{ draft.approved_at|fmt_dt }}{% endif %}
       </p>
-
-      <section class="checks" aria-labelledby="checks-title">
-        <h3 id="checks-title">Проверки письма{% if draft.checks %}: {% if draft.checks_failed %}<span class="neg-text">не прошло {{ draft.checks_failed }} из {{ draft.checks|length }}</span>{% else %}все {{ draft.checks|length }} пройдены{% endif %}{% endif %}</h3>
-        {% if draft.checks %}
-        <ul class="check-list">
-          {% for check in draft.checks %}
-          <li class="check {{ 'passed' if check.passed else 'failed' }}">
-            <svg class="check-mark" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">{% if check.passed %}<path d="M3 8.5 6.5 12 13 4.5"/>{% else %}<path d="M4 4l8 8M12 4l-8 8"/>{% endif %}</svg>
-            <span class="check-name">{{ check.label }}<span class="visually-hidden">: {{ 'пройдена' if check.passed else 'не пройдена' }}</span></span>
-            {% if check.details %}
-            <ul class="check-details">{% for detail in check.details %}<li>{{ detail }}</li>{% endfor %}</ul>
-            {% endif %}
-          </li>
-          {% endfor %}
-        </ul>
-        {% else %}
-        <p class="meta">Проверки ещё не запускались.</p>
-        {% endif %}
-      </section>
-
-      {% if draft.can_approve or draft.can_reject or draft.can_edit %}
-      <div class="actions">
-        {% if draft.can_approve %}
-        <form method="post" action="/drafts/{{ draft.id }}/approve">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <button type="submit" class="btn primary">Одобрить</button>
-        </form>
-        {% endif %}
-        {% if draft.can_reject %}
-        <form method="post" action="/drafts/{{ draft.id }}/reject" data-confirm="Отклонить это письмо? Компания вернётся к статусу «Почта проверена».">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          <button type="submit" class="btn">Отклонить</button>
-        </form>
-        {% endif %}
-        {% if draft.can_edit %}
-        <details class="edit"{% if edit_open %} open{% endif %}>
-        <summary class="btn">Изменить</summary>
-        <form method="post" action="/drafts/{{ draft.id }}/edit" class="stack edit-form">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-          {% if edit.error %}<p class="notice neg" role="alert">{{ edit.error }}</p>{% endif %}
-          <div class="field">
-            <label for="edit-subject">Тема</label>
-            <input id="edit-subject" name="subject" class="input" type="text" required maxlength="200" value="{{ edit.subject }}">
-          </div>
-          <div class="field">
-            <label for="edit-body">Текст</label>
-            <textarea id="edit-body" name="body" class="input textarea" rows="16" required maxlength="10000">{{ edit.body }}</textarea>
-            <p class="hint">После сохранения проверки пройдут заново, одобрение снимется.</p>
-          </div>
-          <div><button type="submit" class="btn primary">Сохранить и проверить</button></div>
-        </form>
-        </details>
-        {% endif %}
-        <p class="meta actions-note">Отправка писем пока выключена.</p>
-      </div>
-      {% elif draft.review_status == 'rejected' %}
-      <p class="meta">Письмо отклонено. Новый черновик напишет следующий запуск.</p>
-      {% endif %}
+      {{ lu.letter_block(draft, 'company') }}
       {% else %}
       <p class="empty">Письма пока нет. Черновик появится после проверки почты.</p>
       {% endif %}

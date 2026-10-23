@@ -12,8 +12,10 @@ from psycopg.types.json import Jsonb
 
 from tanbala_leads import db, pipeline
 from tanbala_leads.steps import approve as approve_step
+from tanbala_leads.llm import call_cost_usd
 from tanbala_leads.web import app as web
-from tanbala_leads.web import create_app
+from tanbala_leads.web import create_app, views
+from tanbala_leads.web import format as fmt
 
 BASE_URL = "http://127.0.0.1"
 TOKEN = "test-csrf-token"
@@ -48,9 +50,9 @@ def make_client(connect=no_db, start_run=None, base_url: str = BASE_URL) -> Test
 
 
 def test_cost_uses_prices_per_million_tokens():
-    assert web.call_cost_usd("claude-haiku-5-5", 1_000_000, 1_000_000, 1_000_000, 1_000_000) == pytest.approx(0.735)
-    assert web.call_cost_usd("claude-sonnet-5-5", 1_000_000, 1_000_000, 1_000_000, 1_000_000) == pytest.approx(14.7)
-    assert web.call_cost_usd("claude-haiku-5-5", 200_000, 40_000) == pytest.approx(0.04)
+    assert call_cost_usd("claude-haiku-5-5", 1_000_000, 1_000_000, 1_000_000, 1_000_000) == pytest.approx(0.735)
+    assert call_cost_usd("claude-sonnet-5-5", 1_000_000, 1_000_000, 1_000_000, 1_000_000) == pytest.approx(14.7)
+    assert call_cost_usd("claude-haiku-5-5", 200_000, 40_000) == pytest.approx(0.04)
 
 
 def test_unknown_model_counts_tokens_but_not_dollars():
@@ -60,34 +62,45 @@ def test_unknown_model_counts_tokens_but_not_dollars():
         {"model": "claude-experimental", "input_tokens": 1_000, "output_tokens": 200,
          "cache_read_tokens": None, "cache_write_tokens": 0},
     ]
-    cost = web.cost_from_rows(rows)
+    cost = fmt.cost_from_rows(rows)
     assert cost.tokens == 241_200
     assert cost.usd == pytest.approx(0.04)
     assert cost.unpriced_tokens == 1_200
     assert not cost.priced
-    assert web.format_cost(cost) == "≈ $0,0400 + 1 200 токенов без цены"
-    only_unknown = web.cost_from_rows(rows[1:])
-    assert web.format_cost(only_unknown) == "1 200 токенов без цены"
-    assert web.format_cost(web.Cost()) == "$0"
+    assert fmt.format_cost(cost) == "≈ $0,0400 + 1 200 токенов без цены"
+    only_unknown = fmt.cost_from_rows(rows[1:])
+    assert fmt.format_cost(only_unknown) == "1 200 токенов без цены"
+    assert fmt.format_cost(fmt.Cost()) == "$0"
 
 
 @pytest.mark.parametrize(("value", "text"), [
     (0, "$0"), (0.00004, "< $0,0001"), (0.0123, "$0,0123"), (12.5, "$12,50"), (1234.5, "$1 234,50"),
 ])
 def test_format_usd(value, text):
-    assert web.format_usd(value) == text
+    assert fmt.format_usd(value) == text
 
 
-def test_estimate_line_under_button():
-    assert web.format_estimate(1) == "За 1 компанию около $0,002"
-    assert web.format_estimate(5) == "За 5 компаний около $0,01"
-    assert web.format_estimate(20) == "За 20 компаний около $0,04"
+def test_estimate_line_comes_from_token_constants():
+    """Первый настоящий запуск: $0,0055 за 1 компанию, из них около $0,0024 запись документа в кэш."""
+    assert fmt.estimate_per_company_usd() == pytest.approx(0.0033, abs=0.0002)
+    assert fmt.estimate_first_run_usd() == pytest.approx(0.00245, abs=0.0001)
+    assert fmt.estimate_per_company_usd() + fmt.estimate_first_run_usd() == pytest.approx(0.0055, abs=0.0004)
+    assert fmt.format_approx_usd(fmt.estimate_per_company_usd()) == "$0,003"
+    assert fmt.format_estimate(1) == "За 1 компанию около $0,006"
+    assert fmt.format_estimate(5) == "За 5 компаний около $0,02"
+    assert fmt.format_estimate(20) == "За 20 компаний около $0,07"
+
+
+@pytest.mark.parametrize(("value", "text"), [(0, "$0"), (0.0033, "$0,003"), (0.00245, "$0,002"), (0.0096, "$0,01"),
+                                             (0.019, "$0,02"), (0.25, "$0,3"), (1.4, "$1")])
+def test_format_approx_usd_keeps_one_significant_digit(value, text):
+    assert fmt.format_approx_usd(value) == text
 
 
 @pytest.mark.parametrize(("number", "word"), [(1, "токен"), (2, "токена"), (5, "токенов"), (11, "токенов"),
                                               (21, "токен"), (104, "токена"), (112, "токенов")])
 def test_plural(number, word):
-    assert web.plural(number, web.TOKEN_FORMS) == word
+    assert fmt.plural(number, fmt.TOKEN_FORMS) == word
 
 
 @pytest.mark.parametrize(("raw", "href"), [
@@ -103,46 +116,46 @@ def test_plural(number, word):
     (None, None),
 ])
 def test_safe_href_allows_only_http(raw, href):
-    assert web.safe_href(raw) == href
+    assert fmt.safe_href(raw) == href
 
 
 def test_stage_states_follow_runs_row():
-    assert web.stage_states("queued", None) == ["pending"] * 5
-    assert web.stage_states("running", None) == ["current"] + ["pending"] * 4
-    assert web.stage_states("running", "crawl") == ["done", "current", "pending", "pending", "pending"]
-    assert web.stage_states("failed", "qualify") == ["done", "done", "failed", "pending", "pending"]
-    assert web.stage_states("done", "draft") == ["done"] * 5
+    assert views.stage_states("queued", None) == ["pending"] * 5
+    assert views.stage_states("running", None) == ["current"] + ["pending"] * 4
+    assert views.stage_states("running", "crawl") == ["done", "current", "pending", "pending", "pending"]
+    assert views.stage_states("failed", "qualify") == ["done", "done", "failed", "pending", "pending"]
+    assert views.stage_states("done", "draft") == ["done"] * 5
 
 
 def test_stage_states_understand_pipeline_labels():
     """pipeline.execute_run пишет в runs.stage русские названия, «Подготовка» и «Готово»."""
-    assert web.stage_states("running", "Подготовка") == ["current"] + ["pending"] * 4
-    assert web.stage_states("running", "Сайты") == ["done", "current", "pending", "pending", "pending"]
-    assert web.stage_states("failed", "Проверка почт") == ["done", "done", "done", "failed", "pending"]
-    assert web.stage_states("failed", None) == ["failed"] + ["pending"] * 4
-    assert web.stage_states("done", "Готово") == ["done"] * 5
-    row = {"id": 1, "city": "almaty", "status": "running", "stage": "Квалификация", "error": None}
-    assert web.run_json(row, web.Cost())["stage_label"] == "Квалификация"
+    assert views.stage_states("running", "Подготовка") == ["current"] + ["pending"] * 4
+    assert views.stage_states("running", "Сайты") == ["done", "current", "pending", "pending", "pending"]
+    assert views.stage_states("failed", "Проверка почт") == ["done", "done", "done", "failed", "pending"]
+    assert views.stage_states("failed", None) == ["failed"] + ["pending"] * 4
+    assert views.stage_states("done", "Готово") == ["done"] * 5
+    row = {"id": 1, "city": "almaty", "status": "running", "stage": "Квалификация", "error": None, "drafted": 0}
+    assert views.run_json(row, fmt.Cost())["stage_label"] == "Квалификация"
 
 
 @pytest.mark.parametrize("raw", ["²", "٣", "-1", "1.5", " ", "1" * 19])
 def test_parse_id_rejects_non_ascii_and_odd_input(raw):
-    assert web.parse_id(raw) is None
+    assert fmt.parse_id(raw) is None
 
 
 def test_redact_hides_keys_and_dsn():
-    text = web.redact("APIError sk-ant-api03-AbC_d-1 при postgresql://user:pw@db:5432/x, api_key=abc token: zzz")
+    text = fmt.redact("APIError sk-ant-api03-AbC_d-1 при postgresql://user:pw@db:5432/x, api_key=abc token: zzz")
     for secret in ("sk-ant-api03", "user:pw", "api_key=abc", "zzz"):
         assert secret not in text
-    assert text.startswith("APIError [скрыто]") and web.redact(None) is None
+    assert text.startswith("APIError [скрыто]") and fmt.redact(None) is None
 
 
 def test_parse_checks_survives_foreign_shapes():
     raw = [{"name": "dashes", "passed": False, "details": ["тире"]}, "мусор", {"name": "new_rule", "passed": True}]
-    checks = web.parse_checks(raw)
+    checks = fmt.parse_checks(raw)
     assert [c["label"] for c in checks] == ["Тире", "new_rule"]
     assert checks[0]["details"] == ["тире"] and not checks[0]["passed"] and checks[1]["passed"]
-    assert web.parse_checks(None) == [] and web.parse_checks({"name": "x"}) == []
+    assert fmt.parse_checks(None) == [] and fmt.parse_checks({"name": "x"}) == []
 
 
 def test_foreign_host_is_rejected():
@@ -158,9 +171,9 @@ def test_cross_site_fetch_and_huge_body_are_refused():
     form = {"csrf_token": TOKEN, "city": "almaty", "query": "склад", "max_companies": "5"}
     assert client.post("/runs", data=form, headers={"Sec-Fetch-Site": "cross-site"}).status_code == 403
     huge = {"csrf_token": TOKEN, "body": "я" * 200_000}
-    # Без полей формы тело проверяет csrf_guard (413); с полями FastAPI разбирает его раньше, и лимит Starlette даёт 400.
-    assert client.post("/drafts/1/approve", data=huge).status_code == 413
-    assert client.post("/drafts/1/edit", data=huge).status_code == 400
+    # Размер проверяется до разбора формы и до базы: connect здесь упал бы.
+    for path in ("/drafts/1/approve", "/drafts/1/edit", "/runs"):
+        assert client.post(path, data=huge).status_code == 413
     assert start_run.calls == []
 
 
@@ -340,7 +353,8 @@ def test_search_page_shows_form_run_history_and_costs(web_db):
     html = page.text
     assert "Найти компании" in html and 'name="csrf_token"' in html and TOKEN in html
     assert "Алматы" in html and "Усть-Каменогорск" in html
-    assert "строительная компания" in html and "За 5 компаний около $0,01" in html
+    assert "строительная компания" in html and "За 5 компаний около $0,02" in html
+    assert "Примерно $0,003 за компанию, плюс около $0,002 на первый запуск за 5 минут." in html
     assert f"Запуск №{finished}" in html and f"/companies?run={finished}" in html
     assert "≈ $0,0700" in html  # 0,04 Haiku + 0,03 Sonnet, и в шапке, и в истории
     assert "251 000 токенов" in html
@@ -416,7 +430,8 @@ def test_company_page_shows_card_reason_emails_and_letter(web_db):
     assert "Инвентаризация за часы" in html and 'class="line note"' in html
     assert "не прошло 1 из 2" in html and "тире: «—»" in html
     assert f'action="/drafts/{draft_id}/approve"' in html and "Отправка писем пока выключена" in html
-    assert html.count('method="post"') == html.count('name="csrf_token"') == 3
+    assert html.count('method="post"') == html.count('name="csrf_token"') == 2
+    assert f'href="/letters/{draft_id}#letter"' in html and "Открыть в очереди писем" in html
     assert "<details class=\"site-text\">" in html and "Склад класса А" in html
     assert "≈ $0,0400" in html
 
@@ -569,7 +584,7 @@ def test_edit_with_empty_subject_is_refused(web_db, monkeypatch):
                                          data={"csrf_token": TOKEN, "subject": "   ", "body": "Текст <b>правки</b>"})
     assert response.status_code == 400
     assert "Тема и текст письма не должны быть пустыми." in response.text
-    assert "Текст &lt;b&gt;правки&lt;/b&gt;" in response.text and " open>" in response.text
+    assert "Текст &lt;b&gt;правки&lt;/b&gt;" in response.text and 'id="edit"' in response.text
     assert conn.execute("SELECT subject FROM drafts WHERE id = %s", (draft_id,)).fetchone()[0] == "Инвентаризация за часы"
 
 
@@ -610,7 +625,7 @@ def test_review_of_missing_or_sent_draft_is_404(web_db):
     sent_id = seed_draft(conn, company_id, contact_id, review_status="approved", sent=True)
     client = make_client(connect)
     assert client.post("/drafts/999999/approve", data={"csrf_token": TOKEN}).status_code == 404
-    assert client.post(f"/drafts/{sent_id}/reject", data={"csrf_token": TOKEN}).status_code == 404
+    assert client.post(f"/drafts/{sent_id}/reject", data={"csrf_token": TOKEN}).status_code == 409
     assert conn.execute("SELECT review_status FROM drafts WHERE id = %s", (sent_id,)).fetchone()[0] == "approved"
 
 
@@ -631,3 +646,200 @@ def test_api_run_json_with_cost_and_stages(web_db):
     active = client.get("/api/runs/active")
     assert active.status_code == 200 and active.json()["id"] == run_id
     assert active.headers["cache-control"] == "no-store"
+
+
+# ---------- очередь писем ----------
+
+
+def test_split_letter_takes_leading_notes_out_of_client_text():
+    body = ("[Проверить: число паллет с сайта]\n\n[Ответить лично: имя из 2ГИС]\nЗдравствуйте!\n\n"
+            "Текст.\n[Проверить: заметка посреди письма]\n\nАрман\n\n")
+    notes, lines = fmt.split_letter(body)
+    assert notes == [{"kind": "Проверить", "text": "число паллет с сайта"},
+                     {"kind": "Ответить лично", "text": "имя из 2ГИС"}]
+    assert [line["text"] for line in lines] == ["Здравствуйте!", "", "Текст.", "[Проверить: заметка посреди письма]",
+                                               "", "Арман"]
+    assert [line["note"] for line in lines] == [False, False, False, True, False, False]
+    assert fmt.split_letter("Здравствуйте!") == ([], [{"text": "Здравствуйте!", "note": False}])
+
+
+def test_letters_url_keeps_filter_and_anchor():
+    assert fmt.letters_url() == "/letters"
+    assert fmt.letters_url(5, status="pending", run_id=3, done="approved") == (
+        "/letters/5?status=pending&run=3&done=approved#letter")
+    assert fmt.letters_url(status="all", run_id=2) == "/letters?status=all&run=2"
+    assert fmt.letters_url(5, status="pending", edit=True) == "/letters/5?status=pending&edit=1#letter"
+
+
+def queue_letter(conn, name, *, run_id=None, review_status="pending", body=None, checks=None) -> int:
+    company_id = seed_company(conn, name, run_id=run_id)
+    conn.execute(
+        "INSERT INTO qualifications (company_id, fit, score, reason, segment, model)"
+        " VALUES (%s, 'yes', 80, 'Склад и тара', 'логистика', 'claude-haiku-5-5')", (company_id,))
+    contact_id = seed_contact(conn, company_id, f"info@q{company_id}.example.kz")
+    return seed_draft(conn, company_id, contact_id, subject=f"Тема для {name}", body=body or "Здравствуйте!",
+                      checks=checks, review_status=review_status)
+
+
+def queue_post(client, draft_id, action, **fields):
+    data = {"csrf_token": TOKEN, "back": "letters", **fields}
+    return client.post(f"/drafts/{draft_id}/{action}", data=data, follow_redirects=False)
+
+
+@pytest.mark.db
+def test_letters_queue_shows_pending_oldest_first_and_opens_first(web_db):
+    conn, connect, opened = web_db
+    first = queue_letter(conn, "ТОО «Первая»")
+    second = queue_letter(conn, "ТОО «Вторая»")
+    queue_letter(conn, "ТОО «Одобренная»", review_status="approved")
+    page = make_client(connect).get("/letters")
+    assert page.status_code == 200
+    html = page.text
+    assert html.index("ТОО «Первая»") < html.index("ТОО «Вторая»")
+    assert "Одобренная" not in html.split('id="letter"')[0]
+    assert f'href="/letters/{first}?status=pending#letter" aria-current="true"' in html
+    assert f'action="/drafts/{first}/approve"' in html and f'action="/drafts/{second}/approve"' not in html
+    assert 'Ждут проверки <span class="num">2</span>' in html and 'Одобрены <span class="num">1</span>' in html
+    assert 'data-letters-badge title="Ждут проверки">2</span>' in html
+    assert "Карточка компании" in html and "Открыть в 2ГИС" in html and "Склад и тара" in html
+    assert all(c.closed for c in opened)
+
+
+@pytest.mark.db
+def test_letter_shows_notes_apart_from_text_and_escapes_everything(web_db):
+    conn, connect, _ = web_db
+    body = "[Проверить: <b>число</b> паллет]\n[Ответить лично: <script>x</script>]\nЗдравствуйте, <i>друзья</i>!\n\nАрман"
+    checks = [{"name": "contacts", "passed": False, "details": ["чужой номер <u>+7 700</u>"]},
+              {"name": "dashes", "passed": True, "details": []}]
+    draft_id = queue_letter(conn, "ТОО <s>Тест</s>", body=body, checks=checks)
+    html = make_client(connect).get(f"/letters/{draft_id}").text
+    notes_box = html.split("Заметки для вас", 1)[1].split("data-letter-body", 1)[0]
+    assert "&lt;b&gt;число&lt;/b&gt; паллет" in notes_box and "&lt;script&gt;x&lt;/script&gt;" in notes_box
+    letter_text = html.split("data-letter-body", 1)[1].split("</div>", 1)[0]
+    assert "Проверить:" not in letter_text and "Здравствуйте, &lt;i&gt;друзья&lt;/i&gt;!" in letter_text
+    assert "Только наш номер WhatsApp" in html and "чужой номер &lt;u&gt;+7 700&lt;/u&gt;" in html
+    for raw in ("<b>число", "<script>x", "<i>друзья", "<s>Тест", "<u>+7"):
+        assert raw not in html
+    assert "data-copy-letter hidden" in html
+
+
+@pytest.mark.db
+def test_approve_and_reject_in_queue_go_to_next_pending_then_empty_state(web_db):
+    conn, connect, _ = web_db
+    a, b, c = (queue_letter(conn, f"ТОО «{name}»") for name in ("А", "Б", "В"))
+    client = make_client(connect)
+    response = queue_post(client, b, "approve", status="pending")
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/letters/{c}?status=pending&done=approved#letter"
+    response = queue_post(client, c, "reject", status="pending")
+    assert response.headers["location"] == f"/letters/{a}?status=pending&done=rejected#letter"  # дальше нет: с начала
+    response = queue_post(client, a, "approve", status="approved")  # из «Одобрены» дальше идёт очередь «Ждут»
+    assert response.headers["location"] == "/letters?status=pending&done=approved"
+    page = client.get(response.headers["location"]).text
+    assert "Все письма проверены" in page and "Письмо одобрено. Отправка писем пока выключена." in page
+    assert 'href="/"' in page and "Одобренные (2)" in page
+    statuses = dict(conn.execute("SELECT id, review_status FROM drafts").fetchall())
+    assert statuses == {a: "approved", b: "approved", c: "rejected"}
+
+
+@pytest.mark.db
+def test_queue_run_filter_limits_list_and_next_letter(web_db):
+    conn, connect, _ = web_db
+    run_a = seed_run(conn, query="склад")
+    run_b = seed_run(conn, query="тара")
+    a1 = queue_letter(conn, "ТОО «Склад 1»", run_id=run_a)
+    queue_letter(conn, "ТОО «Тара 1»", run_id=run_b)
+    a2 = queue_letter(conn, "ТОО «Склад 2»", run_id=run_a)
+    client = make_client(connect)
+    html = client.get("/letters", params={"run": run_a}).text
+    assert "Склад 1" in html and "Склад 2" in html and "Тара 1" not in html
+    assert f"Запуск №{run_a}: Алматы, «склад»." in html
+    response = queue_post(client, a1, "approve", status="pending", run=str(run_a))
+    assert response.headers["location"] == f"/letters/{a2}?status=pending&run={run_a}&done=approved#letter"
+    response = queue_post(client, a2, "approve", status="pending", run=str(run_a))
+    assert response.headers["location"] == f"/letters?status=pending&run={run_a}&done=approved"
+
+
+@pytest.mark.db
+def test_queue_filters_and_letter_opens_in_its_own_filter(web_db):
+    conn, connect, _ = web_db
+    queue_letter(conn, "ТОО «Ждёт»")
+    approved = queue_letter(conn, "ТОО «Одобрена»", review_status="approved")
+    rejected = queue_letter(conn, "ТОО «Отклонена»", review_status="rejected")
+    client = make_client(connect)
+    only_approved = client.get("/letters", params={"status": "approved"}).text
+    assert "ТОО «Одобрена»" in only_approved and "ТОО «Ждёт»" not in only_approved
+    assert f'action="/drafts/{approved}/approve"' not in only_approved  # уже одобрено
+    assert f'action="/drafts/{approved}/reject"' in only_approved
+    everything = client.get("/letters", params={"status": "all"}).text
+    assert everything.index("ТОО «Ждёт»") < everything.index("ТОО «Одобрена»")
+    assert "Ждёт" in client.get("/letters", params={"status": "<script>"}).text
+    opened = client.get(f"/letters/{rejected}").text
+    assert 'href="/letters?status=rejected" aria-current="true"' in opened
+    assert "Письмо отклонено. Новый черновик напишет следующий запуск." in opened
+    assert f'action="/drafts/{rejected}/approve"' not in opened
+    assert client.get("/letters/999999").status_code == 404
+    assert client.get(f"/letters/{'9' * 30}").status_code == 404
+    empty = client.get("/letters", params={"status": "rejected", "run": "999"}).text
+    assert "Здесь пока пусто" in empty
+
+
+@pytest.mark.db
+def test_edit_in_queue_stays_on_letter(web_db, monkeypatch):
+    conn, connect, _ = web_db
+    draft_id = queue_letter(conn, "ТОО «Правка»")
+    monkeypatch.setattr(approve_step, "check_results_json",
+                        lambda subject, body: [{"name": "contacts", "passed": True, "details": []}])
+    client = make_client(connect)
+    form = client.get(f"/letters/{draft_id}", params={"edit": "1", "status": "pending"}).text
+    assert 'id="edit"' in form and 'name="back" value="letters"' in form
+    assert f'action="/drafts/{draft_id}/approve"' not in form  # пока правка не сохранена
+    response = queue_post(client, draft_id, "edit", status="pending", subject="Новая тема", body="Текст правки")
+    assert response.headers["location"] == f"/letters/{draft_id}?status=pending&done=saved#letter"
+    page = client.get(response.headers["location"]).text
+    assert "Новая тема" in page and "Изменения сохранены" in page and "все 1 пройдены" in page
+    error = queue_post(client, draft_id, "edit", status="pending", subject="", body="x")
+    assert error.status_code == 400 and "Тема и текст письма не должны быть пустыми." in error.text
+    assert 'id="edit"' in error.text and "<h1>Письма</h1>" in error.text
+
+
+@pytest.mark.db
+def test_company_rows_link_to_company_and_letter(web_db):
+    conn, connect, _ = web_db
+    company_id, _, draft_id = full_company(conn)
+    plain = seed_company(conn, "ТОО «Без письма»", status="new")
+    html = make_client(connect).get("/companies").text
+    assert f'href="/letters/{draft_id}#letter"' in html and "Инвентаризация за часы" in html
+    assert html.count(f'href="/companies/{company_id}"') == 4  # название, город, оценка, почта
+    assert html.count(f'href="/companies/{plain}"') == 6  # без письма и статус, и «Нет» ведут в карточку
+    row = html.split(f'href="/companies/{company_id}"', 1)[1].split("</tr>", 1)[0]
+    assert row.count(f'href="/letters/{draft_id}#letter"') == 2  # статус «Письмо готово» и колонка «Письмо»
+    assert 'tabindex="-1"' in row
+
+
+@pytest.mark.db
+def test_search_page_offers_review_of_finished_run(web_db):
+    conn, connect, _ = web_db
+    run_id = seed_run(conn, query="склад", drafted=2)
+    queue_letter(conn, "ТОО «Ждёт»", run_id=run_id)
+    queue_letter(conn, "ТОО «Уже одобрена»", run_id=run_id, review_status="approved")
+    client = make_client(connect)
+    html = client.get("/").text
+    assert (f'href="/letters?run={run_id}" data-run-review><span>Проверить письма '
+            '(<span data-run-count="letters_pending">1</span>)</span>') in html
+    assert f'href="/letters?status=all&amp;run={run_id}"' in html
+    data = client.get(f"/api/runs/{run_id}").json()
+    assert (data["letters_pending"], data["pending_total"], data["show_review"]) == (1, 1, True)
+    conn.execute("UPDATE drafts SET review_status = 'approved', approved_by = 'владелец', approved_at = now()")
+    assert client.get(f"/api/runs/{run_id}").json()["show_review"] is False
+    assert "data-run-review hidden" in client.get("/").text
+
+
+@pytest.mark.db
+def test_budget_exceeded_is_shown_on_the_form(web_db):
+    _, connect, _ = web_db
+    error = pipeline.BudgetExceeded("Дневной лимит расходов на API $1.00 исчерпан: сегодня потрачено $1.02.")
+    response = make_client(connect, FakeStartRun(error=error)).post(
+        "/runs", data={"csrf_token": TOKEN, "city": "almaty", "query": "склад", "max_companies": "5"})
+    assert response.status_code == 400
+    assert "Дневной лимит расходов на API $1.00 исчерпан" in response.text and 'class="notice neg"' in response.text

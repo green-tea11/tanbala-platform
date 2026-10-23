@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_letter.html" as lu with context %}
 {% block content %}
 <div class="title-row">
   <div>
@@ -61,31 +62,30 @@
       </thead>
       <tbody>
         {% for row in rows %}
-        <tr>
+        {# Вся строка нажимается: в каждой ячейке ссылка. В порядке Tab только название и письмо. #}
+        <tr class="link-row">
           <td class="cell-name">
-            <a class="row-link" href="{{ row.url }}">{{ row.name }}</a>
-            <span class="sub">{{ row.rubric or '—' }}<span class="sub-city"> · {{ row.city_name or '—' }}</span></span>
+            <a class="cell-fill" href="{{ row.url }}"><span class="row-link">{{ row.name }}</span>
+            <span class="sub">{{ row.rubric or '—' }}<span class="sub-city"> · {{ row.city_name or '—' }}</span></span></a>
           </td>
-          <td class="cell-city">{{ row.city_name or '—' }}</td>
-          <td class="cell-status"><span class="pill {{ row.status_tone }}">{{ row.status_label }}</span>{% if row.last_error %}<span class="sub neg-text">была ошибка</span>{% endif %}</td>
-          <td class="n cell-score">
+          <td class="cell-city"><a class="cell-fill" href="{{ row.url }}" tabindex="-1">{{ row.city_name or '—' }}</a></td>
+          <td class="cell-status"><a class="cell-fill" href="{{ row.status_url }}" tabindex="-1"><span class="pill {{ row.status_tone }}">{{ row.status_label }}</span>{% if row.last_error %}<span class="sub neg-text">была ошибка</span>{% endif %}</a></td>
+          <td class="n cell-score"><a class="cell-fill" href="{{ row.url }}" tabindex="-1">
             {% if row.score is not none %}<span class="num score">{{ row.score }}</span><span class="sub">{{ row.fit_label }}</span>{% else %}<span class="dash">—</span>{% endif %}
-          </td>
-          <td class="cell-email">
+          </a></td>
+          <td class="cell-email"><a class="cell-fill" href="{{ row.url }}" tabindex="-1">
             {% if row.contact %}
             <span class="email" title="{{ row.contact.email }}">{{ row.contact.email }}</span>
             <span class="sub"><span class="dot {{ row.contact.verify_tone }}" aria-hidden="true"></span>{{ row.contact.verify_label }}{% for flag in row.contact.flags %} · {{ flag }}{% endfor %}</span>
             {% else %}<span class="dash">—</span><span class="sub">почта не найдена</span>{% endif %}
-          </td>
+          </a></td>
           <td class="cell-draft">
             {% if row.draft %}
-            <span>{{ 'Есть' if row.draft.review_status == 'pending' else row.draft.review_label }}</span>
-            <span class="sub">
-              {% if not row.draft.checks_total %}проверок нет
-              {% elif row.draft.checks_failed %}<span class="neg-text">не прошло {{ row.draft.checks_failed }} из {{ row.draft.checks_total }}</span>
-              {% else %}проверки пройдены{% endif %}
-            </span>
-            {% else %}<span class="dash">Нет</span>{% endif %}
+            <a class="cell-fill letter-link" href="{{ row.draft.url }}">
+              <span class="letter-subject-line">{{ row.draft.subject }}</span>
+              <span class="sub"><span class="pill {{ row.draft.review_tone }}">{{ row.draft.review_label }}</span> {{ lu.checks_mini(row.draft.checks_total, row.draft.checks_failed) }}</span>
+            </a>
+            {% else %}<a class="cell-fill" href="{{ row.url }}" tabindex="-1"><span class="dash">Нет</span></a>{% endif %}
           </td>
         </tr>
         {% endfor %}

@@ -45,7 +45,7 @@
       <div class="submit-row">
         <button type="submit" class="btn primary btn-large" id="start-button"{% if active_run %} disabled aria-describedby="busy-note"{% endif %}>Найти компании</button>
         <p class="estimate" id="estimate" data-estimates='{{ estimates|tojson }}'>
-          Примерно {{ calls_per_company }} запроса к Claude Haiku на компанию, около {{ usd_per_company }} за компанию.
+          Примерно {{ usd_per_company }} за компанию, плюс около {{ usd_first_run }} на первый запуск за 5 минут.
           <span id="estimate-total">{{ estimate }}</span>.
         </p>
       </div>
@@ -85,7 +85,10 @@
     <p class="notice neg" data-run-error{% if not run.error %} hidden{% endif %}>{{ run.error or '' }}</p>
     <footer class="run-foot">
       <span class="meta">Ошибок по компаниям: <b class="num" data-run-count="errors">{{ run.errors|fmt_int }}</b> · расход <span class="num" data-run-cost>{{ run.cost_text }}</span></span>
-      <a class="card-link" href="{{ run.companies_url }}" data-run-link{% if not run.finished %} hidden{% endif %}>Смотреть компании</a>
+      <span class="run-actions">
+        <a class="card-link" href="{{ run.companies_url }}" data-run-link{% if not run.finished %} hidden{% endif %}>Смотреть компании</a>
+        <a class="btn review btn-large" href="{{ run.letters_url }}" data-run-review{% if not run.show_review %} hidden{% endif %}><span>Проверить письма (<span data-run-count="letters_pending">{{ run.letters_pending }}</span>)</span></a>
+      </span>
     </footer>
     <p class="meta poll-note" data-run-poll hidden></p>
     {% else %}
@@ -126,7 +129,7 @@
             <td class="n num" data-label="найдено" data-run-count="found">{{ item.found|fmt_int }}</td>
             <td class="n num" data-label="новых" data-run-count="new_companies">{{ item.new_companies|fmt_int }}</td>
             <td class="n num" data-label="подходят" data-run-count="qualified">{{ item.qualified|fmt_int }}</td>
-            <td class="n num" data-label="писем" data-run-count="drafted">{{ item.drafted|fmt_int }}</td>
+            <td class="n num" data-label="писем">{% if item.drafted %}<a class="text-link" href="{{ item.letters_all_url }}"><span data-run-count="drafted">{{ item.drafted|fmt_int }}</span></a>{% else %}<span data-run-count="drafted">0</span>{% endif %}</td>
             <td class="cell-status"><span class="pill {{ item.status_tone }}" data-run-field="status_label">{{ item.status_label }}</span></td>
             <td class="n num cell-cost" data-run-cost>{{ item.cost_text }}</td>
           </tr>
