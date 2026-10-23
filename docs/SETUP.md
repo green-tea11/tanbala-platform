@@ -39,6 +39,21 @@ parser-2gis сам находит Chrome в `C:\Program Files\Google\Chrome\Appl
 
 Тесты: `.venv/Scripts/python -m pytest`. Платные тесты (маркер `paid`) по умолчанию не запускаются.
 
+## Сервисы Docker
+
+```bash
+cp .env.example .env               # заполнить пароли и секреты
+docker compose up -d               # Postgres 17 и Reacher 0.11.10, порты только на 127.0.0.1
+.venv/Scripts/python -m tanbala_leads.db   # создать таблицы, повторный запуск безопасен
+curl http://127.0.0.1:8080/version # Reacher: {"version":"0.11.10"}
+```
+
+## Порт 25
+
+`python scripts/check_port25.py` подключается к MX-серверам Gmail и mail.ru и читает приветствие 220, писем не отправляет.
+
+23.10.2026 на машине разработки: **открыт** (с хоста и из контейнера Reacher). На VPS проверить заново: многие хостинги закрывают исходящий 25.
+
 ## Документы
 
 - `docs/TZ.md`: копия обзорного ТЗ «VenMart — AI-поиск клиентов для RFID».
