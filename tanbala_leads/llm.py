@@ -1,12 +1,17 @@
 """Вызовы Claude API: модель из config/models.yaml, кэш документа о Tanbala, лог токенов."""
 
+from anthropic import Anthropic
 
-def make_client():
-    """Создать клиент Anthropic с ключом из VENMART_ANTHROPIC_KEY, переданным явно.
+from tanbala_leads.settings import Settings
 
-    TODO: Anthropic(api_key=...), без чтения стандартной переменной ключа из окружения.
+
+def make_client(settings: Settings) -> Anthropic:
+    """Создать клиент Anthropic с ключом из VENMART_ANTHROPIC_KEY.
+
+    Ключ передаётся явно: тогда SDK не ищет учётные данные в окружении и профилях.
+    Без ключа останавливаемся сразу, иначе SDK сам подобрал бы чужие учётные данные.
     """
-    raise NotImplementedError
+    return Anthropic(api_key=settings.require("anthropic_key"))
 
 
 def model_for(task: str) -> str:

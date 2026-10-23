@@ -4,11 +4,11 @@
 Миграции только добавляются в конец MIGRATIONS, применённые не меняются.
 """
 
-import os
 import sys
 
 import psycopg
-from dotenv import load_dotenv
+
+from tanbala_leads.settings import SettingsError, load_settings
 
 # Любое число, одно на проект: не даёт двум процессам мигрировать одновременно.
 MIGRATION_LOCK_ID = 7_420_250_740
@@ -179,10 +179,10 @@ def migrate(conn: psycopg.Connection) -> list[int]:
 
 
 def main() -> int:
-    load_dotenv()
-    dsn = os.environ.get("DATABASE_URL")
-    if not dsn:
-        print("DATABASE_URL не задан. Скопируйте .env.example в .env и заполните.", file=sys.stderr)
+    try:
+        dsn = load_settings().require("database_url")
+    except SettingsError as exc:
+        print(exc, file=sys.stderr)
         return 1
     with connect(dsn) as conn:
         applied = migrate(conn)
