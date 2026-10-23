@@ -10,6 +10,27 @@
 {% else %}<span class="checks-mini passed">{{ mark(true) }}{{ total }} из {{ total }}</span>{% endif %}
 {%- endmacro %}
 
+{# Боли компании с цитатой. Цитата — чужой текст (сайт, 2ГИС, модель): только экранированный вывод. #}
+{% macro pains_block(pains, heading_level=3) %}
+<section class="pains" aria-label="Боли">
+  <h{{ heading_level }} class="pains-title">Боли</h{{ heading_level }}>
+  {% if pains %}
+  <ul class="pain-list">
+    {% for pain in pains %}
+    <li class="pain{% if not pain.verified %} unverified{% endif %}">
+      <p class="pain-label">{{ pain.label }}</p>
+      {% if pain.evidence %}<blockquote class="pain-evidence">«{{ pain.evidence }}»</blockquote>{% endif %}
+      <p class="pain-meta">{{ pain.source_label }} ·
+        {% if pain.verified %}<span class="pain-verified">{{ mark(true) }}цитата найдена в источнике</span>{% else %}<span class="pain-unverified">не подтверждено</span>{% endif %}</p>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="meta">Явных болей не найдено.</p>
+  {% endif %}
+</section>
+{% endmacro %}
+
 {% macro notes_box(letter) %}
 {% if letter.notes %}
 <section class="notes-box" aria-labelledby="notes-title-{{ letter.id }}">
@@ -66,6 +87,8 @@
     {{ hidden_fields(back, status, run) }}
     <button type="submit" class="btn primary">Одобрить</button>
   </form>
+  {% elif letter.approve_blocked %}
+  <button type="button" class="btn primary" disabled aria-describedby="blocked-note-{{ letter.id }}">Одобрить</button>
   {% endif %}
   {% if letter.can_reject %}
   <form method="post" action="/drafts/{{ letter.id }}/reject" data-confirm="Отклонить это письмо? Компания вернётся к статусу «Почта проверена».">
@@ -76,6 +99,7 @@
   {% if letter.can_edit %}<a class="btn" href="{{ letter.edit_url }}">Изменить</a>{% endif %}
   <button type="button" class="btn" data-copy-letter hidden>Скопировать</button>
   <span class="meta action-note" data-copy-status>Отправка писем пока выключена.</span>
+  {% if letter.approve_blocked %}<p class="blocked-note" id="blocked-note-{{ letter.id }}">Компания в списке «не писать»: одобрить нельзя.</p>{% endif %}
 </div>
 {% elif letter.review_status == 'rejected' %}
 <p class="meta action-note">Письмо отклонено. Новый черновик напишет следующий запуск.</p>

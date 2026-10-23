@@ -137,6 +137,8 @@ select.input { padding-right: 28px; }
 .btn-large { height: 44px; padding: 0 22px; font-size: 15px; font-weight: 600; }
 .btn:disabled, .btn[aria-disabled="true"] { background: var(--raised); border-color: var(--border); color: var(--faint); cursor: not-allowed; transform: none; }
 .btn.primary:disabled { background: #dfe4ea; border-color: #dfe4ea; color: #4e5765; }
+.btn.danger { border-color: #e7b3b3; color: var(--negative); }
+.btn.danger:hover { background: var(--pill-negative-bg); border-color: var(--negative); }
 
 /* ---------- поиск ---------- */
 .search-form { grid-column: span 5; }
@@ -265,6 +267,61 @@ select.input { padding-right: 28px; }
 .queue-empty h2 { margin-bottom: 8px; font-size: 20px; line-height: 26px; }
 .empty-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 
+/* ---------- сводка для руководства на странице поиска ---------- */
+.overview { margin-bottom: var(--gap); }
+.kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); margin: 0; border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--surface); }
+.kpi { min-width: 0; padding: 14px var(--card-pad) 16px; }
+.kpi + .kpi { border-left: 1px solid var(--border); }
+.kpi dt { color: var(--muted); font-size: 13px; line-height: 18px; }
+.kpi dd { margin: 0; }
+.kpi-value { margin-top: 6px; font-size: var(--fs-title); line-height: 30px; font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; }
+.kpi-value small { margin-left: 2px; font-size: 14px; font-weight: 400; color: var(--muted); }
+.kpi-value a { color: var(--accent-ink); text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 4px; text-decoration-color: color-mix(in srgb, var(--accent-ink) 30%, transparent); }
+.kpi-value a:hover { text-decoration-color: currentColor; }
+.kpi-sub { margin-top: 2px; color: var(--muted); font-size: var(--fs-small); line-height: 16px; }
+.budget-bar { margin-top: 8px; }
+.budget-bar svg { display: block; width: 100%; height: 4px; }
+.budget-track { fill: var(--active); }
+.budget-fill { fill: var(--accent); }
+.budget-fill.over { fill: var(--negative); }
+
+/* ---------- боли компании ---------- */
+.pains { margin-top: 16px; }
+.pains-title { margin-bottom: 8px; font-size: var(--fs-body); line-height: 20px; font-weight: 600; }
+.pain-list { display: grid; gap: 12px; }
+.pain { padding-left: 12px; border-left: 3px solid var(--accent); }
+.pain.unverified { border-left-color: var(--control); }
+.pain-label { font-weight: 600; line-height: 20px; }
+.pain-evidence { margin: 4px 0 0; color: var(--text); font-size: 13px; line-height: 19px; overflow-wrap: anywhere; }
+.pain-meta { margin-top: 4px; color: var(--muted); font-size: var(--fs-small); line-height: 16px; }
+.pain-verified { display: inline-flex; align-items: center; gap: 3px; color: var(--positive); }
+.pain-verified .check-mark { width: 13px; height: 13px; margin: 0; }
+.pain-unverified { color: var(--faint); }
+.brief-pains { grid-column: 1 / -1; }
+.brief-pains .pains { margin-top: 0; }
+
+/* ---------- очередь: оценка и отметки в списке ---------- */
+.letter-item-score { flex: none; font-weight: 600; color: var(--text); }
+.letter-item-flags { display: flex; flex-wrap: wrap; gap: 4px; }
+.letter-head-pills { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.blocked-note { flex-basis: 100%; margin: 0; color: var(--negative); font-size: var(--fs-small); }
+
+/* ---------- история писем и «не писать» ---------- */
+.history-rows .row { align-items: baseline; }
+.history-date { flex: none; white-space: nowrap; }
+.block-zone { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--rule); }
+.block-zone .hint { margin-top: 6px; }
+.blocked-state { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--muted); }
+.import-grid { margin-bottom: var(--gap); }
+.import-panel { grid-column: span 6; }
+.import-hint { margin-bottom: 12px; color: var(--muted); }
+.import-text { min-height: 140px; font-size: 14px; }
+.file-input { max-width: 100%; color: var(--muted); }
+.history-table .cell-date, .blocked-table .cell-date { white-space: nowrap; color: var(--muted); }
+.history-table .cell-note, .blocked-table .cell-note { color: var(--muted); }
+.table-panel + .table-panel { margin-top: var(--gap); }
+.pager .meta { margin-right: auto; align-self: center; }
+
 /* ---------- карточка компании ---------- */
 .detail { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: var(--gap); align-items: start; }
 .detail-main { grid-column: span 8; display: grid; gap: var(--gap); min-width: 0; }
@@ -337,6 +394,10 @@ p.action-note { margin-top: 16px; }
   .detail-main, .detail-side { grid-column: 1 / -1; }
   .detail-side { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
   .detail-side .order-why, .detail-side .order-site { grid-column: 1 / -1; }
+  .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .kpi:nth-child(4) { border-left: 0; }
+  .kpi:nth-child(n + 4) { border-top: 1px solid var(--border); }
+  .import-panel { grid-column: 1 / -1; }
 }
 
 /* ---------- телефон: таблицы становятся строками, вкладки уходят во вторую строку шапки ---------- */
@@ -364,7 +425,13 @@ p.action-note { margin-top: 16px; }
   .chip { height: 36px; }
   .detail-main, .detail-side { display: contents; }
   .detail .panel { margin-bottom: var(--gap); }
-  .order-why { order: 1; } .order-letter { order: 2; } .order-emails { order: 3; } .order-card { order: 4; } .order-site { order: 5; }
+  .order-why { order: 1; } .order-letter { order: 2; } .order-emails { order: 3; } .order-history { order: 4; }
+  .order-card { order: 5; } .order-site { order: 6; }
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kpi:nth-child(n) { border-left: 0; border-top: 1px solid var(--border); }
+  .kpi:nth-child(-n + 2) { border-top: 0; }
+  .kpi:nth-child(2n) { border-left: 1px solid var(--border); }
+  .kpi-value { font-size: 22px; line-height: 28px; }
   .detail { display: flex; flex-direction: column; align-items: stretch; }
   .action-bar .btn { height: 44px; }
   /* На телефоне действия — компактная сетка 2×2 у нижнего края; про выключенную отправку сказано в заголовке. */
@@ -374,6 +441,14 @@ p.action-note { margin-top: 16px; }
   .run-foot { flex-direction: column-reverse; align-items: stretch; gap: 12px; }
   .run-actions { display: grid; grid-template-columns: minmax(0, 1fr); justify-content: stretch; justify-items: start; gap: 12px; }
   .run-actions .btn.review { order: -1; width: 100%; }
+  /* «Кому писали»: адрес и дата, потом что и откуда, потом компания и заметка. */
+  .history-table .cell-name, .blocked-table .cell-name { order: 1; }
+  .history-table .cell-date, .blocked-table .cell-date { order: 2; flex: none; margin-left: auto; }
+  .history-table .cell-what, .blocked-table .cell-reason { order: 3; }
+  .history-table .cell-source { order: 4; color: var(--muted); }
+  .history-table .cell-company { order: 5; flex-basis: 100%; }
+  .history-table .cell-note, .blocked-table .cell-note { order: 6; flex-basis: 100%; font-size: 13px; }
+  .history-table .cell-note:empty, .blocked-table .cell-note:empty, .history-table .cell-company:has(.dash) { display: none; }
   /* Строка прошлого запуска: номер и статус, потом запрос и город, потом числа. */
   .history .stacked tr::after { content: ""; order: 2; flex-basis: 100%; height: 0; }
   .brief { grid-template-columns: minmax(0, 1fr); gap: 8px; }

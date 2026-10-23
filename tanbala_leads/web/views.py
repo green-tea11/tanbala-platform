@@ -4,7 +4,7 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
-from tanbala_leads import pipeline
+from tanbala_leads import contact_policy, pipeline
 from tanbala_leads.steps.collect import CITIES
 from tanbala_leads.web import queries as q
 from tanbala_leads.web.format import (
@@ -17,15 +17,19 @@ from tanbala_leads.web.format import (
     format_approx_usd,
     format_cost,
     format_estimate,
+    format_usd,
     letters_url,
     parse_checks,
     parse_id,
+    parse_pains,
     redact,
     safe_href,
     split_letter,
     tel_href,
 )
 from tanbala_leads.web.labels import (
+    BLOCK_REASONS,
+    BLOCKED_LABEL,
     COMPANIES_PER_PAGE,
     COMPANY_STATUSES,
     DEFAULT_CITY,
@@ -33,6 +37,11 @@ from tanbala_leads.web.labels import (
     DEFAULT_MAX_COMPANIES,
     FINISHED_RUN_STATUSES,
     FIT_LABELS,
+    FIT_STATUSES,
+    HISTORY_DIRECTIONS,
+    HISTORY_KINDS,
+    HISTORY_PER_PAGE,
+    HISTORY_SOURCES,
     LETTER_FILTERS,
     MAX_BODY_LENGTH,
     MAX_SUBJECT_LENGTH,
@@ -124,8 +133,26 @@ def search_form(city: str = DEFAULT_CITY, query: str = "", max_companies: str | 
             "max_companies": str(max_companies)[:4]}
 
 
+def overview_view(conn, *, budget_usd: float | None) -> dict[str, Any]:
+    """Сводка для руководства над формой поиска: итоги, средняя оценка, расход всего и за сегодня."""
+    stats = q.fetch_overview(conn, FIT_STATUSES)
+    total = q.fetch_total_cost(conn)
+    today = pipeline.spent_today_usd(conn)
+    share = min(1.0, today / budget_usd) if budget_usd else None
+    return {
+        **stats, "avg_score": int(stats["avg_score"]) if stats["avg_score"] is not None else None,
+        # В ячейке только доллары; токены моделей без цены отдельной строкой, чтобы число не разъезжалось.
+        "cost_total": f"≈ {format_usd(total.usd)}" if total.tokens else "$0", "cost_today": format_usd(today),
+        "unpriced_tokens": total.unpriced_tokens,
+        "budget": format_usd(budget_usd) if budget_usd else None,
+        # Доля дневного лимита для полоски: ширина в SVG-атрибуте, без инлайнового стиля (CSP).
+        "budget_share": round(share * 100, 1) if share is not None else None,
+        "budget_over": bool(budget_usd and today >= budget_usd),
+    }
+
+
 def search_context(conn, *, form: dict, run_id: int | None, message: str | None,
-                   pending_total: int) -> dict[str, Any]:
+                   pending_total: int, budget_usd: float | None = None) -> dict[str, Any]:
     active = q.fetch_active_run(conn)
     recent = q.fetch_recent_runs(conn, RECENT_RUNS)
     shown = (q.fetch_run(conn, run_id) if run_id is not None else None) or active or (recent[0] if recent else None)
@@ -146,6 +173,7 @@ def search_context(conn, *, form: dict, run_id: int | None, message: str | None,
         "active_run": run_view(active, Cost()) if active else None,
         "history": [run_view(row, costs.get(row["id"], Cost())) for row in recent],
         "stage_legend": [{"code": code, "label": label, "hint": STAGE_HINTS[code]} for code, label, _ in STAGES],
+        "overview": overview_view(conn, budget_usd=budget_usd),
     }
 
 
@@ -224,17 +252,30 @@ def companies_context(conn, filters: CompanyFilters) -> dict[str, Any]:
     }
 
 
-def letter_view(draft: dict[str, Any]) -> dict[str, Any]:
-    """Письмо для страницы: заметки отдельно от текста клиенту, непройденные проверки первыми."""
+def letter_view(draft: dict[str, Any], *, blocked: bool = False) -> dict[str, Any]:
+    """Письмо для страницы: заметки отдельно от текста клиенту, непройденные проверки первыми.
+
+    blocked: компания или адрес в списке «не писать»; одобрить нельзя, отклонить и править можно.
+    """
     notes, lines = split_letter(draft["body"])
     checks = sorted(parse_checks(draft["check_result"]), key=lambda check: check["passed"])
     editable = draft["sent_at"] is None and draft["review_status"] != "rejected"
+    approvable = editable and draft["review_status"] != "approved"
     return {
         **draft, **review_view(draft["review_status"]), "notes": notes, "lines": lines, "checks": checks,
         "checks_failed": sum(1 for check in checks if not check["passed"]),
-        "can_approve": editable and draft["review_status"] != "approved",
-        "can_reject": editable, "can_edit": editable,
+        "can_approve": approvable and not blocked, "approve_blocked": approvable and blocked,
+        "can_reject": editable, "can_edit": editable, "blocked": blocked,
     }
+
+
+def history_row_view(row: dict[str, Any]) -> dict[str, Any]:
+    direction = HISTORY_DIRECTIONS.get(row["direction"], row["direction"])
+    kind = HISTORY_KINDS.get(row["kind"], row["kind"])
+    # Входящее — это всегда ответ клиента: «ответ, ответ» не пишем.
+    what = direction if row["direction"] == "in" else f"{direction}, {kind}"
+    return {**row, "direction_label": direction, "kind_label": kind, "what_label": what,
+            "source_label": HISTORY_SOURCES.get(row["source"], row["source"])}
 
 
 def company_context(conn, company_id: int) -> dict[str, Any] | None:
@@ -243,6 +284,7 @@ def company_context(conn, company_id: int) -> dict[str, Any] | None:
         return None
     qualification = q.fetch_qualification(conn, company_id)
     draft = q.fetch_latest_draft(conn, company_id)
+    blocked = bool(company["blocked"]) or bool(draft and q.letter_blocked(conn, draft["id"]))
     label, tone = COMPANY_STATUSES.get(company["status"], (company["status"], "neutral"))
     site_text = company["site_text"] or ""
     website_href = safe_href(company["website"])
@@ -254,10 +296,12 @@ def company_context(conn, company_id: int) -> dict[str, Any] | None:
                     "website_text": display_url(website_href) if website_href else company["website"],
                     "source_href": safe_href(company["source_url"]),
                     "phones": [{"text": p, "href": tel_href(p)} for p in company["phones"] or []]},
-        "qualification": ({**qualification, "fit_label": FIT_LABELS.get(qualification["fit"], qualification["fit"])}
-                          if qualification else None),
+        "qualification": ({**qualification, "fit_label": FIT_LABELS.get(qualification["fit"], qualification["fit"]),
+                           "pains": parse_pains(qualification["pains"])} if qualification else None),
+        "blocked": blocked, "blocked_label": BLOCKED_LABEL,
+        "history": [history_row_view(row) for row in contact_policy.history_for_company(conn, company_id)],
         "contacts": [contact_view(c) for c in q.fetch_contacts(conn, company_id)],
-        "draft": ({**letter_view(draft), "queue_url": letters_url(draft["id"]),
+        "draft": ({**letter_view(draft, blocked=blocked), "queue_url": letters_url(draft["id"]),
                    "self_url": f"/companies/{company_id}#letter", "edit_url": f"/companies/{company_id}?edit=1#letter"}
                   if draft else None),
         "site_text": site_text[:SITE_TEXT_PREVIEW_CHARS], "site_text_length": len(site_text),
@@ -285,6 +329,7 @@ def letters_context(conn, *, filter_code: str, run_id: int | None, selected: dic
         selected = q.fetch_letter(conn, rows[0]["id"])
     selected_id = selected["id"] if selected else None
     items = [{**row, **review_view(row["review_status"]), **checks_summary(row["check_result"]),
+              "blocked_label": BLOCKED_LABEL,
               "url": letters_url(row["id"], status=filter_code, run_id=run_id), "selected": row["id"] == selected_id}
              for row in rows]
     run = q.fetch_run(conn, run_id) if run_id is not None else None
@@ -303,7 +348,8 @@ def selected_letter_view(row: dict[str, Any], filter_code: str, run_id: int | No
     contact = contact_view({"email": row["to_email"], "verify_result": row["verify_result"],
                             "is_catch_all": row["is_catch_all"], "is_role": row["is_role"]})
     return {
-        **letter_view(row), "contact": contact if row["to_email"] else None,
+        **letter_view(row, blocked=bool(row["blocked"])), "contact": contact if row["to_email"] else None,
+        "pains": parse_pains(row["pains"]), "blocked_label": BLOCKED_LABEL,
         "fit_label": FIT_LABELS.get(row["fit"], row["fit"]), "city_name": CITIES.get(row["city"], row["city"]),
         "company_url": f"/companies/{row['company_id']}", "source_href": safe_href(row["source_url"]),
         "self_url": letters_url(row["id"], status=filter_code, run_id=run_id),
@@ -320,3 +366,32 @@ def validate_draft_edit(subject: str, body: str) -> tuple[str, str, str | None]:
     if len(subject) > MAX_SUBJECT_LENGTH or len(body) > MAX_BODY_LENGTH:
         return subject, body, f"Тема до {MAX_SUBJECT_LENGTH} символов, текст до {fmt_int(MAX_BODY_LENGTH)} символов."
     return subject, body, None
+
+
+def history_url(history_page: int, blocked_page: int) -> str:
+    params = {"history_page": history_page, "blocked_page": blocked_page}
+    query = "&".join(f"{key}={value}" for key, value in params.items() if value > 1)
+    return "/history" + (f"?{query}" if query else "")
+
+
+def pager_view(total: int, page: int, url_for) -> dict[str, Any]:
+    pages = max(1, math.ceil(total / HISTORY_PER_PAGE))
+    page = min(page, pages)
+    return {"page": page, "pages": pages, "total": total,
+            "prev_url": url_for(page - 1) if page > 1 else None, "next_url": url_for(page + 1) if page < pages else None}
+
+
+def history_context(conn, *, history_page: int, blocked_page: int, result: dict | None = None,
+                    form_text: dict | None = None) -> dict[str, Any]:
+    """Вкладка «Кому писали»: две формы импорта, история писем и список «не писать», по 50 строк."""
+    history, history_total = q.fetch_history_page(conn, history_page, HISTORY_PER_PAGE)
+    blocked, blocked_total = q.fetch_blocked_page(conn, blocked_page, HISTORY_PER_PAGE)
+    return {
+        "title": "Кому писали", "nav": "history", "result": result, "form_text": form_text or {},
+        "history": [history_row_view(row) for row in history],
+        "history_pager": pager_view(history_total, history_page, lambda n: history_url(n, blocked_page)),
+        "blocked": [{**row, "reason_label": BLOCK_REASONS.get(row["reason"], row["reason"]),
+                     "company_url": f"/companies/{row['company_id']}" if row["company_id"] else None}
+                    for row in blocked],
+        "blocked_pager": pager_view(blocked_total, blocked_page, lambda n: history_url(history_page, n)),
+    }

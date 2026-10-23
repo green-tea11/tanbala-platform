@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="title-row">
+  <div>
+    <h1>Кому писали</h1>
+    <p class="sub">Кому уже писали раньше и кому писать нельзя. Система не напишет ни адресу, ни компании, ни домену из этих списков.</p>
+  </div>
+</div>
+
+{% macro import_form(kind, title, hint, placeholder) %}
+<section class="panel import-panel" aria-labelledby="import-{{ kind }}">
+  <header><h2 id="import-{{ kind }}">{{ title }}</h2></header>
+  <p class="import-hint">{{ hint }}</p>
+  {% if result and result.kind == kind %}
+    {% if result.error %}
+    <p class="notice neg" role="alert">{{ result.error }}</p>
+    {% else %}
+    <p class="notice pos" role="status">Добавлено {{ result.added|fmt_int }}, уже были {{ result.skipped|fmt_int }}{% if result.invalid %}, не распознано: {{ result.invalid|join(', ') }}{% if result.invalid_more %} и ещё {{ result.invalid_more|fmt_int }}{% endif %}{% endif %}.</p>
+    {% endif %}
+  {% endif %}
+  <form method="post" action="/history/import" enctype="multipart/form-data" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="kind" value="{{ kind }}">
+    <div class="field">
+      <label for="text-{{ kind }}">По одному на строку</label>
+      <textarea id="text-{{ kind }}" name="text" class="input textarea import-text" rows="6" placeholder="{{ placeholder }}">{{ form_text.get(kind, '') }}</textarea>
+    </div>
+    <div class="field">
+      <label for="file-{{ kind }}">Или файл .txt / .csv</label>
+      <input id="file-{{ kind }}" name="file" type="file" class="file-input" accept=".txt,.csv,text/plain,text/csv">
+      <p class="hint">До 1 МБ, кодировка UTF-8. Из CSV берётся первая колонка.</p>
+    </div>
+    <div><button type="submit" class="btn primary">Загрузить</button></div>
+  </form>
+</section>
+{% endmacro %}
+
+<div class="grid import-grid">
+  {{ import_form('written', 'Уже писали раньше', 'Адреса почты, на которые вы писали сами. Первое письмо на них и их компаниям не уйдёт.', 'info@sklad.kz') }}
+  {{ import_form('refused', 'Не писать', 'Адреса или домены. Домен закрывает все адреса компании, бесплатная почта (gmail.com, mail.ru) доменом не закрывается.', 'sales@example.kz' ~ '\n' ~ 'example.kz') }}
+</div>
+
+<section class="panel table-panel" aria-labelledby="history-list">
+  <header>
+    <h2 id="history-list">История писем</h2>
+    <span class="meta">{{ history_pager.total|fmt_int }} {{ history_pager.total|plural(('запись', 'записи', 'записей')) }}</span>
+  </header>
+  {% if history %}
+  <div class="table-wrap">
+    <table class="table stacked history-table">
+      <thead><tr><th>Дата</th><th>Адрес</th><th>Компания</th><th>Что</th><th>Откуда</th><th>Заметка</th></tr></thead>
+      <tbody>
+        {% for item in history %}
+        <tr>
+          <td class="cell-date num">{{ item.occurred_at|fmt_dt }}</td>
+          <td class="cell-name"><span class="email">{{ item.email }}</span></td>
+          <td class="cell-company">{% if item.company_id %}<a class="text-link" href="/companies/{{ item.company_id }}">{{ item.company_name }}</a>{% else %}<span class="dash">—</span>{% endif %}</td>
+          <td class="cell-what">{{ item.what_label }}</td>
+          <td class="cell-source">{{ item.source_label }}</td>
+          <td class="cell-note">{{ item.note or '' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">Писем ещё не было. Загрузите адреса, на которые писали раньше, в форму выше.</p>
+  {% endif %}
+  {% if history_pager.pages > 1 %}
+  <nav class="pager" aria-label="Страницы истории">
+    <span class="meta">страница {{ history_pager.page }} из {{ history_pager.pages }}</span>
+    {% if history_pager.prev_url %}<a class="btn" href="{{ history_pager.prev_url }}">Назад</a>{% endif %}
+    {% if history_pager.next_url %}<a class="btn" href="{{ history_pager.next_url }}">Дальше</a>{% endif %}
+  </nav>
+  {% endif %}
+</section>
+
+<section class="panel table-panel" aria-labelledby="blocked-list">
+  <header>
+    <h2 id="blocked-list">Не писать</h2>
+    <span class="meta">{{ blocked_pager.total|fmt_int }} {{ blocked_pager.total|plural(('запись', 'записи', 'записей')) }}</span>
+  </header>
+  {% if blocked %}
+  <div class="table-wrap">
+    <table class="table stacked blocked-table">
+      <thead><tr><th>Цель</th><th>Причина</th><th>Заметка</th><th>Дата</th></tr></thead>
+      <tbody>
+        {% for item in blocked %}
+        <tr>
+          <td class="cell-name">
+            {% if item.email %}<span class="email">{{ item.email }}</span><span class="sub">адрес</span>
+            {% elif item.domain %}<span class="email">{{ item.domain }}</span><span class="sub">домен</span>
+            {% else %}<a class="text-link" href="{{ item.company_url }}">{{ item.company_name or 'компания' }}</a><span class="sub">компания</span>{% endif %}
+          </td>
+          <td class="cell-reason">{{ item.reason_label }}</td>
+          <td class="cell-note">{{ item.note or '' }}</td>
+          <td class="cell-date num">{{ item.created_at|fmt_dt }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">Список пуст. Сюда попадают отказы, жалобы и компании, которым вы нажали «Больше не писать».</p>
+  {% endif %}
+  {% if blocked_pager.pages > 1 %}
+  <nav class="pager" aria-label="Страницы списка «не писать»">
+    <span class="meta">страница {{ blocked_pager.page }} из {{ blocked_pager.pages }}</span>
+    {% if blocked_pager.prev_url %}<a class="btn" href="{{ blocked_pager.prev_url }}">Назад</a>{% endif %}
+    {% if blocked_pager.next_url %}<a class="btn" href="{{ blocked_pager.next_url }}">Дальше</a>{% endif %}
+  </nav>
+  {% endif %}
+</section>
+{% endblock %}

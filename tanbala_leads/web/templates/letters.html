@@ -47,9 +47,15 @@
         <a class="letter-item" href="{{ item.url }}"{% if item.selected %} aria-current="true"{% endif %}>
           <span class="letter-item-top">
             <span class="letter-item-company">{{ item.company_name }}</span>
-            {% if filter_code != 'pending' %}<span class="pill {{ item.review_tone }}">{{ item.review_label }}</span>{% endif %}
+            <span class="letter-item-score num" title="Оценка">{% if item.score is not none %}{{ item.score }}{% else %}—{% endif %}</span>
           </span>
           <span class="letter-item-subject">{{ item.subject }}</span>
+          {% if item.blocked or filter_code != 'pending' %}
+          <span class="letter-item-flags">
+            {% if filter_code != 'pending' %}<span class="pill {{ item.review_tone }}">{{ item.review_label }}</span>{% endif %}
+            {% if item.blocked %}<span class="pill neg">{{ item.blocked_label }}</span>{% endif %}
+          </span>
+          {% endif %}
           <span class="letter-item-meta">{{ lu.checks_mini(item.checks_total, item.checks_failed) }}<span class="meta">{{ item.created_at|fmt_dt }}</span></span>
         </a>
       </li>
@@ -68,7 +74,10 @@
         <h2 id="letter-title">{{ letter.company_name }}</h2>
         <p class="meta">{{ letter.rubric or 'рубрика не указана' }}{% if letter.city_name %} · {{ letter.city_name }}{% endif %} · письмо от {{ letter.created_at|fmt_dt }}{% if letter.kind == 'reply' %} · ответ клиенту{% endif %}</p>
       </div>
-      <span class="pill {{ letter.review_tone }}">{{ letter.review_label }}</span>
+      <span class="letter-head-pills">
+        {% if letter.blocked %}<span class="pill neg">{{ letter.blocked_label }}</span>{% endif %}
+        <span class="pill {{ letter.review_tone }}">{{ letter.review_label }}</span>
+      </span>
     </header>
 
     <section class="brief" aria-label="О компании">
@@ -84,6 +93,7 @@
           {% if letter.source_href %}<a class="card-link" href="{{ letter.source_href }}" rel="noopener noreferrer" target="_blank">Открыть в 2ГИС</a>{% endif %}
         </p>
       </div>
+      <div class="brief-pains">{{ lu.pains_block(letter.pains) }}</div>
     </section>
 
     {{ lu.letter_block(letter, 'letters', filter_code, run_id, letter.contact) }}

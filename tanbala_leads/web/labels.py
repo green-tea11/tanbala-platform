@@ -16,6 +16,9 @@ MAX_BODY_LENGTH = 10_000
 MAX_ID_DIGITS = 18
 MAX_DB_ID = 2**63 - 1  # bigint: больший id даже не отправляем в базу
 MAX_FORM_BYTES = 256 * 1024  # правка письма до 10 000 символов кириллицы в urlencoded
+MAX_UPLOAD_BYTES = 1024 * 1024  # файл со списком адресов для «Кому писали»
+HISTORY_PER_PAGE = 50
+IMPORT_INVALID_SHOWN = 20  # сколько нераспознанных строк показать после импорта
 
 # Оценка расхода по первому настоящему запуску 23.10.2026: 1 компания, 3 вызова Claude Haiku за $0,0055.
 # Токены одного вызова (вход, выход, чтение документа о Tanbala из кэша). Повтор письма бывает не всегда,
@@ -103,10 +106,23 @@ CHECK_LABELS = {
     "style": "Стиль",
     "contacts": "Только наш номер WhatsApp",
 }
+PAIN_SOURCES = {"2gis": "2ГИС", "site": "сайт", "vacancies": "вакансии"}
+# Статусы компании после квалификации «подходит»: для сводки на странице поиска.
+FIT_STATUSES = ("qualified", "verified", "drafted", "approved", "sent", "replied")
+HISTORY_DIRECTIONS = {"out": "отправлено", "in": "ответ"}
+HISTORY_KINDS = {"first_email": "первое письмо", "reply": "ответ"}
+HISTORY_SOURCES = {"pipeline": "система", "import": "импорт", "manual": "вручную"}
+BLOCK_REASONS = {"refused": "отказ", "complaint": "жалоба", "bounce": "не доставлено", "manual": "вручную"}
+IMPORT_KINDS = {"written": False, "refused": True}  # форма → import_contacts(refused=…)
+# Строки-заголовки в CSV, которые не считаем ошибкой.
+IMPORT_HEADERS = frozenset({"email", "e-mail", "почта", "адрес", "адреса", "domain", "домен", "сайт"})
+BLOCKED_LABEL = "В списке «не писать»"
+BLOCKED_MESSAGE = "Компания в списке «не писать»: письмо нельзя одобрить."
 DONE_MESSAGES = {
     "approved": "Письмо одобрено. Отправка писем пока выключена.",
     "rejected": "Письмо отклонено. Компания вернулась к статусу «Почта проверена».",
     "saved": "Изменения сохранены, проверки пройдены заново.",
+    "blocked": "Готово: компания и её домен в списке «не писать». Письма им не уйдут.",
 }
 ERROR_MESSAGES = {
     400: "Неверный запрос.",

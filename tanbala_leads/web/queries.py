@@ -36,41 +36,68 @@ LEFT JOIN LATERAL (SELECT id, subject, review_status, check_result FROM drafts W
 ORDER BY c.created_at DESC, c.id DESC
 LIMIT %s OFFSET %s
 """
+# Последняя квалификация компании (алиас c) и сколько её болей подтверждено цитатой.
+QUAL_LATERAL = """LEFT JOIN LATERAL (
+    SELECT ql.score, ql.fit, ql.reason, ql.segment, ql.pains,
+           (SELECT count(*) FROM jsonb_array_elements(
+                CASE WHEN jsonb_typeof(ql.pains) = 'array' THEN ql.pains ELSE '[]'::jsonb END) AS p
+            WHERE p->>'verified' = 'true')::int AS verified_pains
+    FROM qualifications ql WHERE ql.company_id = c.id ORDER BY ql.created_at DESC, ql.id DESC LIMIT 1) q ON true"""
+# «Не писать»: сама компания или её домен (с поддоменами). Для письма ещё адрес получателя и его домен.
+COMPANY_BLOCKED = """EXISTS (SELECT 1 FROM do_not_contact x WHERE x.company_id = c.id
+    OR (c.website_domain IS NOT NULL AND (x.domain = c.website_domain
+        OR right(c.website_domain, length(x.domain) + 1) = '.' || x.domain)))"""
+LETTER_BLOCKED = """EXISTS (SELECT 1 FROM do_not_contact x WHERE x.company_id = c.id
+    OR (c.website_domain IS NOT NULL AND (x.domain = c.website_domain
+        OR right(c.website_domain, length(x.domain) + 1) = '.' || x.domain))
+    OR x.email = ct.email OR x.domain = split_part(ct.email, '@', 2)
+    OR right(split_part(ct.email, '@', 2), length(x.domain) + 1) = '.' || x.domain)"""
+# Порядок проверки: лучшая оценка, больше подтверждённых болей, раньше написано. Ключ для «следующего письма».
+QUEUE_ORDER = "coalesce(q.score, -1) DESC, coalesce(q.verified_pains, 0) DESC, d.created_at, d.id"
+QUEUE_KEY = "(-coalesce(q.score, -1), -coalesce(q.verified_pains, 0), d.created_at, d.id)"
 # Письма запуска: компания найдена в этом запуске или черновик написан, пока запуск шёл
 # (запуск дорабатывает и компании прошлых запусков; одновременно идёт только один запуск).
 LETTER_RUN_CLAUSE = (
     "(c.run_id = %s OR EXISTS (SELECT 1 FROM runs r WHERE r.id = %s AND d.created_at >= r.started_at"
     " AND d.created_at <= coalesce(r.finished_at, now())))"
 )
-# Очередь: ждущие проверки по порядку появления; решённые — сначала последние.
+# Очередь: ждущие проверки по QUEUE_ORDER; решённые — сначала последние.
 LETTER_ORDER = {
-    "pending": "d.created_at, d.id",
+    "pending": QUEUE_ORDER,
     "approved": "d.updated_at DESC, d.id DESC",
     "rejected": "d.updated_at DESC, d.id DESC",
-    "all": ("(d.review_status = 'pending') DESC, CASE WHEN d.review_status = 'pending' THEN d.created_at END,"
+    "all": ("(d.review_status = 'pending') DESC, CASE WHEN d.review_status = 'pending' THEN -coalesce(q.score, -1) END,"
+            " CASE WHEN d.review_status = 'pending' THEN -coalesce(q.verified_pains, 0) END,"
+            " CASE WHEN d.review_status = 'pending' THEN d.created_at END,"
             " CASE WHEN d.review_status = 'pending' THEN d.id END, d.updated_at DESC, d.id DESC"),
 }
 LETTER_REVIEW = {code: review for code, _, review in LETTER_FILTERS}
-LETTER_LIST_SQL = """
+LETTER_FROM = f"""FROM drafts d JOIN companies c ON c.id = d.company_id
+LEFT JOIN contacts ct ON ct.id = d.contact_id
+{QUAL_LATERAL}"""
+LETTER_LIST_SQL = f"""
 SELECT d.id, d.kind, d.subject, d.review_status, d.check_result, d.sent_at, d.created_at, d.updated_at,
-       c.id AS company_id, c.name AS company_name
-FROM drafts d JOIN companies c ON c.id = d.company_id
-{where}
-ORDER BY {order}
+       c.id AS company_id, c.name AS company_name, q.score, q.verified_pains, {LETTER_BLOCKED} AS blocked
+{LETTER_FROM}
+{{where}}
+ORDER BY {{order}}
 LIMIT %s
 """
-LETTER_SQL = """
+LETTER_SQL = f"""
 SELECT d.id, d.kind, d.subject, d.body, d.model, d.check_result, d.review_status, d.approved_by, d.approved_at,
        d.sent_at, d.created_at, d.updated_at,
        c.id AS company_id, c.name AS company_name, c.rubric, c.city, c.website, c.source_url, c.run_id,
        ct.email AS to_email, ct.verify_result, ct.is_catch_all, ct.is_role,
-       q.score, q.fit, q.reason, q.segment
-FROM drafts d
-JOIN companies c ON c.id = d.company_id
-LEFT JOIN contacts ct ON ct.id = d.contact_id
-LEFT JOIN LATERAL (SELECT score, fit, reason, segment FROM qualifications WHERE company_id = c.id
-                   ORDER BY created_at DESC, id DESC LIMIT 1) q ON true
+       q.score, q.fit, q.reason, q.segment, q.pains, {LETTER_BLOCKED} AS blocked
+{LETTER_FROM}
 WHERE d.id = %s
+"""
+OVERVIEW_SQL = f"""
+SELECT (SELECT count(*) FROM companies) AS companies,
+       (SELECT count(*) FROM companies WHERE status = ANY(%(fit)s)) AS fit,
+       (SELECT round(avg(q.score)) FROM companies c {QUAL_LATERAL} WHERE c.status = ANY(%(fit)s)) AS avg_score,
+       (SELECT count(*) FROM drafts WHERE review_status = 'pending') AS pending,
+       (SELECT count(*) FROM drafts WHERE review_status = 'approved') AS approved
 """
 
 
@@ -154,14 +181,42 @@ def fetch_company(conn, company_id: int) -> dict[str, Any] | None:
     if company_id > MAX_DB_ID:
         return None
     return _row(conn, (
-        "SELECT id, name, city, rubric, address, phones, website, source_url, branches_count, site_text,"
-        " status, last_error, run_id, created_at FROM companies WHERE id = %s"), (company_id,))
+        "SELECT c.id, c.name, c.city, c.rubric, c.address, c.phones, c.website, c.website_domain, c.source_url,"
+        " c.branches_count, c.site_text, c.status, c.last_error, c.run_id, c.created_at,"
+        f" {COMPANY_BLOCKED} AS blocked FROM companies c WHERE c.id = %s"), (company_id,))
 
 
 def fetch_qualification(conn, company_id: int) -> dict[str, Any] | None:
     return _row(conn, (
-        "SELECT fit, score, reason, segment, model, created_at FROM qualifications WHERE company_id = %s"
+        "SELECT fit, score, reason, segment, pains, model, created_at FROM qualifications WHERE company_id = %s"
         " ORDER BY created_at DESC, id DESC LIMIT 1"), (company_id,))
+
+
+# ---------- сводка и «Кому писали» ----------
+
+
+def fetch_overview(conn, fit_statuses: tuple[str, ...]) -> dict[str, Any]:
+    return _row(conn, OVERVIEW_SQL, {"fit": list(fit_statuses)})
+
+
+def fetch_history_page(conn, page: int, per_page: int) -> tuple[list[dict[str, Any]], int]:
+    """Кому писали: все записи contact_history, новые сверху, с компанией, если она известна."""
+    total = _row(conn, "SELECT count(*) AS n FROM contact_history")["n"]
+    rows = _rows(conn, (
+        "SELECT h.id, h.occurred_at, h.email, h.direction, h.kind, h.source, h.note, h.company_id,"
+        " c.name AS company_name FROM contact_history h LEFT JOIN companies c ON c.id = h.company_id"
+        " ORDER BY h.occurred_at DESC, h.id DESC LIMIT %s OFFSET %s"), (per_page, (page - 1) * per_page))
+    return rows, total
+
+
+def fetch_blocked_page(conn, page: int, per_page: int) -> tuple[list[dict[str, Any]], int]:
+    """Список «не писать»: адрес, домен или компания, причина, заметка, дата."""
+    total = _row(conn, "SELECT count(*) AS n FROM do_not_contact")["n"]
+    rows = _rows(conn, (
+        "SELECT x.id, x.email, x.domain, x.company_id, c.name AS company_name, x.reason, x.note, x.created_at"
+        " FROM do_not_contact x LEFT JOIN companies c ON c.id = x.company_id"
+        " ORDER BY x.created_at DESC, x.id DESC LIMIT %s OFFSET %s"), (per_page, (page - 1) * per_page))
+    return rows, total
 
 
 def fetch_contacts(conn, company_id: int) -> list[dict[str, Any]]:
@@ -182,10 +237,12 @@ def fetch_latest_draft(conn, company_id: int) -> dict[str, Any] | None:
 
 
 def fetch_draft_ref(conn, draft_id: int) -> dict[str, Any] | None:
-    """Компания, статус и время письма: для проверок перед действием и поиска следующего."""
+    """Компания, статус, «не писать» и место письма в очереди: для проверок перед действием и поиска следующего."""
     if draft_id > MAX_DB_ID:
         return None
-    return _row(conn, "SELECT id, company_id, review_status, created_at FROM drafts WHERE id = %s", (draft_id,))
+    sql = (f"SELECT d.id, d.company_id, d.review_status, {LETTER_BLOCKED} AS blocked, -coalesce(q.score, -1) AS k1,"
+           f" -coalesce(q.verified_pains, 0) AS k2, d.created_at {LETTER_FROM} WHERE d.id = %s")
+    return _row(conn, sql, (draft_id,))
 
 
 def _letter_where(run_id: int | None, review_status: str | None = None) -> tuple[list[str], list[Any]]:
@@ -207,6 +264,11 @@ def fetch_letter_counts(conn, run_id: int | None) -> dict[str, int]:
     return {row["review_status"]: row["n"] for row in rows}
 
 
+def letter_blocked(conn, draft_id: int) -> bool:
+    row = _row(conn, f"SELECT {LETTER_BLOCKED} AS blocked {LETTER_FROM} WHERE d.id = %s", (draft_id,))
+    return bool(row and row["blocked"])
+
+
 def fetch_letters(conn, filter_code: str, run_id: int | None) -> list[dict[str, Any]]:
     clauses, params = _letter_where(run_id, LETTER_REVIEW[filter_code])
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
@@ -225,9 +287,9 @@ def fetch_next_pending(conn, after: dict[str, Any], run_id: int | None) -> int |
     clauses, params = _letter_where(run_id, "pending")
     clauses.append("d.id <> %s")
     params.append(after["id"])
-    sql = ("SELECT d.id FROM drafts d JOIN companies c ON c.id = d.company_id WHERE " + " AND ".join(clauses)
-           + " ORDER BY ((d.created_at, d.id) > (%s, %s)) DESC, d.created_at, d.id LIMIT 1")
-    row = _row(conn, sql, [*params, after["created_at"], after["id"]])
+    sql = (f"SELECT d.id {LETTER_FROM} WHERE " + " AND ".join(clauses)
+           + f" ORDER BY ({QUEUE_KEY} > (%s, %s, %s, %s)) DESC, {QUEUE_ORDER} LIMIT 1")
+    row = _row(conn, sql, [*params, after["k1"], after["k2"], after["created_at"], after["id"]])
     return row["id"] if row else None
 
 

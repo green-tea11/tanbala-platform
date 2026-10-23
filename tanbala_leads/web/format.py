@@ -15,7 +15,9 @@ from tanbala_leads.web.labels import (
     ESTIMATE_CACHE_WRITE_TOKENS,
     ESTIMATE_CALLS_PER_COMPANY,
     ESTIMATE_MODEL,
+    IMPORT_HEADERS,
     MAX_ID_DIGITS,
+    PAIN_SOURCES,
     TOKEN_FORMS,
 )
 
@@ -231,6 +233,43 @@ def parse_checks(raw: Any) -> list[dict[str, Any]]:
             "details": [str(detail) for detail in details],
         })
     return checks
+
+
+def parse_pains(raw: Any) -> list[dict[str, Any]]:
+    """qualifications.pains → боли для страницы. Подтверждённые цитатой первыми; чужую форму пропускаем."""
+    if not isinstance(raw, list):
+        return []
+    pains = []
+    for item in raw:
+        if not isinstance(item, dict) or not isinstance(item.get("pain"), str) or not item["pain"].strip():
+            continue
+        source = item.get("source")
+        evidence = item.get("evidence")
+        pains.append({
+            "label": item["pain"].strip(),
+            "evidence": evidence.strip() if isinstance(evidence, str) else "",
+            "source_label": PAIN_SOURCES.get(source, str(source) if source else "источник не указан"),
+            "verified": item.get("verified") is True,
+        })
+    return sorted(pains, key=lambda pain: not pain["verified"])
+
+
+def prepare_import_text(text: str) -> str:
+    """Список для импорта: по строке, из CSV только первая колонка, без кавычек и строки заголовка."""
+    items = []
+    for line in text.splitlines():
+        first = re.split(r"[,;\t]", line, maxsplit=1)[0].strip().strip("\"'").strip()
+        if first and first.lower() not in IMPORT_HEADERS:
+            items.append(first)
+    return "\n".join(items)
+
+
+def decode_upload(data: bytes) -> str | None:
+    """Файл списка в UTF-8 (с BOM или без). Другая кодировка: None."""
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return None
 
 
 def split_letter(body: str) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:

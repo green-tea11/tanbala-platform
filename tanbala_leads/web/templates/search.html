@@ -7,6 +7,32 @@
   </div>
 </div>
 
+{% set o = overview %}
+<section class="overview" aria-label="Итоги">
+  <dl class="kpis">
+    <div class="kpi"><dt>Компаний найдено</dt><dd class="kpi-value num">{{ o.companies|fmt_int }}</dd></div>
+    <div class="kpi"><dt>Подходят</dt><dd class="kpi-value num">{{ o.fit|fmt_int }}</dd></div>
+    <div class="kpi">
+      <dt>Средняя оценка</dt>
+      <dd class="kpi-value num">{% if o.avg_score is not none %}{{ o.avg_score }}<small>/100</small>{% else %}<span class="dash">—</span>{% endif %}</dd>
+      <dd class="kpi-sub">у подходящих компаний</dd>
+    </div>
+    <div class="kpi kpi-link">
+      <dt>Писем ждут проверки</dt>
+      <dd class="kpi-value num">{% if o.pending %}<a href="/letters">{{ o.pending|fmt_int }}</a>{% else %}0{% endif %}</dd>
+    </div>
+    <div class="kpi"><dt>Одобрено</dt><dd class="kpi-value num">{{ o.approved|fmt_int }}</dd></div>
+    <div class="kpi">
+      <dt>Расход API</dt>
+      <dd class="kpi-value num">{{ o.cost_total }}</dd>
+      <dd class="kpi-sub num">сегодня {{ o.cost_today }}{% if o.budget %} из {{ o.budget }}{% endif %}{% if o.unpriced_tokens %}, ещё {{ o.unpriced_tokens|fmt_int }} {{ o.unpriced_tokens|plural(token_forms) }} без цены{% endif %}</dd>
+      {% if o.budget_share is not none %}
+      <dd class="budget-bar" aria-hidden="true"><svg viewBox="0 0 100 4" preserveAspectRatio="none" width="100%" height="4"><rect class="budget-track" width="100" height="4" rx="2"/><rect class="budget-fill{% if o.budget_over %} over{% endif %}" width="{{ o.budget_share }}" height="4" rx="2"/></svg></dd>
+      {% endif %}
+    </div>
+  </dl>
+</section>
+
 <div class="grid search-grid">
   <section class="panel search-form" aria-labelledby="new-search">
     <header><h2 id="new-search">Новый поиск</h2></header>

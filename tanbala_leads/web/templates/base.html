@@ -26,6 +26,7 @@
       <a href="/"{% if nav == 'search' %} aria-current="page"{% endif %}>Поиск</a>
       <a href="/letters"{% if nav == 'letters' %} aria-current="page"{% endif %}>Письма<span class="tab-badge num" data-letters-badge title="Ждут проверки"{% if not pending_total %} hidden{% endif %}>{{ pending_total }}</span><span class="visually-hidden"> ждут проверки</span></a>
       <a href="/companies"{% if nav == 'companies' %} aria-current="page"{% endif %}>Компании</a>
+      <a href="/history"{% if nav == 'history' %} aria-current="page"{% endif %}>Кому писали</a>
     </nav>
     {% if api_cost %}
     <p class="spend" title="Все вызовы Claude API по таблице llm_calls. Цены примерные, на 06.10.2026.">

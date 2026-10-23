@@ -1,4 +1,4 @@
-"""Веб-интерфейс поиска клиентов: поиск по кнопке, очередь писем, список и карточка компании.
+"""Веб-интерфейс поиска клиентов: поиск по кнопке, очередь писем, компании и «кому писали».
 
 Работает только на 127.0.0.1. Страницы показывают текст с чужих сайтов и от модели, поэтому:
 Jinja экранирует всё, ссылки выводятся только http(s), в JS данные попадают только через textContent,
@@ -27,32 +27,38 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
+from starlette.datastructures import UploadFile  # request.form() отдаёт файлы этого класса, не fastapi.UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from tanbala_leads import __version__, db, pipeline
-from tanbala_leads.llm import call_cost_usd  # noqa: F401  (цены общие с pipeline; тесты считают через app)
+from tanbala_leads import __version__, contact_policy, db, pipeline
 from tanbala_leads.settings import load_settings
 from tanbala_leads.steps import approve as approve_step
 from tanbala_leads.web import queries as q
 from tanbala_leads.web import views
 from tanbala_leads.web.format import (
     Cost,
+    decode_upload,
     fmt_dt,
     fmt_int,
     format_usd,
     letters_url,
     parse_id,
     plural,
+    prepare_import_text,
 )
 from tanbala_leads.web.labels import (
+    BLOCKED_MESSAGE,
     COMPANY_STATUSES,
     DB_ERROR_MESSAGE,
     DONE_MESSAGES,
     ERROR_MESSAGES,
+    IMPORT_INVALID_SHOWN,
+    IMPORT_KINDS,
     LETTER_FORMS,
     MAX_DB_ID,
     MAX_FORM_BYTES,
+    MAX_UPLOAD_BYTES,
     POLL_INTERVAL_MS,
     REVIEWER,
     TOKEN_FORMS,
@@ -110,8 +116,11 @@ def _redirect(url: str) -> RedirectResponse:
 
 
 def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[str, str, int], int], *,
-               csrf_token: str | None = None) -> FastAPI:
-    """Собрать приложение. connect открывает соединение на запрос, start_run запускает поиск в фоне."""
+               csrf_token: str | None = None, daily_budget_usd: float | None = None) -> FastAPI:
+    """Собрать приложение. connect открывает соединение на запрос, start_run запускает поиск в фоне.
+
+    daily_budget_usd: суточный лимит расходов на API для сводки на странице поиска (None: не показывать).
+    """
     token = csrf_token or secrets.token_urlsafe(32)
     templates = _make_templates()
     app = FastAPI(title="Tanbala", docs_url=None, redoc_url=None, openapi_url=None)
@@ -131,22 +140,34 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
         with open_conn() as conn:
             yield conn
 
-    async def csrf_form(request: Request) -> dict[str, str]:
-        """Каждый POST: своё Origin, разумный размер и токен из скрытого поля. Вернуть поля формы."""
-        origin = request.headers.get("origin")
-        own_origin = f"{request.url.scheme}://{request.headers.get('host', '')}"
-        if origin is not None and origin != own_origin:
-            raise HTTPException(403, ERROR_MESSAGES[403])
-        if request.headers.get("sec-fetch-site") == "cross-site":
-            raise HTTPException(403, ERROR_MESSAGES[403])
-        length = request.headers.get("content-length", "")
-        if length.isascii() and length.isdigit() and int(length) > MAX_FORM_BYTES:
-            raise HTTPException(413, ERROR_MESSAGES[413])
-        form = await request.form()
-        sent = form.get("csrf_token")
-        if not isinstance(sent, str) or not secrets.compare_digest(sent.encode(), token.encode()):
-            raise HTTPException(403, ERROR_MESSAGES[403])
-        return {key: value for key, value in form.items() if isinstance(value, str)}
+    def make_csrf_form(max_bytes: int) -> Callable:
+        async def csrf_form(request: Request) -> dict[str, Any]:
+            """Каждый POST: своё Origin, разумный размер и токен из скрытого поля.
+
+            Вернуть текстовые поля формы; файлы (только у импорта) лежат отдельно в ключе "_files".
+            """
+            origin = request.headers.get("origin")
+            own_origin = f"{request.url.scheme}://{request.headers.get('host', '')}"
+            if origin is not None and origin != own_origin:
+                raise HTTPException(403, ERROR_MESSAGES[403])
+            if request.headers.get("sec-fetch-site") == "cross-site":
+                raise HTTPException(403, ERROR_MESSAGES[403])
+            length = request.headers.get("content-length", "")
+            if length.isascii() and length.isdigit() and int(length) > max_bytes:
+                raise HTTPException(413, ERROR_MESSAGES[413])
+            form = await request.form()
+            sent = form.get("csrf_token")
+            if not isinstance(sent, str) or not secrets.compare_digest(sent.encode(), token.encode()):
+                raise HTTPException(403, ERROR_MESSAGES[403])
+            fields: dict[str, Any] = {key: value for key, value in form.items() if isinstance(value, str)}
+            fields["_files"] = {key: value for key, value in form.items() if isinstance(value, UploadFile)}
+            return fields
+
+        return csrf_form
+
+    csrf_form = make_csrf_form(MAX_FORM_BYTES)
+    # Файл до 1 МБ плюс поля формы и разметка multipart.
+    csrf_upload = make_csrf_form(MAX_UPLOAD_BYTES + MAX_FORM_BYTES)
 
     def render(request: Request, name: str, context: dict[str, Any], *, conn: psycopg.Connection | None = None,
                status_code: int = 200) -> HTMLResponse:
@@ -160,7 +181,8 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
     def render_search(request: Request, conn, *, form: dict, run_id: int | None = None,
                       message: str | None = None, status_code: int = 200) -> HTMLResponse:
         pending = q.count_pending_letters(conn)
-        context = views.search_context(conn, form=form, run_id=run_id, message=message, pending_total=pending)
+        context = views.search_context(conn, form=form, run_id=run_id, message=message, pending_total=pending,
+                                       budget_usd=daily_budget_usd)
         return render(request, "search.html", {**context, "poll_ms": POLL_INTERVAL_MS}, conn=conn,
                       status_code=status_code)
 
@@ -251,6 +273,63 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
                      conn: psycopg.Connection = Depends(get_conn)) -> HTMLResponse:
         return render_company(request, conn, company_id, done=done, edit_requested=edit == "1")
 
+    @app.post("/companies/{company_id:int}/block")
+    def block_company(company_id: int, form: dict[str, Any] = Depends(csrf_form),
+                      conn: psycopg.Connection = Depends(get_conn)) -> Response:
+        """«Больше не писать»: компания и её корпоративный домен в do_not_contact."""
+        if q.fetch_company(conn, company_id) is None:
+            raise HTTPException(404, "Компания не найдена.")
+        contact_policy.block_company(conn, company_id, note="кнопка «Больше не писать»")
+        return _redirect(f"/companies/{company_id}?done=blocked")
+
+    # ---------- кому писали ----------
+
+    def render_history(request: Request, conn, *, history_page: int = 1, blocked_page: int = 1,
+                       result: dict | None = None, form_text: dict | None = None,
+                       status_code: int = 200) -> HTMLResponse:
+        context = views.history_context(conn, history_page=history_page, blocked_page=blocked_page, result=result,
+                                        form_text=form_text)
+        return render(request, "history.html", context, conn=conn, status_code=status_code)
+
+    @app.get("/history", response_class=HTMLResponse)
+    def history_page(request: Request, history_page: str | None = None, blocked_page: str | None = None,
+                     conn: psycopg.Connection = Depends(get_conn)) -> HTMLResponse:
+        return render_history(request, conn, history_page=max(1, parse_id(history_page) or 1),
+                              blocked_page=max(1, parse_id(blocked_page) or 1))
+
+    def read_upload(upload: UploadFile | None) -> tuple[str, str | None]:
+        """Текст из файла списка и ошибка для владельца. Нет файла: пустая строка."""
+        if upload is None or not upload.filename:
+            return "", None
+        data = upload.file.read(MAX_UPLOAD_BYTES + 1)
+        if len(data) > MAX_UPLOAD_BYTES:
+            return "", "Файл больше 1 МБ. Разделите список на части."
+        text = decode_upload(data)
+        if text is None:
+            return "", "Файл не в кодировке UTF-8. Сохраните его как UTF-8 и загрузите снова."
+        return text, None
+
+    @app.post("/history/import")
+    def import_history(request: Request, form: dict[str, Any] = Depends(csrf_upload),
+                       conn: psycopg.Connection = Depends(get_conn)) -> HTMLResponse:
+        """Импорт «Уже писали раньше» (адреса) или «Не писать» (адреса и домены): текст и/или файл."""
+        kind = form.get("kind")
+        if kind not in IMPORT_KINDS:
+            raise HTTPException(400, "Неизвестный список.")
+        typed = form.get("text", "")
+        file_text, error = read_upload(form["_files"].get("file"))
+        items = prepare_import_text(typed + "\n" + file_text)
+        if error is None and not items:
+            error = "Список пуст: вставьте адреса или выберите файл."
+        if error:
+            return render_history(request, conn, result={"kind": kind, "error": error}, form_text={kind: typed},
+                                  status_code=400)
+        outcome = contact_policy.import_contacts(conn, items, refused=IMPORT_KINDS[kind])
+        result = {"kind": kind, "error": None, "added": outcome.added, "skipped": outcome.skipped,
+                  "invalid": outcome.invalid[:IMPORT_INVALID_SHOWN],
+                  "invalid_more": max(0, len(outcome.invalid) - IMPORT_INVALID_SHOWN)}
+        return render_history(request, conn, result=result)
+
     # ---------- письма ----------
 
     @app.get("/letters", response_class=HTMLResponse)
@@ -295,6 +374,9 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
     def approve_draft(draft_id: int, form: dict[str, str] = Depends(csrf_form),
                       conn: psycopg.Connection = Depends(get_conn)) -> Response:
         ref = draft_ref(conn, draft_id)
+        # Кнопка у такой компании выключена; сервер не полагается на то, что её не нажали.
+        if ref["blocked"]:
+            raise HTTPException(409, BLOCKED_MESSAGE)
         run_action(lambda: approve_step.approve(conn, draft_id, REVIEWER))
         return after_decision(conn, ref, form, "approved")
 
@@ -352,12 +434,15 @@ def serve(host: str = BIND_HOST, port: int = 8000) -> None:
     """Настоящее приложение: миграции, пометить прерванные запуски, uvicorn только на 127.0.0.1."""
     if host != BIND_HOST:
         raise ValueError(f"Интерфейс слушает только {BIND_HOST}: он может тратить деньги на API")
-    dsn = load_settings().require("database_url")
+    settings = load_settings()
+    dsn = settings.require("database_url")
+    budget = pipeline.daily_budget(settings)
     with db.connect(dsn) as conn:
         db.migrate(conn)
         pipeline.recover_stale_runs(conn)
     app = create_app(
         connect=lambda: db.connect(dsn),
         start_run=lambda city, query, n: pipeline.start_run(dsn, city, query, n),
+        daily_budget_usd=budget,
     )
     uvicorn.run(app, host=host, port=port, proxy_headers=False, server_header=False)

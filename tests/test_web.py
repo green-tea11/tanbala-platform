@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
 
-from tanbala_leads import db, pipeline
+from tanbala_leads import contact_policy, db, pipeline
 from tanbala_leads.steps import approve as approve_step
 from tanbala_leads.llm import call_cost_usd
 from tanbala_leads.web import app as web
@@ -41,8 +41,8 @@ def no_db() -> psycopg.Connection:
     raise AssertionError("этот запрос не должен открывать соединение с базой")
 
 
-def make_client(connect=no_db, start_run=None, base_url: str = BASE_URL) -> TestClient:
-    app = create_app(connect, start_run or FakeStartRun(), csrf_token=TOKEN)
+def make_client(connect=no_db, start_run=None, base_url: str = BASE_URL, **options) -> TestClient:
+    app = create_app(connect, start_run or FakeStartRun(), csrf_token=TOKEN, **options)
     return TestClient(app, base_url=base_url)
 
 
@@ -430,7 +430,7 @@ def test_company_page_shows_card_reason_emails_and_letter(web_db):
     assert "Инвентаризация за часы" in html and 'class="line note"' in html
     assert "не прошло 1 из 2" in html and "тире: «—»" in html
     assert f'action="/drafts/{draft_id}/approve"' in html and "Отправка писем пока выключена" in html
-    assert html.count('method="post"') == html.count('name="csrf_token"') == 2
+    assert html.count('method="post"') == html.count('name="csrf_token"') == 3  # одобрить, отклонить, не писать
     assert f'href="/letters/{draft_id}#letter"' in html and "Открыть в очереди писем" in html
     assert "<details class=\"site-text\">" in html and "Склад класса А" in html
     assert "≈ $0,0400" in html
@@ -843,3 +843,227 @@ def test_budget_exceeded_is_shown_on_the_form(web_db):
         "/runs", data={"csrf_token": TOKEN, "city": "almaty", "query": "склад", "max_companies": "5"})
     assert response.status_code == 400
     assert "Дневной лимит расходов на API $1.00 исчерпан" in response.text and 'class="notice neg"' in response.text
+
+
+# ---------- боли, история, «не писать», импорт, сводка ----------
+
+
+def test_parse_pains_puts_verified_first_and_skips_junk():
+    raw = [{"pain": "Тара не возвращается", "evidence": "ящики уходят", "source": "site", "verified": False},
+           {"pain": "Инвентаризация занимает дни", "evidence": "пересчёт раз в квартал", "source": "2gis",
+            "verified": True},
+           "мусор", {"pain": ""}, {"pain": "Без источника", "evidence": None}]
+    pains = fmt.parse_pains(raw)
+    assert [p["label"] for p in pains] == ["Инвентаризация занимает дни", "Тара не возвращается", "Без источника"]
+    assert [p["source_label"] for p in pains] == ["2ГИС", "сайт", "источник не указан"]
+    assert [p["verified"] for p in pains] == [True, False, False] and pains[2]["evidence"] == ""
+    assert fmt.parse_pains(None) == [] and fmt.parse_pains({"pain": "x"}) == []
+
+
+def test_prepare_import_text_takes_first_csv_column():
+    text = 'email;name\n"Info@Sklad.kz";Склад\nsales@tara.kz, Тара\n\n  example.kz  \nпочта\n'
+    assert fmt.prepare_import_text(text) == "Info@Sklad.kz\nsales@tara.kz\nexample.kz"
+    assert fmt.decode_upload("﻿info@a.kz".encode()) == "info@a.kz"
+    assert fmt.decode_upload("тара".encode("cp1251")) is None
+
+
+@pytest.mark.parametrize("path", ["/companies/1/block", "/history/import"])
+def test_new_posts_need_csrf_token(path):
+    client = make_client()
+    assert client.post(path, data={"kind": "refused", "text": "a.kz"}).status_code == 403
+    assert client.post(path, data={"csrf_token": TOKEN}, headers={"Origin": "http://evil.example"}).status_code == 403
+
+
+def pains_json(*items):
+    return Jsonb([{"pain": pain, "evidence": evidence, "source": source, "verified": verified}
+                  for pain, evidence, source, verified in items])
+
+
+def queue_with_pains(conn, name, score, verified, unverified=0) -> int:
+    company_id = seed_company(conn, name)
+    pains = [(f"Боль {i}", f"цитата {i}", "site", True) for i in range(verified)]
+    pains += [(f"Сомнение {i}", f"догадка {i}", "2gis", False) for i in range(unverified)]
+    conn.execute("INSERT INTO qualifications (company_id, fit, score, reason, model, pains)"
+                 " VALUES (%s, 'yes', %s, 'Причина', 'claude-haiku-5-5', %s)", (company_id, score, pains_json(*pains)))
+    contact_id = seed_contact(conn, company_id, f"info@p{company_id}.example.kz")
+    return seed_draft(conn, company_id, contact_id, subject=f"Тема {name}")
+
+
+@pytest.mark.db
+def test_queue_orders_by_score_then_verified_pains_then_time(web_db):
+    conn, connect, _ = web_db
+    two = queue_with_pains(conn, "ТОО «Семьдесят-два»", 70, verified=2)
+    top = queue_with_pains(conn, "ТОО «Девяносто»", 90, verified=0)
+    three = queue_with_pains(conn, "ТОО «Семьдесят-три»", 70, verified=3)
+    doubts = queue_with_pains(conn, "ТОО «Семьдесят-ноль»", 70, verified=0, unverified=4)
+    client = make_client(connect)
+    html = client.get("/letters").text
+    order = [html.index(name) for name in ("Девяносто", "Семьдесят-три", "Семьдесят-два", "Семьдесят-ноль")]
+    assert order == sorted(order)
+    assert '<span class="letter-item-score num" title="Оценка">90</span>' in html
+    assert f'href="/letters/{top}?status=pending#letter" aria-current="true"' in html
+    steps = []
+    current = top
+    for _ in range(4):
+        response = queue_post(client, current, "approve", status="pending")
+        location = response.headers["location"]
+        steps.append(location)
+        match = re.match(r"/letters/(\d+)", location)
+        current = int(match.group(1)) if match else None
+    assert steps[:3] == [f"/letters/{three}?status=pending&done=approved#letter",
+                         f"/letters/{two}?status=pending&done=approved#letter",
+                         f"/letters/{doubts}?status=pending&done=approved#letter"]
+    assert steps[3] == "/letters?status=pending&done=approved"
+
+
+@pytest.mark.db
+def test_pains_shown_on_card_and_in_queue_escaped(web_db):
+    conn, connect, _ = web_db
+    company_id = seed_company(conn, "ТОО «Боли»")
+    pains = pains_json(("Инвентаризация занимает дни", "<b>пересчёт</b> раз в квартал", "site", True),
+                       ("Тара уходит к партнёрам", "ящики <script>x</script>", "2gis", False))
+    conn.execute("INSERT INTO qualifications (company_id, fit, score, reason, model, pains)"
+                 " VALUES (%s, 'yes', 77, 'Склад', 'claude-haiku-5-5', %s)", (company_id, pains))
+    contact_id = seed_contact(conn, company_id, "info@boli.example.kz")
+    draft_id = seed_draft(conn, company_id, contact_id)
+    plain = seed_company(conn, "ТОО «Без болей»")
+    conn.execute("INSERT INTO qualifications (company_id, fit, score, reason, model)"
+                 " VALUES (%s, 'maybe', 50, 'Неясно', 'claude-haiku-5-5')", (plain,))
+    client = make_client(connect)
+    for html in (client.get(f"/companies/{company_id}").text, client.get(f"/letters/{draft_id}").text):
+        assert "Инвентаризация занимает дни" in html and "Тара уходит к партнёрам" in html
+        assert "«&lt;b&gt;пересчёт&lt;/b&gt; раз в квартал»" in html and "&lt;script&gt;x&lt;/script&gt;" in html
+        assert "<b>пересчёт" not in html and "<script>x" not in html
+        assert "цитата найдена в источнике" in html and "не подтверждено" in html
+        assert "сайт ·" in html and "2ГИС ·" in html
+        assert html.index("Инвентаризация занимает дни") < html.index("Тара уходит к партнёрам")
+    assert "Явных болей не найдено." in client.get(f"/companies/{plain}").text
+
+
+@pytest.mark.db
+def test_card_shows_history_with_russian_labels(web_db):
+    conn, connect, _ = web_db
+    company_id, _, _ = full_company(conn)
+    contact_policy.record_message(conn, company_id=company_id, email=f"info@c{company_id}.example.kz",
+                                  direction="out", subject="Первое <i>письмо</i>")
+    contact_policy.record_message(conn, company_id=company_id, email=f"info@c{company_id}.example.kz",
+                                  direction="in", kind="reply", source="manual")
+    other = seed_company(conn, "ТОО «Новая»")
+    client = make_client(connect)
+    html = client.get(f"/companies/{company_id}").text
+    assert "История писем" in html and "отправлено, первое письмо · система · «Первое &lt;i&gt;письмо&lt;/i&gt;»" in html
+    assert "ответ · вручную" in html and "<i>письмо" not in html
+    assert "Этой компании ещё не писали." in client.get(f"/companies/{other}").text
+
+
+@pytest.mark.db
+def test_block_company_marks_card_queue_and_refuses_approve(web_db):
+    conn, connect, opened = web_db
+    company_id, _, draft_id = full_company(conn)
+    conn.execute("UPDATE companies SET website_domain = 'step.example.kz' WHERE id = %s", (company_id,))
+    client = make_client(connect)
+    card = client.get(f"/companies/{company_id}").text
+    assert f'action="/companies/{company_id}/block"' in card and "Больше не писать" in card
+    response = client.post(f"/companies/{company_id}/block", data={"csrf_token": TOKEN}, follow_redirects=False)
+    assert response.status_code == 303 and response.headers["location"] == f"/companies/{company_id}?done=blocked"
+    targets = conn.execute("SELECT company_id, domain, reason FROM do_not_contact ORDER BY id").fetchall()
+    assert targets == [(company_id, None, "manual"), (None, "step.example.kz", "manual")]
+    card = client.get(response.headers["location"]).text
+    assert "В списке «не писать»" in card and f'action="/companies/{company_id}/block"' not in card
+    assert f'action="/drafts/{draft_id}/approve"' not in card and "одобрить нельзя" in card
+    queue = client.get(f"/letters/{draft_id}").text
+    assert "В списке «не писать»" in queue and f'action="/drafts/{draft_id}/approve"' not in queue
+    assert 'class="btn primary" disabled' in queue
+    refused = client.post(f"/drafts/{draft_id}/approve", data={"csrf_token": TOKEN})
+    assert refused.status_code == 409 and "письмо нельзя одобрить" in refused.text
+    assert conn.execute("SELECT review_status FROM drafts WHERE id = %s", (draft_id,)).fetchone()[0] == "pending"
+    assert client.post("/companies/999999/block", data={"csrf_token": TOKEN}).status_code == 404
+    assert all(c.closed for c in opened)
+
+
+@pytest.mark.db
+def test_refused_recipient_address_blocks_approve(web_db):
+    conn, connect, _ = web_db
+    company_id, _, draft_id = full_company(conn)
+    contact_policy.import_contacts(conn, f"info@c{company_id}.example.kz", refused=True)
+    client = make_client(connect)
+    assert "В списке «не писать»" in client.get("/letters").text
+    assert client.post(f"/drafts/{draft_id}/approve", data={"csrf_token": TOKEN}).status_code == 409
+
+
+@pytest.mark.db
+def test_history_page_imports_text_and_csv_file(web_db):
+    conn, connect, _ = web_db
+    company_id, _, _ = full_company(conn)
+    client = make_client(connect)
+    empty = client.get("/history").text
+    assert "<h1>Кому писали</h1>" in empty and "Писем ещё не было." in empty and "Список пуст." in empty
+    assert 'enctype="multipart/form-data"' in empty and empty.count('name="csrf_token"') == 2
+    written = client.post("/history/import", data={
+        "csrf_token": TOKEN, "kind": "written", "text": f"info@c{company_id}.example.kz\nold@client.kz\nне адрес"})
+    assert written.status_code == 200
+    assert "Добавлено 2, уже были 0, не распознано: не адрес." in written.text
+    again = client.post("/history/import", data={"csrf_token": TOKEN, "kind": "written", "text": "old@client.kz"})
+    assert "Добавлено 0, уже были 1." in again.text
+    csv = "email;имя\n\"spam@x.kz\";Спам\nbad.example.kz;домен\ngmail.com;бесплатная\n<b>?</b>\n".encode()
+    refused = client.post("/history/import", data={"csrf_token": TOKEN, "kind": "refused"},
+                          files={"file": ("list.csv", csv, "text/csv")})
+    assert refused.status_code == 200
+    assert "Добавлено 2, уже были 0, не распознано: gmail.com, &lt;b&gt;?&lt;/b&gt;." in refused.text
+    blocked = conn.execute("SELECT email, domain, reason FROM do_not_contact ORDER BY id").fetchall()
+    assert blocked == [("spam@x.kz", None, "refused"), (None, "bad.example.kz", "refused")]
+    page = client.get("/history").text
+    assert "old@client.kz" in page and "импорт" in page and "bad.example.kz" in page and "отказ" in page
+    assert f'href="/companies/{company_id}"' in page
+
+
+@pytest.mark.db
+def test_history_import_refuses_bad_files_and_kinds(web_db):
+    _, connect, _ = web_db
+    client = make_client(connect)
+    form = {"csrf_token": TOKEN, "kind": "refused"}
+    cp1251 = client.post("/history/import", data=form, files={"file": ("a.csv", "тара.kz".encode("cp1251"))})
+    assert cp1251.status_code == 400 and "не в кодировке UTF-8" in cp1251.text
+    big = client.post("/history/import", data=form, files={"file": ("a.txt", b"a.kz\n" * 220_000)})
+    assert big.status_code == 400 and "Файл больше 1 МБ" in big.text
+    huge = client.post("/history/import", data=form, files={"file": ("a.txt", b"a.kz\n" * 500_000)})
+    assert huge.status_code == 413
+    nothing = client.post("/history/import", data={**form, "text": "  \n"})
+    assert nothing.status_code == 400 and "Список пуст" in nothing.text
+    assert client.post("/history/import", data={**form, "kind": "all", "text": "a.kz"}).status_code == 400
+
+
+@pytest.mark.db
+def test_history_lists_page_by_fifty(web_db):
+    conn, connect, _ = web_db
+    for index in range(55):
+        contact_policy.block(conn, reason="manual", email=f"user{index:02d}@block.example.kz")
+    client = make_client(connect)
+    first = client.get("/history").text
+    assert "55 записей" in first and "user54@block.example.kz" in first and "user04@block.example.kz" not in first
+    assert 'href="/history?blocked_page=2"' in first
+    second = client.get("/history", params={"blocked_page": "2"}).text
+    assert "user04@block.example.kz" in second and "страница 2 из 2" in second
+
+
+@pytest.mark.db
+def test_search_page_overview_for_management(web_db):
+    conn, connect, _ = web_db
+    queue_with_pains(conn, "ТОО «А»", 80, verified=1)
+    queue_with_pains(conn, "ТОО «Б»", 60, verified=0)
+    conn.execute("UPDATE companies SET status = 'drafted'")
+    seed_company(conn, "ТОО «Мимо»", status="rejected")
+    approved = queue_letter(conn, "ТОО «Одобрена»", review_status="approved")
+    conn.execute("UPDATE companies SET status = 'approved' WHERE id = (SELECT company_id FROM drafts WHERE id = %s)",
+                 (approved,))
+    seed_llm_call(conn, "claude-haiku-5-5", input_tokens=200_000, output_tokens=40_000)
+    html = make_client(connect, daily_budget_usd=1.0).get("/").text
+    overview = html.split('aria-label="Итоги"', 1)[1].split("</section>", 1)[0]
+    values = re.findall(r'<dd class="kpi-value num">(.*?)</dd>', overview, re.S)
+    assert values[0] == "4" and values[1] == "3"  # найдено, подходят (кроме «не подходит»)
+    assert values[2] == "73<small>/100</small>"  # (80 + 60 + 80) / 3
+    assert '<a href="/letters">2</a>' in values[3] and values[4] == "1"
+    assert values[5] == "≈ $0,0400" and "сегодня $0,0400 из $1,00" in overview
+    assert 'class="budget-fill" width="4.0"' in overview
+    no_budget = make_client(connect).get("/").text
+    assert "budget-fill" not in no_budget and "сегодня $0,0400</dd>" in no_budget

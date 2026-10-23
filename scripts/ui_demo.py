@@ -22,7 +22,7 @@ from psycopg.types.json import Jsonb
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tanbala_leads import db, pipeline  # noqa: E402
+from tanbala_leads import contact_policy, db, pipeline  # noqa: E402
 from tanbala_leads.settings import load_settings  # noqa: E402
 from tanbala_leads.web.app import create_app  # noqa: E402
 
@@ -122,6 +122,28 @@ COMPANIES = [
      "crawled", None, None, None, None, [], None,
      "Сайт не открылся: таймаут 30 с после 2 попыток"),
 ]
+# Боли с цитатами (раздел 5 документа о Tanbala). verified: цитата найдена во входных данных.
+PAINS = {
+    "ТОО «Степь Склад Сервис»": [
+        ("Инвентаризация занимает дни и отрывает людей", "инвентаризация раз в квартал, склад закрыт два дня", "site", True),
+        ("Считают вручную или сканируют штрихкоды по одному", "вакансия: кладовщик, пересчёт остатков", "site", True),
+        ("Цифры в 1С не сходятся с тем, что на полках", "расхождения остатков с учётной системой", "site", False),
+    ],
+    "ТОО «Жетысу Логистик»": [
+        ("Тара уходит к партнёрам и не возвращается", "возвратная тара: паллеты и контейнеры между складами", "2gis", True),
+        ("Трудно проверить, вся ли партия ушла на отгрузку", "кросс-докинг, отгрузка в день поступления", "site", False),
+    ],
+    "ТОО «Алтын Тара Пласт»": [
+        ("Тара уходит к партнёрам и не возвращается", "аренда пластиковых ящиков торговым сетям", "site", True),
+        ("Считают вручную или сканируют штрихкоды по одному", "учёт возврата ящиков ведётся в Excel", "site", True),
+    ],
+    "ТОО «Медикал Сток»": [
+        ("Непонятно, что внутри коробок, пока их не вскроешь", "хранение медизделий в заводской упаковке", "2gis", False),
+    ],
+    "ТОО «Kaz Textile Group»": [
+        ("Инвентаризация занимает дни и отрывает людей", "сеть из 6 магазинов, общий склад на Абая", "2gis", True),
+    ],
+}
 SITE_TEXT = (
     "Ответственное хранение и комплектация заказов. Склад класса А, 12 000 паллетомест, температурный режим.\n"
     "Вакансия: кладовщик, пересчёт остатков, инвентаризация раз в квартал.\n"
@@ -164,17 +186,22 @@ def insert_run(conn, city: str, query: str, n: int, status: str, counters: dict,
 
 def insert_company(conn, run_id: int, item: tuple, minutes_ago: int) -> None:
     (name, rubric, address, website, status, score, fit, segment, reason, contacts, draft, error) = item
+    domain = website if website and website.endswith(".example.kz") else None
     company_id = conn.execute(
-        "INSERT INTO companies (name, city, rubric, address, phones, website, source_id, source_url, branches_count,"
-        " site_text, status, last_error, run_id, created_at) VALUES (%s, 'almaty', %s, %s, %s, %s, %s, %s, %s, %s,"
-        " %s, %s, %s, now() - make_interval(mins => %s)) RETURNING id",
-        (name, rubric, address, ["+7 727 355 10 20", "+7 701 555 44 33"], website, f"demo-{uuid.uuid4().hex[:12]}",
+        "INSERT INTO companies (name, city, rubric, address, phones, website, website_domain, source_id, source_url,"
+        " branches_count, site_text, status, last_error, run_id, created_at) VALUES (%s, 'almaty', %s, %s, %s, %s, %s,"
+        " %s, %s, %s, %s, %s, %s, %s, now() - make_interval(mins => %s)) RETURNING id",
+        (name, rubric, address, ["+7 727 355 10 20", "+7 701 555 44 33"], website, domain,
+         f"demo-{uuid.uuid4().hex[:12]}",
          f"https://2gis.kz/almaty/firm/demo{minutes_ago}", 1 if status != "approved" else 6,
          SITE_TEXT if website else None, status, error, run_id, minutes_ago),
     ).fetchone()[0]
     if reason:
-        conn.execute("INSERT INTO qualifications (company_id, fit, score, reason, segment, model)"
-                     " VALUES (%s, %s, %s, %s, %s, 'claude-haiku-5-5')", (company_id, fit, score, reason, segment))
+        pains = [{"pain": pain, "evidence": evidence, "source": source, "verified": verified}
+                 for pain, evidence, source, verified in PAINS.get(name, [])]
+        conn.execute("INSERT INTO qualifications (company_id, fit, score, reason, segment, model, pains)"
+                     " VALUES (%s, %s, %s, %s, %s, 'claude-haiku-5-5', %s)",
+                     (company_id, fit, score, reason, segment, Jsonb(pains)))
     contact_ids = []
     for email, page, verify, catch_all, role in contacts:
         contact_ids.append(conn.execute(
@@ -212,6 +239,21 @@ def seed(dsn: str) -> None:
             insert_company(conn, second if index < 9 else first, item, 90 - index if index < 9 else 60 * 26 - index)
         conn.execute("INSERT INTO llm_calls (task, model, run_id, input_tokens, output_tokens)"
                      " VALUES ('check', 'claude-experimental-x', %s, 1200, 90)", (second,))
+        seed_history(conn)
+
+
+def seed_history(conn) -> None:
+    """История писем (система и импорт) и список «не писать», в том числе одна компания с письмом."""
+    nur = conn.execute("SELECT id FROM companies WHERE name = 'ТОО «Нур Авто Запчасти»'").fetchone()[0]
+    contact_policy.record_message(conn, company_id=nur, email="zakaz@nur-avto.example.kz", direction="out",
+                                  subject="Учёт запчастей без пересчёта")
+    contact_policy.record_message(conn, company_id=nur, email="zakaz@nur-avto.example.kz", direction="in",
+                                  kind="reply", source="manual", note="ответили по телефону, интересно")
+    contact_policy.import_contacts(conn, "tender@alatau-stroy.example.kz\nold.client@astana-sklad.example.kz\n"
+                                   "director@mega-trade.example.kz", refused=False)
+    contact_policy.import_contacts(conn, "spam-sklad.example.kz\nno-reply@bereke.example.kz", refused=True)
+    medical = conn.execute("SELECT id FROM companies WHERE name = 'ТОО «Медикал Сток»'").fetchone()[0]
+    contact_policy.block_company(conn, medical, note="просили не писать, звонок 20.10")
 
 
 def fake_start_run(dsn: str, city: str, query: str, max_companies: int) -> int:
@@ -269,7 +311,8 @@ def main() -> int:
     dsn = load_settings().require("database_url")
     reset_schema(dsn)
     seed(dsn)
-    app = create_app(lambda: demo_connect(dsn), lambda city, query, n: fake_start_run(dsn, city, query, n))
+    app = create_app(lambda: demo_connect(dsn), lambda city, query, n: fake_start_run(dsn, city, query, n),
+                     daily_budget_usd=pipeline.daily_budget(load_settings()))
     print(f"Демо: http://{HOST}:{PORT}/  (схема {SCHEMA}, запуск поддельный)")
     uvicorn.run(app, host=HOST, port=PORT, log_level="warning")
     return 0

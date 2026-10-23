@@ -7,6 +7,7 @@
     <div class="title-line">
       <h1>{{ company.name }}</h1>
       <span class="pill {{ company.status_tone }}">{{ company.status_label }}</span>
+      {% if blocked %}<span class="pill neg">{{ blocked_label }}</span>{% endif %}
     </div>
     <p class="sub">
       {% if qualification %}{{ qualification.fit_label|capitalize }}, {{ qualification.score }} из 100{% if qualification.segment %} · {{ qualification.segment }}{% endif %}{% else %}Ещё не оценена{% endif %}
@@ -46,6 +47,7 @@
       <p class="fit fit-{{ qualification.fit }}">{{ qualification.fit_label|capitalize }}{% if qualification.segment %} · {{ qualification.segment }}{% endif %}</p>
       <p class="reason">{{ qualification.reason }}</p>
       <p class="meta">{{ qualification.model }} · {{ qualification.created_at|fmt_dt }}</p>
+      {{ lu.pains_block(qualification.pains) }}
       {% else %}
       <p class="meta">Ещё не оценена.</p>
       {% endif %}
@@ -69,6 +71,36 @@
       {% else %}
       <p class="meta">Почт не найдено.</p>
       {% endif %}
+    </section>
+
+    <section class="panel order-history" aria-labelledby="history-title">
+      <header><h2 id="history-title">История писем</h2>{% if history %}<span class="meta">{{ history|length }}</span>{% endif %}</header>
+      {% if history %}
+      <ul class="rows history-rows">
+        {% for item in history %}
+        <li class="row">
+          <div class="contact-main">
+            <span class="email">{{ item.email }}</span>
+            <span class="sub">{{ item.what_label }} · {{ item.source_label }}{% if item.subject %} · «{{ item.subject }}»{% endif %}</span>
+          </div>
+          <span class="meta history-date">{{ item.occurred_at|fmt_dt }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="meta">Этой компании ещё не писали.</p>
+      {% endif %}
+      <div class="block-zone">
+        {% if blocked %}
+        <p class="blocked-state"><span class="pill neg">{{ blocked_label }}</span> Письма этой компании одобрить нельзя.</p>
+        {% else %}
+        <form method="post" action="/companies/{{ company.id }}/block" data-confirm="Больше не писать «{{ company.name }}»? Компания и её домен попадут в список «не писать».">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="btn danger">Больше не писать</button>
+        </form>
+        <p class="hint">Компания и её домен попадут в список «не писать»: письма им не уйдут.</p>
+        {% endif %}
+      </div>
     </section>
 
     <section class="panel order-card" aria-labelledby="card-title">
