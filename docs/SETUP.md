@@ -60,6 +60,16 @@ docker compose up -d               # Postgres 17 и Reacher 0.11.10, порты 
 curl http://127.0.0.1:8080/version # Reacher: {"version":"0.11.10"}
 ```
 
+## Интерфейс
+
+```bash
+docker compose up -d                              # Postgres и Reacher
+.venv/Scripts/python -m tanbala_leads web         # http://127.0.0.1:8000
+.venv/Scripts/python -m tanbala_leads search --query склад --limit 5   # тот же запуск без интерфейса
+```
+
+Кнопка «Найти компании» тратит деньги на Claude API: примерно $0.002 на компанию. Новый поиск не запустится, если за сегодня потрачено больше `DAILY_API_BUDGET_USD` (по умолчанию $1). Интерфейс слушает только 127.0.0.1.
+
 ## Порт 25
 
 `python scripts/check_port25.py` подключается к MX-серверам Gmail и mail.ru и читает приветствие 220, писем не отправляет.

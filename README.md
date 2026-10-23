@@ -12,10 +12,13 @@ docs/                       ТЗ и установка
 knowledge/tanbala-agent.md  документ владельца о Tanbala
 scripts/                    служебные проверки окружения
 tanbala_leads/
-  cli.py                    python -m tanbala_leads <команда>
+  cli.py                    python -m tanbala_leads migrate | web | search
+  pipeline.py               запуск по кнопке: все шаги в фоне, прогресс в runs
+  sites.py                  обход сайта crawl4ai, почты, защита от SSRF
+  web/                      интерфейс FastAPI: поиск, компании, письма
   settings.py               переменные окружения и .env
   db.py                     схема Postgres и миграции
-  llm.py                    вызовы Claude: модель из конфига, кэш, лог токенов
+  llm.py                    вызовы Claude: модель из конфига, кэш, лог токенов, цены
   knowledge.py              чтение документа о Tanbala
   checks.py                 проверки письма кодом, без API
   contact_policy.py         история писем и список «не писать»
