@@ -2,7 +2,7 @@
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 
 from dotenv import load_dotenv
 
@@ -33,10 +33,11 @@ class SettingsError(RuntimeError):
 
 @dataclass(frozen=True)
 class Settings:
-    anthropic_key: str = ""
-    database_url: str = ""
+    # Секреты не попадают в repr: иначе они окажутся в логах и traceback.
+    anthropic_key: str = field(default="", repr=False)
+    database_url: str = field(default="", repr=False)
     reacher_url: str = ""
-    reacher_secret: str = ""
+    reacher_secret: str = field(default="", repr=False)
     parser_2gis_bin: str = ""
     llm_log_path: str = ""
     agent_name: str = ""
@@ -58,7 +59,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         load_dotenv()
         env = os.environ
     values = {
-        field.name: env.get(ENV_NAMES[field.name], "").strip() or DEFAULTS.get(field.name, "")
-        for field in fields(Settings)
+        item.name: env.get(ENV_NAMES[item.name], "").strip() or DEFAULTS.get(item.name, "")
+        for item in fields(Settings)
     }
     return Settings(**values)

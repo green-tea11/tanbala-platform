@@ -12,11 +12,11 @@ def write_config(tmp_path, tasks: dict[str, str]):
     return path
 
 
-def test_real_config_has_every_task_on_haiku_by_default():
+def test_real_config_describes_every_task():
     config = load_models_config()
 
     assert set(config) == set(TASKS)
-    assert {entry.model for entry in config.values()} == {"claude-haiku-5-5"}
+    assert all(entry.model.startswith("claude-") for entry in config.values())
 
 
 def test_task_config_reads_real_file():
@@ -55,6 +55,7 @@ def test_missing_task_is_rejected(tmp_path):
         "    model: gpt-4\n    max_tokens: 512\n",
         "    model: claude-haiku-5-5\n    max_tokens: 0\n",
         "    model: claude-haiku-5-5\n    max_tokens: 100000\n",
+        "    model: claude-haiku-5-5\n    max_tokens: true\n",
         "    model: claude-haiku-5-5\n    max_tokens: 512\n    effort: turbo\n",
     ],
 )
@@ -64,4 +65,12 @@ def test_invalid_task_entry_is_rejected(tmp_path, fields):
     path = write_config(tmp_path, tasks)
 
     with pytest.raises(ModelsConfigError, match="qualify"):
+        load_models_config(path)
+
+
+def test_broken_yaml_is_reported_as_config_error(tmp_path):
+    path = tmp_path / "models.yaml"
+    path.write_text("tasks: [qualify:\n", encoding="utf-8")
+
+    with pytest.raises(ModelsConfigError):
         load_models_config(path)

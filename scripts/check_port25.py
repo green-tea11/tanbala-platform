@@ -1,6 +1,7 @@
 """Проверить, открыт ли исходящий порт 25. Он нужен Reacher для SMTP-проверки почт.
 
-Подключается к почтовым серверам и читает приветствие 220. Писем и SMTP-команд не отправляет.
+Подключается к почтовым серверам, читает приветствие 220 и вежливо закрывает соединение командой QUIT.
+Писем и других SMTP-команд не отправляет.
 Запуск: python scripts/check_port25.py
 """
 
@@ -27,6 +28,7 @@ def probe(host: str, port: int = PORT, timeout: float = TIMEOUT_SECONDS,
     try:
         with connect((host, port), timeout=timeout) as sock:
             banner = sock.recv(512).decode("ascii", errors="replace").strip()
+            sock.sendall(b"QUIT\r\n")
     except OSError as exc:
         return ProbeResult(host, False, f"{type(exc).__name__}: {exc}")
     if banner.startswith("220"):

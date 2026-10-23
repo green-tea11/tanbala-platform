@@ -21,5 +21,6 @@ def crawl_company(conn, company_id: int) -> int:
     """Обойти сайт компании, сохранить почты и текст сайта. Вернуть число найденных почт.
 
     TODO: crawl4ai, пометка ролевых адресов (info@, sales@).
+    Не ходить на localhost и частные адреса (рядом Postgres и Reacher), таймауты и лимит размера страницы.
     """
     raise NotImplementedError

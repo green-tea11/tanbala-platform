@@ -15,6 +15,7 @@ from tanbala_leads.settings import SettingsError, load_settings
 
 # Любое число, одно на проект: не даёт двум процессам мигрировать одновременно.
 MIGRATION_LOCK_ID = 7_420_250_740
+CONNECT_TIMEOUT_SECONDS = 10
 
 CREATE_MIGRATIONS_TABLE = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -204,7 +205,7 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
 
 def connect(dsn: str) -> psycopg.Connection:
     """Открыть соединение с Postgres в режиме autocommit. Транзакции открываются явно."""
-    return psycopg.connect(dsn, autocommit=True)
+    return psycopg.connect(dsn, autocommit=True, connect_timeout=CONNECT_TIMEOUT_SECONDS)
 
 
 def migrate(conn: psycopg.Connection) -> list[int]:
@@ -231,8 +232,12 @@ def main() -> int:
     except SettingsError as exc:
         print(exc, file=sys.stderr)
         return 1
-    with connect(dsn) as conn:
-        applied = migrate(conn)
+    try:
+        with connect(dsn) as conn:
+            applied = migrate(conn)
+    except psycopg.Error as exc:
+        print(f"Миграция не выполнена: {exc}", file=sys.stderr)
+        return 1
     print(f"Применены миграции: {applied}" if applied else "Схема актуальна, миграций нет.")
     return 0
 

@@ -1,0 +1,14 @@
+# Точные версии окружения .venv-2gis на 23.10.2026.
+certifi==2026.10.19
+charset-normalizer==3.5.2
+click==8.5.0
+idna==3.20
+parser-2gis==1.2.1
+psutil==7.2.2
+pychrome==0.2.4
+pydantic==1.10.26
+requests==2.34.2
+typing_extensions==4.16.0
+urllib3==2.8.0
+websocket-client==1.9.2
+xlsxwriter==3.3.0

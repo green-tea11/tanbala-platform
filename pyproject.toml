@@ -27,6 +27,7 @@ include = ["tanbala_leads*"]
 testpaths = ["tests"]
 markers = [
     "db: нужен запущенный Postgres из docker-compose",
-    "paid: реальный вызов API, только с разрешения владельца",
+    "paid: реальный вызов API, только с разрешения владельца и с RUN_PAID=1",
 ]
-addopts = "-m 'not paid'"
+# Опечатка в маркере (например paid) иначе молча дала бы неотмеченный тест.
+addopts = "--strict-markers"

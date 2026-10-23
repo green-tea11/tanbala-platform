@@ -20,6 +20,9 @@ class FakeSocket:
     def recv(self, size: int) -> bytes:
         return self.banner
 
+    def sendall(self, data: bytes) -> None:
+        pass
+
 
 def test_probe_open_when_banner_is_220():
     result = check_port25.probe("mx", connect=lambda *a, **k: FakeSocket(b"220 mx.google.com ESMTP\r\n"))

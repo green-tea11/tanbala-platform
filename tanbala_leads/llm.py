@@ -9,6 +9,8 @@ from anthropic import Anthropic
 from tanbala_leads.settings import Settings
 
 TASKS = ("qualify", "first_email", "reply", "check", "classify_reply")
+# Задаётся явно: иначе SDK возьмёт адрес из ANTHROPIC_BASE_URL и отправит ключ туда.
+API_BASE_URL = "https://api.anthropic.com"
 MODELS_CONFIG = Path(__file__).resolve().parents[1] / "config" / "models.yaml"
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 # Без стриминга SDK держит ответы до этого размера в пределах HTTP-таймаута.
@@ -34,7 +36,7 @@ def _parse_task(task: str, entry: object) -> TaskModel:
     effort = entry.get("effort")
     if not isinstance(model, str) or not model.startswith("claude-"):
         raise ModelsConfigError(f"{task}: model должен быть id модели Claude, сейчас {model!r}")
-    if not isinstance(max_tokens, int) or not 0 < max_tokens <= MAX_TOKENS_LIMIT:
+    if type(max_tokens) is not int or not 0 < max_tokens <= MAX_TOKENS_LIMIT:
         raise ModelsConfigError(f"{task}: max_tokens должен быть от 1 до {MAX_TOKENS_LIMIT}, сейчас {max_tokens!r}")
     if effort is not None and effort not in EFFORTS:
         raise ModelsConfigError(f"{task}: effort должен быть одним из {EFFORTS}, сейчас {effort!r}")
@@ -43,7 +45,10 @@ def _parse_task(task: str, entry: object) -> TaskModel:
 
 def load_models_config(path: Path = MODELS_CONFIG) -> dict[str, TaskModel]:
     """Прочитать и проверить config/models.yaml. Каждая задача из TASKS обязательна."""
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        raise ModelsConfigError(f"{path}: не удалось прочитать: {exc}") from exc
     tasks = data.get("tasks") if isinstance(data, dict) else None
     if not isinstance(tasks, dict):
         raise ModelsConfigError(f"{path}: нет раздела tasks")
@@ -66,7 +71,7 @@ def make_client(settings: Settings) -> Anthropic:
     Ключ передаётся явно: тогда SDK не ищет учётные данные в окружении и профилях.
     Без ключа останавливаемся сразу, иначе SDK сам подобрал бы чужие учётные данные.
     """
-    return Anthropic(api_key=settings.require("anthropic_key"))
+    return Anthropic(api_key=settings.require("anthropic_key"), base_url=API_BASE_URL)
 
 
 def complete(task: str, user_content: str, *, cached_context: str | None = None) -> str:
@@ -74,6 +79,6 @@ def complete(task: str, user_content: str, *, cached_context: str | None = None)
 
     TODO: модель, max_tokens и effort из task_config(task); cached_context (документ о Tanbala)
     в system с cache_control; проверять stop_reason (max_tokens, refusal);
-    запись в LLM_LOG_PATH: задача, модель, input/output/cache токены.
+    запись в LLM_LOG_PATH: задача, модель, input/output/cache токены. Без текста промптов и ключа.
     """
     raise NotImplementedError

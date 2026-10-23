@@ -37,7 +37,17 @@ python -m venv .venv-2gis
 
 parser-2gis сам находит Chrome в `C:\Program Files\Google\Chrome\Application\chrome.exe`. Если не нашёл, путь задаётся флагом `--chrome.binary_path`. Без флагов `-i`, `-o`, `-f` он не запускается.
 
-Тесты: `.venv/Scripts/python -m pytest`. Платные тесты (маркер `paid`) по умолчанию не запускаются.
+Точные версии на дату установки: `requirements.lock.txt` и `requirements-2gis.lock.txt`.
+
+## Тесты
+
+| Команда | Что запускает |
+| --- | --- |
+| `.venv/Scripts/python -m pytest` | все бесплатные тесты, нужен запущенный Docker |
+| `.venv/Scripts/python -m pytest -m "not db"` | без базы, Docker не нужен |
+| `RUN_PAID=1 .venv/Scripts/python -m pytest -m paid` | платные вызовы API, только с разрешения владельца |
+
+В тестах без маркера `paid` любой HTTP-запрос SDK Anthropic валит тест. Тесты базы работают во временной схеме и удаляют её после себя.
 
 ## Сервисы Docker
 
@@ -53,6 +63,13 @@ curl http://127.0.0.1:8080/version # Reacher: {"version":"0.11.10"}
 `python scripts/check_port25.py` подключается к MX-серверам Gmail и mail.ru и читает приветствие 220, писем не отправляет.
 
 23.10.2026 на машине разработки: **открыт** (с хоста и из контейнера Reacher). На VPS проверить заново: многие хостинги закрывают исходящий 25.
+
+## При переносе на VPS
+
+- Снова проверить порт 25.
+- Порты 5432 и 8080 оставить на 127.0.0.1, в файрволе не открывать.
+- `REACHER_HELLO_NAME` и `REACHER_FROM_EMAIL`: реальный домен с PTR-записью, иначе почтовые серверы отказывают и IP попадает в блок-листы.
+- Закрепить образы по digest (`@sha256:…`), добавить `security_opt: ["no-new-privileges:true"]`.
 
 ## Документы
 
