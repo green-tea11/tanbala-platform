@@ -15,6 +15,30 @@
 
 Docker Desktop не стартует сам вместе с Windows. Перед работой запустите его или включите автозапуск в настройках.
 
+## Python-окружения
+
+Окружений два: parser-2gis требует `pydantic<2`, а crawl4ai требует `pydantic>=2.10`, в одном окружении они не ставятся.
+
+| Окружение | Что внутри | Как ставить |
+| --- | --- | --- |
+| `.venv` | проект, crawl4ai 0.9.5, anthropic 2.1, psycopg 3.3, python-dotenv, pyyaml, pytest | см. ниже |
+| `.venv-2gis` | parser-2gis 1.2.1 (pydantic 1.10) | см. ниже, вызывается из проекта как CLI |
+
+```bash
+python -m venv .venv
+.venv/Scripts/python -m pip install -e ".[dev]"
+.venv/Scripts/crawl4ai-setup      # ставит Chromium для Playwright
+.venv/Scripts/crawl4ai-doctor     # проверка: «Crawling test passed»
+
+python -m venv .venv-2gis
+.venv-2gis/Scripts/python -m pip install -r requirements-2gis.txt
+.venv-2gis/Scripts/parser-2gis --version
+```
+
+parser-2gis сам находит Chrome в `C:\Program Files\Google\Chrome\Application\chrome.exe`. Если не нашёл, путь задаётся флагом `--chrome.binary_path`. Без флагов `-i`, `-o`, `-f` он не запускается.
+
+Тесты: `.venv/Scripts/python -m pytest`. Платные тесты (маркер `paid`) по умолчанию не запускаются.
+
 ## Документы
 
 - `docs/TZ.md`: копия обзорного ТЗ «VenMart — AI-поиск клиентов для RFID».

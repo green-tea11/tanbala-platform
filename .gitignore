@@ -3,6 +3,7 @@
 
 # Python
 .venv/
+.venv-2gis/
 __pycache__/
 *.py[cod]
 *.egg-info/
