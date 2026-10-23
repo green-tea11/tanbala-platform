@@ -198,8 +198,55 @@ CREATE TRIGGER contact_history_forbid_blocked BEFORE INSERT OR UPDATE ON contact
     FOR EACH ROW EXECUTE FUNCTION forbid_blocked_send();
 """
 
+SCHEMA_V2 = """
+-- Запуски поиска из интерфейса: город, запрос, лимит и счётчики по шагам для прогресса.
+CREATE TABLE runs (
+    id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    city           text NOT NULL,
+    query          text NOT NULL,
+    max_companies  integer NOT NULL CHECK (max_companies BETWEEN 1 AND 100),
+    status         text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'done', 'failed')),
+    stage          text,
+    found          integer NOT NULL DEFAULT 0,
+    new_companies  integer NOT NULL DEFAULT 0,
+    crawled        integer NOT NULL DEFAULT 0,
+    qualified      integer NOT NULL DEFAULT 0,
+    rejected       integer NOT NULL DEFAULT 0,
+    verified       integer NOT NULL DEFAULT 0,
+    drafted        integer NOT NULL DEFAULT 0,
+    errors         integer NOT NULL DEFAULT 0,
+    error          text,
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    started_at     timestamptz,
+    finished_at    timestamptz
+);
+-- Одновременно идёт не больше одного запуска.
+CREATE UNIQUE INDEX runs_one_active_uq ON runs ((true)) WHERE status IN ('queued', 'running');
+
+ALTER TABLE companies ADD COLUMN run_id bigint REFERENCES runs (id) ON DELETE SET NULL;
+CREATE INDEX companies_run_idx ON companies (run_id);
+
+-- Каждый реальный вызов Claude API: модель и токены. По этой таблице интерфейс считает расходы.
+CREATE TABLE llm_calls (
+    id                  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    task                text NOT NULL,
+    model               text NOT NULL,
+    run_id              bigint REFERENCES runs (id) ON DELETE SET NULL,
+    company_id          bigint REFERENCES companies (id) ON DELETE SET NULL,
+    input_tokens        integer NOT NULL CHECK (input_tokens >= 0),
+    output_tokens       integer NOT NULL CHECK (output_tokens >= 0),
+    cache_read_tokens   integer NOT NULL DEFAULT 0 CHECK (cache_read_tokens >= 0),
+    cache_write_tokens  integer NOT NULL DEFAULT 0 CHECK (cache_write_tokens >= 0),
+    stop_reason         text,
+    created_at          timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX llm_calls_run_idx ON llm_calls (run_id);
+CREATE INDEX llm_calls_company_idx ON llm_calls (company_id);
+"""
+
 MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     (1, "init", SCHEMA_V1),
+    (2, "runs_and_llm_calls", SCHEMA_V2),
 )
 
 

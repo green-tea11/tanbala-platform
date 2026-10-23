@@ -7,7 +7,10 @@ errors = psycopg.errors
 
 pytestmark = pytest.mark.db
 
-TABLES = {"companies", "contacts", "qualifications", "drafts", "contact_history", "do_not_contact"}
+TABLES = {
+    "companies", "contacts", "qualifications", "drafts", "contact_history", "do_not_contact",
+    "runs", "llm_calls",
+}
 APPROVED = {"review_status": "approved", "approved_by": "owner", "approved_at": "2026-10-23T10:00:00+05:00"}
 
 
@@ -52,7 +55,7 @@ def conn(db_conn):
 def test_migrate_creates_all_tables(db_conn):
     applied = db.migrate(db_conn)
 
-    assert applied == [1]
+    assert applied == [1, 2]
     assert TABLES <= table_names(db_conn)
 
 
@@ -232,3 +235,57 @@ def test_blocked_company_cannot_be_deleted(conn):
     insert(conn, "do_not_contact", company_id=company_id, reason="complaint")
     with pytest.raises(errors.ForeignKeyViolation):
         conn.execute("DELETE FROM companies WHERE id = %s", (company_id,))
+
+
+# runs, llm_calls: запуски из интерфейса и учёт токенов
+
+def add_run(conn, **fields) -> int:
+    return insert(conn, "runs", **{"city": "almaty", "query": "склад", "max_companies": 5, **fields})
+
+
+def test_run_defaults_to_queued(conn):
+    run_id = add_run(conn)
+
+    assert conn.execute("SELECT status FROM runs WHERE id = %s", (run_id,)).fetchone()[0] == "queued"
+
+
+def test_only_one_active_run(conn):
+    add_run(conn, status="running")
+    with pytest.raises(errors.UniqueViolation):
+        add_run(conn)
+
+
+def test_finished_runs_do_not_block_new_one(conn):
+    add_run(conn, status="done")
+    add_run(conn, status="failed")
+
+    add_run(conn)
+
+
+def test_run_limits_company_count(conn):
+    with pytest.raises(errors.CheckViolation):
+        add_run(conn, max_companies=0)
+
+
+def test_company_links_to_run(conn):
+    run_id = add_run(conn)
+
+    company_id = add_company(conn, run_id=run_id)
+
+    assert conn.execute("SELECT run_id FROM companies WHERE id = %s", (company_id,)).fetchone()[0] == run_id
+
+
+def test_llm_call_is_logged_with_tokens(conn):
+    run_id = add_run(conn)
+    company_id = add_company(conn, run_id=run_id)
+
+    insert(conn, "llm_calls", task="qualify", model="claude-haiku-5-5", run_id=run_id, company_id=company_id,
+           input_tokens=1200, output_tokens=150, cache_read_tokens=9000)
+
+    total = conn.execute("SELECT sum(input_tokens + output_tokens) FROM llm_calls WHERE run_id = %s", (run_id,))
+    assert total.fetchone()[0] == 1350
+
+
+def test_llm_call_tokens_cannot_be_negative(conn):
+    with pytest.raises(errors.CheckViolation):
+        insert(conn, "llm_calls", task="qualify", model="m", input_tokens=-1, output_tokens=0)
