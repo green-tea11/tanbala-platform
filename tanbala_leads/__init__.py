@@ -11,5 +11,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 # рядом работают другие проекты со своими агентами, файлы не должны смешиваться.
 # Задаётся до любого импорта crawl4ai и перекрывает чужие глобальные значения.
 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(PROJECT_ROOT / ".browsers")
-os.environ["CRAWL4_AI_BASE_DIRECTORY"] = str(PROJECT_ROOT)
+# crawl4ai создаёт в этой папке global.yml и подпапку .crawl4ai с базой и кэшем.
+os.environ["CRAWL4_AI_BASE_DIRECTORY"] = str(PROJECT_ROOT / ".crawl4ai")
 os.environ["CRAWL4AI_NO_CLOUD_NOTICE"] = "1"
