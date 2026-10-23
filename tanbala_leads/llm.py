@@ -1,6 +1,9 @@
 """Вызовы Claude API: модель из config/models.yaml, кэш документа о Tanbala, лог токенов."""
 
-from dataclasses import dataclass
+import json
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -74,11 +77,94 @@ def make_client(settings: Settings) -> Anthropic:
     return Anthropic(api_key=settings.require("anthropic_key"), base_url=API_BASE_URL)
 
 
-def complete(task: str, user_content: str, *, cached_context: str | None = None) -> str:
-    """Один вызов модели для задачи. Вернуть текст ответа.
+class LLMError(RuntimeError):
+    """Модель не дала пригодного ответа: обрезан, отказ или не JSON."""
 
-    TODO: модель, max_tokens и effort из task_config(task); cached_context (документ о Tanbala)
-    в system с cache_control; проверять stop_reason (max_tokens, refusal);
-    запись в LLM_LOG_PATH: задача, модель, input/output/cache токены. Без текста промптов и ключа.
+
+@dataclass(frozen=True)
+class LLMUsage:
+    task: str
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+    stop_reason: str | None
+
+
+def _usage_of(task: str, response) -> LLMUsage:
+    usage = response.usage
+    return LLMUsage(
+        task=task,
+        model=response.model,
+        input_tokens=usage.input_tokens or 0,
+        output_tokens=usage.output_tokens or 0,
+        cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
+        cache_write_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
+        stop_reason=response.stop_reason,
+    )
+
+
+def complete_json(
+    client: Anthropic,
+    task: str,
+    *,
+    instructions: str,
+    user_content: str,
+    schema: dict,
+    cached_context: str | None = None,
+    on_usage: Callable[[LLMUsage], None] | None = None,
+) -> dict:
+    """Один вызов модели для задачи с ответом строго по JSON-схеме.
+
+    cached_context (документ о Tanbala) идёт первым блоком system с cache_control: он одинаковый
+    во всех запросах и читается из кэша. on_usage получает токены каждого вызова, даже неудачного.
     """
-    raise NotImplementedError
+    config = task_config(task)
+    system = []
+    if cached_context:
+        system.append({"type": "text", "text": cached_context, "cache_control": {"type": "ephemeral"}})
+    system.append({"type": "text", "text": instructions})
+    output_config: dict = {"format": {"type": "json_schema", "schema": schema}}
+    if config.effort:
+        output_config["effort"] = config.effort
+
+    response = client.messages.create(
+        model=config.model,
+        max_tokens=config.max_tokens,
+        system=system,
+        messages=[{"role": "user", "content": user_content}],
+        output_config=output_config,
+    )
+    if on_usage is not None:
+        on_usage(_usage_of(task, response))
+
+    if response.stop_reason == "refusal":
+        raise LLMError(f"{task}: модель ответила отказом")
+    if response.stop_reason == "max_tokens":
+        raise LLMError(f"{task}: ответ обрезан по max_tokens, увеличьте его в config/models.yaml")
+    text = next((block.text for block in response.content if block.type == "text"), "")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise LLMError(f"{task}: ответ не JSON") from exc
+
+
+def append_usage_log(log_path: Path, usage: LLMUsage, *, run_id: int | None = None,
+                     company_id: int | None = None) -> None:
+    """Дописать строку в лог вызовов: только модель и токены, без текста промптов."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    line = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "run_id": run_id,
+            "company_id": company_id, **asdict(usage)}
+    with log_path.open("a", encoding="utf-8") as file:
+        file.write(json.dumps(line, ensure_ascii=False) + "\n")
+
+
+def save_usage(conn, usage: LLMUsage, *, run_id: int | None = None, company_id: int | None = None) -> None:
+    """Записать вызов в таблицу llm_calls: по ней интерфейс считает расходы."""
+    conn.execute(
+        "INSERT INTO llm_calls (task, model, run_id, company_id, input_tokens, output_tokens,"
+        " cache_read_tokens, cache_write_tokens, stop_reason) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        (usage.task, usage.model, run_id, company_id, usage.input_tokens, usage.output_tokens,
+         usage.cache_read_tokens, usage.cache_write_tokens, usage.stop_reason),
+    )

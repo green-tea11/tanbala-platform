@@ -8,25 +8,25 @@
 tasks:
   qualify:          # подходит ли компании RFID, ответ JSON: fit, score, reason, segment
     model: claude-haiku-5-5
-    max_tokens: 1024
+    max_tokens: 2048
     effort: low
 
   first_email:      # черновик первого письма, 5–8 предложений
     model: claude-haiku-5-5
-    max_tokens: 2048
+    max_tokens: 4096
     effort: medium
 
   reply:            # черновик ответа клиенту
     model: claude-haiku-5-5
-    max_tokens: 2048
+    max_tokens: 4096
     effort: medium
 
   check:            # проверка черновика моделью, после проверок кодом
     model: claude-haiku-5-5
-    max_tokens: 1024
+    max_tokens: 2048
     effort: low
 
   classify_reply:   # тип ответа клиента, если правила кодом не решили
     model: claude-haiku-5-5
-    max_tokens: 512
+    max_tokens: 1024
     effort: low
