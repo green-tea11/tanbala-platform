@@ -2,6 +2,9 @@
 
 Создать или обновить таблицы одной командой: `python -m tanbala_leads.db`.
 Миграции только добавляются в конец MIGRATIONS, применённые не меняются.
+
+Главные правила документа о Tanbala (раздел 13) база держит сама, не только код:
+первое письмо компании и на адрес уходит один раз, тем, кто в do_not_contact, не пишем.
 """
 
 import sys
@@ -22,6 +25,14 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 """
 
 SCHEMA_V1 = """
+-- Почта в нижнем регистре, ровно одна @, точка в домене, без пробелов.
+CREATE DOMAIN email_address AS text
+    CHECK (VALUE = lower(VALUE) AND VALUE ~ '^[^@[:space:]]+@[^@[:space:]]+[.][^@[:space:]]+$');
+
+-- Голый домен: sklad.kz, без схемы, www, пути и заглавных букв. Кириллические домены в punycode.
+CREATE DOMAIN host_name AS text
+    CHECK (VALUE ~ '^([a-z0-9]([a-z0-9-]*[a-z0-9])?[.])+[a-z0-9]([a-z0-9-]*[a-z0-9])?$' AND VALUE !~ '^www[.]');
+
 CREATE FUNCTION set_updated_at() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     NEW.updated_at := now();
@@ -31,6 +42,7 @@ $$;
 
 -- Одна строка на компанию. Дубли отсекаются по сайту (website_domain) и телефонам.
 -- website_domain заполняется только для своего домена компании: соцсети и конструкторы сайтов сюда не пишутся.
+-- Телефоны дедуплицирует код: у сетей бывает один номер на разные филиалы.
 CREATE TABLE companies (
     id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name            text NOT NULL,
@@ -39,7 +51,7 @@ CREATE TABLE companies (
     address         text,
     phones          text[] NOT NULL DEFAULT '{}',
     website         text,
-    website_domain  text CHECK (website_domain = lower(website_domain)),
+    website_domain  host_name,
     source          text NOT NULL DEFAULT '2gis',
     source_id       text,
     source_url      text,
@@ -60,11 +72,11 @@ CREATE INDEX companies_status_idx ON companies (status);
 CREATE TRIGGER companies_updated_at BEFORE UPDATE ON companies
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
--- Все найденные почты и результат Reacher.
+-- Все найденные почты и результат Reacher. Один адрес может быть у нескольких компаний (филиалы сети).
 CREATE TABLE contacts (
     id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     company_id     bigint NOT NULL REFERENCES companies (id) ON DELETE CASCADE,
-    email          text NOT NULL CHECK (email = lower(email) AND email LIKE '_%@_%'),
+    email          email_address NOT NULL,
     source_page    text,
     verify_result  text CHECK (verify_result IN ('safe', 'risky', 'invalid', 'unknown')),
     verify_raw     jsonb,
@@ -72,7 +84,8 @@ CREATE TABLE contacts (
     is_role        boolean NOT NULL DEFAULT false,
     verified_at    timestamptz,
     created_at     timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (company_id, email)
+    UNIQUE (company_id, email),
+    UNIQUE (id, company_id)
 );
 CREATE INDEX contacts_email_idx ON contacts (email);
 
@@ -89,11 +102,11 @@ CREATE TABLE qualifications (
 );
 CREATE INDEX qualifications_company_idx ON qualifications (company_id, created_at DESC);
 
--- Черновики писем, одобрение и результат.
+-- Черновики писем, одобрение и результат. Контакт обязан принадлежать той же компании.
 CREATE TABLE drafts (
     id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     company_id     bigint NOT NULL REFERENCES companies (id) ON DELETE CASCADE,
-    contact_id     bigint NOT NULL REFERENCES contacts (id) ON DELETE CASCADE,
+    contact_id     bigint NOT NULL,
     kind           text NOT NULL DEFAULT 'first_email' CHECK (kind IN ('first_email', 'reply')),
     subject        text NOT NULL,
     body           text NOT NULL,
@@ -103,53 +116,85 @@ CREATE TABLE drafts (
     approved_by    text,
     approved_at    timestamptz,
     sent_at        timestamptz,
+    -- Значения появятся вместе с модулем разбора ответов.
     reply_status   text,
     created_at     timestamptz NOT NULL DEFAULT now(),
     updated_at     timestamptz NOT NULL DEFAULT now(),
+    FOREIGN KEY (contact_id, company_id) REFERENCES contacts (id, company_id) ON DELETE CASCADE,
     CHECK ((review_status = 'approved') = (approved_by IS NOT NULL AND approved_at IS NOT NULL)),
     CHECK (sent_at IS NULL OR review_status = 'approved')
 );
-CREATE INDEX drafts_company_idx ON drafts (company_id);
-CREATE INDEX drafts_contact_idx ON drafts (contact_id);
+CREATE INDEX drafts_contact_idx ON drafts (contact_id, company_id);
 CREATE INDEX drafts_pending_idx ON drafts (created_at) WHERE review_status = 'pending';
--- Первое письмо компании уходит один раз.
-CREATE UNIQUE INDEX drafts_first_email_sent_uq ON drafts (company_id)
-    WHERE kind = 'first_email' AND sent_at IS NOT NULL;
+-- Не больше одного живого черновика первого письма на компанию. После отклонения можно написать новый.
+CREATE UNIQUE INDEX drafts_first_email_active_uq ON drafts (company_id)
+    WHERE kind = 'first_email' AND review_status <> 'rejected';
 CREATE TRIGGER drafts_updated_at BEFORE UPDATE ON drafts
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
--- Кому и когда писали. Переживает удаление компании: по ней проверяем «уже писали».
+-- Кому и когда писали, и входящие ответы. Строку out пишем до отправки письма:
+-- повторная отправка упрётся в уникальные индексы ниже.
+-- Компанию с историей удалить нельзя, иначе после повторного парсинга она получит новый id
+-- и проверка «этой компании уже писали» её пропустит.
 CREATE TABLE contact_history (
     id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    company_id   bigint REFERENCES companies (id) ON DELETE SET NULL,
-    email        text NOT NULL CHECK (email = lower(email) AND email LIKE '_%@_%'),
+    company_id   bigint REFERENCES companies (id) ON DELETE RESTRICT,
+    email        email_address NOT NULL,
     domain       text GENERATED ALWAYS AS (split_part(email, '@', 2)) STORED,
     direction    text NOT NULL CHECK (direction IN ('out', 'in')),
+    kind         text NOT NULL DEFAULT 'first_email' CHECK (kind IN ('first_email', 'reply')),
     draft_id     bigint REFERENCES drafts (id) ON DELETE SET NULL,
     subject      text,
     note         text,
     occurred_at  timestamptz NOT NULL DEFAULT now()
 );
+-- Первое письмо на адрес и первое письмо компании: по одному разу.
+CREATE UNIQUE INDEX contact_history_first_email_uq ON contact_history (email)
+    WHERE direction = 'out' AND kind = 'first_email';
+CREATE UNIQUE INDEX contact_history_first_company_uq ON contact_history (company_id)
+    WHERE direction = 'out' AND kind = 'first_email' AND company_id IS NOT NULL;
 CREATE INDEX contact_history_email_idx ON contact_history (email);
 CREATE INDEX contact_history_domain_idx ON contact_history (domain);
 CREATE INDEX contact_history_company_idx ON contact_history (company_id);
 CREATE INDEX contact_history_draft_idx ON contact_history (draft_id);
 
--- Кому больше не пишем: отказ, жалоба, ручная блокировка. Цель: адрес, домен или компания.
--- Компанию из этого списка удалить нельзя, иначе блокировка потеряется.
+-- Кому больше не пишем: отказ, жалоба, ручная блокировка. В строке ровно одна цель:
+-- адрес, домен (вместе с поддоменами) или компания. Компанию из списка удалить нельзя.
+-- Домены бесплатной почты (gmail.com, mail.ru) сюда не пишем: заблокируем всех.
 CREATE TABLE do_not_contact (
     id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    email       text CHECK (email = lower(email) AND email LIKE '_%@_%'),
-    domain      text CHECK (domain = lower(domain)),
+    email       email_address,
+    domain      host_name,
     company_id  bigint REFERENCES companies (id) ON DELETE RESTRICT,
     reason      text NOT NULL CHECK (reason IN ('refused', 'complaint', 'bounce', 'manual')),
     note        text,
     created_at  timestamptz NOT NULL DEFAULT now(),
-    CHECK (num_nonnulls(email, domain, company_id) >= 1)
+    CHECK (num_nonnulls(email, domain, company_id) = 1)
 );
 CREATE UNIQUE INDEX do_not_contact_email_uq ON do_not_contact (email) WHERE email IS NOT NULL;
 CREATE UNIQUE INDEX do_not_contact_domain_uq ON do_not_contact (domain) WHERE domain IS NOT NULL;
-CREATE INDEX do_not_contact_company_idx ON do_not_contact (company_id) WHERE company_id IS NOT NULL;
+CREATE UNIQUE INDEX do_not_contact_company_uq ON do_not_contact (company_id) WHERE company_id IS NOT NULL;
+
+-- Последний рубеж: исходящее письмо тому, кто в do_not_contact, в историю не записать.
+-- Домен берём из email: генерируемая колонка domain в BEFORE-триггере ещё не вычислена.
+CREATE FUNCTION forbid_blocked_send() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+    email_domain text := split_part(NEW.email, '@', 2);
+BEGIN
+    IF NEW.direction = 'out' AND EXISTS (
+        SELECT 1 FROM do_not_contact d
+        WHERE d.email = NEW.email
+           OR d.domain = email_domain
+           OR right(email_domain, length(d.domain) + 1) = '.' || d.domain
+           OR d.company_id = NEW.company_id
+    ) THEN
+        RAISE EXCEPTION 'Адрес % в списке do_not_contact', NEW.email USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER contact_history_forbid_blocked BEFORE INSERT OR UPDATE ON contact_history
+    FOR EACH ROW EXECUTE FUNCTION forbid_blocked_send();
 """
 
 MIGRATIONS: tuple[tuple[int, str, str], ...] = (
@@ -166,12 +211,14 @@ def migrate(conn: psycopg.Connection) -> list[int]:
     """Применить недостающие миграции в одной транзакции. Вернуть номера применённых."""
     applied_now: list[int] = []
     with conn.transaction():
+        conn.execute("SET LOCAL lock_timeout = '10s'")
         conn.execute("SELECT pg_advisory_xact_lock(%s)", (MIGRATION_LOCK_ID,))
         conn.execute(CREATE_MIGRATIONS_TABLE)
         applied = {version for (version,) in conn.execute("SELECT version FROM schema_migrations")}
         for version, name, sql in MIGRATIONS:
             if version in applied:
                 continue
+            # Без параметров: тогда psycopg не разбирает % в тексте SQL и выполняет все операторы сразу.
             conn.execute(sql)
             conn.execute("INSERT INTO schema_migrations (version, name) VALUES (%s, %s)", (version, name))
             applied_now.append(version)

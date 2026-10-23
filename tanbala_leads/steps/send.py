@@ -12,6 +12,8 @@ def strip_reviewer_notes(body: str) -> str:
 def send_draft(conn, draft_id: int, *, dry_run: bool = True, test_address: str | None = None) -> None:
     """Отправить одобренный черновик и записать в contact_history.
 
-    TODO: реальная отправка запрещена, пока не разрешит владелец.
+    TODO: порядок: строка out в contact_history и коммит, потом SMTP, потом drafts.sent_at.
+    Тогда сбой после SMTP не приведёт к повторному письму. При ошибке SMTP строку истории убрать.
+    Реальная отправка запрещена, пока не разрешит владелец.
     """
     raise NotImplementedError

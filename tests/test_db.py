@@ -2,9 +2,13 @@ import pytest
 
 from tanbala_leads import db
 
+psycopg = pytest.importorskip("psycopg")
+errors = psycopg.errors
+
 pytestmark = pytest.mark.db
 
 TABLES = {"companies", "contacts", "qualifications", "drafts", "contact_history", "do_not_contact"}
+APPROVED = {"review_status": "approved", "approved_by": "owner", "approved_at": "2026-10-23T10:00:00+05:00"}
 
 
 def table_names(conn) -> set[str]:
@@ -14,24 +18,27 @@ def table_names(conn) -> set[str]:
     return {name for (name,) in rows}
 
 
+def insert(conn, table: str, **fields) -> int:
+    columns = ", ".join(fields)
+    placeholders = ", ".join(["%s"] * len(fields))
+    sql = f"INSERT INTO {table} ({columns}) VALUES ({placeholders}) RETURNING id"
+    return conn.execute(sql, list(fields.values())).fetchone()[0]
+
+
 def add_company(conn, name="ТОО Склад", **fields) -> int:
-    columns = ["name", *fields]
-    placeholders = ", ".join(["%s"] * len(columns))
-    sql = f"INSERT INTO companies ({', '.join(columns)}) VALUES ({placeholders}) RETURNING id"
-    return conn.execute(sql, [name, *fields.values()]).fetchone()[0]
+    return insert(conn, "companies", name=name, **fields)
 
 
 def add_contact(conn, company_id: int, email="info@sklad.kz") -> int:
-    return conn.execute(
-        "INSERT INTO contacts (company_id, email) VALUES (%s, %s) RETURNING id", (company_id, email)
-    ).fetchone()[0]
+    return insert(conn, "contacts", company_id=company_id, email=email)
 
 
 def add_draft(conn, company_id: int, contact_id: int, **fields) -> int:
-    columns = ["company_id", "contact_id", "subject", "body", *fields]
-    placeholders = ", ".join(["%s"] * len(columns))
-    sql = f"INSERT INTO drafts ({', '.join(columns)}) VALUES ({placeholders}) RETURNING id"
-    return conn.execute(sql, [company_id, contact_id, "Тема", "Текст", *fields.values()]).fetchone()[0]
+    return insert(conn, "drafts", company_id=company_id, contact_id=contact_id, subject="Тема", body="Текст", **fields)
+
+
+def add_sent(conn, email: str, company_id: int | None = None, kind="first_email") -> int:
+    return insert(conn, "contact_history", company_id=company_id, email=email, direction="out", kind=kind)
 
 
 @pytest.fixture
@@ -39,6 +46,8 @@ def conn(db_conn):
     db.migrate(db_conn)
     return db_conn
 
+
+# Миграция
 
 def test_migrate_creates_all_tables(db_conn):
     applied = db.migrate(db_conn)
@@ -53,6 +62,8 @@ def test_migrate_is_idempotent(db_conn):
     assert db.migrate(db_conn) == []
 
 
+# companies
+
 def test_company_defaults_to_new(conn):
     company_id = add_company(conn)
 
@@ -61,78 +72,24 @@ def test_company_defaults_to_new(conn):
 
 
 def test_company_rejects_unknown_status(conn):
-    psycopg = pytest.importorskip("psycopg")
-    with pytest.raises(psycopg.errors.CheckViolation):
+    with pytest.raises(errors.CheckViolation):
         add_company(conn, status="lost")
 
 
 def test_company_dedup_by_website_domain(conn):
-    psycopg = pytest.importorskip("psycopg")
     add_company(conn, website_domain="sklad.kz")
-    with pytest.raises(psycopg.errors.UniqueViolation):
+    with pytest.raises(errors.UniqueViolation):
         add_company(conn, name="ТОО Склад филиал", website_domain="sklad.kz")
 
 
-def test_contact_email_must_be_lowercase(conn):
-    psycopg = pytest.importorskip("psycopg")
-    company_id = add_company(conn)
-    with pytest.raises(psycopg.errors.CheckViolation):
-        add_contact(conn, company_id, email="Info@Sklad.kz")
+@pytest.mark.parametrize("domain", ["www.sklad.kz", "https://sklad.kz", "sklad.kz/", "Sklad.kz", "sklad"])
+def test_website_domain_must_be_bare_host(conn, domain):
+    with pytest.raises(errors.CheckViolation):
+        add_company(conn, website_domain=domain)
 
 
-def test_qualification_score_range(conn):
-    psycopg = pytest.importorskip("psycopg")
-    company_id = add_company(conn)
-    with pytest.raises(psycopg.errors.CheckViolation):
-        conn.execute(
-            "INSERT INTO qualifications (company_id, fit, score, reason, model) VALUES (%s, 'yes', 101, 'склад', 'm')",
-            (company_id,),
-        )
-
-
-def test_draft_cannot_be_sent_without_approval(conn):
-    psycopg = pytest.importorskip("psycopg")
-    company_id = add_company(conn)
-    contact_id = add_contact(conn, company_id)
-    with pytest.raises(psycopg.errors.CheckViolation):
-        add_draft(conn, company_id, contact_id, sent_at="2026-10-23T10:00:00+05:00")
-
-
-def test_only_one_first_email_sent_per_company(conn):
-    psycopg = pytest.importorskip("psycopg")
-    company_id = add_company(conn)
-    contact_id = add_contact(conn, company_id)
-    approved = {"review_status": "approved", "approved_by": "owner", "approved_at": "2026-10-23T10:00:00+05:00"}
-    add_draft(conn, company_id, contact_id, sent_at="2026-10-23T11:00:00+05:00", **approved)
-    with pytest.raises(psycopg.errors.UniqueViolation):
-        add_draft(conn, company_id, contact_id, sent_at="2026-10-24T11:00:00+05:00", **approved)
-
-
-def test_contact_history_derives_domain_and_survives_company_delete(conn):
-    company_id = add_company(conn)
-    conn.execute(
-        "INSERT INTO contact_history (company_id, email, direction) VALUES (%s, 'info@sklad.kz', 'out')",
-        (company_id,),
-    )
-
-    conn.execute("DELETE FROM companies WHERE id = %s", (company_id,))
-
-    row = conn.execute("SELECT company_id, domain FROM contact_history").fetchone()
-    assert row == (None, "sklad.kz")
-
-
-def test_do_not_contact_needs_a_target(conn):
-    psycopg = pytest.importorskip("psycopg")
-    with pytest.raises(psycopg.errors.CheckViolation):
-        conn.execute("INSERT INTO do_not_contact (reason) VALUES ('refused')")
-
-
-def test_blocked_company_cannot_be_deleted(conn):
-    psycopg = pytest.importorskip("psycopg")
-    company_id = add_company(conn)
-    conn.execute("INSERT INTO do_not_contact (company_id, reason) VALUES (%s, 'complaint')", (company_id,))
-    with pytest.raises(psycopg.errors.ForeignKeyViolation):
-        conn.execute("DELETE FROM companies WHERE id = %s", (company_id,))
+def test_website_domain_accepts_punycode(conn):
+    add_company(conn, website_domain="xn--80ao21a.xn--80ao21a")
 
 
 def test_updated_at_changes_on_update(conn):
@@ -143,3 +100,135 @@ def test_updated_at_changes_on_update(conn):
 
     after = conn.execute("SELECT updated_at FROM companies WHERE id = %s", (company_id,)).fetchone()[0]
     assert after > before
+
+
+# contacts, qualifications
+
+@pytest.mark.parametrize("email", ["Info@Sklad.kz", "a@b@c.kz", "info @sklad.kz", "info@sklad"])
+def test_contact_email_format(conn, email):
+    company_id = add_company(conn)
+    with pytest.raises(errors.CheckViolation):
+        add_contact(conn, company_id, email=email)
+
+
+def test_qualification_score_range(conn):
+    company_id = add_company(conn)
+    with pytest.raises(errors.CheckViolation):
+        insert(conn, "qualifications", company_id=company_id, fit="yes", score=101, reason="склад", model="m")
+
+
+# drafts
+
+def test_draft_cannot_be_sent_without_approval(conn):
+    company_id = add_company(conn)
+    contact_id = add_contact(conn, company_id)
+    with pytest.raises(errors.CheckViolation):
+        add_draft(conn, company_id, contact_id, sent_at="2026-10-23T10:00:00+05:00")
+
+
+def test_only_one_active_first_email_draft_per_company(conn):
+    company_id = add_company(conn)
+    contact_id = add_contact(conn, company_id)
+    add_draft(conn, company_id, contact_id)
+    with pytest.raises(errors.UniqueViolation):
+        add_draft(conn, company_id, contact_id)
+
+
+def test_rejected_draft_allows_new_one(conn):
+    company_id = add_company(conn)
+    contact_id = add_contact(conn, company_id)
+    add_draft(conn, company_id, contact_id, review_status="rejected")
+
+    add_draft(conn, company_id, contact_id)
+
+
+def test_draft_contact_must_belong_to_company(conn):
+    company_a = add_company(conn, name="А")
+    company_b = add_company(conn, name="Б")
+    contact_b = add_contact(conn, company_b, email="info@b.kz")
+    with pytest.raises(errors.ForeignKeyViolation):
+        add_draft(conn, company_a, contact_b)
+
+
+# contact_history: кому уже писали
+
+def test_contact_history_derives_domain(conn):
+    add_sent(conn, "info@sklad.kz")
+
+    assert conn.execute("SELECT domain FROM contact_history").fetchone()[0] == "sklad.kz"
+
+
+def test_first_email_to_same_address_only_once(conn):
+    add_sent(conn, "info@set.kz", company_id=add_company(conn, name="Филиал 1"))
+    with pytest.raises(errors.UniqueViolation):
+        add_sent(conn, "info@set.kz", company_id=add_company(conn, name="Филиал 2"))
+
+
+def test_first_email_to_same_company_only_once(conn):
+    company_id = add_company(conn)
+    add_sent(conn, "info@sklad.kz", company_id=company_id)
+    with pytest.raises(errors.UniqueViolation):
+        add_sent(conn, "sales@sklad.kz", company_id=company_id)
+
+
+def test_replies_to_same_address_are_allowed(conn):
+    add_sent(conn, "info@sklad.kz", kind="first_email")
+    add_sent(conn, "info@sklad.kz", kind="reply")
+
+    add_sent(conn, "info@sklad.kz", kind="reply")
+
+
+def test_company_with_history_cannot_be_deleted(conn):
+    company_id = add_company(conn)
+    add_sent(conn, "info@sklad.kz", company_id=company_id)
+    with pytest.raises(errors.ForeignKeyViolation):
+        conn.execute("DELETE FROM companies WHERE id = %s", (company_id,))
+
+
+# do_not_contact: кому больше не пишем
+
+def test_do_not_contact_needs_exactly_one_target(conn):
+    with pytest.raises(errors.CheckViolation):
+        insert(conn, "do_not_contact", reason="refused")
+    with pytest.raises(errors.CheckViolation):
+        insert(conn, "do_not_contact", email="info@sklad.kz", domain="sklad.kz", reason="refused")
+
+
+def test_send_to_blocked_address_is_refused(conn):
+    insert(conn, "do_not_contact", email="info@sklad.kz", reason="refused")
+    with pytest.raises(errors.CheckViolation):
+        add_sent(conn, "info@sklad.kz")
+
+
+def test_send_to_blocked_domain_and_subdomain_is_refused(conn):
+    insert(conn, "do_not_contact", domain="sklad.kz", reason="complaint")
+    with pytest.raises(errors.CheckViolation):
+        add_sent(conn, "sales@sklad.kz")
+    with pytest.raises(errors.CheckViolation):
+        add_sent(conn, "sales@mail.sklad.kz")
+
+
+def test_send_to_blocked_company_is_refused(conn):
+    company_id = add_company(conn)
+    insert(conn, "do_not_contact", company_id=company_id, reason="manual")
+    with pytest.raises(errors.CheckViolation):
+        add_sent(conn, "new@other.kz", company_id=company_id)
+
+
+def test_similar_domain_is_not_blocked(conn):
+    insert(conn, "do_not_contact", domain="sklad.kz", reason="refused")
+
+    add_sent(conn, "info@bigsklad.kz")
+
+
+def test_inbound_from_blocked_address_is_recorded(conn):
+    insert(conn, "do_not_contact", email="info@sklad.kz", reason="refused")
+
+    insert(conn, "contact_history", email="info@sklad.kz", direction="in", kind="reply")
+
+
+def test_blocked_company_cannot_be_deleted(conn):
+    company_id = add_company(conn)
+    insert(conn, "do_not_contact", company_id=company_id, reason="complaint")
+    with pytest.raises(errors.ForeignKeyViolation):
+        conn.execute("DELETE FROM companies WHERE id = %s", (company_id,))
