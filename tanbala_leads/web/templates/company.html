@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block content %}
+<nav class="crumbs" aria-label="Путь"><a href="/companies">Компании</a>{% if run_url %} <span aria-hidden="true">/</span> <a href="{{ run_url }}">запуск №{{ company.run_id }}</a>{% endif %}</nav>
+<div class="title-row">
+  <div>
+    <div class="title-line">
+      <h1>{{ company.name }}</h1>
+      <span class="pill {{ company.status_tone }}">{{ company.status_label }}</span>
+    </div>
+    <p class="sub">
+      {% if qualification %}{{ qualification.fit_label|capitalize }}, {{ qualification.score }} из 100{% if qualification.segment %} · {{ qualification.segment }}{% endif %}{% else %}Ещё не оценена{% endif %}
+      · найдена {{ company.created_at|fmt_dt }} · расход на компанию {{ company_cost }}
+    </p>
+  </div>
+</div>
+
+{% if done_message %}<p class="notice pos" role="status">{{ done_message }}</p>{% endif %}
+{% if company.last_error %}<p class="notice neg"><b>Ошибка на последнем шаге.</b> {{ company.last_error }}</p>{% endif %}
+
+<div class="detail">
+  <div class="detail-main">
+    <section class="panel letter order-letter" aria-labelledby="letter-title">
+      <header>
+        <h2 id="letter-title">Письмо</h2>
+        {% if draft %}<span class="pill {{ 'pos' if draft.review_status == 'approved' else ('muted' if draft.review_status == 'rejected' else 'accent') }}">{{ draft.review_label }}</span>{% endif %}
+      </header>
+      {% if draft %}
+      <dl class="letter-meta">
+        <div><dt>Кому</dt><dd>{{ draft.to_email or '—' }}</dd></div>
+        <div><dt>Тема</dt><dd class="letter-subject">{{ draft.subject }}</dd></div>
+      </dl>
+      <div class="letter-body" aria-label="Текст письма">
+        {% for line in draft.lines %}<p class="line{% if line.note %} note{% endif %}">{{ line.text }}</p>{% endfor %}
+      </div>
+      <p class="meta letter-foot">
+        {% if draft.kind == 'reply' %}Ответ клиенту · {% endif %}написал {{ draft.model or '—' }} · {{ draft.created_at|fmt_dt }}
+        {% if draft.approved_at %} · одобрил {{ draft.approved_by }} {{ draft.approved_at|fmt_dt }}{% endif %}
+      </p>
+
+      <section class="checks" aria-labelledby="checks-title">
+        <h3 id="checks-title">Проверки письма{% if draft.checks %}: {% if draft.checks_failed %}<span class="neg-text">не прошло {{ draft.checks_failed }} из {{ draft.checks|length }}</span>{% else %}все {{ draft.checks|length }} пройдены{% endif %}{% endif %}</h3>
+        {% if draft.checks %}
+        <ul class="check-list">
+          {% for check in draft.checks %}
+          <li class="check {{ 'passed' if check.passed else 'failed' }}">
+            <svg class="check-mark" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">{% if check.passed %}<path d="M3 8.5 6.5 12 13 4.5"/>{% else %}<path d="M4 4l8 8M12 4l-8 8"/>{% endif %}</svg>
+            <span class="check-name">{{ check.label }}<span class="visually-hidden">: {{ 'пройдена' if check.passed else 'не пройдена' }}</span></span>
+            {% if check.details %}
+            <ul class="check-details">{% for detail in check.details %}<li>{{ detail }}</li>{% endfor %}</ul>
+            {% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p class="meta">Проверки ещё не запускались.</p>
+        {% endif %}
+      </section>
+
+      {% if draft.can_approve or draft.can_reject or draft.can_edit %}
+      <div class="actions">
+        {% if draft.can_approve %}
+        <form method="post" action="/drafts/{{ draft.id }}/approve">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="btn primary">Одобрить</button>
+        </form>
+        {% endif %}
+        {% if draft.can_reject %}
+        <form method="post" action="/drafts/{{ draft.id }}/reject" data-confirm="Отклонить это письмо? Компания вернётся к статусу «Почта проверена».">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="btn">Отклонить</button>
+        </form>
+        {% endif %}
+        {% if draft.can_edit %}
+        <details class="edit"{% if edit_open %} open{% endif %}>
+        <summary class="btn">Изменить</summary>
+        <form method="post" action="/drafts/{{ draft.id }}/edit" class="stack edit-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          {% if edit.error %}<p class="notice neg" role="alert">{{ edit.error }}</p>{% endif %}
+          <div class="field">
+            <label for="edit-subject">Тема</label>
+            <input id="edit-subject" name="subject" class="input" type="text" required maxlength="200" value="{{ edit.subject }}">
+          </div>
+          <div class="field">
+            <label for="edit-body">Текст</label>
+            <textarea id="edit-body" name="body" class="input textarea" rows="16" required maxlength="10000">{{ edit.body }}</textarea>
+            <p class="hint">После сохранения проверки пройдут заново, одобрение снимется.</p>
+          </div>
+          <div><button type="submit" class="btn primary">Сохранить и проверить</button></div>
+        </form>
+        </details>
+        {% endif %}
+        <p class="meta actions-note">Отправка писем пока выключена.</p>
+      </div>
+      {% elif draft.review_status == 'rejected' %}
+      <p class="meta">Письмо отклонено. Новый черновик напишет следующий запуск.</p>
+      {% endif %}
+      {% else %}
+      <p class="empty">Письма пока нет. Черновик появится после проверки почты.</p>
+      {% endif %}
+    </section>
+
+  </div>
+
+  <aside class="detail-side">
+    <section class="panel order-why" aria-labelledby="why-title">
+      <header><h2 id="why-title">Почему подходит</h2>{% if qualification %}<span class="score-big num">{{ qualification.score }}<small>/100</small></span>{% endif %}</header>
+      {% if qualification %}
+      <p class="fit fit-{{ qualification.fit }}">{{ qualification.fit_label|capitalize }}{% if qualification.segment %} · {{ qualification.segment }}{% endif %}</p>
+      <p class="reason">{{ qualification.reason }}</p>
+      <p class="meta">{{ qualification.model }} · {{ qualification.created_at|fmt_dt }}</p>
+      {% else %}
+      <p class="meta">Ещё не оценена.</p>
+      {% endif %}
+    </section>
+
+    <section class="panel order-emails" aria-labelledby="emails-title">
+      <header><h2 id="emails-title">Почты</h2>{% if contacts %}<span class="meta">{{ contacts|length }}</span>{% endif %}</header>
+      {% if contacts %}
+      <ul class="rows">
+        {% for contact in contacts %}
+        <li class="row contact">
+          <div class="contact-main">
+            <span class="email">{{ contact.email }}</span>
+            {% if contact.flags %}<span class="sub">{{ contact.flags|join(' · ') }}</span>{% endif %}
+            <span class="sub source">{% if contact.source_href %}<a class="text-link" href="{{ contact.source_href }}" rel="noopener noreferrer" target="_blank">{{ contact.source_page }}</a>{% elif contact.source_page %}{{ contact.source_page }}{% else %}страница не записана{% endif %}</span>
+          </div>
+          <span class="pill {{ contact.verify_tone }}">{{ contact.verify_label }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="meta">Почт не найдено.</p>
+      {% endif %}
+    </section>
+
+    <section class="panel order-card" aria-labelledby="card-title">
+      <header><h2 id="card-title">Карточка 2ГИС</h2>{% if company.source_href %}<a class="card-link" href="{{ company.source_href }}" rel="noopener noreferrer" target="_blank">Открыть в 2ГИС</a>{% endif %}</header>
+      <dl class="kv">
+        <div><dt>Рубрика</dt><dd>{{ company.rubric or '—' }}</dd></div>
+        <div><dt>Город</dt><dd>{{ company.city_name or '—' }}</dd></div>
+        <div><dt>Адрес</dt><dd>{{ company.address or '—' }}</dd></div>
+        <div><dt>Телефоны</dt><dd>{% for phone in company.phones %}{% if phone.href %}<a class="text-link num" href="{{ phone.href }}">{{ phone.text }}</a>{% else %}{{ phone.text }}{% endif %}{% if not loop.last %}<br>{% endif %}{% else %}—{% endfor %}</dd></div>
+        <div><dt>Сайт</dt><dd>{% if company.website_href %}<a class="text-link" href="{{ company.website_href }}" rel="noopener noreferrer" target="_blank">{{ company.website_text }}</a>{% else %}{{ company.website or '—' }}{% endif %}</dd></div>
+        <div><dt>Филиалов</dt><dd class="num">{{ company.branches_count if company.branches_count is not none else '—' }}</dd></div>
+      </dl>
+    </section>
+    <section class="panel site order-site" aria-labelledby="site-title">
+      <header><h2 id="site-title">Текст сайта</h2>{% if site_text_length %}<span class="meta num">{{ site_text_length|fmt_int }} символов</span>{% endif %}</header>
+      {% if site_text %}
+      <details class="site-text">
+        <summary>Показать текст, который прочитал Claude</summary>
+        <div class="site-text-body">{{ site_text }}</div>
+        {% if site_text_truncated %}<p class="meta">Показаны первые {{ site_text|length|fmt_int }} символов.</p>{% endif %}
+      </details>
+      {% else %}
+      <p class="meta">Сайт ещё не обойдён или текста на нём нет.</p>
+      {% endif %}
+    </section>
+  </aside>
+</div>
+{% endblock %}

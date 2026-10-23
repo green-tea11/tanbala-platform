@@ -7,7 +7,7 @@ from psycopg.types.json import Jsonb
 
 
 class DraftNotFound(LookupError):
-    """Черновика нет или он уже отправлен."""
+    """Черновика нет, он уже отправлен или отклонён."""
 
 
 def check_results_json(subject: str, body: str) -> list[dict]:
@@ -22,7 +22,7 @@ def approve(conn: psycopg.Connection, draft_id: int, approved_by: str) -> None:
     with conn.transaction():
         row = conn.execute(
             "UPDATE drafts SET review_status = 'approved', approved_by = %s, approved_at = now()"
-            " WHERE id = %s AND sent_at IS NULL RETURNING company_id",
+            " WHERE id = %s AND sent_at IS NULL AND review_status <> 'rejected' RETURNING company_id",
             (approved_by, draft_id),
         ).fetchone()
         if row is None:
@@ -50,7 +50,7 @@ def update_draft(conn: psycopg.Connection, draft_id: int, subject: str, body: st
         row = conn.execute(
             "UPDATE drafts SET subject = %s, body = %s, check_result = %s,"
             " review_status = 'pending', approved_by = NULL, approved_at = NULL"
-            " WHERE id = %s AND sent_at IS NULL RETURNING company_id",
+            " WHERE id = %s AND sent_at IS NULL AND review_status <> 'rejected' RETURNING company_id",
             (subject, body, Jsonb(checks), draft_id),
         ).fetchone()
         if row is None:

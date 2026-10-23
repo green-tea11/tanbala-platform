@@ -5,6 +5,7 @@
 
 import asyncio
 import logging
+import re
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -28,6 +29,9 @@ MAX_QUERY_LENGTH = 100
 PARSER_RECORDS_FACTOR = 3
 PARSER_RECORDS_LIMIT = 60
 COUNTERS = ("crawled", "qualified", "rejected", "verified", "drafted", "errors")
+MAX_ERROR_CHARS = 500
+# Текст ошибки виден в интерфейсе: ключи API и строки подключения из него вырезаются.
+SECRET_PATTERNS = (re.compile(r"sk-ant-[\w-]+"), re.compile(r"postgres(?:ql)?://\S+"), re.compile(r"key=\S+", re.I))
 
 
 class RunAlreadyActive(RuntimeError):
@@ -102,6 +106,14 @@ def default_deps(settings: Settings) -> Deps:
     )
 
 
+def safe_error(exc: BaseException) -> str:
+    """Короткий текст ошибки для базы и интерфейса, без секретов."""
+    text = f"{type(exc).__name__}: {exc}"
+    for pattern in SECRET_PATTERNS:
+        text = pattern.sub("[скрыто]", text)
+    return text[:MAX_ERROR_CHARS]
+
+
 def _set(conn: psycopg.Connection, run_id: int, **fields) -> None:
     assignments = sql.SQL(", ").join(
         sql.SQL("{} = {}").format(sql.Identifier(name), sql.Placeholder(name)) for name in fields
@@ -117,7 +129,7 @@ def _bump(conn: psycopg.Connection, run_id: int, counter: str) -> None:
 
 def _company_failed(conn: psycopg.Connection, run_id: int, company_id: int, exc: Exception) -> None:
     logger.exception("Запуск %s, компания %s: ошибка", run_id, company_id)
-    message = f"{type(exc).__name__}: {exc}"[:500]
+    message = safe_error(exc)
     conn.execute("UPDATE companies SET last_error = %s WHERE id = %s", (message, company_id))
     _bump(conn, run_id, "errors")
 
@@ -213,5 +225,5 @@ def execute_run(dsn: str, run_id: int, deps: Deps | None = None) -> None:
             _set(conn, run_id, status="done", stage="Готово", finished_at=datetime.now(timezone.utc))
         except Exception as exc:  # noqa: BLE001  любая ошибка запуска видна в интерфейсе
             logger.exception("Запуск %s упал", run_id)
-            _set(conn, run_id, status="failed", error=f"{type(exc).__name__}: {exc}"[:500],
+            _set(conn, run_id, status="failed", error=safe_error(exc),
                  finished_at=datetime.now(timezone.utc))

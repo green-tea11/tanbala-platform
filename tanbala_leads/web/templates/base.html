@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="same-origin">
+<title>{{ title }} · Tanbala</title>
+<link rel="icon" href="{{ static('favicon.svg') }}" type="image/svg+xml">
+<link rel="stylesheet" href="{{ static('app.css') }}">
+<script src="{{ static('app.js') }}" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/" aria-label="Tanbala, поиск клиентов">
+      <svg class="brand-mark" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true">
+        <rect x="1" y="3" width="22" height="18" rx="4" fill="#152C51"/>
+        <rect x="4.5" y="6.5" width="15" height="11" rx="2" fill="none" stroke="#1594A2" stroke-width="1.5"/>
+        <rect x="7.5" y="9.5" width="9" height="5" rx="1" fill="none" stroke="#1594A2" stroke-width="1.5"/>
+        <rect x="10.5" y="11" width="3" height="2" fill="#ffffff"/>
+      </svg>
+      <span class="brand-name">Tanbala</span>
+      <span class="brand-product">· поиск клиентов</span>
+    </a>
+    <nav class="tabs" aria-label="Разделы">
+      <a href="/"{% if nav == 'search' %} aria-current="page"{% endif %}>Поиск</a>
+      <a href="/companies"{% if nav == 'companies' %} aria-current="page"{% endif %}>Компании</a>
+    </nav>
+    {% if api_cost %}
+    <p class="spend" title="Все вызовы Claude API по таблице llm_calls. Цены примерные, на 06.10.2026.">
+      <span class="spend-label">Расход API</span>
+      <span class="spend-value num">{{ api_cost_text }}</span>
+      <span class="spend-tokens num">{{ api_cost.tokens|fmt_int }} {{ api_cost.tokens|plural(token_forms) }}{% if not api_cost.priced %}, из них {{ api_cost.unpriced_tokens|fmt_int }} без цены{% endif %}</span>
+    </p>
+    {% endif %}
+  </div>
+</header>
+<main class="canvas">
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

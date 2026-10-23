@@ -140,3 +140,14 @@ def test_stale_runs_are_marked_failed(db_conn):
 
     assert pipeline.recover_stale_runs(db_conn) == 1
     assert db_conn.execute("SELECT status FROM runs WHERE id = %s", (run_id,)).fetchone()[0] == "failed"
+
+
+@pytest.mark.parametrize(
+    "secret",
+    ["sk-ant-api03-AbCdEf1234567890_xyz", "postgresql://tanbala:p4ss@127.0.0.1:5432/tanbala"],
+)
+def test_error_text_hides_secrets(secret):
+    text = pipeline.safe_error(RuntimeError(f"не вышло: {secret} конец"))
+
+    assert secret not in text
+    assert "[скрыто]" in text and "не вышло" in text

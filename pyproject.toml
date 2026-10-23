@@ -28,6 +28,9 @@ dev = ["pytest>=9,<10"]
 [tool.setuptools.packages.find]
 include = ["tanbala_leads*"]
 
+[tool.setuptools.package-data]
+"tanbala_leads.web" = ["templates/*.html", "static/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [

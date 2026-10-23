@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="title-row">
+  <div>
+    <h1>{{ title }}</h1>
+    <p class="sub">Код ответа {{ status_code }}.</p>
+  </div>
+</div>
+<section class="panel error-panel" aria-label="Что случилось">
+  <p class="error-message">{{ message }}</p>
+  <p><a class="card-link" href="/">На страницу поиска</a></p>
+</section>
+{% endblock %}
