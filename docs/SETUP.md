@@ -27,13 +27,15 @@ Docker Desktop не стартует сам вместе с Windows. Перед 
 ```bash
 python -m venv .venv
 .venv/Scripts/python -m pip install -e ".[dev]"
-.venv/Scripts/crawl4ai-setup      # ставит Chromium для Playwright
-.venv/Scripts/crawl4ai-doctor     # проверка: «Crawling test passed»
+.venv/Scripts/python scripts/crawl4ai_tools.py setup    # Chromium в .browsers, данные crawl4ai в .crawl4ai
+.venv/Scripts/python scripts/crawl4ai_tools.py doctor   # проверка: «Crawling test passed»
 
 python -m venv .venv-2gis
 .venv-2gis/Scripts/python -m pip install -r requirements-2gis.txt
 .venv-2gis/Scripts/parser-2gis --version
 ```
+
+Штатные `crawl4ai-setup` и `crawl4ai-doctor` не запускать: они кладут браузер и данные в профиль пользователя, а всё по проекту держим в его папке. Пути задаёт `tanbala_leads/__init__.py`.
 
 parser-2gis сам находит Chrome в `C:\Program Files\Google\Chrome\Application\chrome.exe`. Если не нашёл, путь задаётся флагом `--chrome.binary_path`. Без флагов `-i`, `-o`, `-f` он не запускается.
 

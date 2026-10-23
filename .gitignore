@@ -15,6 +15,10 @@ htmlcov/
 data/
 logs/
 
+# Браузер и служебные файлы crawl4ai (держим в папке проекта)
+.browsers/
+.crawl4ai/
+
 # Исходник ТЗ из Claude Docs, рабочая копия в docs/TZ.md
 VenMart — AI-поиск клиентов для RFID.md
 
