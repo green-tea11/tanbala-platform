@@ -244,9 +244,21 @@ CREATE INDEX llm_calls_run_idx ON llm_calls (run_id);
 CREATE INDEX llm_calls_company_idx ON llm_calls (company_id);
 """
 
+SCHEMA_V3 = """
+-- Боли компании, которые нашёл Claude, с цитатой-доказательством:
+-- [{"pain": "...", "evidence": "...", "source": "2gis|site|vacancies", "verified": true}].
+-- verified: код нашёл цитату во входных данных, то есть Claude её не придумал.
+ALTER TABLE qualifications ADD COLUMN pains jsonb NOT NULL DEFAULT '[]';
+
+-- Откуда запись в истории: письмо пайплайна, импорт прошлых писем владельца или ручная отметка.
+ALTER TABLE contact_history ADD COLUMN source text NOT NULL DEFAULT 'pipeline'
+    CHECK (source IN ('pipeline', 'import', 'manual'));
+"""
+
 MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     (1, "init", SCHEMA_V1),
     (2, "runs_and_llm_calls", SCHEMA_V2),
+    (3, "pains_and_history_source", SCHEMA_V3),
 )
 
 

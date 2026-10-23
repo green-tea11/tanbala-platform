@@ -55,7 +55,7 @@ def conn(db_conn):
 def test_migrate_creates_all_tables(db_conn):
     applied = db.migrate(db_conn)
 
-    assert applied == [1, 2]
+    assert applied == [1, 2, 3]
     assert TABLES <= table_names(db_conn)
 
 
@@ -289,3 +289,30 @@ def test_llm_call_is_logged_with_tokens(conn):
 def test_llm_call_tokens_cannot_be_negative(conn):
     with pytest.raises(errors.CheckViolation):
         insert(conn, "llm_calls", task="qualify", model="m", input_tokens=-1, output_tokens=0)
+
+
+# Миграция 3: боли с доказательствами, источник записи в истории
+
+def test_qualification_keeps_pains(conn):
+    company_id = add_company(conn)
+    pains = '[{"pain": "Инвентаризация занимает дни", "evidence": "инвентаризация раз в квартал", "source": "site", "verified": true}]'
+    conn.execute("INSERT INTO qualifications (company_id, fit, score, reason, model, pains) VALUES (%s, 'yes', 80, 'r', 'm', %s)",
+                 (company_id, pains))
+
+    stored = conn.execute("SELECT pains FROM qualifications").fetchone()[0]
+    assert stored[0]["pain"] == "Инвентаризация занимает дни"
+
+
+def test_old_qualifications_get_empty_pains(conn):
+    company_id = add_company(conn)
+    insert(conn, "qualifications", company_id=company_id, fit="yes", score=70, reason="r", model="m")
+
+    assert conn.execute("SELECT pains FROM qualifications").fetchone()[0] == []
+
+
+def test_history_source_is_pipeline_by_default_and_checked(conn):
+    add_sent(conn, "info@sklad.kz")
+
+    assert conn.execute("SELECT source FROM contact_history").fetchone()[0] == "pipeline"
+    with pytest.raises(errors.CheckViolation):
+        insert(conn, "contact_history", email="a@b.kz", direction="out", source="spam")
