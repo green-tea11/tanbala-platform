@@ -1,0 +1,43 @@
+# Postgres и Reacher. Значения берутся из .env (образец: .env.example).
+# Порты открыты только на 127.0.0.1.
+name: tanbala-leads
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-tanbala}
+      POSTGRES_USER: ${POSTGRES_USER:-tanbala}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?задайте POSTGRES_PASSWORD в .env}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  reacher:
+    # Своего Postgres и RabbitMQ Reacher в этом режиме не требует.
+    image: reacherhq/backend:v0.11.10
+    restart: unless-stopped
+    environment:
+      RCH__HELLO_NAME: ${REACHER_HELLO_NAME:-localhost}
+      RCH__FROM_EMAIL: ${REACHER_FROM_EMAIL:-hello@localhost}
+      RCH__HEADER_SECRET: ${REACHER_SECRET:?задайте REACHER_SECRET в .env}
+      RCH__SMTP_TIMEOUT: ${REACHER_SMTP_TIMEOUT:-45}
+      RCH__THROTTLE__MAX_REQUESTS_PER_MINUTE: ${REACHER_MAX_PER_MINUTE:-10}
+    ports:
+      - "127.0.0.1:${REACHER_PORT:-8080}:8080"
+    healthcheck:
+      # /version не делает SMTP-проверок и не требует секрета.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/version"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:
