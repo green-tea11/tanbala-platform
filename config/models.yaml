@@ -1,0 +1,32 @@
+# Модель для каждой задачи. Модель меняется только здесь, код править не нужно.
+# По умолчанию везде claude-haiku-5-5. На claude-sonnet-5-5 переходим только по решению владельца,
+# когда Haiku явно не справляется с конкретной задачей.
+#
+# max_tokens: потолок ответа. У Haiku 5.5 по умолчанию включено мышление, его токены входят в этот потолок.
+# effort: глубина мышления, low | medium | high | xhigh | max. Не указан: значение модели по умолчанию.
+
+tasks:
+  qualify:          # подходит ли компании RFID, ответ JSON: fit, score, reason, segment
+    model: claude-haiku-5-5
+    max_tokens: 1024
+    effort: low
+
+  first_email:      # черновик первого письма, 5–8 предложений
+    model: claude-haiku-5-5
+    max_tokens: 2048
+    effort: medium
+
+  reply:            # черновик ответа клиенту
+    model: claude-haiku-5-5
+    max_tokens: 2048
+    effort: medium
+
+  check:            # проверка черновика моделью, после проверок кодом
+    model: claude-haiku-5-5
+    max_tokens: 1024
+    effort: low
+
+  classify_reply:   # тип ответа клиента, если правила кодом не решили
+    model: claude-haiku-5-5
+    max_tokens: 512
+    effort: low
