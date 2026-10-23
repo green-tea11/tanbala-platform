@@ -255,12 +255,22 @@ def parse_pains(raw: Any) -> list[dict[str, Any]]:
 
 
 def prepare_import_text(text: str) -> str:
-    """Список для импорта: по строке, из CSV только первая колонка, без кавычек и строки заголовка."""
+    """Список для импорта: каждый адрес или домен из строки, а не только первый.
+
+    Строки режутся по пробелам, запятым, точкам с запятой и табуляции. Остаются только кусочки с @ или
+    точкой: так из CSV «email;название» берутся адреса, а названия и заголовки отбрасываются.
+    """
     items = []
     for line in text.splitlines():
-        first = re.split(r"[,;\t]", line, maxsplit=1)[0].strip().strip("\"'").strip()
-        if first and first.lower() not in IMPORT_HEADERS:
-            items.append(first)
+        tokens = [token.strip("\"'<>()[]").removeprefix("mailto:").strip() for token in re.split(r"[\s,;]+", line)]
+        found = [token for token in tokens if token and token.lower() not in IMPORT_HEADERS and ("@" in token or "." in token)]
+        if found:
+            items.extend(found)
+        elif all(token.lower() in IMPORT_HEADERS for token in tokens if token):
+            continue  # строка заголовка CSV или пустая
+        elif line.strip():
+            # Ни одного адреса в строке: целиком, чтобы владелец увидел её в «не распознано».
+            items.append(line.strip())
     return "\n".join(items)
 
 

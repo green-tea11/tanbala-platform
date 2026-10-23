@@ -115,7 +115,11 @@ HISTORY_SOURCES = {"pipeline": "система", "import": "импорт", "manu
 BLOCK_REASONS = {"refused": "отказ", "complaint": "жалоба", "bounce": "не доставлено", "manual": "вручную"}
 IMPORT_KINDS = {"written": False, "refused": True}  # форма → import_contacts(refused=…)
 # Строки-заголовки в CSV, которые не считаем ошибкой.
-IMPORT_HEADERS = frozenset({"email", "e-mail", "почта", "адрес", "адреса", "domain", "домен", "сайт"})
+# Названия колонок CSV: строка только из них считается заголовком и пропускается.
+IMPORT_HEADERS = frozenset({
+    "email", "e-mail", "почта", "адрес", "адреса", "domain", "домен", "сайт", "name", "имя", "название",
+    "компания", "company", "организация", "телефон", "phone", "дата", "date", "комментарий", "comment",
+})
 BLOCKED_LABEL = "В списке «не писать»"
 BLOCKED_MESSAGE = "Компания в списке «не писать»: письмо нельзя одобрить."
 DONE_MESSAGES = {

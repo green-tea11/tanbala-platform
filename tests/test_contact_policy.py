@@ -143,3 +143,62 @@ def test_history_for_company_finds_rows_by_id_email_and_domain(conn):
     rows = contact_policy.history_for_company(conn, company_id)
 
     assert {row["email"] for row in rows} == {"info@sklad.kz", "old@sklad.kz"}
+
+
+# По ревью: отказ корпоративного адреса закрывает компанию целиком
+
+def test_refused_corporate_address_blocks_its_domain(conn):
+    contact_policy.import_contacts(conn, "info@sklad.kz", refused=True)
+
+    assert not contact_policy.can_contact(conn, add_company(conn), "sales@sklad.kz")
+
+
+def test_refused_free_mail_address_blocks_only_itself(conn):
+    contact_policy.import_contacts(conn, "ivan@gmail.com", refused=True)
+
+    assert contact_policy.can_contact(conn, add_company(conn), "olga@gmail.com")
+
+
+def test_blocked_site_domain_blocks_company_writing_from_free_mail(conn):
+    contact_policy.block(conn, reason="refused", domain="sklad.kz")
+    company_id = conn.execute("INSERT INTO companies (name, website_domain) VALUES ('Склад', 'sklad.kz') RETURNING id").fetchone()[0]
+
+    assert not contact_policy.can_contact(conn, company_id, "director@gmail.com")
+
+
+@pytest.mark.parametrize("zone", ["com.kz", "kz", "org.kz", "co.uk"])
+def test_public_suffix_cannot_be_blocked(conn, zone):
+    result = contact_policy.import_contacts(conn, zone, refused=True)
+
+    assert result.added == 0 and result.invalid == (zone,)
+
+
+@pytest.mark.parametrize("junk", ["a\x00b@c.kz", "x" * 300 + "@c.kz", "<a@b.kz>", "a@b.kz,c@d.kz"])
+def test_junk_lines_are_invalid_not_crash(conn, junk):
+    result = contact_policy.import_contacts(conn, junk, refused=True)
+
+    assert result.added == 0 and len(result.invalid) == 1
+
+
+def test_import_line_limit(conn, monkeypatch):
+    monkeypatch.setattr(contact_policy, "MAX_IMPORT_LINES", 2)
+
+    with pytest.raises(ValueError, match="строк"):
+        contact_policy.import_contacts(conn, "a@a.kz\nb@b.kz\nc@c.kz", refused=True)
+
+
+def test_block_company_also_blocks_its_free_mail_contacts(conn):
+    company_id = add_company(conn)
+    conn.execute("INSERT INTO contacts (company_id, email) VALUES (%s, 'boss@gmail.com')", (company_id,))
+
+    contact_policy.block_company(conn, company_id)
+
+    assert not contact_policy.can_contact(conn, add_company(conn, "Другая"), "boss@gmail.com")
+
+
+def test_history_includes_corporate_domain_of_contacts(conn):
+    company_id = add_company(conn)
+    conn.execute("INSERT INTO contacts (company_id, email) VALUES (%s, 'info@pel.kz')", (company_id,))
+    contact_policy.record_message(conn, company_id=None, email="old@pel.kz", direction="out")
+
+    assert [row["email"] for row in contact_policy.history_for_company(conn, company_id)] == ["old@pel.kz"]

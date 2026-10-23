@@ -1,6 +1,7 @@
 """Шаг 3. Подходит ли компании RFID (задача qualify). Результат: qualifications, статус qualified или rejected."""
 
 import re
+import unicodedata
 from collections.abc import Callable
 
 import psycopg
@@ -35,8 +36,15 @@ PAINS = (
 )
 PAIN_SOURCES = ("2gis", "site")
 MAX_PAINS = 2
-# Короче этого цитата ничего не доказывает: «склад» найдётся почти на любом сайте.
+# Цитата-доказательство: короче ничего не доказывает («склад» есть на любом сайте), длиннее превращается
+# в пересказ, в котором злой сайт может спрятать инструкцию для письма.
 MIN_EVIDENCE_CHARS = 12
+MIN_EVIDENCE_WORDS = 2
+MAX_EVIDENCE_WORDS = 25
+MAX_EVIDENCE_CHARS = 200
+URL_RE = re.compile(r"https?://|www\.|[\w-]+\.[a-z]{2,}/", re.IGNORECASE)
+INVISIBLE_RE = re.compile("[­​-‍⁠﻿]")
+DASHES_RE = re.compile("[‐-―−]")
 MAX_SITE_CHARS = 9000
 
 SCHEMA = {
@@ -92,16 +100,21 @@ def as_data(text: object) -> str:
     return str(text).replace("<", "‹").replace(">", "›")
 
 
+def _ad_text(raw: dict | None) -> str | None:
+    return ((raw or {}).get("ads") or {}).get("text")
+
+
+def _attributes(raw: dict | None) -> list[str]:
+    return [attr["name"] for group in (raw or {}).get("attribute_groups") or []
+            for attr in group.get("attributes") or [] if attr.get("name")][:10]
+
+
 def _card_extras(raw: dict | None) -> list[str]:
-    raw = raw or {}
     lines = []
-    ad_text = (raw.get("ads") or {}).get("text")
-    if ad_text:
-        lines.append(f"Реклама в 2ГИС: {ad_text}")
-    attributes = [attr.get("name") for group in raw.get("attribute_groups") or []
-                  for attr in group.get("attributes") or [] if attr.get("name")]
-    if attributes:
-        lines.append(f"Особенности: {', '.join(attributes[:10])}")
+    if _ad_text(raw):
+        lines.append(f"Реклама в 2ГИС: {_ad_text(raw)}")
+    if _attributes(raw):
+        lines.append(f"Особенности: {', '.join(_attributes(raw))}")
     return lines
 
 
@@ -121,30 +134,50 @@ def build_input(company: dict) -> str:
             + "\n</site>")
 
 
+def evidence_sources(company: dict) -> dict[str, str]:
+    """Где искать цитату: значения карточки 2ГИС и текст сайта, без подписей полей и заглушек вроде
+    «сайт не найден». В том же виде, что в промпте (as_data), потому что модель цитирует его."""
+    raw = company.get("raw")
+    card = [company.get("rubric"), company.get("address"), _ad_text(raw), ", ".join(_attributes(raw))]
+    site_text = (company.get("site_text") or "").strip()[:MAX_SITE_CHARS]
+    return {"2gis": as_data("\n".join(value for value in card if value)), "site": as_data(site_text)}
+
+
 def _normalized(text: str) -> str:
-    """Для сравнения цитат: нижний регистр, ё как е, без кавычек и лишних пробелов."""
-    text = re.sub(r"[«»\"'“”„]", "", text.lower().replace("ё", "е"))
+    """Для сравнения цитат: NFKC, нижний регистр, ё как е, одно тире, без кавычек и невидимых символов."""
+    text = INVISIBLE_RE.sub("", unicodedata.normalize("NFKC", text))
+    text = DASHES_RE.sub("-", text.lower().replace("ё", "е"))
+    text = re.sub(r"[«»\"'“”„]", "", text)
     return " ".join(text.split()).strip(" .,;:!?")
 
 
-def verify_evidence(evidence: str, input_text: str) -> bool:
-    """Цитата действительно есть во входных данных: модель её не придумала."""
+def locate_evidence(evidence: str, sources: dict[str, str]) -> str | None:
+    """Источник, где цитата найдена дословно, или None: короткая, длинная, со ссылкой или выдуманная."""
     quote = _normalized(evidence)
-    return len(quote) >= MIN_EVIDENCE_CHARS and quote in _normalized(input_text)
+    words = len(quote.split())
+    if not (MIN_EVIDENCE_WORDS <= words <= MAX_EVIDENCE_WORDS and MIN_EVIDENCE_CHARS <= len(quote) <= MAX_EVIDENCE_CHARS):
+        return None
+    if URL_RE.search(evidence):
+        return None
+    return next((source for source in PAIN_SOURCES if quote in _normalized(sources.get(source, ""))), None)
 
 
-def _parse_pains(items: object, input_text: str) -> list[dict]:
-    pains = []
+def _parse_pains(items: object, sources: dict[str, str]) -> list[dict]:
+    """Боли из ответа: источник определяет код, подтверждённые первыми, без повторов, не больше MAX_PAINS."""
+    best: dict[str, dict] = {}
     for item in items if isinstance(items, list) else []:
-        if not isinstance(item, dict) or item.get("pain") not in PAINS or item.get("source") not in PAIN_SOURCES:
+        if not isinstance(item, dict) or item.get("pain") not in PAINS:
             continue
         evidence = str(item.get("evidence") or "").strip()
-        pains.append({"pain": item["pain"], "evidence": evidence, "source": item["source"],
-                      "verified": verify_evidence(evidence, input_text)})
-    return pains[:MAX_PAINS]
+        found_in = locate_evidence(evidence, sources)
+        claimed = item.get("source") if item.get("source") in PAIN_SOURCES else "site"
+        pain = {"pain": item["pain"], "evidence": evidence, "source": found_in or claimed, "verified": found_in is not None}
+        if item["pain"] not in best or (pain["verified"] and not best[item["pain"]]["verified"]):
+            best[item["pain"]] = pain
+    return sorted(best.values(), key=lambda pain: not pain["verified"])[:MAX_PAINS]
 
 
-def parse_answer(data: dict, input_text: str) -> dict:
+def parse_answer(data: dict, sources: dict[str, str]) -> dict:
     """Проверить ответ модели: схема гарантирует поля, а диапазоны и цитаты проверяем сами."""
     fit, score, segment, reason = data.get("fit"), data.get("score"), data.get("segment"), data.get("reason")
     if fit not in FITS:
@@ -156,7 +189,7 @@ def parse_answer(data: dict, input_text: str) -> dict:
     if not isinstance(reason, str) or not reason.strip():
         raise llm.LLMError("qualify: пустая причина")
     return {"fit": fit, "score": score, "segment": segment, "reason": reason.strip(),
-            "pains": _parse_pains(data.get("pains"), input_text)}
+            "pains": _parse_pains(data.get("pains"), sources)}
 
 
 def qualify_company(conn: psycopg.Connection, company_id: int, *, client, owner_doc: str,
@@ -168,7 +201,7 @@ def qualify_company(conn: psycopg.Connection, company_id: int, *, client, owner_
     user_content = build_input(company)
     data = llm.complete_json(client, "qualify", instructions=INSTRUCTIONS, user_content=user_content,
                              schema=SCHEMA, cached_context=owner_doc, on_usage=on_usage)
-    answer = parse_answer(data, user_content)
+    answer = parse_answer(data, evidence_sources(company))
     status = "rejected" if answer["fit"] == "no" else "qualified"
     with conn.transaction():
         conn.execute(

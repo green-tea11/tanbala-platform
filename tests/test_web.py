@@ -966,8 +966,12 @@ def test_block_company_marks_card_queue_and_refuses_approve(web_db):
     assert f'action="/companies/{company_id}/block"' in card and "Больше не писать" in card
     response = client.post(f"/companies/{company_id}/block", data={"csrf_token": TOKEN}, follow_redirects=False)
     assert response.status_code == 303 and response.headers["location"] == f"/companies/{company_id}?done=blocked"
-    targets = conn.execute("SELECT company_id, domain, reason FROM do_not_contact ORDER BY id").fetchall()
+    targets = conn.execute("SELECT company_id, domain, reason FROM do_not_contact WHERE email IS NULL ORDER BY id").fetchall()
     assert targets == [(company_id, None, "manual"), (None, "step.example.kz", "manual")]
+    # Адреса компании тоже закрыты: бесплатная почта по домену не блокируется.
+    blocked_emails = {email for (email,) in conn.execute("SELECT email FROM do_not_contact WHERE email IS NOT NULL")}
+    contact_emails = {email for (email,) in conn.execute("SELECT email FROM contacts WHERE company_id = %s", (company_id,))}
+    assert blocked_emails == contact_emails
     card = client.get(response.headers["location"]).text
     assert "В списке «не писать»" in card and f'action="/companies/{company_id}/block"' not in card
     assert f'action="/drafts/{draft_id}/approve"' not in card and "одобрить нельзя" in card
@@ -1011,7 +1015,8 @@ def test_history_page_imports_text_and_csv_file(web_db):
     assert refused.status_code == 200
     assert "Добавлено 2, уже были 0, не распознано: gmail.com, &lt;b&gt;?&lt;/b&gt;." in refused.text
     blocked = conn.execute("SELECT email, domain, reason FROM do_not_contact ORDER BY id").fetchall()
-    assert blocked == [("spam@x.kz", None, "refused"), (None, "bad.example.kz", "refused")]
+    # Отказ с корпоративного адреса закрывает и домен компании.
+    assert blocked == [("spam@x.kz", None, "refused"), (None, "x.kz", "refused"), (None, "bad.example.kz", "refused")]
     page = client.get("/history").text
     assert "old@client.kz" in page and "импорт" in page and "bad.example.kz" in page and "отказ" in page
     assert f'href="/companies/{company_id}"' in page
@@ -1067,3 +1072,9 @@ def test_search_page_overview_for_management(web_db):
     assert 'class="budget-fill" width="4.0"' in overview
     no_budget = make_client(connect).get("/").text
     assert "budget-fill" not in no_budget and "сегодня $0,0400</dd>" in no_budget
+
+
+def test_prepare_import_text_keeps_every_address_in_a_line():
+    text = "a@b.kz; c@d.kz, e@f.kz\t<g@h.kz> mailto:i@j.kz\n"
+
+    assert fmt.prepare_import_text(text).splitlines() == ["a@b.kz", "c@d.kz", "e@f.kz", "g@h.kz", "i@j.kz"]

@@ -56,7 +56,7 @@ def test_input_without_site_says_so():
 )
 def test_bad_answers_are_rejected(bad):
     with pytest.raises(llm.LLMError):
-        qualify.parse_answer(bad, "")
+        qualify.parse_answer(bad, {})
 
 
 def test_schema_lists_every_segment():
@@ -116,7 +116,7 @@ def test_schema_lists_pains_from_owner_doc():
     ],
 )
 def test_evidence_must_be_found_in_input(evidence, expected):
-    assert qualify.verify_evidence(evidence, qualify.build_input(COMPANY)) is expected
+    assert (qualify.locate_evidence(evidence, qualify.evidence_sources(COMPANY)) is not None) is expected
 
 
 def test_pains_get_verified_flag_and_are_limited():
@@ -126,9 +126,10 @@ def test_pains_get_verified_flag_and_are_limited():
         {"pain": qualify.PAINS[2], "evidence": "Аренда контейнеров", "source": "site"},
     ]}
 
-    parsed = qualify.parse_answer(answer, qualify.build_input(COMPANY))
+    parsed = qualify.parse_answer(answer, qualify.evidence_sources(COMPANY))
 
-    assert [pain["verified"] for pain in parsed["pains"]] == [True, False]
+    # Подтверждённые идут первыми, выдуманная третья боль отброшена лимитом.
+    assert [(pain["pain"], pain["verified"]) for pain in parsed["pains"]] == [(PAIN, True), (qualify.PAINS[2], True)]
 
 
 @pytest.mark.db
@@ -144,3 +145,43 @@ def test_qualify_company_saves_pains(db_conn):
 
     pains = db_conn.execute("SELECT pains FROM qualifications").fetchone()[0]
     assert pains == [{"pain": PAIN, "evidence": "Ответственное хранение паллет", "source": "site", "verified": True}]
+
+
+# По ревью: что считается доказательством
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        "сайт не найден или пуст",
+        "Рубрики: Складское хранение",
+        "инвентаризация",
+        "Аренда контейнеров под склад. " * 7,
+        "подробнее на https://kontainer.kz/asklad",
+    ],
+)
+def test_weak_or_service_text_is_not_evidence(evidence):
+    company = {**COMPANY, "site_text": None if "сайт не найден" in evidence else
+               "Аренда контейнеров под склад. " * 7 + " подробнее на https://kontainer.kz/asklad инвентаризация"}
+
+    assert qualify.locate_evidence(evidence, qualify.evidence_sources(company)) is None
+
+
+def test_source_is_where_the_quote_was_found_not_what_model_said():
+    answer = {**GOOD, "pains": [{"pain": PAIN, "evidence": "Склад от 1000 кв.м", "source": "site"}]}
+
+    parsed = qualify.parse_answer(answer, qualify.evidence_sources(COMPANY))
+
+    assert parsed["pains"] == [{"pain": PAIN, "evidence": "Склад от 1000 кв.м", "source": "2gis", "verified": True}]
+
+
+def test_verified_pain_is_kept_even_if_model_listed_it_third():
+    answer = {**GOOD, "pains": [
+        {"pain": qualify.PAINS[0], "evidence": "выдумка без источника вообще", "source": "site"},
+        {"pain": qualify.PAINS[0], "evidence": "Ответственное хранение", "source": "site"},
+        {"pain": PAIN, "evidence": "Аренда контейнеров под склад", "source": "site"},
+    ]}
+
+    parsed = qualify.parse_answer(answer, qualify.evidence_sources(COMPANY))
+
+    # Повтор той же боли с настоящей цитатой заменяет выдуманную, обе боли подтверждены.
+    assert [(pain["pain"], pain["verified"]) for pain in parsed["pains"]] == [(qualify.PAINS[0], True), (PAIN, True)]

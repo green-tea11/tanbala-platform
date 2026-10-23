@@ -324,7 +324,11 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
         if error:
             return render_history(request, conn, result={"kind": kind, "error": error}, form_text={kind: typed},
                                   status_code=400)
-        outcome = contact_policy.import_contacts(conn, items, refused=IMPORT_KINDS[kind])
+        try:
+            outcome = contact_policy.import_contacts(conn, items, refused=IMPORT_KINDS[kind])
+        except ValueError as exc:
+            return render_history(request, conn, result={"kind": kind, "error": str(exc)}, form_text={kind: typed},
+                                  status_code=400)
         result = {"kind": kind, "error": None, "added": outcome.added, "skipped": outcome.skipped,
                   "invalid": outcome.invalid[:IMPORT_INVALID_SHOWN],
                   "invalid_more": max(0, len(outcome.invalid) - IMPORT_INVALID_SHOWN)}
