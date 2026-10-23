@@ -15,7 +15,7 @@ from psycopg.types.json import Jsonb
 
 from tanbala_leads import checks, contact_policy, llm
 from tanbala_leads.settings import Settings
-from tanbala_leads.steps.qualify import build_input
+from tanbala_leads.steps.qualify import as_data, build_input
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +43,12 @@ INSTRUCTIONS = """\
 Верни:
 - subject: тема до 60 символов, про задачу получателя.
 - body: текст письма без подписи, подпись добавит программа. Первая строка «Здравствуйте!», затем пустая строка \
-и 5–8 предложений короткими абзацами. Представься: «Меня зовут {name}, я из Tanbala.» Начни с задачи получателя \
-под его отрасль, одна польза. Пиши условно: «если у вас…». Не придумывай факты о компании и не делай вид, что вы \
-знакомы. В конце призыв написать в WhatsApp: {whatsapp}.
+и 5–8 предложений короткими абзацами. Представься: «Меня зовут {name}, я из Tanbala.» Если в <qualification> \
+есть главная боль, построй письмо вокруг неё: назови её условно («если у вас инвентаризация занимает дни…») \
+и покажи, что меняется, словами раздела 5. Можно опереться на один публичный факт из доказательства (например, \
+что у компании несколько складов), но не пиши, что изучал их сайт или вакансии, и не цитируй дословно. Если \
+боли нет, начни с задачи получателя под его отрасль (таблица раздела 8). Одна польза. Не придумывай факты \
+о компании и не делай вид, что вы знакомы. В конце призыв написать в WhatsApp: {whatsapp}.
 - notes: заметки проверяющему, только если в письме есть утверждение о компании, которое стоит перепроверить \
 (например, «написал про склад, но на сайте прямо не сказано, что он свой»). Не пиши о правилах, тире, длине, \
 о том, что исправил, и об истории писем: это проверяет программа. Обычно список пустой. В body заметки не вставляй.
@@ -102,6 +105,16 @@ def choose_contact(conn: psycopg.Connection, company_id: int) -> tuple[int, str]
     return None
 
 
+def qualification_block(qualification: dict) -> str:
+    """Вывод квалификации для письма. Боли только подтверждённые цитатой: выдуманная боль в письмо не идёт."""
+    lines = [f"Отрасль: {qualification.get('segment')}", f"Почему подходит: {qualification.get('reason')}"]
+    verified = [pain for pain in qualification.get("pains") or [] if pain.get("verified")]
+    for index, pain in enumerate(verified):
+        label = "Главная боль" if index == 0 else "Ещё боль"
+        lines.append(f"{label}: {pain['pain']}. Доказательство: «{as_data(pain['evidence'])}»")
+    return "<qualification>\n" + "\n".join(lines) + "\n</qualification>"
+
+
 def _failed(results: list[checks.CheckResult]) -> list[checks.CheckResult]:
     return [result for result in results if not result.passed]
 
@@ -140,13 +153,10 @@ def draft_first_email(conn: psycopg.Connection, company_id: int, *, client, owne
     with conn.cursor(row_factory=dict_row) as cursor:
         company = cursor.execute("SELECT * FROM companies WHERE id = %s", (company_id,)).fetchone()
         qualification = cursor.execute(
-            "SELECT fit, score, segment, reason FROM qualifications WHERE company_id = %s"
+            "SELECT fit, score, segment, reason, pains FROM qualifications WHERE company_id = %s"
             " ORDER BY created_at DESC LIMIT 1", (company_id,),
         ).fetchone() or {}
-    user_content = build_input(company) + (
-        f"\n\n<qualification>\nОтрасль: {qualification.get('segment')}\nПочему подходит: "
-        f"{qualification.get('reason')}\n</qualification>"
-    )
+    user_content = build_input(company) + "\n\n" + qualification_block(qualification)
 
     answer, body = _write(client, user_content, owner_doc, instructions, signature, on_usage)
     results = checks.run_all(answer["subject"], body, whatsapp=whatsapp)

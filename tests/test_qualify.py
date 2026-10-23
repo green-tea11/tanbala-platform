@@ -28,7 +28,7 @@ COMPANY = {
     "raw": {"ads": {"text": "Склад от 1000 кв.м"}, "attribute_groups": [{"attributes": [{"name": "Оплата через банк"}]}]},
 }
 GOOD = {"fit": "yes", "score": 82, "segment": "Склад, логистика, дистрибуция",
-        "reason": "Компания держит склад в трёх филиалах, учёт коробок и контейнеров ей близок."}
+        "reason": "Компания держит склад в трёх филиалах, учёт коробок и контейнеров ей близок.", "pains": []}
 
 
 def test_input_has_card_and_site_text_marked_as_data():
@@ -56,7 +56,7 @@ def test_input_without_site_says_so():
 )
 def test_bad_answers_are_rejected(bad):
     with pytest.raises(llm.LLMError):
-        qualify.parse_answer(bad)
+        qualify.parse_answer(bad, "")
 
 
 def test_schema_lists_every_segment():
@@ -90,3 +90,57 @@ def test_site_text_cannot_close_the_data_tag():
 
     assert text.count("</site>") == 1 and text.endswith("</site>")
     assert "<b>" not in text
+
+
+# Боли с цитатой-доказательством
+
+PAIN = "Инвентаризация занимает дни и отрывает людей"
+
+
+def test_schema_lists_pains_from_owner_doc():
+    item = qualify.SCHEMA["properties"]["pains"]["items"]
+
+    assert item["properties"]["pain"]["enum"] == list(qualify.PAINS)
+    assert item["properties"]["source"]["enum"] == list(qualify.PAIN_SOURCES)
+
+
+@pytest.mark.parametrize(
+    ("evidence", "expected"),
+    [
+        ("Аренда контейнеров под склад", True),
+        ("аренда   КОНТЕЙНЕРОВ под\nсклад.", True),
+        ("«Ответственное хранение»", True),
+        ("Склад от 1000 кв.м", True),
+        ("Инвентаризация занимает три дня", False),
+        ("склад", False),
+    ],
+)
+def test_evidence_must_be_found_in_input(evidence, expected):
+    assert qualify.verify_evidence(evidence, qualify.build_input(COMPANY)) is expected
+
+
+def test_pains_get_verified_flag_and_are_limited():
+    answer = {**GOOD, "pains": [
+        {"pain": PAIN, "evidence": "Ответственное хранение", "source": "site"},
+        {"pain": qualify.PAINS[0], "evidence": "Теряют инструмент каждую неделю", "source": "site"},
+        {"pain": qualify.PAINS[2], "evidence": "Аренда контейнеров", "source": "site"},
+    ]}
+
+    parsed = qualify.parse_answer(answer, qualify.build_input(COMPANY))
+
+    assert [pain["verified"] for pain in parsed["pains"]] == [True, False]
+
+
+@pytest.mark.db
+def test_qualify_company_saves_pains(db_conn):
+    db.migrate(db_conn)
+    company_id = db_conn.execute(
+        "INSERT INTO companies (name, rubric, site_text, status) VALUES ('Asklad', 'Склад', 'Ответственное хранение паллет',"
+        " 'crawled') RETURNING id"
+    ).fetchone()[0]
+    client = fake_client({**GOOD, "pains": [{"pain": PAIN, "evidence": "Ответственное хранение паллет", "source": "site"}]})
+
+    qualify.qualify_company(db_conn, company_id, client=client, owner_doc="Документ")
+
+    pains = db_conn.execute("SELECT pains FROM qualifications").fetchone()[0]
+    assert pains == [{"pain": PAIN, "evidence": "Ответственное хранение паллет", "source": "site", "verified": True}]

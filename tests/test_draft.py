@@ -151,3 +151,22 @@ def test_missing_signature_settings_stop_before_paid_call(db_conn, company):
     with pytest.raises(Exception, match="AGENT_NAME"):
         draft.draft_first_email(db_conn, company, client=client, owner_doc="Д", settings=load_settings({}))
     assert client.calls == []
+
+
+@pytest.mark.db
+def test_letter_is_built_around_verified_pain_only(db_conn, company):
+    add_contact(db_conn, company, "info@pel.kz", "safe")
+    db_conn.execute(
+        "UPDATE qualifications SET pains = %s",
+        ('[{"pain": "Инвентаризация занимает дни и отрывает людей", "evidence": "инвентаризация раз в квартал",'
+         ' "source": "site", "verified": true},'
+         ' {"pain": "Вещи теряются, никто не знает, где они", "evidence": "выдумка модели",'
+         ' "source": "site", "verified": false}]',),
+    )
+    client = fake_client(CLEAN)
+
+    draft.draft_first_email(db_conn, company, client=client, owner_doc="Д", settings=SETTINGS)
+
+    content = client.calls[0]["messages"][0]["content"]
+    assert "Инвентаризация занимает дни" in content and "инвентаризация раз в квартал" in content
+    assert "Вещи теряются" not in content and "выдумка модели" not in content

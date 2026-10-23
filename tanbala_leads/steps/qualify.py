@@ -1,9 +1,11 @@
 """Шаг 3. Подходит ли компании RFID (задача qualify). Результат: qualifications, статус qualified или rejected."""
 
+import re
 from collections.abc import Callable
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 from tanbala_leads import llm
 
@@ -32,7 +34,10 @@ PAINS = (
     "Тара уходит к партнёрам и не возвращается",
 )
 PAIN_SOURCES = ("2gis", "site")
-MAX_SITE_CHARS = 6000
+MAX_PAINS = 2
+# Короче этого цитата ничего не доказывает: «склад» найдётся почти на любом сайте.
+MIN_EVIDENCE_CHARS = 12
+MAX_SITE_CHARS = 9000
 
 SCHEMA = {
     "type": "object",
@@ -41,8 +46,21 @@ SCHEMA = {
         "score": {"type": "integer"},
         "segment": {"type": "string", "enum": list(SEGMENTS)},
         "reason": {"type": "string"},
+        "pains": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "pain": {"type": "string", "enum": list(PAINS)},
+                    "evidence": {"type": "string"},
+                    "source": {"type": "string", "enum": list(PAIN_SOURCES)},
+                },
+                "required": ["pain", "evidence", "source"],
+                "additionalProperties": False,
+            },
+        },
     },
-    "required": ["fit", "score", "segment", "reason"],
+    "required": ["fit", "score", "segment", "reason", "pains"],
     "additionalProperties": False,
 }
 
@@ -61,6 +79,11 @@ maybe, если похоже, но данных мало; no, если учит�
 - segment: одна отрасль из списка.
 - reason: одно-два коротких предложения на русском, почему подходит или нет. Только факты из карточки и сайта, \
 ничего не придумывай. Без тире.
+- pains: до двух болей из списка, которые вероятнее всего есть у этой компании. К каждой боли evidence: \
+дословная цитата из <company> или <site>, от 3 до 25 слов, без изменений, которая на неё указывает (склады на \
+нескольких объектах, ответственное хранение, инвентаризация, кладовщик или учётчик в вакансиях, возвратная тара, \
+архив, много оборудования или инструмента). source: 2gis, если цитата из <company>; site, если из <site>. \
+Если подходящей цитаты нет, боль не указывай: пустой список лучше выдуманной боли.
 """
 
 
@@ -98,8 +121,31 @@ def build_input(company: dict) -> str:
             + "\n</site>")
 
 
-def parse_answer(data: dict) -> dict:
-    """Проверить ответ модели: схема гарантирует поля, а диапазоны проверяем сами."""
+def _normalized(text: str) -> str:
+    """Для сравнения цитат: нижний регистр, ё как е, без кавычек и лишних пробелов."""
+    text = re.sub(r"[«»\"'“”„]", "", text.lower().replace("ё", "е"))
+    return " ".join(text.split()).strip(" .,;:!?")
+
+
+def verify_evidence(evidence: str, input_text: str) -> bool:
+    """Цитата действительно есть во входных данных: модель её не придумала."""
+    quote = _normalized(evidence)
+    return len(quote) >= MIN_EVIDENCE_CHARS and quote in _normalized(input_text)
+
+
+def _parse_pains(items: object, input_text: str) -> list[dict]:
+    pains = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict) or item.get("pain") not in PAINS or item.get("source") not in PAIN_SOURCES:
+            continue
+        evidence = str(item.get("evidence") or "").strip()
+        pains.append({"pain": item["pain"], "evidence": evidence, "source": item["source"],
+                      "verified": verify_evidence(evidence, input_text)})
+    return pains[:MAX_PAINS]
+
+
+def parse_answer(data: dict, input_text: str) -> dict:
+    """Проверить ответ модели: схема гарантирует поля, а диапазоны и цитаты проверяем сами."""
     fit, score, segment, reason = data.get("fit"), data.get("score"), data.get("segment"), data.get("reason")
     if fit not in FITS:
         raise llm.LLMError(f"qualify: неизвестный fit {fit!r}")
@@ -109,7 +155,8 @@ def parse_answer(data: dict) -> dict:
         raise llm.LLMError(f"qualify: неизвестная отрасль {segment!r}")
     if not isinstance(reason, str) or not reason.strip():
         raise llm.LLMError("qualify: пустая причина")
-    return {"fit": fit, "score": score, "segment": segment, "reason": reason.strip()}
+    return {"fit": fit, "score": score, "segment": segment, "reason": reason.strip(),
+            "pains": _parse_pains(data.get("pains"), input_text)}
 
 
 def qualify_company(conn: psycopg.Connection, company_id: int, *, client, owner_doc: str,
@@ -118,14 +165,17 @@ def qualify_company(conn: psycopg.Connection, company_id: int, *, client, owner_
     with conn.cursor(row_factory=dict_row) as cursor:
         company = cursor.execute("SELECT * FROM companies WHERE id = %s", (company_id,)).fetchone()
     model = llm.task_config("qualify").model
-    data = llm.complete_json(client, "qualify", instructions=INSTRUCTIONS, user_content=build_input(company),
+    user_content = build_input(company)
+    data = llm.complete_json(client, "qualify", instructions=INSTRUCTIONS, user_content=user_content,
                              schema=SCHEMA, cached_context=owner_doc, on_usage=on_usage)
-    answer = parse_answer(data)
+    answer = parse_answer(data, user_content)
     status = "rejected" if answer["fit"] == "no" else "qualified"
     with conn.transaction():
         conn.execute(
-            "INSERT INTO qualifications (company_id, fit, score, reason, segment, model) VALUES (%s, %s, %s, %s, %s, %s)",
-            (company_id, answer["fit"], answer["score"], answer["reason"], answer["segment"], model),
+            "INSERT INTO qualifications (company_id, fit, score, reason, segment, model, pains)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (company_id, answer["fit"], answer["score"], answer["reason"], answer["segment"], model,
+             Jsonb(answer["pains"])),
         )
         conn.execute("UPDATE companies SET status = %s, last_error = NULL WHERE id = %s", (status, company_id))
     return answer
