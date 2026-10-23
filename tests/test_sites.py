@@ -11,6 +11,7 @@ from tanbala_leads import sites
 from tanbala_leads.sites import (
     MAX_PAGE_TEXT_CHARS,
     MAX_SITE_TEXT_CHARS,
+    PAGE_KINDS,
     SOCIAL_DOMAINS,
     PageText,
     SiteCrawl,
@@ -19,7 +20,7 @@ from tanbala_leads.sites import (
     is_public_url,
     is_role_address,
     normalize_domain,
-    pick_contact_pages,
+    pick_pages,
 )
 
 # Проверки из схемы базы (tanbala_leads/db.py): домены host_name и email_address.
@@ -358,14 +359,17 @@ def test_is_not_role_address(email):
     assert not is_role_address(email)
 
 
-# --- pick_contact_pages ---
+# --- pick_pages: виды страниц ---
 
 HOME_LINKS = [
     ("/", "Главная"),
+    ("/news/2025", "Новости"),
     ("/catalog/nasosy", "Каталог"),
     ("/o-nas/", "О нас"),
     ("/kontakty", "Контакты"),
     ("https://www.pel.kz/rekvizity", "Реквизиты"),
+    ("/sklady", "Наши склады"),
+    ("/vakansii", "Вакансии"),
     ("https://instagram.com/pel_kz", "Instagram"),
     ("mailto:info@pel.kz", "info@pel.kz"),
     ("tel:+77272000000", "Позвонить"),
@@ -376,114 +380,213 @@ HOME_LINKS = [
 ]
 
 
-def test_pick_contact_pages_orders_contacts_then_about():
-    pages = pick_contact_pages("https://pel.kz/", HOME_LINKS)
+def test_page_kinds_are_in_reading_order_with_russian_labels():
+    assert list(PAGE_KINDS) == ["home", "about", "services", "logistics", "vacancies", "contacts", "other"]
+    assert PAGE_KINDS["home"] == "Главная"
+    assert PAGE_KINDS["about"] == "О компании"
+    assert PAGE_KINDS["services"] == "Услуги и продукция"
+    assert PAGE_KINDS["logistics"] == "Склады, филиалы, доставка"
+    assert PAGE_KINDS["vacancies"] == "Вакансии"
+    assert PAGE_KINDS["contacts"] == "Контакты"
 
-    assert pages == ["https://pel.kz/kontakty", "https://pel.kz/o-nas/", "https://www.pel.kz/rekvizity"]
 
-
-def test_pick_contact_pages_contacts_first_even_if_listed_last():
-    links = [("/about", "About us"), ("/company", "Компания"), ("/contacts", "Contacts")]
-
-    assert pick_contact_pages("https://pel.kz", links) == [
-        "https://pel.kz/contacts",
-        "https://pel.kz/about",
-        "https://pel.kz/company",
+def test_pick_pages_one_per_kind_contacts_first():
+    assert pick_pages("https://pel.kz/", HOME_LINKS) == [
+        ("https://pel.kz/kontakty", "contacts"),
+        ("https://pel.kz/o-nas/", "about"),
+        ("https://pel.kz/catalog/nasosy", "services"),
+        ("https://pel.kz/sklady", "logistics"),
+        ("https://pel.kz/vakansii", "vacancies"),
     ]
 
 
+def test_pick_pages_priority_does_not_depend_on_link_order():
+    links = [("/vacancy", ""), ("/delivery", ""), ("/services", ""), ("/about", ""), ("/contacts", "")]
+
+    assert [kind for _, kind in pick_pages("https://pel.kz", links)] == [
+        "contacts", "about", "services", "logistics", "vacancies",
+    ]
+
+
+def test_pick_pages_limit_keeps_highest_priority():
+    assert pick_pages("https://pel.kz/", HOME_LINKS, limit=2) == [
+        ("https://pel.kz/kontakty", "contacts"),
+        ("https://pel.kz/o-nas/", "about"),
+    ]
+    assert pick_pages("https://pel.kz/", HOME_LINKS, limit=0) == []
+    assert len(pick_pages("https://pel.kz/", HOME_LINKS)) == 5
+
+
 @pytest.mark.parametrize(
-    ("href", "text"),
+    ("href", "text", "kind"),
     [
-        ("/page/12", "О компании"),
-        ("/%D0%BA%D0%BE%D0%BD%D1%82%D0%B0%D0%BA%D1%82%D1%8B", ""),
-        ("/kz/bailanys", "Байланыс"),
-        ("/kz/biz-turaly", "Біз туралы"),
-        ("/index.php?route=information/contact", ""),
-        ("https://almaty.pel.kz/contacts", "Филиал"),
-        ("http://pel.kz/ru/about-us", ""),
-        ("/ru/o-kompanii", ""),
-        ("/rekvizity", ""),
+        ("/page/12", "О компании", "about"),
+        ("/ru/o-kompanii", "", "about"),
+        ("/company", "Company", "about"),
+        ("http://pel.kz/ru/about-us", "", "about"),
+        ("/kz/biz-turaly", "Біз туралы", "about"),
+        ("/uslugi", "", "services"),
+        ("/ru/services/", "", "services"),
+        ("/%D1%83%D1%81%D0%BB%D1%83%D0%B3%D0%B8", "", "services"),
+        ("/produkciya", "Продукция", "services"),
+        ("/products/racks", "", "services"),
+        ("/katalog", "", "services"),
+        ("/resheniya", "Решения", "services"),
+        ("/solutions/rfid", "", "services"),
+        ("/kz/kyzmetter", "Қызметтер", "services"),
+        ("/sklad", "", "logistics"),
+        ("/warehouse", "", "logistics"),
+        ("/logistika", "", "logistics"),
+        ("/dostavka-i-oplata", "Доставка и оплата", "logistics"),
+        ("/delivery", "", "logistics"),
+        ("/filialy", "Филиалы", "logistics"),
+        ("/company/branches", "", "logistics"),
+        ("/adresa-magazinov", "Адреса магазинов", "logistics"),
+        ("/page/7", "Наши магазины", "logistics"),
+        ("/obekty", "Наши объекты", "logistics"),
+        ("/stores", "", "logistics"),
+        ("/vakansii", "", "vacancies"),
+        ("/karera", "Карьера", "vacancies"),
+        ("/career", "", "vacancies"),
+        ("/jobs", "", "vacancies"),
+        ("/rabota-u-nas", "Работа у нас", "vacancies"),
+        ("/company/vacancy", "", "vacancies"),
+        ("/vakansii/kladovshchik-na-sklad", "", "vacancies"),
+        ("/kz/bos-zhumys-oryndary", "Бос жұмыс орындары", "vacancies"),
+        ("/kontakty", "", "contacts"),
+        ("/%D0%BA%D0%BE%D0%BD%D1%82%D0%B0%D0%BA%D1%82%D1%8B", "", "contacts"),
+        ("/kz/bailanys", "Байланыс", "contacts"),
+        ("/index.php?route=information/contact", "", "contacts"),
+        ("/rekvizity", "Реквизиты", "contacts"),
+        ("https://almaty.pel.kz/contacts", "Филиал в Алматы", "contacts"),
     ],
 )
-def test_pick_contact_pages_recognises(href, text):
-    assert len(pick_contact_pages("https://pel.kz/", [(href, text)])) == 1
+def test_pick_pages_recognises_kind(href, text, kind):
+    pages = pick_pages("https://pel.kz/", [(href, text)])
+
+    assert [found for _, found in pages] == [kind]
 
 
 @pytest.mark.parametrize(
     ("href", "text"),
     [
-        ("/catalog/nasosy", "О насосах"),
+        ("/nasosy", "О насосах"),
+        ("/news/2025", "Новости"),
+        ("/blog/rfid-v-ritejle", "Блог"),
         ("https://notpel.kz/contacts", "Контакты"),
         ("https://pel.kz.evil.com/contacts", "Контакты"),
         ("https://instagram.com/pel_kz", "Контакты"),
+        ("https://hh.kz/employer/123", "Вакансии"),
         ("/files/rekvizity.docx", "Реквизиты"),
-        ("/img/contacts.jpg", "Контакты"),
+        ("/img/sklad.jpg", "Склад"),
         ("mailto:info@pel.kz", "Контакты"),
         ("tel:+77272000000", "Контакты"),
         ("#contacts", "Контакты"),
         ("", "Контакты"),
-        ("/news/2025", "Новости"),
     ],
 )
-def test_pick_contact_pages_skips(href, text):
-    assert pick_contact_pages("https://pel.kz/", [(href, text)]) == []
+def test_pick_pages_skips(href, text):
+    assert pick_pages("https://pel.kz/", [(href, text)]) == []
 
 
-def test_pick_contact_pages_deduplicates_and_respects_limit():
+def test_pick_pages_takes_section_not_deep_link():
+    links = [("/uslugi/montazh-stellazhey", "Монтаж стеллажей"), ("/uslugi", "Услуги"), ("/uslugi/arenda", "Аренда")]
+
+    assert pick_pages("https://pel.kz/", links) == [("https://pel.kz/uslugi", "services")]
+
+
+def test_pick_pages_same_page_is_taken_once():
     links = [
         ("/contacts", "Контакты"),
         ("/contacts/", "Контакты"),
-        ("https://pel.kz/contacts#top", "Контакты"),
-        ("https://www.pel.kz/contacts", "Контакты"),
-        ("/about", "О нас"),
+        ("https://www.pel.kz/contacts#top", "Контакты"),
+        ("/page/5", "Вакансии"),
+        ("/page/5", "О компании"),
     ]
 
-    assert pick_contact_pages("https://pel.kz/", links) == ["https://pel.kz/contacts", "https://pel.kz/about"]
-    assert pick_contact_pages("https://pel.kz/", links, limit=1) == ["https://pel.kz/contacts"]
-    assert pick_contact_pages("https://pel.kz/", links, limit=0) == []
+    assert pick_pages("https://pel.kz/", links) == [
+        ("https://pel.kz/contacts", "contacts"),
+        ("https://pel.kz/page/5", "about"),
+    ]
 
 
-def test_pick_contact_pages_resolves_relative_to_base_path():
-    assert pick_contact_pages("https://www.pel.kz/ru/", [("contacts", "Контакты")]) == ["https://www.pel.kz/ru/contacts"]
-
-
-def test_pick_contact_pages_spreads_language_versions():
-    links = [("/ru/contacts", ""), ("/kz/contacts", ""), ("/en/contacts", ""), ("/ru/about", "")]
-
-    assert pick_contact_pages("https://pel.kz/", links) == [
-        "https://pel.kz/ru/contacts",
-        "https://pel.kz/ru/about",
-        "https://pel.kz/kz/contacts",
+def test_pick_pages_resolves_relative_to_base_path():
+    assert pick_pages("https://www.pel.kz/ru/", [("contacts", "Контакты")]) == [
+        ("https://www.pel.kz/ru/contacts", "contacts"),
     ]
 
 
 # --- SiteCrawl.text ---
 
+LONG = "Склады в Алматы и Астане, инвентаризация раз в квартал. " * 200
 
-def test_site_text_puts_homepage_first_and_fits_limit():
+
+def test_site_text_sections_in_reading_order_with_labels():
     pages = (
-        PageText(url="https://pel.kz/", text="Главная. " + "Насосы и запорная арматура. " * 200),
-        PageText(url="https://pel.kz/kontakty", text="Алматы, пр. Абая 10. info@pel.kz"),
-        PageText(url="https://pel.kz/o-nas", text="О компании. " + "Склады в Алматы и Астане. " * 200),
+        PageText(url="https://pel.kz/", text="Главная."),
+        PageText(url="https://pel.kz/kontakty", text="info@pel.kz", kind="contacts"),
+        PageText(url="https://pel.kz/o-nas", text="О компании.", kind="about"),
+        PageText(url="https://pel.kz/uslugi", text="Услуги.", kind="services"),
+        PageText(url="https://pel.kz/sklady", text="Склады.", kind="logistics"),
+        PageText(url="https://pel.kz/vakansii", text="Кладовщик.", kind="vacancies"),
     )
 
-    text = SiteCrawl(start_url="https://pel.kz", pages=pages, emails=frozenset(), error=None).text
+    text = SiteCrawl(start_url="https://pel.kz", pages=pages).text
 
-    assert len(text) <= MAX_SITE_TEXT_CHARS
-    assert text.startswith("[https://pel.kz/]\nГлавная.")
+    headers = [line for line in text.splitlines() if line.startswith("[")]
+    assert headers == [
+        "[Главная] https://pel.kz/",
+        "[О компании] https://pel.kz/o-nas",
+        "[Услуги и продукция] https://pel.kz/uslugi",
+        "[Склады, филиалы, доставка] https://pel.kz/sklady",
+        "[Вакансии] https://pel.kz/vakansii",
+        "[Контакты] https://pel.kz/kontakty",
+    ]
+    assert text.startswith("[Главная] https://pel.kz/\nГлавная.")
+
+
+def test_site_text_fits_limit_and_keeps_short_pages_whole():
+    pages = (
+        PageText(url="https://pel.kz/", text=LONG[:MAX_PAGE_TEXT_CHARS]),
+        PageText(url="https://pel.kz/kontakty", text="Алматы, пр. Абая 10. info@pel.kz", kind="contacts"),
+        PageText(url="https://pel.kz/o-nas", text=LONG[:MAX_PAGE_TEXT_CHARS], kind="about"),
+        PageText(url="https://pel.kz/uslugi", text=LONG[:MAX_PAGE_TEXT_CHARS], kind="services"),
+        PageText(url="https://pel.kz/sklady", text=LONG[:MAX_PAGE_TEXT_CHARS], kind="logistics"),
+        PageText(url="https://pel.kz/vakansii", text="Требуется кладовщик.", kind="vacancies"),
+    )
+
+    text = SiteCrawl(start_url="https://pel.kz", pages=pages).text
+
+    assert MAX_SITE_TEXT_CHARS - 200 < len(text) <= MAX_SITE_TEXT_CHARS
     assert "Алматы, пр. Абая 10. info@pel.kz" in text
-    assert text.index("[https://pel.kz/kontakty]") < text.index("[https://pel.kz/o-nas]")
-    assert "О компании." in text
-    assert "…" in text
+    assert "Требуется кладовщик." in text
+    assert text.count("…") == 4
 
 
-def test_site_text_keeps_short_site_whole():
-    pages = (PageText(url="https://pel.kz/", text="Коротко о нас"), PageText(url="https://pel.kz/x", text=""))
+def test_site_limits():
+    assert MAX_SITE_TEXT_CHARS == 9000
+    assert MAX_PAGE_TEXT_CHARS == 2500
+    assert sites.SITE_TIMEOUT_S == 60
 
-    text = SiteCrawl(start_url="https://pel.kz", pages=pages, emails=frozenset(), error=None).text
 
-    assert text == "[https://pel.kz/]\nКоротко о нас"
+def test_site_text_unknown_kind_goes_last_as_other():
+    pages = (
+        PageText(url="https://pel.kz/x", text="Что-то", kind="news"),
+        PageText(url="https://pel.kz/", text="Главная"),
+    )
+
+    text = SiteCrawl(start_url="https://pel.kz", pages=pages).text
+
+    assert text == "[Главная] https://pel.kz/\nГлавная\n\n[Другая страница] https://pel.kz/x\nЧто-то"
+
+
+def test_site_text_skips_empty_pages():
+    pages = (
+        PageText(url="https://pel.kz/", text="Коротко о нас"),
+        PageText(url="https://pel.kz/x", text="", kind="about"),
+    )
+
+    assert SiteCrawl(start_url="https://pel.kz", pages=pages).text == "[Главная] https://pel.kz/\nКоротко о нас"
 
 
 def test_site_text_empty_without_pages():
@@ -493,11 +596,12 @@ def test_site_text_empty_without_pages():
 # --- crawl_site с фейковым crawl4ai ---
 
 
-def page_result(url, *, html="", markdown="", internal=(), success=True, error=None, redirected_url=None):
-    """Похоже на CrawlResult crawl4ai: success, error_message, html, markdown, links, redirected_url."""
+def page_result(url, *, html="", markdown="", internal=(), success=True, error=None, redirected_url=None, status=200):
+    """Похоже на CrawlResult crawl4ai: success, error_message, status_code, html, markdown, links, redirected_url."""
     return SimpleNamespace(
         url=url,
         success=success,
+        status_code=status,
         error_message=error,
         html=html,
         markdown=SimpleNamespace(raw_markdown=markdown, fit_markdown=""),
@@ -564,21 +668,55 @@ def pel_site():
             html="<p>Алматы</p>",
             markdown="Бухгалтерия: buh [at] pel [dot] kz",
         ),
+        "https://pel.kz/catalog": page_result("https://pel.kz/catalog", markdown="Насосы Grundfos со склада."),
     }
 
 
-def test_crawl_site_fetches_homepage_and_contacts():
+def test_crawl_site_fetches_homepage_and_key_pages():
     crawler = FakeCrawler(pel_site())
 
     crawl = run_crawl("pel.kz", crawler)
 
     assert crawl.error is None
     assert crawl.start_url == "https://pel.kz"
-    assert crawler.calls == ["https://pel.kz", "https://pel.kz/kontakty"]
-    assert [page.url for page in crawl.pages] == ["https://pel.kz", "https://pel.kz/kontakty"]
+    assert crawler.calls == ["https://pel.kz", "https://pel.kz/kontakty", "https://pel.kz/catalog"]
+    assert [(page.url, page.kind) for page in crawl.pages] == [
+        ("https://pel.kz", "home"),
+        ("https://pel.kz/kontakty", "contacts"),
+        ("https://pel.kz/catalog", "services"),
+    ]
     assert crawl.pages[0].text == "# Пэл\nНасосы для складов и производств."
     assert crawl.emails == frozenset({"sales@pel.kz", "buh@pel.kz"})
     assert crawler.entered == crawler.exited == 1
+
+
+def test_crawl_site_default_is_home_plus_five_kinds():
+    kinds = {
+        "kontakty": "Контакты", "o-nas": "О нас", "uslugi": "Услуги", "sklady": "Склады",
+        "vakansii": "Вакансии", "rekvizity": "Реквизиты", "dostavka": "Доставка",
+    }
+    results = {
+        f"https://pel.kz/{slug}": page_result(f"https://pel.kz/{slug}", markdown=f"{label}. hr@pel.kz")
+        for slug, label in kinds.items()
+    }
+    results["https://pel.kz"] = page_result(
+        "https://pel.kz", markdown="Главная", internal=[(f"/{slug}", label) for slug, label in kinds.items()]
+    )
+    crawler = FakeCrawler(results)
+
+    crawl = run_crawl("https://pel.kz", crawler)
+
+    assert crawler.calls == [
+        "https://pel.kz",
+        "https://pel.kz/kontakty",
+        "https://pel.kz/o-nas",
+        "https://pel.kz/uslugi",
+        "https://pel.kz/sklady",
+        "https://pel.kz/vakansii",
+    ]
+    assert [page.kind for page in crawl.pages] == ["home", "contacts", "about", "services", "logistics", "vacancies"]
+    assert crawl.emails == frozenset({"hr@pel.kz"})
+    assert crawl.text.index("[О компании]") < crawl.text.index("[Вакансии]") < crawl.text.index("[Контакты]")
 
 
 def test_crawl_site_bypasses_cache_and_passes_timeout():
@@ -609,6 +747,57 @@ def test_crawl_site_skips_non_public_link():
     assert crawl.emails == frozenset({"buh@pel.kz"})
 
 
+def test_crawl_site_takes_next_link_of_same_kind_when_page_is_broken():
+    results = {
+        "https://pel.kz": page_result(
+            "https://pel.kz",
+            markdown="Главная",
+            internal=[("https://pel.kz/contacts", "Контакты"), ("https://pel.kz/rekvizity", "Реквизиты")],
+        ),
+        "https://pel.kz/contacts": page_result("https://pel.kz/contacts", markdown="Страница не найдена", status=404),
+        "https://pel.kz/rekvizity": page_result("https://pel.kz/rekvizity", markdown="БИН 123, buh@pel.kz"),
+    }
+    crawler = FakeCrawler(results)
+
+    crawl = run_crawl("https://pel.kz", crawler)
+
+    assert crawler.calls == ["https://pel.kz", "https://pel.kz/contacts", "https://pel.kz/rekvizity"]
+    assert [(page.url, page.kind) for page in crawl.pages] == [
+        ("https://pel.kz", "home"),
+        ("https://pel.kz/rekvizity", "contacts"),
+    ]
+    assert "не найдена" not in crawl.text
+    assert crawl.emails == frozenset({"buh@pel.kz"})
+
+
+def test_crawl_site_next_kind_moves_up_when_page_fails():
+    results = {
+        "https://pel.kz": page_result(
+            "https://pel.kz",
+            markdown="Главная",
+            internal=[("https://pel.kz/kontakty", "Контакты"), ("https://pel.kz/o-nas", "О нас"),
+                      ("https://pel.kz/vakansii", "Вакансии")],
+        ),
+        "https://pel.kz/o-nas": page_result("https://pel.kz/o-nas", markdown="О компании"),
+        "https://pel.kz/vakansii": page_result("https://pel.kz/vakansii", markdown="Кладовщик"),
+    }
+    crawler = FakeCrawler(results)
+
+    crawl = run_crawl("https://pel.kz", crawler, max_pages=3)
+
+    assert crawler.calls == ["https://pel.kz", "https://pel.kz/kontakty", "https://pel.kz/o-nas", "https://pel.kz/vakansii"]
+    assert [page.kind for page in crawl.pages] == ["home", "about", "vacancies"]
+
+
+def test_crawl_site_homepage_with_http_error_is_an_error():
+    results = {"https://pel.kz": page_result("https://pel.kz", markdown="403 Forbidden", status=403)}
+
+    crawl = run_crawl("https://pel.kz", FakeCrawler(results))
+
+    assert crawl.error and "403" in crawl.error
+    assert crawl.pages == ()
+
+
 def test_crawl_site_drops_page_redirected_to_private_address():
     results = pel_site()
     results["https://pel.kz/kontakty"] = page_result(
@@ -619,7 +808,7 @@ def test_crawl_site_drops_page_redirected_to_private_address():
     crawl = run_crawl("https://pel.kz", crawler)
 
     assert crawl.error is None
-    assert [page.url for page in crawl.pages] == ["https://pel.kz"]
+    assert [page.url for page in crawl.pages] == ["https://pel.kz", "https://pel.kz/catalog"]
     assert crawl.emails == frozenset({"sales@pel.kz"})
 
 

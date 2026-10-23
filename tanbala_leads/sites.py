@@ -1,4 +1,7 @@
-"""Сайт компании: свой домен, почты, страницы контактов и текст для квалификации. Обход через crawl4ai."""
+"""Сайт компании: свой домен, почты и ключевые страницы (о компании, услуги, склады, вакансии, контакты).
+
+Текст этих страниц идёт в Claude: по нему видно, где у компании боль, которую снимает RFID. Обход через crawl4ai.
+"""
 
 import asyncio
 import html
@@ -13,11 +16,11 @@ from urllib.parse import SplitResult, unquote, urldefrag, urljoin, urlsplit
 import tanbala_leads  # noqa: F401  задаёт пути crawl4ai внутри проекта до его импорта
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CacheMode, CrawlerRunConfig, DefaultMarkdownGenerator
 
-MAX_PAGE_TEXT_CHARS = 3000
-MAX_SITE_TEXT_CHARS = 6000
+MAX_PAGE_TEXT_CHARS = 2500
+MAX_SITE_TEXT_CHARS = 9000
 MAX_HTML_CHARS = 5_000_000  # почты ищем в первых 5 млн символов страницы
 MAX_ERROR_CHARS = 300
-SITE_TIMEOUT_S = 45.0  # на весь сайт вместе со страницами контактов
+SITE_TIMEOUT_S = 60.0  # на весь сайт: главная и до пяти страниц
 RENDER_DELAY_S = 1.0  # дать скриптам дорисовать страницу
 
 # Не свой сайт компании: соцсети, мессенджеры, карты, площадки, сокращатели ссылок, визитки-ссылки.
@@ -44,12 +47,29 @@ ROLE_LOCALS = frozenset("""
     general feedback client clients tender zakupki snab supply opt shop store booking noreply webmaster postmaster
 """.split())
 FILE_SUFFIXES = tuple(f".{ext}" for ext in "pdf jpg jpeg png gif webp svg doc docx xls xlsx pptx zip rar mp4".split())
-# Порядок важен: контакты, потом «о нас», потом реквизиты.
-PAGE_PATTERNS = (
-    re.compile(r"contact|kontakt|контакт|байланыс|bajlanys|baylanys|bailanys"),
-    re.compile(r"about|o-nas|o_nas|\bonas\b|\bо\s+нас\b|о\s+компании|\bкомпания\b|company|o-kompanii|kompaniya"
-               r"|біз\s+туралы|biz-turaly"),
-    re.compile(r"rekvizit|реквизит"),
+# Виды страниц в порядке чтения: так они идут в SiteCrawl.text.
+PAGE_KINDS = {
+    "home": "Главная",
+    "about": "О компании",
+    "services": "Услуги и продукция",
+    "logistics": "Склады, филиалы, доставка",
+    "vacancies": "Вакансии",
+    "contacts": "Контакты",
+    "other": "Другая страница",
+}
+# Что обходить, пока не кончился лимит: сначала контакты (почты), потом страницы, где видна боль компании.
+PICK_ORDER = ("contacts", "about", "services", "logistics", "vacancies")
+# Вид по адресу и тексту ссылки, от частного к общему: /company/vacancy это вакансии, а не «о компании».
+KIND_PATTERNS = (
+    ("contacts", re.compile(r"contact|kontakt|контакт|байланыс|bajlanys|baylanys|bailanys|rekvizit|реквизит")),
+    ("vacancies", re.compile(r"vakans|вакан|vacanc|karer|karier|карьер|career|\bjobs?\b|работа\s+у\s+нас|rabota"
+                             r"|жұмыс|zhumys")),
+    ("logistics", re.compile(r"sklad|склад|warehouse|logist|логист|dostavk|доставк|deliver|filial|филиал|branch"
+                             r"|\bадреса\b|adresa|объект|obekt|\bмагазины\b|magaziny|\bstores\b|қойма|жеткізу")),
+    ("services", re.compile(r"uslug|услуг|service|servis|сервис|produk|продукц|product|katalog|каталог|catalog"
+                            r"|решени|resheni|solution|қызмет|kyzmet|өнім")),
+    ("about", re.compile(r"about|o-nas|o_nas|\bonas\b|\bо\s+нас\b|о\s+компании|\bкомпания\b|company|o-kompanii"
+                         r"|kompaniya|біз\s+туралы|biz-turaly|туралы")),
 )
 SKIPPED_RESOURCES = frozenset({"image", "media", "font"})  # текста и почт в них нет, а грузятся долго
 BLOCKED_NETWORKS = (ipaddress.ip_network("100.64.0.0/10"), ipaddress.ip_network("fc00::/7"))
@@ -71,6 +91,7 @@ Links = tuple[tuple[str, str], ...]
 class PageText:
     url: str
     text: str
+    kind: str = "home"  # ключ PAGE_KINDS
 
 
 @dataclass(frozen=True)
@@ -82,7 +103,7 @@ class SiteCrawl:
 
     @property
     def text(self) -> str:
-        """Текст сайта для Claude: главная первой, всего не больше MAX_SITE_TEXT_CHARS."""
+        """Текст сайта для Claude: разделы в порядке PAGE_KINDS, всего не больше MAX_SITE_TEXT_CHARS."""
         return _combine(self.pages, MAX_SITE_TEXT_CHARS)
 
 
@@ -192,28 +213,30 @@ def _is_real_email(email: str) -> bool:
     return all(len(label) <= 63 for label in domain.split(".")) and bool(PG_EMAIL_RE.match(email))
 
 
-def pick_contact_pages(base_url: str, links: list[tuple[str, str]], limit: int = 3) -> list[str]:
-    """Ссылки с главной (href, текст) → до limit адресов «Контакты», «О нас», «Реквизиты» этого же сайта.
+def pick_pages(base_url: str, links: list[tuple[str, str]], limit: int = 5) -> list[tuple[str, str]]:
+    """Ссылки с главной (href, текст) → до limit страниц этого же сайта: (адрес, вид), не больше одной на вид.
 
-    Сначала по одной странице каждого вида, потом остальные по очереди: /kz/contacts не вытеснит «О нас».
+    Порядок PICK_ORDER. Из ссылок одного вида берём самую короткую по пути (раздел, а не карточку в нём),
+    при равенстве первую по порядку на странице.
     """
     base_url = _with_scheme(base_url, "https")
-    site = _page_key(base_url)[0]
-    if not site or limit <= 0:
+    home = _page_key(base_url)
+    if not home[0] or limit <= 0:
         return []
-    seen = {_page_key(base_url)}
-    groups: tuple[list[str], ...] = ([], [], [])
+    best: dict[str, tuple[int, str]] = {}
     for href, text in links:
         url = _absolute(base_url, href)
         key = _page_key(url) if url else None
-        if key is None or key in seen or not (key[0] == site or key[0].endswith("." + site)):
+        if key is None or key == home or not (key[0] == home[0] or key[0].endswith("." + home[0])):
             continue
-        tier = _page_tier(url, text)
-        if tier is not None:
-            seen.add(key)
-            groups[tier].append(url)
-    longest = max(len(group) for group in groups)
-    return [group[i] for i in range(longest) for group in groups if i < len(group)][:limit]
+        kind = _page_kind(url, text)
+        depth = key[1].count("/")
+        if kind and (kind not in best or depth < best[kind][0]):
+            best[kind] = (depth, url)
+    by_page: dict[tuple[str, str, str], tuple[str, str]] = {}
+    for kind in (kind for kind in PICK_ORDER if kind in best):
+        by_page.setdefault(_page_key(best[kind][1]), (best[kind][1], kind))  # одна ссылка с двумя подписями
+    return list(by_page.values())[:limit]
 
 
 def _absolute(base_url: str, href: str) -> str | None:
@@ -237,16 +260,17 @@ def _page_key(url: str) -> tuple[str, str, str]:
     return (host.removeprefix("www."), parts.path.rstrip("/"), parts.query)
 
 
-def _page_tier(url: str, text: str) -> int | None:
+def _page_kind(url: str, text: str) -> str | None:
     parts = urlsplit(url)
     haystack = f"{unquote(parts.path)}?{unquote(parts.query)} {' '.join((text or '').split())}".lower()
-    return next((tier for tier, pattern in enumerate(PAGE_PATTERNS) if pattern.search(haystack)), None)
+    return next((kind for kind, pattern in KIND_PATTERNS if pattern.search(haystack)), None)
 
 
 def _combine(pages: tuple[PageText, ...], limit: int) -> str:
-    """Склеить страницы под заголовком-адресом. Короткие целиком, длинным поровну оставшегося места."""
-    filled = [page for page in pages if page.text]
-    headers = [f"[{page.url}]\n" for page in filled]
+    """Склеить страницы в порядке PAGE_KINDS под заголовком «[Вид] адрес». Короткие целиком, длинным поровну."""
+    rank = {kind: index for index, kind in enumerate(PAGE_KINDS)}
+    filled = sorted((page for page in pages if page.text), key=lambda page: rank.get(page.kind, rank["other"]))
+    headers = [f"[{PAGE_KINDS.get(page.kind, PAGE_KINDS['other'])}] {page.url}\n" for page in filled]
     budget = max(limit - sum(map(len, headers)) - 2 * max(len(filled) - 1, 0), 0)
     shares = [0] * len(filled)
     order = sorted(range(len(filled)), key=lambda index: len(filled[index].text))
@@ -273,10 +297,10 @@ def _short(message: object) -> str:
     return " ".join(text.split())[:MAX_ERROR_CHARS]
 
 
-async def crawl_site(url: str, *, max_pages: int = 4, page_timeout_ms: int = 20_000,
+async def crawl_site(url: str, *, max_pages: int = 6, page_timeout_ms: int = 20_000,
                      crawler_factory: Callable[[], Any] | None = None,
                      resolver: Resolver = socket.getaddrinfo) -> SiteCrawl:
-    """Обойти главную и до max_pages - 1 страниц контактов. Ожидаемые сбои не бросает, а пишет в error.
+    """Обойти главную и до max_pages - 1 страниц из pick_pages. Ожидаемые сбои не бросает, а пишет в error.
 
     crawler_factory для тестов: объект с async with и arun(url, config=...), как AsyncWebCrawler.
     """
@@ -295,7 +319,7 @@ async def crawl_site(url: str, *, max_pages: int = 4, page_timeout_ms: int = 20_
     try:
         async with (crawler_factory or _default_crawler)() as crawler:
             for candidate in candidates:
-                home = await _fetch(crawler, candidate, config, deadline, resolver)
+                home = await _fetch(crawler, candidate, "home", config, deadline, resolver)
                 if not isinstance(home, str):
                     start = candidate
                     break
@@ -303,17 +327,38 @@ async def crawl_site(url: str, *, max_pages: int = 4, page_timeout_ms: int = 20_
                 return SiteCrawl(start_url=start, error=f"главная страница: {home}")
             if normalize_domain(home[0].url) is None:
                 return SiteCrawl(start_url=start, error="сайт переадресует на соцсеть или каталог")
-            fetched = [home]
-            for page_url in pick_contact_pages(home[0].url, list(home[2]), limit=max(max_pages - 1, 0)):
-                page = await _fetch(crawler, page_url, config, deadline, resolver)
-                fetched += [] if isinstance(page, str) else [page]
+            fetched = [home, *await _fetch_pages(crawler, home, max(max_pages - 1, 0), config, deadline, resolver)]
     except Exception as exc:  # запуск и закрытие браузера: любая ошибка crawl4ai или Playwright = сбой сайта
         return SiteCrawl(start_url=start, error=f"crawl4ai: {_short(exc)}")
     emails = frozenset().union(*(emails for _, emails, _ in fetched))
     return SiteCrawl(start_url=start, pages=tuple(page for page, _, _ in fetched), emails=emails)
 
 
-async def _fetch(crawler: Any, url: str, config: Any, deadline: float,
+async def _fetch_pages(crawler: Any, home: tuple, limit: int, config: Any, deadline: float,
+                       resolver: Resolver) -> list[tuple[PageText, frozenset[str], Links]]:
+    """Страницы из pick_pages по очереди. Не открылась: ссылку выкидываем и выбираем заново.
+
+    Так битая или закрытая ссылка не оставляет сайт без контактов: берётся другая ссылка того же вида
+    или следующий вид. Попыток не больше 2 * limit.
+    """
+    base, links = home[0].url, list(home[2])
+    fetched: list[tuple[PageText, frozenset[str], Links]] = []
+    failed: set[tuple[str, str, str]] = set()
+    for _ in range(2 * limit):
+        alive = [link for link in links if _page_key(_absolute(base, link[0]) or "") not in failed]
+        done = {page.kind for page, _, _ in fetched}
+        todo = [(url, kind) for url, kind in pick_pages(base, alive, len(PICK_ORDER)) if kind not in done]
+        if len(fetched) >= limit or not todo or asyncio.get_running_loop().time() >= deadline:
+            break
+        page = await _fetch(crawler, todo[0][0], todo[0][1], config, deadline, resolver)
+        if isinstance(page, str):
+            failed.add(_page_key(todo[0][0]))
+        else:
+            fetched.append(page)
+    return fetched
+
+
+async def _fetch(crawler: Any, url: str, kind: str, config: Any, deadline: float,
                  resolver: Resolver) -> tuple[PageText, frozenset[str], Links] | str:
     """Загрузить одну страницу: (текст, почты, ссылки). Вместо исключения вернуть текст ошибки."""
     remaining = deadline - asyncio.get_running_loop().time()
@@ -329,12 +374,15 @@ async def _fetch(crawler: Any, url: str, config: Any, deadline: float,
         return _short(exc)
     if not getattr(result, "success", False):
         return f"не загрузилась: {_short(getattr(result, 'error_message', None) or 'нет ответа')}"
+    if (getattr(result, "status_code", None) or 200) >= 400:  # страница 404 не должна попасть в текст для Claude
+        return f"ответ HTTP {result.status_code}"
     final_url = getattr(result, "redirected_url", None) or url
     if final_url != url and not await _is_public(final_url, resolver):
         return "переадресация на непубличный адрес"
     markdown = _markdown(getattr(result, "markdown", None))
     emails = extract_emails(getattr(result, "html", "") or "") | extract_emails(markdown)
-    return PageText(url=final_url, text=_cut(markdown, MAX_PAGE_TEXT_CHARS)), frozenset(emails), _links(result)
+    page = PageText(url=final_url, text=_cut(markdown, MAX_PAGE_TEXT_CHARS), kind=kind)
+    return page, frozenset(emails), _links(result)
 
 
 async def _is_public(url: str, resolver: Resolver) -> bool:
