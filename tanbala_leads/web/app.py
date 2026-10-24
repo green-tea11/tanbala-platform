@@ -34,6 +34,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from tanbala_leads import __version__, contact_policy, db, pipeline
 from tanbala_leads.settings import load_settings
 from tanbala_leads.steps import approve as approve_step
+from tanbala_leads.steps import send as send_step
 from tanbala_leads.web import queries as q
 from tanbala_leads.web import views
 from tanbala_leads.web.format import (
@@ -61,7 +62,9 @@ from tanbala_leads.web.labels import (
     MAX_FORM_BYTES,
     MAX_UPLOAD_BYTES,
     POLL_INTERVAL_MS,
+    REJECTED_TEST_TEXT,
     REVIEWER,
+    TEST_OFF_TEXT,
     TOKEN_FORMS,
 )
 
@@ -117,12 +120,18 @@ def _redirect(url: str) -> RedirectResponse:
 
 
 def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[str, str, int], int], *,
-               csrf_token: str | None = None, daily_budget_usd: float | None = None) -> FastAPI:
+               csrf_token: str | None = None, daily_budget_usd: float | None = None,
+               send_test: Callable[[psycopg.Connection, int], send_step.TestSendResult] | None = None,
+               test_address: str | None = None) -> FastAPI:
     """Собрать приложение. connect открывает соединение на запрос, start_run запускает поиск в фоне.
 
     daily_budget_usd: суточный лимит расходов на API для сводки на странице поиска (None: не показывать).
+    send_test: тестовая отправка письма владельцу (steps/send.send_test); test_address: куда она уходит.
+    Без них, или если адрес не из send.TEST_RECIPIENTS, тестовая отправка выключена.
     """
     token = csrf_token or secrets.token_urlsafe(32)
+    # Компаниям здесь не отправляется ничего: только тест, и только на зашитый в send.py адрес владельца.
+    test_to = test_address if send_test is not None and test_address in send_step.TEST_RECIPIENTS else None
     templates = _make_templates()
     app = FastAPI(title="Tanbala", docs_url=None, redoc_url=None, openapi_url=None)
     app.middleware("http")(_security_headers)
@@ -176,7 +185,8 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
         pending = q.count_pending_letters(conn) if conn is not None else 0
         full = {"csrf_token": token, "api_cost": api_cost, "pending_total": pending, "token_forms": TOKEN_FORMS,
                 "letter_forms": LETTER_FORMS, "api_cost_text": f"≈ {format_usd(api_cost.usd)}" if api_cost else "",
-                **context}
+                "test_address": test_to, "test_off_text": TEST_OFF_TEXT, "rejected_test_text": REJECTED_TEST_TEXT,
+                "send_error": None, **context}
         return templates.TemplateResponse(request, name, full, status_code=status_code)
 
     def render_search(request: Request, conn, *, form: dict, run_id: int | None = None,
@@ -193,17 +203,28 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
         is_open = bool(letter and letter["can_edit"] and (requested or (edit and edit.get("error"))))
         return {"edit": edit or default, "edit_open": is_open}
 
+    def done_text(conn, done: str | None, letter: dict | None) -> str | None:
+        """Сообщение после действия. «Тест отправлен» собирается из базы, а не из адреса страницы."""
+        if done != "test_sent":
+            return DONE_MESSAGES.get(done or "")
+        last = q.fetch_test_sends(conn, letter["id"], 1) if letter else []
+        if not last or last[0]["status"] != "sent":
+            return None
+        return f"Тест отправлен на {last[0]['sent_to']} в {last[0]['created_at'].astimezone():%H:%M}."
+
     def render_company(request: Request, conn, company_id: int, *, done: str | None = None,
-                       edit: dict | None = None, edit_requested: bool = False, status_code: int = 200) -> HTMLResponse:
+                       edit: dict | None = None, edit_requested: bool = False, send_error: str | None = None,
+                       status_code: int = 200) -> HTMLResponse:
         context = views.company_context(conn, company_id)
         if context is None:
             raise HTTPException(404, "Компания не найдена.")
-        context.update(done_message=DONE_MESSAGES.get(done or ""), **edit_state(context["draft"], edit, edit_requested))
+        context.update(done_message=done_text(conn, done, context["draft"]), send_error=send_error,
+                       **edit_state(context["draft"], edit, edit_requested))
         return render(request, "company.html", context, conn=conn, status_code=status_code)
 
     def render_letters(request: Request, conn, *, status: str | None, run: str | None, draft_id: int | None = None,
                        done: str | None = None, edit: dict | None = None, edit_requested: bool = False,
-                       status_code: int = 200) -> HTMLResponse:
+                       send_error: str | None = None, status_code: int = 200) -> HTMLResponse:
         selected = None
         if draft_id is not None:
             selected = q.fetch_letter(conn, draft_id)
@@ -211,7 +232,8 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
                 raise HTTPException(404, "Письмо не найдено.")
         filter_code = views.letter_filter(status, selected["review_status"] if selected else None)
         context = views.letters_context(conn, filter_code=filter_code, run_id=parse_id(run), selected=selected)
-        context.update(done_message=DONE_MESSAGES.get(done or ""), **edit_state(context["letter"], edit, edit_requested))
+        context.update(done_message=done_text(conn, done, context["letter"]), send_error=send_error,
+                       **edit_state(context["letter"], edit, edit_requested))
         return render(request, "letters.html", context, conn=conn, status_code=status_code)
 
     @app.exception_handler(StarletteHTTPException)
@@ -412,6 +434,37 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
             return _redirect(letters_url(draft_id, status=status, run_id=parse_id(form.get("run")), done="saved"))
         return _redirect(f"/companies/{ref['company_id']}?done=saved")
 
+    @app.post("/drafts/{draft_id:int}/send-test")
+    def send_test_draft(request: Request, draft_id: int, form: dict[str, Any] = Depends(csrf_form),
+                        conn: psycopg.Connection = Depends(get_conn)) -> Response:
+        """«Отправить тест»: письмо уходит только на адрес владельца, компании ничего не отправляется."""
+        ref = q.fetch_draft_ref(conn, draft_id)
+        if ref is None:
+            raise HTTPException(404, "Письмо не найдено.")
+        from_queue = form.get("back") == "letters"
+        status, run = form.get("status"), form.get("run")
+
+        def show_error(message: str, status_code: int) -> HTMLResponse:
+            if from_queue:
+                return render_letters(request, conn, status=status, run=run, draft_id=draft_id,
+                                      send_error=message, status_code=status_code)
+            return render_company(request, conn, ref["company_id"], send_error=message, status_code=status_code)
+
+        if test_to is None:
+            return show_error(TEST_OFF_TEXT + ".", 409)
+        if ref["review_status"] == "rejected":
+            return show_error(REJECTED_TEST_TEXT, 409)
+        try:
+            send_test(conn, draft_id)
+        except send_step.SendBlocked as exc:
+            return show_error(str(exc), 409)
+        except send_step.SendFailed as exc:
+            return show_error(str(exc), 502)
+        if from_queue:
+            filter_code = views.letter_filter(status, ref["review_status"])
+            return _redirect(letters_url(draft_id, status=filter_code, run_id=parse_id(run), done="test_sent"))
+        return _redirect(f"/companies/{ref['company_id']}?done=test_sent")
+
     # ---------- API для живого хода запуска ----------
 
     def run_payload(conn, row: dict[str, Any]) -> JSONResponse:
@@ -444,6 +497,10 @@ def serve(host: str = BIND_HOST, port: int = 8000) -> None:
     settings = load_settings()
     dsn = settings.require("database_url")
     budget = pipeline.daily_budget(settings)
+    try:
+        test_address = send_step.test_recipient(settings)
+    except send_step.SendBlocked:
+        test_address = None  # баннер «Тестовая отправка выключена», кнопка неактивна
     with db.connect(dsn) as conn:
         db.migrate(conn)
         pipeline.recover_stale_runs(conn)
@@ -451,5 +508,7 @@ def serve(host: str = BIND_HOST, port: int = 8000) -> None:
         connect=lambda: db.connect(dsn),
         start_run=lambda city, query, n: pipeline.start_run(dsn, city, query, n),
         daily_budget_usd=budget,
+        send_test=lambda conn, draft_id: send_step.send_test(conn, draft_id, load_settings()),
+        test_address=test_address,
     )
     uvicorn.run(app, host=host, port=port, proxy_headers=False, server_header=False)

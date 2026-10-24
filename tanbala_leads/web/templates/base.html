@@ -10,6 +10,10 @@
 <script src="{{ static('app.js') }}" defer></script>
 </head>
 <body>
+{# Тестовый режим виден на каждой странице: компаниям письма не отправляются. #}
+<p class="test-banner{% if not test_address %} off{% endif %}" role="note">
+  {% if test_address %}Тестовый режим: письма уходят только на <b>{{ test_address }}</b>, компаниям ничего не отправляется{% else %}{{ test_off_text }}{% endif %}
+</p>
 <header class="topbar">
   <div class="topbar-inner">
     <a class="brand" href="/" aria-label="Tanbala, поиск клиентов">

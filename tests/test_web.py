@@ -12,6 +12,7 @@ from psycopg.types.json import Jsonb
 
 from tanbala_leads import contact_policy, db, pipeline
 from tanbala_leads.steps import approve as approve_step
+from tanbala_leads.steps import send as send_step
 from tanbala_leads.llm import call_cost_usd
 from tanbala_leads.web import app as web
 from tanbala_leads.web import create_app, views
@@ -431,7 +432,7 @@ def test_company_page_shows_card_reason_emails_and_letter(web_db):
     assert "Существует" in html and "общий ящик" in html
     assert "Инвентаризация за часы" in html and 'class="line note"' in html
     assert "не прошло 1 из 2" in html and "тире: «—»" in html
-    assert f'action="/drafts/{draft_id}/approve"' in html and "Отправка писем пока выключена" in html
+    assert f'action="/drafts/{draft_id}/approve"' in html and "Компаниям не отправляем" in html
     assert html.count('method="post"') == html.count('name="csrf_token"') == 3  # одобрить, отклонить, не писать
     assert f'href="/letters/{draft_id}#letter"' in html and "Открыть в очереди писем" in html
     assert "<details class=\"site-text\">" in html and "Склад класса А" in html
@@ -545,7 +546,7 @@ def test_approve_marks_draft_and_company(web_db):
     assert draft == ("approved", "владелец")
     assert conn.execute("SELECT status FROM companies WHERE id = %s", (company_id,)).fetchone()[0] == "approved"
     page = client.get(response.headers["location"]).text
-    assert "Письмо одобрено. Отправка писем пока выключена." in page
+    assert "Письмо одобрено. Компаниям письма пока не отправляются." in page
     assert f'action="/drafts/{draft_id}/approve"' not in page
 
 
@@ -746,7 +747,7 @@ def test_approve_and_reject_in_queue_go_to_next_pending_then_empty_state(web_db)
     response = queue_post(client, a, "approve", status="approved")  # из «Одобрены» дальше идёт очередь «Ждут»
     assert response.headers["location"] == "/letters?status=pending&done=approved"
     page = client.get(response.headers["location"]).text
-    assert "Все письма проверены" in page and "Письмо одобрено. Отправка писем пока выключена." in page
+    assert "Все письма проверены" in page and "Письмо одобрено. Компаниям письма пока не отправляются." in page
     assert 'href="/"' in page and "Одобренные (2)" in page
     statuses = dict(conn.execute("SELECT id, review_status FROM drafts").fetchall())
     assert statuses == {a: "approved", b: "approved", c: "rejected"}
@@ -1220,3 +1221,122 @@ def test_queue_and_history_show_industry(web_db):
     assert 'ТОО «Тара» <span class="tag">оборотная тара</span>' in letter
     history = client.get("/").text
     assert ">склад, оборотная тара</a><span class=\"sub\">до 5 на отрасль</span>" in history
+
+
+# ---------- тестовая отправка: только владельцу ----------
+
+TEST_TO = "bogdansm2000@gmail.com"
+
+
+class FakeSender:
+    """Подменяет send.send_test: пишет строку test_sends, как настоящая функция, и запоминает вызовы.
+    Настоящего SMTP здесь нет и быть не может."""
+
+    def __init__(self, error: Exception | None = None):
+        self.error = error
+        self.calls: list[int] = []
+
+    def __call__(self, conn, draft_id: int) -> send_step.TestSendResult:
+        self.calls.append(draft_id)
+        real_to = conn.execute("SELECT c.email FROM drafts d JOIN contacts c ON c.id = d.contact_id WHERE d.id = %s",
+                               (draft_id,)).fetchone()[0]
+        if isinstance(self.error, send_step.SendFailed):
+            conn.execute("INSERT INTO test_sends (draft_id, sent_to, real_to, status, error)"
+                         " VALUES (%s, %s, %s, 'failed', 'SMTP: SMTPAuthenticationError')", (draft_id, TEST_TO, real_to))
+        if self.error is not None:
+            raise self.error
+        conn.execute("INSERT INTO test_sends (draft_id, sent_to, real_to, status, message_id)"
+                     " VALUES (%s, %s, %s, 'sent', '<x@venmart.kz>')", (draft_id, TEST_TO, real_to))
+        return send_step.TestSendResult(sent_to=TEST_TO, real_to=real_to, message_id="<x@venmart.kz>")
+
+
+def test_banner_shows_test_mode_on_every_page():
+    on = make_client(send_test=FakeSender(), test_address=TEST_TO).get("/docs").text  # страница ошибки, без базы
+    assert ("Тестовый режим: письма уходят только на <b>bogdansm2000@gmail.com</b>, компаниям ничего не отправляется"
+            in on)
+    off = make_client().get("/docs").text
+    assert "Тестовая отправка выключена: DRY_RUN_TO не настроен" in off
+    stranger = make_client(send_test=FakeSender(), test_address="boss@company.kz").get("/docs").text
+    assert "Тестовая отправка выключена" in stranger and "boss@company.kz" not in stranger
+
+
+def test_send_test_needs_csrf():
+    sender = FakeSender()
+    client = make_client(send_test=sender, test_address=TEST_TO)
+    assert client.post("/drafts/1/send-test").status_code == 403
+    assert client.post("/drafts/1/send-test", data={"csrf_token": TOKEN},
+                       headers={"Origin": "http://evil.example"}).status_code == 403
+    assert sender.calls == []
+
+
+@pytest.mark.db
+def test_letter_shows_company_address_and_test_address(web_db):
+    conn, connect, _ = web_db
+    company_id, _, draft_id = full_company(conn)
+    client = make_client(connect, send_test=FakeSender(), test_address=TEST_TO)
+    for html in (client.get(f"/letters/{draft_id}").text, client.get(f"/companies/{company_id}").text):
+        assert f"<dt>Адрес компании</dt><dd>info@c{company_id}.example.kz <span class=\"not-sent\">(не отправляем)</span>" in html
+        assert '<dt>Тест уйдёт на</dt><dd><b class="test-address">bogdansm2000@gmail.com</b>' in html
+        assert f'action="/drafts/{draft_id}/send-test"' in html
+        assert 'data-confirm="Письмо уйдёт только на bogdansm2000@gmail.com. Компании оно не отправляется."' in html
+        assert "Компаниям не отправляем." in html and "Тестовый режим: письма уходят только на" in html
+    off = make_client(connect).get(f"/letters/{draft_id}").text
+    assert f'action="/drafts/{draft_id}/send-test"' not in off and "Отправить тест</button>" in off
+
+
+@pytest.mark.db
+def test_send_test_success_from_queue_and_card(web_db):
+    conn, connect, _ = web_db
+    company_id, _, draft_id = full_company(conn)
+    sender = FakeSender()
+    client = make_client(connect, send_test=sender, test_address=TEST_TO)
+    response = client.post(f"/drafts/{draft_id}/send-test", follow_redirects=False,
+                           data={"csrf_token": TOKEN, "back": "letters", "status": "pending"})
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/letters/{draft_id}?status=pending&done=test_sent#letter"
+    assert sender.calls == [draft_id]
+    page = client.get(response.headers["location"]).text
+    assert re.search(r"Тест отправлен на bogdansm2000@gmail\.com в \d\d:\d\d\.", page)
+    assert "Тестовые отправки" in page and "отправлено на bogdansm2000@gmail.com" in page
+    card = client.post(f"/drafts/{draft_id}/send-test", data={"csrf_token": TOKEN}, follow_redirects=False)
+    assert card.headers["location"] == f"/companies/{company_id}?done=test_sent"
+    assert sender.calls == [draft_id, draft_id]
+    assert conn.execute("SELECT review_status, sent_at FROM drafts WHERE id = %s", (draft_id,)).fetchone() == (
+        "pending", None)  # тест не отмечает письмо отправленным
+    assert conn.execute("SELECT count(*) FROM contact_history").fetchone()[0] == 0
+
+
+@pytest.mark.db
+def test_send_test_errors_are_shown(web_db):
+    conn, connect, _ = web_db
+    _, _, draft_id = full_company(conn)
+    blocked = make_client(connect, send_test=FakeSender(send_step.SendBlocked("Дневной лимит тестовых отправок 30 исчерпан")),
+                          test_address=TEST_TO)
+    response = blocked.post(f"/drafts/{draft_id}/send-test", data={"csrf_token": TOKEN, "back": "letters"})
+    assert response.status_code == 409 and "Дневной лимит тестовых отправок 30 исчерпан" in response.text
+    failed = make_client(connect, send_test=FakeSender(send_step.SendFailed(
+        "Почтовый сервер не принял письмо (SMTP: SMTPAuthenticationError)")), test_address=TEST_TO)
+    response = failed.post(f"/drafts/{draft_id}/send-test", data={"csrf_token": TOKEN})
+    assert response.status_code == 502 and "Почтовый сервер не принял письмо" in response.text
+    assert "не ушло на bogdansm2000@gmail.com" in response.text and "SMTPAuthenticationError" in response.text
+    assert "Тест отправлен" not in response.text
+
+
+@pytest.mark.db
+def test_rejected_or_disabled_test_send_is_refused(web_db):
+    conn, connect, _ = web_db
+    _, _, draft_id = full_company(conn)
+    conn.execute("UPDATE drafts SET review_status = 'rejected' WHERE id = %s", (draft_id,))
+    sender = FakeSender()
+    client = make_client(connect, send_test=sender, test_address=TEST_TO)
+    page = client.get(f"/letters/{draft_id}").text
+    assert f'action="/drafts/{draft_id}/send-test"' not in page
+    assert "Отклонённое письмо не отправляется даже в тест." in page and "Отправить тест</button>" in page
+    response = client.post(f"/drafts/{draft_id}/send-test", data={"csrf_token": TOKEN})
+    assert response.status_code == 409 and "Отклонённое письмо не отправляется даже в тест." in response.text
+    conn.execute("UPDATE drafts SET review_status = 'pending' WHERE id = %s", (draft_id,))
+    wrong = make_client(connect, send_test=sender, test_address="sales@company.kz")
+    refused = wrong.post(f"/drafts/{draft_id}/send-test", data={"csrf_token": TOKEN})
+    assert refused.status_code == 409 and "Тестовая отправка выключена" in refused.text
+    assert sender.calls == []
+    assert client.post("/drafts/999999/send-test", data={"csrf_token": TOKEN}).status_code == 404

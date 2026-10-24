@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tanbala_leads import contact_policy, db, pipeline  # noqa: E402
 from tanbala_leads.settings import load_settings  # noqa: E402
+from tanbala_leads.steps import send  # noqa: E402
 from tanbala_leads.web.app import create_app  # noqa: E402
 
 SCHEMA = "ui_demo"
@@ -253,6 +254,33 @@ def seed(dsn: str) -> None:
         conn.execute("INSERT INTO llm_calls (task, model, run_id, input_tokens, output_tokens)"
                      " VALUES ('check', 'claude-experimental-x', %s, 1200, 90)", (second,))
         seed_history(conn)
+        seed_test_sends(conn)
+
+
+TEST_TO = next(iter(send.TEST_RECIPIENTS))  # единственный разрешённый адрес, как в steps/send.py
+
+
+def seed_test_sends(conn) -> None:
+    """Две прошлые тестовые отправки первого письма: удачная и неудачная."""
+    draft_id, real_to = conn.execute("SELECT d.id, c.email FROM drafts d JOIN contacts c ON c.id = d.contact_id"
+                                     " ORDER BY d.id LIMIT 1").fetchone()
+    conn.execute("INSERT INTO test_sends (draft_id, sent_to, real_to, status, error, created_at)"
+                 " VALUES (%s, %s, %s, 'failed', 'SMTP: SMTPAuthenticationError', now() - interval '40 minutes')",
+                 (draft_id, TEST_TO, real_to))
+    conn.execute("INSERT INTO test_sends (draft_id, sent_to, real_to, status, message_id, created_at)"
+                 " VALUES (%s, %s, %s, 'sent', '<demo@venmart.kz>', now() - interval '25 minutes')",
+                 (draft_id, TEST_TO, real_to))
+
+
+def fake_send_test(conn, draft_id: int) -> send.TestSendResult:
+    """Как send.send_test, но без почтового сервера: только строка в ui_demo.test_sends. Писем нет вообще."""
+    row = conn.execute("SELECT d.review_status, c.email FROM drafts d JOIN contacts c ON c.id = d.contact_id"
+                       " WHERE d.id = %s", (draft_id,)).fetchone()
+    if row is None or row[0] == "rejected":
+        raise send.SendBlocked("Отклонённое письмо не отправляется даже в тест")
+    conn.execute("INSERT INTO test_sends (draft_id, sent_to, real_to, status, message_id)"
+                 " VALUES (%s, %s, %s, 'sent', '<demo@venmart.kz>')", (draft_id, TEST_TO, row[1]))
+    return send.TestSendResult(sent_to=TEST_TO, real_to=row[1], message_id="<demo@venmart.kz>")
 
 
 def seed_history(conn) -> None:
@@ -336,7 +364,8 @@ def main() -> int:
     reset_schema(dsn)
     seed(dsn)
     app = create_app(lambda: demo_connect(dsn), lambda city, query, n: fake_start_run(dsn, city, query, n),
-                     daily_budget_usd=pipeline.daily_budget(load_settings()))
+                     daily_budget_usd=pipeline.daily_budget(load_settings()),
+                     send_test=fake_send_test, test_address=TEST_TO)
     print(f"Демо: http://{HOST}:{PORT}/  (схема {SCHEMA}, запуск поддельный)")
     uvicorn.run(app, host=HOST, port=PORT, log_level="warning")
     return 0

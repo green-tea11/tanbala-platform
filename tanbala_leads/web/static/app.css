@@ -67,6 +67,10 @@ a { color: inherit; text-decoration: none; }
 .text-link:hover { text-decoration-color: currentColor; }
 
 /* ---------- шапка: знак, вкладки, расход API ---------- */
+/* Тестовый режим: полоса над шапкой на каждой странице. */
+.test-banner { margin: 0; padding: 7px var(--pad); background: var(--pill-warning-bg); border-bottom: 1px solid #fde68a; color: var(--pill-warning-ink); font-size: 13px; line-height: 18px; text-align: center; }
+.test-banner b { font-weight: 600; }
+.test-banner.off { background: var(--pill-neutral-bg); border-bottom-color: var(--border); color: var(--pill-neutral-ink); }
 .topbar { background: var(--surface); border-bottom: 1px solid var(--border); }
 .topbar-inner { display: flex; align-items: center; gap: 32px; max-width: 1200px; height: var(--topbar-height); margin: 0 auto; padding: 0 var(--pad); }
 .brand { display: flex; align-items: center; gap: 8px; flex: none; font-size: 15px; }
@@ -336,7 +340,19 @@ a.tag:hover { color: var(--text); border-color: var(--control); }
 .detail-main { grid-column: span 8; display: grid; gap: var(--gap); min-width: 0; }
 .detail-side { grid-column: span 4; display: grid; gap: var(--gap); min-width: 0; }
 .letter-meta { display: grid; gap: 6px; margin-bottom: 16px; }
-.letter-meta > div, .kv > div { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 12px; }
+.letter-meta > div { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 12px; }
+.kv > div { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 12px; }
+.not-sent { color: var(--muted); }
+.test-row dd { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+.test-address { font-weight: 600; color: var(--pill-warning-ink); }
+.send-test-form { display: inline-flex; margin: 0; }
+.btn-small { height: 28px; padding: 0 10px; font-size: 13px; }
+.test-sends { margin-top: 16px; }
+.test-sends h3 { margin-bottom: 6px; font-size: var(--fs-body); line-height: 20px; font-weight: 600; }
+.test-sends ul { display: grid; gap: 4px; }
+.test-send { display: grid; grid-template-columns: 14px minmax(0, 1fr); align-items: start; gap: 6px; color: var(--muted); font-size: 13px; line-height: 18px; overflow-wrap: anywhere; }
+.test-send .check-mark { width: 14px; height: 14px; margin: 2px 0 0; }
+.test-send-error { color: var(--negative); }
 .letter-meta dt, .kv dt { color: var(--muted); }
 .letter-meta dd { overflow-wrap: anywhere; }
 .letter-subject { font-size: var(--fs-section); line-height: 22px; font-weight: 600; }
@@ -446,6 +462,8 @@ p.action-note { margin-top: 16px; }
   /* На телефоне действия — компактная сетка 2×2 у нижнего края; про выключенную отправку сказано в заголовке. */
   .action-bar { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 8px var(--card-pad); }
   .action-bar .btn { width: 100%; }
+  .letter-meta > div { grid-template-columns: 96px minmax(0, 1fr); gap: 8px; }
+  .btn-small { height: 36px; }
   .field-row { grid-template-columns: minmax(0, 1fr); }
   .action-bar .action-note { display: none; }
   .run-foot { flex-direction: column-reverse; align-items: stretch; gap: 12px; }

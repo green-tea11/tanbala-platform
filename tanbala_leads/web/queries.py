@@ -313,3 +313,12 @@ def count_pending_letters(conn, run_id: int | None = None) -> int:
     clauses, params = _letter_where(run_id, "pending")
     sql = "SELECT count(*) AS n FROM drafts d JOIN companies c ON c.id = d.company_id WHERE " + " AND ".join(clauses)
     return _row(conn, sql, params)["n"]
+
+
+# ---------- тестовые отправки ----------
+
+
+def fetch_test_sends(conn, draft_id: int, limit: int) -> list[dict[str, Any]]:
+    """Тестовые отправки письма (только на адрес владельца), новые сверху."""
+    return _rows(conn, ("SELECT id, sent_to, real_to, status, error, created_at FROM test_sends WHERE draft_id = %s"
+                        " ORDER BY created_at DESC, id DESC LIMIT %s"), (draft_id, limit))

@@ -60,6 +60,8 @@ from tanbala_leads.web.labels import (
     STAGE_STATE_LABELS,
     STAGES,
     STATUS_CARDS,
+    TEST_SEND_STATUSES,
+    TEST_SENDS_SHOWN,
     VERIFY_RESULTS,
 )
 
@@ -295,7 +297,14 @@ def letter_view(draft: dict[str, Any], *, blocked: bool = False) -> dict[str, An
         "checks_failed": sum(1 for check in checks if not check["passed"]),
         "can_approve": approvable and not blocked, "approve_blocked": approvable and blocked,
         "can_reject": editable, "can_edit": editable, "blocked": blocked,
+        # Тест уходит только владельцу; отклонённое письмо не отправляется даже в тест.
+        "can_send_test": draft["sent_at"] is None and draft["review_status"] in ("pending", "approved"),
     }
+
+
+def test_sends_view(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{**row, "status_label": TEST_SEND_STATUSES.get(row["status"], (row["status"], "neutral"))[0],
+             "ok": row["status"] == "sent", "error": redact(row["error"])} for row in rows]
 
 
 def history_row_view(row: dict[str, Any]) -> dict[str, Any]:
@@ -331,6 +340,7 @@ def company_context(conn, company_id: int) -> dict[str, Any] | None:
         "history": [history_row_view(row) for row in contact_policy.history_for_company(conn, company_id)],
         "contacts": [contact_view(c) for c in q.fetch_contacts(conn, company_id)],
         "draft": ({**letter_view(draft, blocked=blocked), "queue_url": letters_url(draft["id"]),
+                   "test_sends": test_sends_view(q.fetch_test_sends(conn, draft["id"], TEST_SENDS_SHOWN)),
                    "self_url": f"/companies/{company_id}#letter", "edit_url": f"/companies/{company_id}?edit=1#letter"}
                   if draft else None),
         "site_text": site_text[:SITE_TEXT_PREVIEW_CHARS], "site_text_length": len(site_text),
@@ -367,7 +377,9 @@ def letters_context(conn, *, filter_code: str, run_id: int | None, selected: dic
         "filters": [{"code": code, "label": label, "count": totals[code], "selected": code == filter_code,
                      "url": letters_url(status=code, run_id=run_id)} for code, label, _ in LETTER_FILTERS],
         "items": items, "shown_count": len(items), "filter_total": totals[filter_code],
-        "letter": selected_letter_view(selected, filter_code, run_id) if selected else None,
+        "letter": ({**selected_letter_view(selected, filter_code, run_id),
+                    "test_sends": test_sends_view(q.fetch_test_sends(conn, selected["id"], TEST_SENDS_SHOWN))}
+                   if selected else None),
         "run": run_view(run, Cost()) if run else None,
         "clear_run_url": letters_url(status=filter_code),
     }

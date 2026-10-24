@@ -43,9 +43,42 @@
 {% endif %}
 {% endmacro %}
 
-{% macro letter_text(letter, contact=None) %}
+{# Тестовая отправка: кнопка рядом с адресом, куда письмо уйдёт. Компании не отправляется ничего. #}
+{% macro send_test_control(letter, back, status=None, run=None) %}
+{% if letter.sent_at is none %}
+  {% if not test_address %}
+  <button type="button" class="btn btn-small" disabled aria-describedby="send-off-{{ letter.id }}">Отправить тест</button>
+  <span class="sub" id="send-off-{{ letter.id }}">{{ test_off_text }}</span>
+  {% elif not letter.can_send_test %}
+  <button type="button" class="btn btn-small" disabled aria-describedby="send-off-{{ letter.id }}">Отправить тест</button>
+  <span class="sub" id="send-off-{{ letter.id }}">{{ rejected_test_text }}</span>
+  {% else %}
+  <form method="post" action="/drafts/{{ letter.id }}/send-test" class="send-test-form"
+        data-confirm="Письмо уйдёт только на {{ test_address }}. Компании оно не отправляется.">
+    {{ hidden_fields(back, status, run) }}
+    <button type="submit" class="btn btn-small">Отправить тест</button>
+  </form>
+  {% endif %}
+{% endif %}
+{% endmacro %}
+
+{% macro test_sends_list(letter) %}
+{% if letter.test_sends %}
+<section class="test-sends" aria-labelledby="test-sends-{{ letter.id }}">
+  <h3 id="test-sends-{{ letter.id }}">Тестовые отправки</h3>
+  <ul>
+    {% for item in letter.test_sends %}
+    <li class="test-send {{ 'ok' if item.ok else 'fail' }}">{{ mark(item.ok) }}<span><span class="num">{{ item.created_at|fmt_dt }}</span> · {{ item.status_label }} на {{ item.sent_to }}{% if item.error %} · <span class="test-send-error">{{ item.error }}</span>{% endif %}</span></li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% endmacro %}
+
+{% macro letter_text(letter, contact=None, back='company', status=None, run=None) %}
 <dl class="letter-meta">
-  <div><dt>Кому</dt><dd>{{ letter.to_email or '—' }}{% if contact %} <span class="pill {{ contact.verify_tone }}">{{ contact.verify_label }}</span>{% for flag in contact.flags %}<span class="sub">{{ flag }}</span>{% endfor %}{% endif %}</dd></div>
+  <div><dt>Адрес компании</dt><dd>{{ letter.to_email or '—' }} <span class="not-sent">(не отправляем)</span>{% if contact %} <span class="pill {{ contact.verify_tone }}">{{ contact.verify_label }}</span>{% for flag in contact.flags %}<span class="sub">{{ flag }}</span>{% endfor %}{% endif %}</dd></div>
+  <div class="test-row"><dt>Тест уйдёт на</dt><dd>{% if test_address %}<b class="test-address">{{ test_address }}</b>{% else %}<span class="dash">не настроено</span>{% endif %} {{ send_test_control(letter, back, status, run) }}</dd></div>
   <div><dt>Тема</dt><dd class="letter-subject" data-letter-subject>{{ letter.subject }}</dd></div>
 </dl>
 <div class="letter-body" data-letter-body aria-label="Текст письма">
@@ -98,7 +131,7 @@
   {% endif %}
   {% if letter.can_edit %}<a class="btn" href="{{ letter.edit_url }}">Изменить</a>{% endif %}
   <button type="button" class="btn" data-copy-letter hidden>Скопировать</button>
-  <span class="meta action-note" data-copy-status>Отправка писем пока выключена.</span>
+  <span class="meta action-note" data-copy-status>Компаниям не отправляем.</span>
   {% if letter.approve_blocked %}<p class="blocked-note" id="blocked-note-{{ letter.id }}">Компания в списке «не писать»: одобрить нельзя.</p>{% endif %}
 </div>
 {% elif letter.review_status == 'rejected' %}
@@ -131,9 +164,11 @@
 {% if edit_open %}
 {{ edit_form(letter, back, status, run) }}
 {% else %}
+{% if send_error %}<p class="notice neg" role="alert">{{ send_error }}</p>{% endif %}
 {{ notes_box(letter) }}
-{{ letter_text(letter, contact) }}
+{{ letter_text(letter, contact, back, status, run) }}
 {{ checks_block(letter) }}
+{{ test_sends_list(letter) }}
 {{ action_bar(letter, back, status, run) }}
 {% endif %}
 {% endmacro %}
