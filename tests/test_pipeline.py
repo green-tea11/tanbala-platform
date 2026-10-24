@@ -245,3 +245,57 @@ def test_unfinished_companies_are_finished_by_next_run(db_conn, dsn, tmp_path):
 
     assert {status for (status,) in db_conn.execute("SELECT status FROM companies")} == {"drafted"}
     assert db_conn.execute("SELECT new_companies, drafted FROM runs WHERE id = %s", (second,)).fetchone() == (0, 4)
+
+
+
+# Несколько отраслей через запятую
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("склад", ["склад"]),
+        ("склад, логистика,производство", ["склад", "логистика", "производство"]),
+        ("  Склад ; склад\nмагазин одежды,, ", ["Склад", "магазин одежды"]),
+    ],
+)
+def test_split_queries(text, expected):
+    assert pipeline.split_queries(text) == expected
+
+
+@pytest.mark.parametrize("text", ["", " , ;", ",".join(f"отрасль {i}" for i in range(11)), "x" * 61])
+def test_bad_query_lists_are_refused(text):
+    with pytest.raises(ValueError):
+        pipeline.split_queries(text)
+
+
+def test_run_stores_normalized_query_list(db_conn):
+    run_id = pipeline.create_run(db_conn, "almaty", " склад;логистика ", 5)
+
+    assert db_conn.execute("SELECT query FROM runs WHERE id = %s", (run_id,)).fetchone()[0] == "склад, логистика"
+
+
+def test_total_company_limit_per_run(db_conn):
+    with pytest.raises(ValueError, match="60"):
+        pipeline.create_run(db_conn, "almaty", "а1, б2, в3, г4", 20)
+
+
+def test_each_query_is_searched_and_companies_remember_it(db_conn, dsn, tmp_path):
+    searched = []
+
+    def parser_for(url, out, max_records):
+        searched.append(url)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        items = json.loads(FIXTURE.read_text(encoding="utf-8-sig"))
+        half = items[:3] if len(searched) == 1 else items[3:]
+        out.write_text(json.dumps(half, ensure_ascii=False), encoding="utf-8")
+        return out
+
+    run_id = pipeline.create_run(db_conn, "almaty", "склад, логистика", 2)
+
+    pipeline.execute_run(dsn, run_id, make_deps(tmp_path, run_parser=parser_for))
+
+    assert [url.rsplit("/", 1)[-1] for url in searched] == ["%D1%81%D0%BA%D0%BB%D0%B0%D0%B4",
+                                                             "%D0%BB%D0%BE%D0%B3%D0%B8%D1%81%D1%82%D0%B8%D0%BA%D0%B0"]
+    by_query = dict(db_conn.execute("SELECT search_query, count(*) FROM companies GROUP BY 1").fetchall())
+    assert by_query == {"склад": 2, "логистика": 2}
+    assert db_conn.execute("SELECT found, new_companies, drafted FROM runs WHERE id = %s", (run_id,)).fetchone() == (4, 4, 4)

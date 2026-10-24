@@ -172,14 +172,14 @@ def _is_duplicate(conn: psycopg.Connection, card: CompanyCard) -> bool:
     ).fetchone()[0]
 
 
-def _insert(conn: psycopg.Connection, card: CompanyCard, run_id: int | None) -> int | None:
+def _insert(conn: psycopg.Connection, card: CompanyCard, run_id: int | None, search_query: str | None) -> int | None:
     with conn.transaction():
         row = conn.execute(
             "INSERT INTO companies (name, city, rubric, address, phones, website, website_domain, source,"
-            " source_id, source_url, branches_count, raw, run_id)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, '2gis', %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING RETURNING id",
+            " source_id, source_url, branches_count, raw, run_id, search_query)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, '2gis', %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING RETURNING id",
             (card.name, card.city, card.rubric, card.address, list(card.phones), card.website, card.website_domain,
-             card.source_id, card.source_url, card.branches_count, Jsonb(card.raw), run_id),
+             card.source_id, card.source_url, card.branches_count, Jsonb(card.raw), run_id, search_query),
         ).fetchone()
         if row is None:
             return None
@@ -193,7 +193,7 @@ def _insert(conn: psycopg.Connection, card: CompanyCard, run_id: int | None) -> 
 
 
 def load_companies(conn: psycopg.Connection, export_path: Path, *, run_id: int | None = None,
-                   limit: int | None = None) -> LoadResult:
+                   limit: int | None = None, search_query: str | None = None) -> LoadResult:
     """Загрузить выгрузку в companies со статусом new. Дубли по 2ГИС id, сайту и телефону пропускаются."""
     cards = [card for item in read_export(export_path) if (card := parse_item(item))]
     new_ids: list[int] = []
@@ -201,7 +201,7 @@ def load_companies(conn: psycopg.Connection, export_path: Path, *, run_id: int |
     for card in cards:
         if limit is not None and len(new_ids) >= limit:
             break
-        company_id = None if _is_duplicate(conn, card) else _insert(conn, card, run_id)
+        company_id = None if _is_duplicate(conn, card) else _insert(conn, card, run_id, search_query)
         if company_id is None:
             duplicates += 1
         else:

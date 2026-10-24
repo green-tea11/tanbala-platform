@@ -24,8 +24,13 @@ from tanbala_leads.steps.collect import CITIES
 
 logger = logging.getLogger(__name__)
 
+# Число компаний задаётся на каждую отрасль; отраслей в одном запуске несколько, через запятую.
 MAX_COMPANIES_LIMIT = 20
-MAX_QUERY_LENGTH = 100
+MAX_QUERIES = 10
+MAX_QUERY_LENGTH = 60
+MAX_TOTAL_COMPANIES = 60
+# Длина всего поля «Что ищем»: все отрасли с запятыми.
+MAX_QUERY_TEXT_LENGTH = MAX_QUERIES * (MAX_QUERY_LENGTH + 2)
 # В выдаче 2ГИС бывают районы, здания и уже известные компании: берём записей с запасом.
 PARSER_RECORDS_FACTOR = 3
 PARSER_RECORDS_LIMIT = 60
@@ -63,16 +68,38 @@ def spent_today_usd(conn: psycopg.Connection) -> float:
     return total
 
 
+def split_queries(text: str) -> list[str]:
+    """Отрасли из поля поиска: через запятую, точку с запятой или с новой строки, без повторов."""
+    queries: list[str] = []
+    for part in re.split(r"[,;\n]+", text):
+        query = " ".join(part.split())
+        if query and query.lower() not in {known.lower() for known in queries}:
+            queries.append(query)
+    if not queries:
+        raise ValueError("Напишите, что искать, например: склад, логистика")
+    if len(queries) > MAX_QUERIES:
+        raise ValueError(f"Не больше {MAX_QUERIES} отраслей за один запуск, сейчас {len(queries)}")
+    too_long = next((query for query in queries if len(query) > MAX_QUERY_LENGTH), None)
+    if too_long:
+        raise ValueError(f"Запрос «{too_long[:30]}…» длиннее {MAX_QUERY_LENGTH} символов")
+    return queries
+
+
 def create_run(conn: psycopg.Connection, city: str, query: str, max_companies: int, *,
                daily_budget_usd: float | None = None) -> int:
-    """Проверить параметры и лимит расходов, создать запись запуска со статусом queued."""
-    query = query.strip()
+    """Проверить параметры и лимит расходов, создать запись запуска со статусом queued.
+
+    query: одна или несколько отраслей через запятую; max_companies: сколько компаний на каждую.
+    """
     if city not in CITIES:
         raise ValueError(f"Неизвестный город: {city}")
-    if not query or len(query) > MAX_QUERY_LENGTH:
-        raise ValueError(f"Запрос должен быть от 1 до {MAX_QUERY_LENGTH} символов")
+    queries = split_queries(query)
+    query = ", ".join(queries)
     if not 1 <= max_companies <= MAX_COMPANIES_LIMIT:
-        raise ValueError(f"Число компаний должно быть от 1 до {MAX_COMPANIES_LIMIT}")
+        raise ValueError(f"Число компаний на отрасль должно быть от 1 до {MAX_COMPANIES_LIMIT}")
+    if len(queries) * max_companies > MAX_TOTAL_COMPANIES:
+        raise ValueError(f"За один запуск не больше {MAX_TOTAL_COMPANIES} компаний: {len(queries)} отраслей"
+                         f" × {max_companies} = {len(queries) * max_companies}. Уменьшите число компаний на отрасль.")
     if daily_budget_usd is not None:
         spent = spent_today_usd(conn)
         if spent >= daily_budget_usd:
@@ -235,14 +262,23 @@ def _unfinished(conn: psycopg.Connection, exclude: tuple[int, ...], limit: int) 
 
 
 def _collect(conn: psycopg.Connection, run_id: int, run: dict, deps: Deps) -> tuple[int, ...]:
+    """Поиск в 2ГИС по каждой отрасли запуска: по max_companies новых компаний на отрасль."""
     _set(conn, run_id, stage="Поиск в 2ГИС")
-    url = collect.build_search_url(run["city"], run["query"])
-    export = deps.exports_dir / f"run-{run_id}.json"
+    queries = split_queries(run["query"])
     max_records = min(run["max_companies"] * PARSER_RECORDS_FACTOR, PARSER_RECORDS_LIMIT)
-    deps.run_parser(url, export, max_records)
-    result = collect.load_companies(conn, export, run_id=run_id, limit=run["max_companies"])
-    _set(conn, run_id, found=result.found, new_companies=len(result.new_ids))
-    return result.new_ids + _unfinished(conn, result.new_ids, run["max_companies"] - len(result.new_ids))
+    new_ids: tuple[int, ...] = ()
+    found = 0
+    for index, query in enumerate(queries, start=1):
+        _set(conn, run_id, stage_detail=f"{query} ({index} из {len(queries)})" if len(queries) > 1 else query)
+        export = deps.exports_dir / (f"run-{run_id}.json" if len(queries) == 1 else f"run-{run_id}-{index}.json")
+        deps.run_parser(collect.build_search_url(run["city"], query), export, max_records)
+        result = collect.load_companies(conn, export, run_id=run_id, limit=run["max_companies"], search_query=query)
+        new_ids += result.new_ids
+        found += result.found
+        _set(conn, run_id, found=found, new_companies=len(new_ids))
+    _set(conn, run_id, stage_detail=None)
+    total = run["max_companies"] * len(queries)
+    return new_ids + _unfinished(conn, new_ids, total - len(new_ids))
 
 
 # Ошибки, при которых следующие компании упадут так же: ключ, доступ, баланс. Запуск останавливается.

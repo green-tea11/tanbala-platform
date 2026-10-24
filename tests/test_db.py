@@ -55,7 +55,7 @@ def conn(db_conn):
 def test_migrate_creates_all_tables(db_conn):
     applied = db.migrate(db_conn)
 
-    assert applied == [1, 2, 3]
+    assert applied == [1, 2, 3, 4]
     assert TABLES <= table_names(db_conn)
 
 
@@ -316,3 +316,17 @@ def test_history_source_is_pipeline_by_default_and_checked(conn):
     assert conn.execute("SELECT source FROM contact_history").fetchone()[0] == "pipeline"
     with pytest.raises(errors.CheckViolation):
         insert(conn, "contact_history", email="a@b.kz", direction="out", source="spam")
+
+
+# Миграция 4: несколько отраслей за запуск
+
+def test_company_remembers_its_search_query(conn):
+    company_id = add_company(conn, search_query="склад")
+
+    assert conn.execute("SELECT search_query FROM companies WHERE id = %s", (company_id,)).fetchone()[0] == "склад"
+
+
+def test_run_has_stage_detail(conn):
+    run_id = add_run(conn, stage_detail="склад, 1 из 3")
+
+    assert conn.execute("SELECT stage_detail FROM runs WHERE id = %s", (run_id,)).fetchone()[0] == "склад, 1 из 3"

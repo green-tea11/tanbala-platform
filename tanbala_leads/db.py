@@ -255,10 +255,18 @@ ALTER TABLE contact_history ADD COLUMN source text NOT NULL DEFAULT 'pipeline'
     CHECK (source IN ('pipeline', 'import', 'manual'));
 """
 
+SCHEMA_V4 = """
+-- Несколько отраслей за запуск: по какому запросу найдена компания и какая отрасль ищется сейчас.
+ALTER TABLE companies ADD COLUMN search_query text;
+CREATE INDEX companies_search_query_idx ON companies (search_query);
+ALTER TABLE runs ADD COLUMN stage_detail text;
+"""
+
 MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     (1, "init", SCHEMA_V1),
     (2, "runs_and_llm_calls", SCHEMA_V2),
     (3, "pains_and_history_source", SCHEMA_V3),
+    (4, "search_query_per_company", SCHEMA_V4),
 )
 
 
