@@ -147,10 +147,19 @@ select.input { padding-right: 28px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
 .chip { display: inline-flex; align-items: center; height: 28px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--raised); color: var(--muted); transition: background-color var(--t-hover) ease, color var(--t-hover) ease, border-color var(--t-hover) ease; }
 .chip:hover { border-color: var(--control); color: var(--text); background: var(--surface); }
-.chip[aria-pressed="true"] { border-color: var(--text); color: var(--text); background: var(--surface); }
-.field-row { display: grid; grid-template-columns: minmax(0, 1fr) 132px; gap: 12px; }
+.chip[aria-pressed="true"] { border-color: var(--accent); color: var(--accent-ink); background: var(--accent-soft); font-weight: 500; }
+.field-row { display: grid; grid-template-columns: minmax(0, 1fr) 200px; gap: 12px; }
 .submit-row { display: grid; gap: 10px; padding-top: 4px; justify-items: start; }
 .estimate { color: var(--muted); font-size: 13px; line-height: 18px; }
+.run-estimate { font-weight: 500; }
+.run-estimate:empty { display: none; }
+.run-limit { padding: 8px 10px; border-radius: var(--radius-control); background: var(--pill-negative-bg); color: var(--pill-negative-ink); font-size: 13px; line-height: 18px; }
+.run-industries { margin-top: 2px; font-weight: 500; overflow-wrap: anywhere; }
+/* Отрасль, по которой нашли компанию: тихая метка под названием. */
+.tag { display: inline-block; max-width: 100%; margin-top: 4px; padding: 0 6px; border-radius: var(--radius-chip, 4px); background: var(--raised); border: 1px solid var(--border); color: var(--muted); font-size: var(--fs-small); font-weight: 400; line-height: 18px; vertical-align: middle; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+a.tag:hover { color: var(--text); border-color: var(--control); }
+.title-line .tag, .letter-head h2 .tag { margin-top: 0; }
+.cell-query .sub { margin-top: 2px; }
 
 /* ход запуска: пять этапов, бирюза на сделанных */
 .track { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; margin-bottom: 8px; }
@@ -228,8 +237,8 @@ select.input { padding-right: 28px; }
 .count-card-value { font-size: 16px; line-height: 22px; font-weight: 600; }
 .filters { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 12px; margin-bottom: var(--gap); }
 .field-inline > label { font-size: var(--fs-small); font-weight: 400; color: var(--muted); line-height: 16px; }
-.filters .field-inline:first-child { flex: 1 1 260px; max-width: 340px; }
-.filters .field-inline { flex: 0 1 240px; }
+.filters .field-inline:first-child { flex: 1 1 240px; max-width: 320px; }
+.filters .field-inline { flex: 0 1 210px; }
 .pager { display: flex; justify-content: flex-end; gap: 8px; padding-top: 16px; border-top: 1px solid var(--rule); margin: 0 calc(-1 * var(--card-pad)); padding: 12px var(--card-pad); }
 
 /* ---------- очередь писем ---------- */
@@ -418,7 +427,7 @@ p.action-note { margin-top: 16px; }
   .filters .field-inline > label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .filters .field-inline:nth-child(1) { order: 1; flex: 1 1 200px; max-width: none; }
   .filters .btn { order: 2; height: 44px; }
-  .filters .field-inline:nth-child(2), .filters .field-inline:nth-child(3) { order: 3; flex: 1 1 calc(50% - 4px); }
+  .filters .field-inline:nth-child(n + 2) { order: 3; flex: 1 1 calc(50% - 4px); }
   .companies-table .sub-city { display: inline; }
   .companies-table .cell-city { display: none !important; }
   .input { height: 44px; font-size: 16px; }
@@ -437,6 +446,7 @@ p.action-note { margin-top: 16px; }
   /* На телефоне действия — компактная сетка 2×2 у нижнего края; про выключенную отправку сказано в заголовке. */
   .action-bar { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 8px var(--card-pad); }
   .action-bar .btn { width: 100%; }
+  .field-row { grid-template-columns: minmax(0, 1fr); }
   .action-bar .action-note { display: none; }
   .run-foot { flex-direction: column-reverse; align-items: stretch; gap: 12px; }
   .run-actions { display: grid; grid-template-columns: minmax(0, 1fr); justify-content: stretch; justify-items: start; gap: 12px; }

@@ -3,6 +3,7 @@
 import math
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlencode
 
 from tanbala_leads import contact_policy, pipeline
 from tanbala_leads.steps.collect import CITIES
@@ -14,9 +15,10 @@ from tanbala_leads.web.format import (
     estimate_first_run_usd,
     estimate_per_company_usd,
     fmt_int,
+    industries,
     format_approx_usd,
     format_cost,
-    format_estimate,
+    format_run_estimate,
     format_usd,
     letters_url,
     parse_checks,
@@ -26,11 +28,13 @@ from tanbala_leads.web.format import (
     safe_href,
     split_letter,
     tel_href,
+    toggle_industry,
 )
 from tanbala_leads.web.labels import (
     BLOCK_REASONS,
     BLOCKED_LABEL,
     COMPANIES_PER_PAGE,
+    COMPANY_SEARCH_MAX_LENGTH,
     COMPANY_STATUSES,
     DEFAULT_CITY,
     DEFAULT_LETTER_FILTER,
@@ -106,8 +110,10 @@ def run_json(row: dict[str, Any], cost: Cost, *, letters_pending: int = 0, pendi
         "status_label": label,
         "status_tone": tone,
         "stage_label": next((name for code, name, _ in STAGES if row["stage"] in (code, name)), row["stage"]),
-        "stages": [{"code": code, "label": name, "state": state, "state_label": STAGE_STATE_LABELS[state]}
+        "stages": [{"code": code, "label": name, "state": state, "state_label": STAGE_STATE_LABELS[state],
+                    "hint": stage_hint(code, state, row.get("stage_detail"))}
                    for (code, name, _), state in zip(STAGES, states, strict=True)],
+        "industries": industries(row.get("query") or ""),
         "finished": finished,
         # Письма этого запуска, которые ждут проверки, и все ждущие (для значка вкладки «Письма»).
         "letters_pending": letters_pending,
@@ -119,7 +125,7 @@ def run_json(row: dict[str, Any], cost: Cost, *, letters_pending: int = 0, pendi
 def run_view(row: dict[str, Any], cost: Cost, **letters: int) -> dict[str, Any]:
     view = run_json(row, cost, **letters)
     stages = [
-        {**stage, "hint": STAGE_HINTS[stage["code"]],
+        {**stage,
          "counters": [{"field": field, "label": text, "value": row[field]} for field, text in counters]}
         for stage, (_, _, counters) in zip(view["stages"], STAGES, strict=True)
     ]
@@ -128,9 +134,23 @@ def run_view(row: dict[str, Any], cost: Cost, **letters: int) -> dict[str, Any]:
             "letters_url": letters_url(run_id=row["id"]), "letters_all_url": letters_url(status="all", run_id=row["id"])}
 
 
+def stage_hint(code: str, state: str, detail: str | None) -> str:
+    """Подпись этапа; пока идёт поиск в 2ГИС по нескольким отраслям, какая сейчас: «логистика (2 из 3)»."""
+    if code == STAGES[0][0] and state == "current" and detail:
+        return f"ищем: {detail}"
+    return STAGE_HINTS[code]
+
+
 def search_form(city: str = DEFAULT_CITY, query: str = "", max_companies: str | int = DEFAULT_MAX_COMPANIES) -> dict:
-    return {"city": city if city in CITIES else DEFAULT_CITY, "query": query[: pipeline.MAX_QUERY_LENGTH],
+    return {"city": city if city in CITIES else DEFAULT_CITY, "query": query[: pipeline.MAX_QUERY_TEXT_LENGTH],
             "max_companies": str(max_companies)[:4]}
+
+
+def search_limits() -> dict[str, Any]:
+    """Лимиты и цены для живой строки под кнопкой: те же, что проверяет pipeline.create_run."""
+    return {"max_queries": pipeline.MAX_QUERIES, "max_query_length": pipeline.MAX_QUERY_LENGTH,
+            "max_total": pipeline.MAX_TOTAL_COMPANIES, "max_per": pipeline.MAX_COMPANIES_LIMIT,
+            "per_company_usd": round(estimate_per_company_usd(), 6), "first_run_usd": round(estimate_first_run_usd(), 6)}
 
 
 def overview_view(conn, *, budget_usd: float | None) -> dict[str, Any]:
@@ -158,17 +178,20 @@ def search_context(conn, *, form: dict, run_id: int | None, message: str | None,
     shown = (q.fetch_run(conn, run_id) if run_id is not None else None) or active or (recent[0] if recent else None)
     costs = q.fetch_run_costs(conn, sorted({row["id"] for row in recent} | ({shown["id"]} if shown else set())))
     limit = pipeline.MAX_COMPANIES_LIMIT
+    chosen = industries(form["query"])
+    chips = [{"label": item, "pressed": item.casefold() in {query.casefold() for query in chosen},
+              "url": "/?" + urlencode({"q": toggle_industry(form["query"], item)})} for item in QUICK_QUERIES]
     run = None
     if shown:
         run = run_view(shown, costs.get(shown["id"], Cost()), pending_total=pending_total,
                        letters_pending=q.count_pending_letters(conn, shown["id"]))
     return {
         "title": "Поиск", "nav": "search", "cities": CITIES, "form": form, "message": message,
-        "quick_queries": QUICK_QUERIES, "max_limit": limit, "max_query_length": pipeline.MAX_QUERY_LENGTH,
+        "chips": chips, "max_limit": limit, "max_query_length": pipeline.MAX_QUERY_TEXT_LENGTH,
+        "limits": search_limits(),
         "usd_per_company": format_approx_usd(estimate_per_company_usd()),
         "usd_first_run": format_approx_usd(estimate_first_run_usd()),
-        "estimates": {str(n): format_estimate(n) for n in range(1, limit + 1)},
-        "estimate": format_estimate(parse_id(form["max_companies"]) or DEFAULT_MAX_COMPANIES),
+        "run_estimate": format_run_estimate(len(chosen), parse_id(form["max_companies"]) or DEFAULT_MAX_COMPANIES),
         "run": run,
         "active_run": run_view(active, Cost()) if active else None,
         "history": [run_view(row, costs.get(row["id"], Cost())) for row in recent],
@@ -224,19 +247,24 @@ class CompanyFilters:
     status: str | None
     q: str
     page: int
+    query: str | None = None  # отрасль: companies.search_query, точное совпадение
 
 
 def companies_context(conn, filters: CompanyFilters) -> dict[str, Any]:
-    counts = q.fetch_status_counts(conn, filters.run_id, filters.q)
+    counts = q.fetch_status_counts(conn, filters.run_id, filters.q, filters.query)
     total_all = sum(counts.values())
     total = counts.get(filters.status, 0) if filters.status else total_all
     pages = max(1, math.ceil(total / COMPANIES_PER_PAGE))
     page = min(filters.page, pages)
-    rows = q.fetch_companies(conn, filters.run_id, filters.status, filters.q, page)
+    rows = q.fetch_companies(conn, filters.run_id, filters.status, filters.q, page, filters.query)
+
+    def url(status: str | None = filters.status, page_number: int | None = None) -> str:
+        return companies_url(filters.run_id, status, filters.q, page_number, filters.query)
+
     first = (page - 1) * COMPANIES_PER_PAGE + 1 if rows else 0
     run = q.fetch_run(conn, filters.run_id) if filters.run_id is not None else None
     cards = [{"label": label, "count": total_all if not code else counts.get(code, 0),
-              "url": companies_url(filters.run_id, code or None, filters.q), "selected": (filters.status or "") == code}
+              "url": url(code or None), "selected": (filters.status or "") == code}
              for code, label in STATUS_CARDS]
     statuses = [{"code": code, "label": label, "count": counts.get(code, 0)}
                 for code, (label, _) in COMPANY_STATUSES.items()]
@@ -244,11 +272,12 @@ def companies_context(conn, filters: CompanyFilters) -> dict[str, Any]:
         "title": "Компании", "nav": "companies", "filters": filters, "rows": [company_row_view(r) for r in rows],
         "cards": cards, "statuses": statuses, "total": total, "first": first, "last": first + len(rows) - 1,
         "page": page, "pages": pages,
-        "prev_url": companies_url(filters.run_id, filters.status, filters.q, page - 1) if page > 1 else None,
-        "next_url": companies_url(filters.run_id, filters.status, filters.q, page + 1) if page < pages else None,
+        "prev_url": url(page_number=page - 1) if page > 1 else None,
+        "next_url": url(page_number=page + 1) if page < pages else None,
+        "industries": q.fetch_industry_counts(conn, filters.run_id, filters.q, filters.status),
         "run": run_view(run, Cost()) if run else None,
         "run_choices": [run_view(r, Cost()) for r in q.fetch_recent_runs(conn, RUN_FILTER_CHOICES)],
-        "clear_url": "/companies", "max_query_length": pipeline.MAX_QUERY_LENGTH,
+        "clear_url": "/companies", "max_query_length": COMPANY_SEARCH_MAX_LENGTH,
     }
 
 

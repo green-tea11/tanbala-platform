@@ -7,6 +7,7 @@
     <div class="title-line">
       <h1>{{ company.name }}</h1>
       <span class="pill {{ company.status_tone }}">{{ company.status_label }}</span>
+      {% if company.search_query %}<a class="tag" href="/companies?query={{ company.search_query|urlencode }}" title="Все компании этой отрасли">{{ company.search_query }}</a>{% endif %}
       {% if blocked %}<span class="pill neg">{{ blocked_label }}</span>{% endif %}
     </div>
     <p class="sub">

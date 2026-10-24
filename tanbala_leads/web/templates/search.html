@@ -44,10 +44,12 @@
       <div class="field">
         <label for="query">Что ищем в 2ГИС</label>
         <input id="query" name="query" class="input" type="text" required maxlength="{{ max_query_length }}"
-               placeholder="например, склад" value="{{ form.query }}" autocomplete="off">
-        <ul class="chips" aria-label="Готовые запросы">
-          {% for item in quick_queries %}
-          <li><a class="chip" href="/?q={{ item|urlencode }}" data-query="{{ item }}">{{ item }}</a></li>
+               placeholder="склад, логистика, производство" value="{{ form.query }}" autocomplete="off"
+               aria-describedby="query-hint">
+        <p class="hint" id="query-hint">Можно несколько отраслей через запятую.</p>
+        <ul class="chips" aria-label="Добавить или убрать отрасль">
+          {% for chip in chips %}
+          <li><a class="chip" href="{{ chip.url }}" data-query="{{ chip.label }}" aria-pressed="{{ 'true' if chip.pressed else 'false' }}">{{ chip.label }}</a></li>
           {% endfor %}
         </ul>
       </div>
@@ -61,7 +63,7 @@
           </select>
         </div>
         <div class="field field-count">
-          <label for="max_companies">Сколько компаний</label>
+          <label for="max_companies">Компаний на каждую отрасль</label>
           <input id="max_companies" name="max_companies" class="input num" type="number" required
                  min="1" max="{{ max_limit }}" step="1" value="{{ form.max_companies }}" inputmode="numeric"
                  aria-describedby="count-hint">
@@ -69,11 +71,10 @@
         </div>
       </div>
       <div class="submit-row">
-        <button type="submit" class="btn primary btn-large" id="start-button"{% if active_run %} disabled aria-describedby="busy-note"{% endif %}>Найти компании</button>
-        <p class="estimate" id="estimate" data-estimates='{{ estimates|tojson }}'>
-          Примерно {{ usd_per_company }} за компанию, плюс около {{ usd_first_run }} на первый запуск за 5 минут.
-          <span id="estimate-total">{{ estimate }}</span>.
-        </p>
+        <button type="submit" class="btn primary btn-large" id="start-button"{% if active_run %} disabled data-busy="true" aria-describedby="busy-note"{% endif %}>Найти компании</button>
+        <p class="run-estimate num" id="run-estimate" aria-live="polite" data-limits='{{ limits|tojson }}'>{{ run_estimate }}</p>
+        <p class="run-limit" id="run-limit" role="alert" hidden></p>
+        <p class="estimate">Примерно {{ usd_per_company }} за компанию, плюс около {{ usd_first_run }} на первый запуск за 5 минут.</p>
       </div>
       {% if active_run %}
       <p class="hint" id="busy-note">Идёт запуск №{{ active_run.id }}. Новый можно начать, когда он закончится.</p>
@@ -87,7 +88,8 @@
     <header>
       <div>
         <h2 id="run-title">Запуск №{{ run.id }}</h2>
-        <p class="meta">{{ run.city_name }} · «{{ run.query }}» · до {{ run.max_companies }} {{ run.max_companies|plural(('компании', 'компаний', 'компаний')) }} · {{ run.created_at|fmt_dt }}</p>
+        <p class="run-industries">{{ run.industries|join(', ') }}</p>
+        <p class="meta">{{ run.city_name }} · до {{ run.max_companies }} на отрасль · {{ run.created_at|fmt_dt }}</p>
       </div>
       <span class="pill {{ run.status_tone }}" data-run-field="status_label">{{ run.status_label }}</span>
     </header>
@@ -98,7 +100,7 @@
       {% for stage in run.stages %}
       <li class="stage" data-stage="{{ stage.code }}" data-state="{{ stage.state }}">
         <span class="stage-mark" aria-hidden="true"></span>
-        <span class="stage-text"><span class="stage-name">{{ stage.label }}</span><span class="stage-hint">{{ stage.hint }}</span></span>
+        <span class="stage-text"><span class="stage-name">{{ stage.label }}</span><span class="stage-hint" data-stage-hint>{{ stage.hint }}</span></span>
         <span class="stage-counts">
           {% for counter in stage.counters %}
           <span class="count"><span class="count-label">{{ counter.label }}</span> <b class="num" data-run-count="{{ counter.field }}">{{ counter.value|fmt_int }}</b></span>
@@ -151,7 +153,7 @@
           <tr data-history-run="{{ item.id }}">
             <td class="cell-id"><a class="row-link" href="{{ item.companies_url }}">№{{ item.id }}</a><span class="sub">{{ item.created_at|fmt_dt }}</span></td>
             <td class="cell-city">{{ item.city_name }}</td>
-            <td class="cell-query"><a href="{{ item.companies_url }}">{{ item.query }}</a></td>
+            <td class="cell-query"><a href="{{ item.companies_url }}">{{ item.industries|join(', ') }}</a><span class="sub">до {{ item.max_companies }} на отрасль</span></td>
             <td class="n num" data-label="найдено" data-run-count="found">{{ item.found|fmt_int }}</td>
             <td class="n num" data-label="новых" data-run-count="new_companies">{{ item.new_companies|fmt_int }}</td>
             <td class="n num" data-label="подходят" data-run-count="qualified">{{ item.qualified|fmt_int }}</td>

@@ -36,6 +36,15 @@
     </select>
   </div>
   <div class="field field-inline">
+    <label for="f-query">Отрасль</label>
+    <select id="f-query" name="query" class="input" data-autosubmit>
+      <option value="">Все отрасли</option>
+      {% for item in industries %}
+      <option value="{{ item.query }}"{% if item.query == filters.query %} selected{% endif %}>{{ item.query }} ({{ item.n|fmt_int }})</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="field field-inline">
     <label for="f-run">Запуск</label>
     <select id="f-run" name="run" class="input" data-autosubmit>
       <option value="">Все запуски</option>
@@ -66,7 +75,8 @@
         <tr class="link-row">
           <td class="cell-name">
             <a class="cell-fill" href="{{ row.url }}"><span class="row-link">{{ row.name }}</span>
-            <span class="sub">{{ row.rubric or '—' }}<span class="sub-city"> · {{ row.city_name or '—' }}</span></span></a>
+            <span class="sub">{{ row.rubric or '—' }}<span class="sub-city"> · {{ row.city_name or '—' }}</span></span>
+            {% if row.search_query %}<span class="tag">{{ row.search_query }}</span>{% endif %}</a>
           </td>
           <td class="cell-city"><a class="cell-fill" href="{{ row.url }}" tabindex="-1">{{ row.city_name or '—' }}</a></td>
           <td class="cell-status"><a class="cell-fill" href="{{ row.status_url }}" tabindex="-1"><span class="pill {{ row.status_tone }}">{{ row.status_label }}</span>{% if row.last_error %}<span class="sub neg-text">была ошибка</span>{% endif %}</a></td>
@@ -94,7 +104,7 @@
   </div>
   {% else %}
   <p class="empty">
-    {% if filters.q or filters.status or filters.run_id %}По этим условиям компаний нет. <a class="text-link" href="{{ clear_url }}">Сбросить фильтры</a>
+    {% if filters.q or filters.status or filters.run_id or filters.query %}По этим условиям компаний нет. <a class="text-link" href="{{ clear_url }}">Сбросить фильтры</a>
     {% else %}Компаний пока нет. Запустите поиск на вкладке <a class="text-link" href="/">Поиск</a>.{% endif %}
   </p>
   {% endif %}

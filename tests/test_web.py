@@ -353,8 +353,10 @@ def test_search_page_shows_form_run_history_and_costs(web_db):
     html = page.text
     assert "Найти компании" in html and 'name="csrf_token"' in html and TOKEN in html
     assert "Алматы" in html and "Усть-Каменогорск" in html
-    assert "строительная компания" in html and "За 5 компаний около $0,02" in html
+    assert "строительная компания" in html and 'placeholder="склад, логистика, производство"' in html
+    assert "Можно несколько отраслей через запятую." in html and "Компаний на каждую отрасль" in html
     assert "Примерно $0,003 за компанию, плюс около $0,002 на первый запуск за 5 минут." in html
+    assert '"max_total": 60' in html and '"max_queries": 10' in html  # лимиты для живой строки
     assert f"Запуск №{finished}" in html and f"/companies?run={finished}" in html
     assert "≈ $0,0700" in html  # 0,04 Haiku + 0,03 Sonnet, и в шапке, и в истории
     assert "251 000 токенов" in html
@@ -514,7 +516,15 @@ def test_real_create_run_validation_reaches_the_page(web_db):
     client = make_client(connect, start_run)
     too_many = client.post("/runs", data={"csrf_token": TOKEN, "city": "almaty", "query": "склад",
                                           "max_companies": str(pipeline.MAX_COMPANIES_LIMIT + 1)})
-    assert too_many.status_code == 400 and "Число компаний должно быть от 1 до 20" in too_many.text
+    assert too_many.status_code == 400 and "Число компаний на отрасль должно быть от 1 до 20" in too_many.text
+    over_total = client.post("/runs", data={"csrf_token": TOKEN, "city": "almaty", "max_companies": "20",
+                                            "query": "склад, логистика, производство, тара"})
+    assert over_total.status_code == 400 and "За один запуск не больше 60 компаний" in over_total.text
+    assert 'value="склад, логистика, производство, тара"' in over_total.text  # введённое не теряется
+    eleven = ", ".join(f"отрасль {n}" for n in range(11))
+    over_queries = client.post("/runs", data={"csrf_token": TOKEN, "city": "almaty", "max_companies": "1",
+                                              "query": eleven})
+    assert over_queries.status_code == 400 and "Не больше 10 отраслей за один запуск, сейчас 11" in over_queries.text
     first = client.post("/runs", data={"csrf_token": TOKEN, "city": "almaty", "query": "склад",
                                        "max_companies": "2"}, follow_redirects=False)
     assert first.status_code == 303
@@ -1078,3 +1088,135 @@ def test_prepare_import_text_keeps_every_address_in_a_line():
     text = "a@b.kz; c@d.kz, e@f.kz\t<g@h.kz> mailto:i@j.kz\n"
 
     assert fmt.prepare_import_text(text).splitlines() == ["a@b.kz", "c@d.kz", "e@f.kz", "g@h.kz", "i@j.kz"]
+
+
+# ---------- несколько отраслей за запуск ----------
+
+
+def test_industries_split_like_pipeline_and_toggle():
+    text = "склад, Логистика;  склад\nпроизводство,,"
+    assert fmt.industries(text) == ["склад", "Логистика", "производство"]
+    assert fmt.industries(text) == pipeline.split_queries(text)
+    assert fmt.industries("") == [] and fmt.industries(" , ;") == []
+    assert fmt.toggle_industry("склад, логистика", "Логистика") == "склад"
+    assert fmt.toggle_industry("склад", "производство") == "склад, производство"
+    assert fmt.toggle_industry("", "склад") == "склад"
+    assert fmt.toggle_industry("склад;  тара", "склад") == "тара"
+
+
+def test_run_estimate_line():
+    assert fmt.format_run_estimate(3, 5) == "3 отрасли × 5 = до 15 компаний · примерно $0,05"
+    assert fmt.format_run_estimate(1, 1) == "1 отрасль × 1 = до 1 компании · примерно $0,006"
+    assert fmt.format_run_estimate(5, 12) == "5 отраслей × 12 = до 60 компаний · примерно $0,2"
+    assert fmt.format_run_estimate(0, 5) == ""
+
+
+NODE = __import__("shutil").which("node")
+JS_HARNESS = """
+global.window = {}; global.document = {readyState: "loading", addEventListener() {}};
+require(process.argv[1]);  // node -e <код> <app.js> <лимиты>: argv[1] и argv[2]
+const t = window.TanbalaSearch;
+const limits = JSON.parse(process.argv[2]);
+const estimates = [];
+for (let count = 1; count <= 10; count++) for (let per = 1; per <= 20; per++) estimates.push(t.estimateText(count, per, limits));
+console.log(JSON.stringify({
+  estimates,
+  split: t.splitIndustries("склад, Логистика;  склад\\nпроизводство,,"),
+  toggles: [t.toggleIndustry("склад, логистика", "Логистика"), t.toggleIndustry("склад", "производство"),
+            t.toggleIndustry("", "склад"), t.toggleIndustry("склад;  тара", "склад")],
+  errors: [t.limitError(["a", "b", "c", "d"], 20, limits), t.limitError(Array(11).fill(0).map((_, i) => "q" + i), 1, limits),
+           t.limitError(["x".repeat(61)], 1, limits), t.limitError(["склад"], 25, limits), t.limitError(["склад", "тара"], 20, limits)],
+}));
+"""
+
+
+@pytest.mark.skipif(NODE is None, reason="нужен Node.js, чтобы проверить JS страницы поиска")
+def test_search_js_matches_python():
+    """Живая строка и кнопки-подсказки в браузере считают так же, как сервер и pipeline. Файлов не пишет."""
+    import json
+    import subprocess
+
+    limits = views.search_limits()
+    result = subprocess.run([NODE, "-e", JS_HARNESS, str(WEB_DIR / "static" / "app.js"), json.dumps(limits)],
+                            capture_output=True, text=True, encoding="utf-8", timeout=30, check=True)
+    data = json.loads(result.stdout)
+    expected = [fmt.format_run_estimate(count, per) for count in range(1, 11) for per in range(1, 21)]
+    assert data["estimates"] == expected
+    assert data["split"] == fmt.industries("склад, Логистика;  склад\nпроизводство,,")
+    assert data["toggles"] == ["склад", "склад, производство", "склад", "тара"]
+    over_total, over_queries, too_long, over_per, fine = data["errors"]
+    assert "не больше 60 компаний: 4 отрасли × 20 = 80" in over_total
+    assert over_queries.startswith("Не больше 10 отраслей за один запуск, сейчас 11")
+    assert "длиннее 60 символов" in too_long and "от 1 до 20" in over_per and fine == ""
+
+
+@pytest.mark.db
+def test_search_page_chips_and_estimate_for_typed_industries(web_db):
+    _, connect, _ = web_db
+    html = make_client(connect).get("/", params={"q": "склад, Логистика"}).text
+    assert 'value="склад, Логистика"' in html
+    assert 'href="/?q=%D0%9B%D0%BE%D0%B3%D0%B8%D1%81%D1%82%D0%B8%D0%BA%D0%B0" data-query="склад" aria-pressed="true"' in html
+    assert 'data-query="логистика" aria-pressed="true"' in html
+    assert 'data-query="производство" aria-pressed="false"' in html
+    assert "2 отрасли × 5 = до 10 компаний · примерно $0,04" in html
+
+
+@pytest.mark.db
+def test_run_panel_lists_industries_and_shows_current_one(web_db):
+    conn, connect, _ = web_db
+    run_id = seed_run(conn, query="склад, логистика, производство", status="running", stage="Поиск в 2ГИС", found=4)
+    conn.execute("UPDATE runs SET stage_detail = 'логистика (2 из 3)' WHERE id = %s", (run_id,))
+    client = make_client(connect)
+    data = client.get(f"/api/runs/{run_id}").json()
+    assert data["stage_detail"] == "логистика (2 из 3)"
+    assert data["stages"][0]["hint"] == "ищем: логистика (2 из 3)" and data["stages"][1]["hint"] == "почты и текст с сайта"
+    assert data["industries"] == ["склад", "логистика", "производство"]
+    html = client.get("/").text
+    assert "ищем: логистика (2 из 3)" in html and '<p class="run-industries">склад, логистика, производство</p>' in html
+    assert "до 5 на отрасль" in html
+    conn.execute("UPDATE runs SET stage = 'Сайты', stage_detail = NULL WHERE id = %s", (run_id,))
+    assert client.get(f"/api/runs/{run_id}").json()["stages"][0]["hint"] == "компании по запросу"
+
+
+def seed_industry_company(conn, name, query, *, run_id=None, status="new") -> int:
+    company_id = seed_company(conn, name, run_id=run_id, status=status)
+    conn.execute("UPDATE companies SET search_query = %s WHERE id = %s", (query, company_id))
+    return company_id
+
+
+@pytest.mark.db
+def test_companies_filter_by_industry_with_counts_and_tags(web_db):
+    conn, connect, _ = web_db
+    run_id = seed_run(conn, query="склад, логистика")
+    seed_industry_company(conn, "ТОО «Склад 1»", "склад", run_id=run_id)
+    seed_industry_company(conn, "ТОО «Склад 2»", "склад", run_id=run_id, status="rejected")
+    logistic = seed_industry_company(conn, "ТОО «Логист»", "логистика", run_id=run_id)
+    seed_company(conn, "ТОО «Без отрасли»")
+    client = make_client(connect)
+    html = client.get("/companies").text
+    assert '<option value="склад">склад (2)</option>' in html and '<option value="логистика">логистика (1)</option>' in html
+    assert '<span class="tag">логистика</span>' in html
+    only = client.get("/companies", params={"query": "склад"}).text
+    assert "Склад 1" in only and "Склад 2" in only and "Логист" not in only and "Без отрасли" not in only
+    assert '<option value="склад" selected>' in only
+    assert 'href="/companies?status=rejected&amp;query=%D1%81%D0%BA%D0%BB%D0%B0%D0%B4"' in only  # карточки помнят отрасль
+    combined = client.get("/companies", params={"query": "склад", "status": "rejected", "run": run_id}).text
+    assert "Склад 2" in combined and "Склад 1" not in combined and "1–1 из 1" in combined
+    assert "По этим условиям компаний нет." in client.get("/companies", params={"query": "<нет>"}).text
+    card = client.get(f"/companies/{logistic}").text
+    assert 'class="tag" href="/companies?query=%D0%BB%D0%BE%D0%B3%D0%B8%D1%81%D1%82%D0%B8%D0%BA%D0%B0"' in card
+
+
+@pytest.mark.db
+def test_queue_and_history_show_industry(web_db):
+    conn, connect, _ = web_db
+    run_id = seed_run(conn, query="склад, оборотная тара")
+    draft_id = queue_letter(conn, "ТОО «Тара»", run_id=run_id)
+    conn.execute("UPDATE companies SET search_query = 'оборотная тара' WHERE run_id = %s", (run_id,))
+    client = make_client(connect)
+    queue = client.get("/letters").text
+    assert '<span class="tag">оборотная тара</span>' in queue
+    letter = client.get(f"/letters/{draft_id}").text
+    assert 'ТОО «Тара» <span class="tag">оборотная тара</span>' in letter
+    history = client.get("/").text
+    assert ">склад, оборотная тара</a><span class=\"sub\">до 5 на отрасль</span>" in history

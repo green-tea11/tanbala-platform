@@ -49,6 +49,7 @@ from tanbala_leads.web.format import (
 )
 from tanbala_leads.web.labels import (
     BLOCKED_MESSAGE,
+    COMPANY_SEARCH_MAX_LENGTH,
     COMPANY_STATUSES,
     DB_ERROR_MESSAGE,
     DONE_MESSAGES,
@@ -261,11 +262,13 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
 
     @app.get("/companies", response_class=HTMLResponse)
     def companies_page(request: Request, run: str | None = None, status: str | None = None,
-                       text: str | None = Query(None, alias="q"), page: str | None = None,
+                       text: str | None = Query(None, alias="q"), page: str | None = None, query: str | None = None,
                        conn: psycopg.Connection = Depends(get_conn)) -> HTMLResponse:
+        industry = " ".join((query or "").split())[: pipeline.MAX_QUERY_LENGTH] or None
         filters = views.CompanyFilters(
             run_id=parse_id(run), status=status if status in COMPANY_STATUSES else None,
-            q=" ".join((text or "").split())[: pipeline.MAX_QUERY_LENGTH], page=max(1, parse_id(page) or 1))
+            q=" ".join((text or "").split())[:COMPANY_SEARCH_MAX_LENGTH], page=max(1, parse_id(page) or 1),
+            query=industry)
         return render(request, "companies.html", views.companies_context(conn, filters), conn=conn)
 
     @app.get("/companies/{company_id:int}", response_class=HTMLResponse)

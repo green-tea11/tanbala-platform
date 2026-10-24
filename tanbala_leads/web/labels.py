@@ -35,6 +35,9 @@ ESTIMATE_CACHE_WRITE_TOKENS = 10_100 + 9_500
 TOKEN_FORMS = ("токен", "токена", "токенов")
 COMPANY_FORMS = ("компанию", "компании", "компаний")
 LETTER_FORMS = ("письмо", "письма", "писем")
+INDUSTRY_FORMS = ("отрасль", "отрасли", "отраслей")
+UP_TO_COMPANY_FORMS = ("компании", "компаний", "компаний")  # «до 1 компании», «до 5 компаний»
+COMPANY_SEARCH_MAX_LENGTH = 100  # поиск по названию и рубрике в списке компаний
 
 # Коды этапов в runs.stage, их названия и счётчики из строки runs.
 STAGES: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (

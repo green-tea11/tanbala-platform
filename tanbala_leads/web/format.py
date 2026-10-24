@@ -16,9 +16,11 @@ from tanbala_leads.web.labels import (
     ESTIMATE_CALLS_PER_COMPANY,
     ESTIMATE_MODEL,
     IMPORT_HEADERS,
+    INDUSTRY_FORMS,
     MAX_ID_DIGITS,
     PAIN_SOURCES,
     TOKEN_FORMS,
+    UP_TO_COMPANY_FORMS,
 )
 
 NBSP = " "
@@ -104,6 +106,33 @@ def estimate_per_company_usd() -> float:
 def estimate_first_run_usd() -> float:
     """Доплата первого запуска за 5 минут: запись документа о Tanbala в кэш."""
     return call_cost_usd(ESTIMATE_MODEL, 0, 0, 0, ESTIMATE_CACHE_WRITE_TOKENS) or 0.0
+
+
+def industries(text: str) -> list[str]:
+    """Отрасли из поля поиска так же, как их режет pipeline.split_queries, но без проверок лимитов."""
+    found: list[str] = []
+    for part in re.split(r"[,;\n]+", text or ""):
+        query = " ".join(part.split())
+        if query and query.casefold() not in {known.casefold() for known in found}:
+            found.append(query)
+    return found
+
+
+def toggle_industry(text: str, industry: str) -> str:
+    """Кнопка-подсказка: добавить отрасль в список через запятую или убрать, если она уже есть."""
+    current = industries(text)
+    kept = [query for query in current if query.casefold() != industry.casefold()]
+    return ", ".join(kept if len(kept) < len(current) else [*current, industry])
+
+
+def format_run_estimate(count: int, per_industry: int) -> str:
+    """«3 отрасли × 5 = до 15 компаний · примерно $0,05»: компании плюс запись документа в кэш."""
+    if count < 1 or per_industry < 1:
+        return ""
+    total = count * per_industry
+    usd = format_approx_usd(total * estimate_per_company_usd() + estimate_first_run_usd())
+    return (f"{count} {plural(count, INDUSTRY_FORMS)} × {per_industry} = до {total}"
+            f" {plural(total, UP_TO_COMPANY_FORMS)} · примерно {usd}")
 
 
 def format_estimate(companies: int) -> str:
@@ -199,8 +228,10 @@ def _url(path: str, params: dict[str, Any]) -> str:
 
 
 def companies_url(run_id: int | None = None, status: str | None = None, q: str | None = None,
-                  page: int | None = None) -> str:
-    return _url("/companies", {"run": run_id, "status": status, "q": q, "page": page if page and page > 1 else None})
+                  page: int | None = None, query: str | None = None) -> str:
+    """Список компаний с фильтрами: запуск, статус, отрасль (query, точное совпадение), текст и страница."""
+    return _url("/companies", {"run": run_id, "status": status, "query": query, "q": q,
+                                "page": page if page and page > 1 else None})
 
 
 def letters_url(draft_id: int | None = None, *, status: str | None = None, run_id: int | None = None,

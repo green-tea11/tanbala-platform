@@ -144,6 +144,19 @@ PAINS = {
         ("Инвентаризация занимает дни и отрывает людей", "сеть из 6 магазинов, общий склад на Абая", "2gis", True),
     ],
 }
+SEARCH_QUERY = {
+    "ТОО «Степь Склад Сервис»": "склад",
+    "ТОО «Жетысу Логистик»": "логистика",
+    "ТОО «Алтын Тара Пласт»": "оборотная тара",
+    "ТОО «Kaz Textile Group»": "склад",
+    "ИП «Тара-Сервис»": "оборотная тара",
+    "ТОО «Алатау Строй Инвест»": "логистика",
+    "ТОО «Медеу Фарм Дистрибьюшн»": "склад",
+    "ТОО «Береке Продукт»": "склад",
+    "ТОО «Медикал Сток»": "склад",
+    "ТОО «Нур Авто Запчасти»": "оборотная тара",
+    "ТОО «Достык Ритейл <b>Плюс</b>»": "оборотная тара",
+}
 SITE_TEXT = (
     "Ответственное хранение и комплектация заказов. Склад класса А, 12 000 паллетомест, температурный режим.\n"
     "Вакансия: кладовщик, пересчёт остатков, инвентаризация раз в квартал.\n"
@@ -189,12 +202,12 @@ def insert_company(conn, run_id: int, item: tuple, minutes_ago: int) -> None:
     domain = website if website and website.endswith(".example.kz") else None
     company_id = conn.execute(
         "INSERT INTO companies (name, city, rubric, address, phones, website, website_domain, source_id, source_url,"
-        " branches_count, site_text, status, last_error, run_id, created_at) VALUES (%s, 'almaty', %s, %s, %s, %s, %s,"
-        " %s, %s, %s, %s, %s, %s, %s, now() - make_interval(mins => %s)) RETURNING id",
+        " branches_count, site_text, status, last_error, run_id, search_query, created_at) VALUES (%s, 'almaty', %s,"
+        " %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now() - make_interval(mins => %s)) RETURNING id",
         (name, rubric, address, ["+7 727 355 10 20", "+7 701 555 44 33"], website, domain,
          f"demo-{uuid.uuid4().hex[:12]}",
          f"https://2gis.kz/almaty/firm/demo{minutes_ago}", 1 if status != "approved" else 6,
-         SITE_TEXT if website else None, status, error, run_id, minutes_ago),
+         SITE_TEXT if website else None, status, error, run_id, SEARCH_QUERY.get(name), minutes_ago),
     ).fetchone()[0]
     if reason:
         pains = [{"pain": pain, "evidence": evidence, "source": source, "verified": verified}
@@ -232,7 +245,7 @@ def seed(dsn: str) -> None:
         first = insert_run(conn, "almaty", "оборотная тара", 3, "failed",
                            {"stage": "Сайты", "found": 3, "new": 3, "crawled": 1, "errors": 1}, 60 * 26,
                            error="Сайт не открылся у 1 компании, запуск остановлен вручную")
-        second = insert_run(conn, "almaty", "склад", 10, "done",
+        second = insert_run(conn, "almaty", "склад, логистика, оборотная тара", 4, "done",
                             {"stage": "Готово", "found": 10, "new": 9, "crawled": 8, "qualified": 5, "rejected": 2,
                              "verified": 4, "drafted": 3, "errors": 1}, 95)
         for index, item in enumerate(COMPANIES):
@@ -260,13 +273,15 @@ def fake_start_run(dsn: str, city: str, query: str, max_companies: int) -> int:
     """Как pipeline.start_run, но вместо шагов пайплайна только счётчики в ui_demo.runs."""
     with demo_connect(dsn) as conn:
         run_id = pipeline.create_run(conn, city, query, max_companies)
-    threading.Thread(target=_fake_progress, args=(dsn, run_id, max_companies), daemon=True).start()
+    queries = pipeline.split_queries(query)
+    threading.Thread(target=_fake_progress, args=(dsn, run_id, max_companies, queries), daemon=True).start()
     return run_id
 
 
-def fake_letter_item(run_id: int, index: int) -> tuple:
+def fake_letter_item(run_id: int, index: int, query: str) -> tuple:
     """Выдуманная компания с черновиком, ждущим проверки: письмо поддельного запуска."""
-    name = f"ТОО «Демо-склад {run_id}-{index + 1}»"
+    name = f"ТОО «Демо {query} {run_id}-{index + 1}»"
+    SEARCH_QUERY[name] = query
     body = ("[Проверить: письмо из поддельного запуска, данные выдуманы]\n"
             "Здравствуйте!\n\nПишу по поводу вашего склада. RFID-метки на паллетах позволяют пересчитать склад за "
             "один обход. Можем показать на одном ряду стеллажей. Удобно ли созвониться?\n\n" + SIGNATURE)
@@ -276,8 +291,9 @@ def fake_letter_item(run_id: int, index: int) -> tuple:
             ("Пересчёт склада за один обход", body, CHECKS_OK), None)
 
 
-def _fake_progress(dsn: str, run_id: int, n: int) -> None:
-    """Те же названия этапов в runs.stage, что пишет pipeline.execute_run."""
+def _fake_progress(dsn: str, run_id: int, per_query: int, queries: list[str]) -> None:
+    """Те же названия этапов в runs.stage и stage_detail, что пишет pipeline.execute_run."""
+    n = per_query * len(queries)
     good = max(1, n * 6 // 10)
     plan = [
         ("Поиск в 2ГИС", {"found": n, "new_companies": max(1, n - 1)}),
@@ -292,10 +308,18 @@ def _fake_progress(dsn: str, run_id: int, n: int) -> None:
                          " WHERE id = %s", (run_id,))
             for stage, counters in plan:
                 conn.execute("UPDATE runs SET stage = %s WHERE id = %s", (stage, run_id))
-                time.sleep(FAKE_STEP_SECONDS)
+                if stage == "Поиск в 2ГИС":
+                    for index, query in enumerate(queries, start=1):
+                        detail = f"{query} ({index} из {len(queries)})" if len(queries) > 1 else query
+                        conn.execute("UPDATE runs SET stage_detail = %s WHERE id = %s", (detail, run_id))
+                        time.sleep(FAKE_STEP_SECONDS / 1.5)
+                    conn.execute("UPDATE runs SET stage_detail = NULL WHERE id = %s", (run_id,))
+                else:
+                    time.sleep(FAKE_STEP_SECONDS)
                 if stage == "Письма":
                     for index in range(counters["drafted"]):
-                        insert_company(conn, run_id, fake_letter_item(run_id, index), 0)
+                        item = fake_letter_item(run_id, index, queries[index % len(queries)])
+                        insert_company(conn, run_id, item, 0)
                 sets = ", ".join(f"{field} = %s" for field in counters)
                 conn.execute(f"UPDATE runs SET {sets} WHERE id = %s", (*counters.values(), run_id))
             conn.execute("UPDATE runs SET status = 'done', stage = 'Готово', finished_at = now() WHERE id = %s",

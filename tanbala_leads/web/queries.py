@@ -10,7 +10,7 @@ from tanbala_leads.web.labels import COMPANIES_PER_PAGE, LETTER_FILTERS, LETTERS
 
 RUN_COLUMNS = (
     "id, city, query, max_companies, status, stage, found, new_companies, crawled, qualified, rejected,"
-    " verified, drafted, errors, error, created_at, started_at, finished_at"
+    " verified, drafted, errors, error, created_at, started_at, finished_at, stage_detail"
 )
 TOKEN_SUMS = (
     "sum(input_tokens)::bigint AS input_tokens, sum(output_tokens)::bigint AS output_tokens,"
@@ -22,7 +22,7 @@ CONTACT_ORDER = (
     " WHEN 'invalid' THEN 4 ELSE 3 END, id"
 )
 COMPANY_LIST_SQL = f"""
-SELECT c.id, c.name, c.rubric, c.city, c.status, c.created_at, c.last_error,
+SELECT c.id, c.name, c.rubric, c.city, c.status, c.created_at, c.last_error, c.search_query,
        q.score, q.fit, ct.email, ct.verify_result, ct.is_catch_all, ct.is_role,
        d.id AS draft_id, d.subject, d.review_status, d.check_result
 FROM companies c
@@ -77,7 +77,8 @@ LEFT JOIN contacts ct ON ct.id = d.contact_id
 {QUAL_LATERAL}"""
 LETTER_LIST_SQL = f"""
 SELECT d.id, d.kind, d.subject, d.review_status, d.check_result, d.sent_at, d.created_at, d.updated_at,
-       c.id AS company_id, c.name AS company_name, q.score, q.verified_pains, {LETTER_BLOCKED} AS blocked
+       c.id AS company_id, c.name AS company_name, c.search_query, q.score, q.verified_pains,
+       {LETTER_BLOCKED} AS blocked
 {LETTER_FROM}
 {{where}}
 ORDER BY {{order}}
@@ -87,6 +88,7 @@ LETTER_SQL = f"""
 SELECT d.id, d.kind, d.subject, d.body, d.model, d.check_result, d.review_status, d.approved_by, d.approved_at,
        d.sent_at, d.created_at, d.updated_at,
        c.id AS company_id, c.name AS company_name, c.rubric, c.city, c.website, c.source_url, c.run_id,
+       c.search_query,
        ct.email AS to_email, ct.verify_result, ct.is_catch_all, ct.is_role,
        q.score, q.fit, q.reason, q.segment, q.pains, {LETTER_BLOCKED} AS blocked
 {LETTER_FROM}
@@ -150,11 +152,15 @@ def fetch_run_costs(conn, run_ids: list[int]) -> dict[int, Cost]:
 # ---------- компании ----------
 
 
-def _company_where(run_id: int | None, q: str, status: str | None = None) -> tuple[str, list[Any]]:
+def _company_where(run_id: int | None, q: str, status: str | None = None,
+                   query: str | None = None) -> tuple[str, list[Any]]:
     clauses, params = [], []
     if run_id is not None:
         clauses.append("c.run_id = %s")
         params.append(run_id)
+    if query:
+        clauses.append("c.search_query = %s")
+        params.append(query)
     if q:
         pattern = f"%{escape_like(q)}%"
         clauses.append("(c.name ILIKE %s OR c.rubric ILIKE %s)")
@@ -165,14 +171,23 @@ def _company_where(run_id: int | None, q: str, status: str | None = None) -> tup
     return ("WHERE " + " AND ".join(clauses) if clauses else ""), params
 
 
-def fetch_status_counts(conn, run_id: int | None, q: str) -> dict[str, int]:
-    where, params = _company_where(run_id, q)
+def fetch_status_counts(conn, run_id: int | None, q: str, query: str | None = None) -> dict[str, int]:
+    where, params = _company_where(run_id, q, query=query)
     rows = _rows(conn, f"SELECT c.status, count(*) AS n FROM companies c {where} GROUP BY c.status", params)
     return {row["status"]: row["n"] for row in rows}
 
 
-def fetch_companies(conn, run_id: int | None, status: str | None, q: str, page: int) -> list[dict[str, Any]]:
+def fetch_industry_counts(conn, run_id: int | None, q: str, status: str | None) -> list[dict[str, Any]]:
+    """Отрасли (companies.search_query) с числом компаний при остальных фильтрах; без отрасли не считаем."""
     where, params = _company_where(run_id, q, status)
+    where = f"{where} AND c.search_query IS NOT NULL" if where else "WHERE c.search_query IS NOT NULL"
+    return _rows(conn, (f"SELECT c.search_query AS query, count(*) AS n FROM companies c {where}"
+                        " GROUP BY c.search_query ORDER BY n DESC, c.search_query"), params)
+
+
+def fetch_companies(conn, run_id: int | None, status: str | None, q: str, page: int,
+                    query: str | None = None) -> list[dict[str, Any]]:
+    where, params = _company_where(run_id, q, status, query)
     offset = (page - 1) * COMPANIES_PER_PAGE
     return _rows(conn, COMPANY_LIST_SQL.format(where=where), [*params, COMPANIES_PER_PAGE, offset])
 
@@ -182,6 +197,7 @@ def fetch_company(conn, company_id: int) -> dict[str, Any] | None:
         return None
     return _row(conn, (
         "SELECT c.id, c.name, c.city, c.rubric, c.address, c.phones, c.website, c.website_domain, c.source_url,"
+        " c.search_query,"
         " c.branches_count, c.site_text, c.status, c.last_error, c.run_id, c.created_at,"
         f" {COMPANY_BLOCKED} AS blocked FROM companies c WHERE c.id = %s"), (company_id,))
 

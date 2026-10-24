@@ -50,8 +50,9 @@
             <span class="letter-item-score num" title="Оценка">{% if item.score is not none %}{{ item.score }}{% else %}—{% endif %}</span>
           </span>
           <span class="letter-item-subject">{{ item.subject }}</span>
-          {% if item.blocked or filter_code != 'pending' %}
+          {% if item.blocked or filter_code != 'pending' or item.search_query %}
           <span class="letter-item-flags">
+            {% if item.search_query %}<span class="tag">{{ item.search_query }}</span>{% endif %}
             {% if filter_code != 'pending' %}<span class="pill {{ item.review_tone }}">{{ item.review_label }}</span>{% endif %}
             {% if item.blocked %}<span class="pill neg">{{ item.blocked_label }}</span>{% endif %}
           </span>
@@ -71,7 +72,7 @@
     {% if done_message %}<p class="notice pos" role="status">{{ done_message }}</p>{% endif %}
     <header class="letter-head">
       <div>
-        <h2 id="letter-title">{{ letter.company_name }}</h2>
+        <h2 id="letter-title">{{ letter.company_name }}{% if letter.search_query %} <span class="tag">{{ letter.search_query }}</span>{% endif %}</h2>
         <p class="meta">{{ letter.rubric or 'рубрика не указана' }}{% if letter.city_name %} · {{ letter.city_name }}{% endif %} · письмо от {{ letter.created_at|fmt_dt }}{% if letter.kind == 'reply' %} · ответ клиенту{% endif %}</p>
       </div>
       <span class="letter-head-pills">

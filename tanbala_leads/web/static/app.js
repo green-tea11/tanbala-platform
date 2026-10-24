@@ -16,45 +16,129 @@
     Array.prototype.forEach.call(root.querySelectorAll(selector), fn);
   }
 
-  /* Готовые запросы: подставить в поле без перехода по ссылке. */
-  function setupChips() {
-    var input = document.getElementById("query");
-    if (!input) return;
-    var chips = document.querySelectorAll("[data-query]");
-    function sync() {
-      each(document, "[data-query]", function (chip) {
-        chip.setAttribute("aria-pressed", String(chip.getAttribute("data-query") === input.value.trim()));
-      });
-    }
-    Array.prototype.forEach.call(chips, function (chip) {
-      chip.setAttribute("role", "button");
-      chip.addEventListener("click", function (event) {
-        event.preventDefault();
-        input.value = chip.getAttribute("data-query");
-        sync();
-        input.focus();
-      });
-    });
-    input.addEventListener("input", sync);
-    sync();
+  /* ---------- несколько отраслей: те же правила, что в pipeline.split_queries и create_run ---------- */
+
+  var INDUSTRY_FORMS = ["отрасль", "отрасли", "отраслей"];
+  var UP_TO_COMPANY_FORMS = ["компании", "компаний", "компаний"];
+
+  function pluralRu(number, forms) {
+    var n = Math.abs(number) % 100;
+    if (n >= 11 && n <= 14) return forms[2];
+    if (n % 10 === 1) return forms[0];
+    if (n % 10 >= 2 && n % 10 <= 4) return forms[1];
+    return forms[2];
   }
 
-  /* Оценка расхода под кнопкой: тексты готовит сервер, здесь только выбор по числу. */
-  function setupEstimate() {
-    var input = document.getElementById("max_companies");
-    var holder = document.getElementById("estimate");
-    var target = document.getElementById("estimate-total");
-    if (!input || !holder || !target) return;
-    var texts;
+  /* Отрасли из поля: через запятую, точку с запятой или с новой строки, без повторов. */
+  function splitIndustries(text) {
+    var found = [];
+    var seen = {};
+    String(text || "").split(/[,;\n]+/).forEach(function (part) {
+      var query = part.split(/\s+/).filter(Boolean).join(" ");
+      var key = query.toLowerCase();
+      if (query && !seen[key]) {
+        seen[key] = true;
+        found.push(query);
+      }
+    });
+    return found;
+  }
+
+  /* Кнопка-подсказка: добавить отрасль в список или убрать, если она уже есть. Поле не заменяется. */
+  function toggleIndustry(text, industry) {
+    var current = splitIndustries(text);
+    var key = industry.toLowerCase();
+    var kept = current.filter(function (query) { return query.toLowerCase() !== key; });
+    return (kept.length < current.length ? kept : current.concat([industry])).join(", ");
+  }
+
+  /* Одна значащая цифра, как format_approx_usd на сервере: $0,05, $0,3, $1. */
+  function approxUsd(value) {
+    if (!(value > 0)) return "$0";
+    var exponent = Math.floor(Math.log10(value));
+    var step = Math.pow(10, exponent);
+    var rounded = Math.round(value / step) * step;
+    return "$" + String(Number(rounded.toFixed(Math.max(0, -exponent)))).replace(".", ",");
+  }
+
+  function estimateText(count, perIndustry, limits) {
+    if (count < 1 || perIndustry < 1) return "";
+    var total = count * perIndustry;
+    var usd = approxUsd(total * limits.per_company_usd + limits.first_run_usd);
+    return count + " " + pluralRu(count, INDUSTRY_FORMS) + " × " + perIndustry + " = до " + total + " " +
+      pluralRu(total, UP_TO_COMPANY_FORMS) + " · примерно " + usd;
+  }
+
+  /* Что не пропустит сервер: сказать сразу, до нажатия. Пустая строка: всё в порядке. */
+  function limitError(industries, perIndustry, limits) {
+    var count = industries.length;
+    if (count > limits.max_queries) {
+      return "Не больше " + limits.max_queries + " отраслей за один запуск, сейчас " + count + ".";
+    }
+    var tooLong = industries.filter(function (query) { return query.length > limits.max_query_length; })[0];
+    if (tooLong) return "Запрос «" + tooLong.slice(0, 30) + "…» длиннее " + limits.max_query_length + " символов.";
+    if (perIndustry > limits.max_per) return "На отрасль можно от 1 до " + limits.max_per + " компаний.";
+    if (count * perIndustry > limits.max_total) {
+      return "За один запуск не больше " + limits.max_total + " компаний: " + count + " " +
+        pluralRu(count, INDUSTRY_FORMS) + " × " + perIndustry + " = " + count * perIndustry +
+        ". Уменьшите число компаний на отрасль.";
+    }
+    return "";
+  }
+
+  window.TanbalaSearch = {
+    splitIndustries: splitIndustries, toggleIndustry: toggleIndustry, approxUsd: approxUsd,
+    estimateText: estimateText, limitError: limitError
+  };
+
+  /* Кнопка «Найти компании» выключена, пока идёт другой запуск (data-busy) или нарушен лимит (data-invalid). */
+  function refreshStart() {
+    var button = document.getElementById("start-button");
+    if (!button) return;
+    button.disabled = button.getAttribute("data-busy") === "true" || button.getAttribute("data-invalid") === "true";
+  }
+
+  /* Отрасли, число на отрасль, живая строка «3 отрасли × 5 = до 15 компаний · примерно $0,05» и лимиты. */
+  function setupSearchForm() {
+    var input = document.getElementById("query");
+    var count = document.getElementById("max_companies");
+    var line = document.getElementById("run-estimate");
+    var warning = document.getElementById("run-limit");
+    var button = document.getElementById("start-button");
+    if (!input || !count || !line || !warning || !button) return;
+    var limits;
     try {
-      texts = JSON.parse(holder.getAttribute("data-estimates") || "{}");
+      limits = JSON.parse(line.getAttribute("data-limits") || "{}");
     } catch (error) {
       return;
     }
-    input.addEventListener("input", function () {
-      var text = texts[String(parseInt(input.value, 10))];
-      if (typeof text === "string") target.textContent = text;
+
+    function update() {
+      var industries = splitIndustries(input.value);
+      var perIndustry = parseInt(count.value, 10) || 0;
+      var keys = industries.map(function (query) { return query.toLowerCase(); });
+      each(document, "[data-query]", function (chip) {
+        chip.setAttribute("aria-pressed", String(keys.indexOf(chip.getAttribute("data-query").toLowerCase()) >= 0));
+      });
+      var problem = limitError(industries, perIndustry, limits);
+      line.textContent = estimateText(industries.length, perIndustry, limits);
+      warning.textContent = problem;
+      warning.hidden = !problem;
+      button.setAttribute("data-invalid", problem ? "true" : "false");
+      refreshStart();
+    }
+
+    each(document, "[data-query]", function (chip) {
+      chip.setAttribute("role", "button");
+      chip.addEventListener("click", function (event) {
+        event.preventDefault();
+        input.value = toggleIndustry(input.value, chip.getAttribute("data-query"));
+        update();
+      });
     });
+    input.addEventListener("input", update);
+    count.addEventListener("input", update);
+    update();
   }
 
   /* Кнопка запуска: защита от двойного нажатия. После «назад» в браузере кнопка снова как была. */
@@ -63,7 +147,6 @@
     var button = document.getElementById("start-button");
     if (!form || !button) return;
     var label = button.textContent;
-    var wasDisabled = button.disabled;
     form.addEventListener("submit", function () {
       window.setTimeout(function () {
         button.disabled = true;
@@ -72,8 +155,8 @@
     });
     window.addEventListener("pageshow", function (event) {
       if (!event.persisted) return;
-      button.disabled = wasDisabled;
       button.textContent = label;
+      refreshStart();
     });
   }
 
@@ -81,8 +164,9 @@
     var button = document.getElementById("start-button");
     var busy = document.getElementById("busy-note");
     if (button) {
-      button.disabled = false;
+      button.removeAttribute("data-busy");
       button.removeAttribute("aria-describedby");
+      refreshStart();
     }
     if (busy) busy.hidden = true;
   }
@@ -178,6 +262,8 @@
         el.setAttribute("data-state", stage.state);
         var label = el.querySelector("[data-stage-state]");
         if (label) label.textContent = stage.state_label;
+        var hint = el.querySelector("[data-stage-hint]");
+        if (hint && typeof stage.hint === "string") hint.textContent = stage.hint;
       });
       each(panel, "[data-stage-track]", function (el) {
         var stage = byCode[el.getAttribute("data-stage-track")];
@@ -275,8 +361,7 @@
   }
 
   onReady(function () {
-    setupChips();
-    setupEstimate();
+    setupSearchForm();
     setupSearchSubmit();
     setupRunPolling();
     setupActiveWatch();
