@@ -262,11 +262,29 @@ CREATE INDEX companies_search_query_idx ON companies (search_query);
 ALTER TABLE runs ADD COLUMN stage_detail text;
 """
 
+SCHEMA_V5 = """
+-- Тестовые отправки: письмо уходит владельцу, а не компании. Адрес зашит и здесь, и в коде (steps/send.py):
+-- сменить его можно только новой миграцией. Тестовая отправка не пишется в contact_history и не ставит
+-- drafts.sent_at, чтобы не заблокировать настоящее письмо этой компании потом.
+CREATE TABLE test_sends (
+    id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    draft_id    bigint NOT NULL REFERENCES drafts (id) ON DELETE CASCADE,
+    sent_to     text NOT NULL CHECK (sent_to = 'bogdansm2000@gmail.com'),
+    real_to     text NOT NULL,
+    status      text NOT NULL CHECK (status IN ('sent', 'failed')),
+    message_id  text,
+    error       text,
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX test_sends_draft_idx ON test_sends (draft_id, created_at DESC);
+"""
+
 MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     (1, "init", SCHEMA_V1),
     (2, "runs_and_llm_calls", SCHEMA_V2),
     (3, "pains_and_history_source", SCHEMA_V3),
     (4, "search_query_per_company", SCHEMA_V4),
+    (5, "test_sends", SCHEMA_V5),
 )
 
 

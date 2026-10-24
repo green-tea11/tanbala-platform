@@ -19,6 +19,10 @@ ENV_NAMES: dict[str, str] = {
     "agent_email": "AGENT_EMAIL",
     "dry_run_to": "DRY_RUN_TO",
     "daily_api_budget_usd": "DAILY_API_BUDGET_USD",
+    "smtp_host": "SMTP_HOST",
+    "smtp_port": "SMTP_PORT",
+    "smtp_user": "SMTP_USER",
+    "smtp_password": "SMTP_PASSWORD",
 }
 
 DEFAULTS: dict[str, str] = {
@@ -47,6 +51,10 @@ class Settings:
     agent_email: str = ""
     dry_run_to: str = ""
     daily_api_budget_usd: str = ""
+    smtp_host: str = ""
+    smtp_port: str = ""
+    smtp_user: str = ""
+    smtp_password: str = field(default="", repr=False)
 
     def require(self, name: str) -> str:
         """Вернуть значение поля или остановиться с понятной ошибкой, если оно пустое."""
