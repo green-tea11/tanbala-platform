@@ -1,4 +1,4 @@
-import type { LlmPurpose, PhoneDigits } from '../domain/types.js';
+import type { ApiLimits, LlmPurpose, PhoneDigits } from '../domain/types.js';
 import { notImplemented } from '../shared/todo.js';
 
 /** ID моделей для трёх вызовов LLM. Источник: config/models.json, меняется без правки кода. */
@@ -34,6 +34,8 @@ export interface AppConfig {
   /** PANEL_HOST и PANEL_PORT. */
   readonly panel: { readonly host: string; readonly port: number };
   readonly models: ModelsConfig;
+  /** API_DAILY_LIMIT и API_DAILY_LIMIT_PER_CHAT: дневной предохранитель расходов. */
+  readonly limits: ApiLimits;
 }
 
 /**
@@ -43,6 +45,7 @@ export interface AppConfig {
  * TODO(этап 2): пути из .env считать от root, а не от текущей папки процесса; сессию, базу и лог разрешать только внутри data/ корня проекта.
  * TODO(этап 2): пустые VENMART_ANTHROPIC_KEY, OPENROUTER_API_KEY, MANAGER_WHATSAPP => null; MANAGER_WHATSAPP только цифры, приведение к PhoneDigits здесь.
  * TODO(этап 2): WA_ENABLED только «true» или «false», по умолчанию false.
+ * TODO(этап 2): API_DAILY_LIMIT и API_DAILY_LIMIT_PER_CHAT: целые больше нуля; нет переменной => 500 и 40 (предохранитель не должен выключаться случайно); иное значение => отказ в запуске с названием переменной.
  * TODO(этап 3): ANTHROPIC_CUSTOM_HEADERS в окружении => отказать в запуске: SDK подмешивает эти заголовки после ключа и может его подменить.
  * TODO(этап 3): ANTHROPIC_BASE_URL в окружении => предупреждение в лог: baseURL передаём в SDK явно.
  * TODO(этап 3): стандартную переменную ключа SDK не читать никогда: ключ только из VENMART_ANTHROPIC_KEY.

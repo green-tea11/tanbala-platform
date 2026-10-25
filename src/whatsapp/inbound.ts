@@ -2,8 +2,8 @@ import type { WAMessage } from 'baileys';
 import type { InboundMessage, Jid, OwnMessage } from '../domain/types.js';
 import { notImplemented } from '../shared/todo.js';
 
-/** Почему сообщение пропущено без обработки. */
-export type IgnoreReason = 'service' | 'manager' | 'self' | 'protocol' | 'stale';
+/** Почему сообщение пропущено без обработки. before_link: отправлено до привязки номера к боту. */
+export type IgnoreReason = 'service' | 'manager' | 'self' | 'protocol' | 'before_link';
 
 /** Результат разбора одного сообщения из события messages.upsert. */
 export type WaEvent =
@@ -17,10 +17,11 @@ export interface ClassifyContext {
   readonly managerJids: ReadonlySet<Jid>;
   /** Адреса самого номера бота: sock.user.id и sock.user.lid. */
   readonly selfJids: ReadonlySet<Jid>;
-  /** Текущее время, мс UTC. */
-  readonly nowMs: number;
-  /** Порог свежести для сообщений клиента, мс. */
-  readonly freshMs: number;
+  /**
+   * Момент первой привязки номера, мс UTC (AppStateRepo.getLinkedAtMs). Всё, что отправлено раньше,
+   * пропускается полностью: без ответа и без отметки для менеджера (решение владельца).
+   */
+  readonly linkedAtMs: number;
 }
 
 /**
@@ -28,10 +29,11 @@ export interface ClassifyContext {
  * Чистая функция: не ходит в сеть и в базу.
  * TODO(этап 2): только личные чаты по whatsapp/jid.isPersonalJid(key.remoteJid); остальное => ignore 'service'. Здесь JID уже нормализован (cleanMessage: c.us => s.whatsapp.net), сырой адрес отсекает shouldIgnoreJid сокета.
  * TODO(этап 2): protocolMessage, реакции, правки, удаления, звонки => ignore 'protocol'.
- * TODO(этап 2): key.fromMe => 'own' вместе с содержимым, в том числе из type 'append': сообщение менеджера с телефона, отправленное, пока бот был выключен, всё равно включает перехват чата. Бот это или человек, решает pipeline/takeover.ts.
+ * TODO(этап 2): сообщения клиента и свои с tsMs < linkedAtMs => ignore 'before_link': старые чаты рабочего номера бот пропускает полностью: не отвечает, не отмечает для менеджера и не отмечает прочитанными (решение владельца). Проверка раньше остальных разборов содержимого.
+ * TODO(этап 2): после привязки обрабатывается всё, в том числе type 'append' после коротких разрывов связи.
+ * TODO(этап 2): key.fromMe после привязки => 'own' вместе с содержимым, в том числе из 'append': сообщение менеджера с телефона, отправленное, пока бот был выключен, всё равно включает перехват чата. Бот это или человек, решает pipeline/takeover.ts.
  * TODO(этап 2): своё сообщение никогда не идёт в LLM как реплика клиента и не запускает ответ; в истории остаётся с ролью assistant (автор bot или human_phone).
- * TODO(этап 2): порог freshMs только для сообщений клиента: старше => ignore 'stale', чтобы после привязки рабочего номера бот не ответил во все старые чаты.
- * TODO(этап 2): messageTimestamp в rc14 имеет тип number | Long | null и хранится в секундах: перевести в number и умножить на 1000, иначе фильтр 'stale' отбросит все входящие.
+ * TODO(этап 2): messageTimestamp в rc14 имеет тип number | Long | null и хранится в секундах: перевести в number и умножить на 1000, иначе сравнение с linkedAtMs отбросит все входящие; нет времени => ignore 'before_link' (безопаснее промолчать).
  * TODO(этап 2): адреса: replyJid = key.remoteJid; в key.remoteJidAlt второй адрес: при addressingMode 'lid' это номер, при 'pn' адрес @lid. Тип адреса определять через isLidUser и isPnUser. Номера нет => позже resolvePhone.
  * TODO(этап 2): managerJids и selfJids сравнивать и с remoteJid, и с remoteJidAlt после jidNormalizedUser; сообщение менеджера => ignore 'manager', чат с самим собой => ignore 'self'.
  * TODO(этап 2): текст и pushName недоверенные: удалить символы Cc (кроме \n в тексте) и Cf (zero-width, U+FEFF, bidi U+202A..U+202E и U+2066..U+2069), нормализовать NFKC, лимит длины ставить ПОСЛЕ NFKC.

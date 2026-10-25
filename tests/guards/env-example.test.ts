@@ -16,6 +16,8 @@ const REQUIRED_KEYS = [
   'WHATSAPP_SESSION_DIR',
   'DATABASE_PATH',
   'TOKEN_LOG_PATH',
+  'API_DAILY_LIMIT',
+  'API_DAILY_LIMIT_PER_CHAT',
   'PANEL_HOST',
   'PANEL_PORT',
 ];
@@ -59,6 +61,11 @@ describe('.env.example', () => {
   it('задаёт пароль панели admin и адрес 127.0.0.1 по умолчанию', () => {
     expect(example.get('ADMIN_PASSWORD')).toBe('admin');
     expect(example.get('PANEL_HOST')).toBe('127.0.0.1');
+  });
+
+  it('задаёт предохранитель расходов: 500 вызовов API в сутки на бот и 40 на чат', () => {
+    expect(example.get('API_DAILY_LIMIT')).toBe('500');
+    expect(example.get('API_DAILY_LIMIT_PER_CHAT')).toBe('40');
   });
 
   it('держит WhatsApp выключенным, пока владелец не разрешит подключение', () => {

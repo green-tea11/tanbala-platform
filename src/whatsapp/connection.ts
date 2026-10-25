@@ -1,5 +1,5 @@
 import type { makeWASocket } from 'baileys';
-import type { Clock, Logger, WhatsAppGateway } from '../domain/ports.js';
+import type { AppStateRepo, Clock, Logger, WhatsAppGateway } from '../domain/ports.js';
 import type { Jid, WaMessageId } from '../domain/types.js';
 import { notImplemented } from '../shared/todo.js';
 import type { WaEvent } from './inbound.js';
@@ -10,6 +10,8 @@ export interface WhatsAppDeps {
   sessionDir: string;
   logger: Logger;
   clock: Clock;
+  /** Момент первой привязки номера: отсечка старых сообщений (whatsapp/inbound.ts). */
+  appState: AppStateRepo;
   /**
    * Фабрика сокета для тестов. В рабочем режиме не передаётся: main не может импортировать Baileys
    * (границы модулей), сокет создаёт сам адаптер.
@@ -37,7 +39,10 @@ export type WhatsAppConnection = WhatsAppGateway & { stop(): Promise<void> };
  * TODO(этап 2): shouldIgnoreJid(jid) => !whatsapp/jid.isPersonalJid(jid): это единственное место, где виден сырой адрес до нормализации.
  * TODO(этап 2): QR брать из поля qr события connection.update и показывать только по команде владельца; printQRInTerminal в rc14 лишь предупреждает.
  * TODO(этап 2): риск rc14 (на 25.10.2026): с 28.07.2026 привязка нового номера проходит не всегда (companion_reg_refresh, issue #2737, PR #2765 не слит); не больше двух или трёх попыток в день, иначе WhatsApp блокирует привязку.
- * TODO(этап 2): messages.upsert: type 'notify' живые, 'append' история и офлайн-очередь; из 'append' брать свои сообщения (перехват чата) и клиентские с дедупликацией по waId и порогом свежести.
+ * TODO(этап 2): граница старых сообщений: connection.update с isNewLogin: true (первая или новая привязка по QR) => appState.setLinkedAtMs(clock.now()) с перезаписью; обычные переподключения границу не сдвигают. ClassifyContext.linkedAtMs брать из appState.getLinkedAtMs(). Всё, что отправлено до привязки, пропускается полностью (решение владельца).
+ * TODO(этап 2): linkedAtMs нет в базе, а в сессии уже есть creds.me (номер привязан раньше) => отказ в запуске с понятной ошибкой: база потеряна или подменена, граница неизвестна.
+ * TODO(этап 8): часы VPS синхронизировать (chrony): при отстающих или спешащих часах свежие сообщения уйдут в before_link.
+ * TODO(этап 2): messages.upsert: type 'notify' живые, 'append' история и офлайн-очередь; из 'append' после привязки брать свои сообщения (перехват чата) и клиентские с дедупликацией по waId; отсечку по linkedAtMs делает whatsapp/inbound.ts.
  * TODO(этап 2): getMessage(key) отдаёт getSentText(key.id, key.remoteJid); логгер Baileys: logger.child({ module: 'baileys' }, { level: 'warn' }).
  * TODO(этап 2): разрывы через whatsapp/reconnect.ts; замок на папку сессии против второго экземпляра; на VPS права 700, новая привязка, сессию не копировать.
  * TODO(этап 2): newMessageId через generateMessageIDV2(sock.user.id); sendText через sendMessage(jid, { text, linkPreview: null }, { messageId }): иначе при пакете link-preview-js Baileys сам скачает ссылку из текста; перед отправкой повторить проверку isPersonalJid.

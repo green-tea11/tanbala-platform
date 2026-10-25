@@ -3,6 +3,7 @@
 import type { z } from 'zod';
 import type {
   AudioClip,
+  BudgetScope,
   Chat,
   ChatId,
   ChatIdentity,
@@ -99,8 +100,8 @@ export interface StructuredRequest<T> {
   /** Схема без transform: вход и выход совпадают, иначе её не перевести в JSON Schema. */
   readonly schema: z.ZodType<T, T>;
   readonly maxTokens: number;
-  /** Внутренний ID чата для лога токенов. */
-  readonly chatId: ChatId | null;
+  /** Внутренний ID чата: для лога токенов и лимита чата. Служебных вызовов вне чата нет. */
+  readonly chatId: ChatId;
 }
 
 /** Клиент LLM. Отказ, обрезка, неверный формат и другие сбои приходят как { ok: false }, а не исключением. */
@@ -113,13 +114,43 @@ export interface TokenLog {
   record(entry: TokenUsageEntry): Promise<void>;
 }
 
-/** Расшифровка голосовых (этап 7). Выключена, пока нет ключа и модели OpenRouter. */
+/**
+ * Расшифровка голосовых (этап 7). Выключена, пока нет ключа и модели OpenRouter: тогда конвейер отвечает
+ * на голосовое фиксированной фразой (Outbox.sendVoiceNotice). Сбой и лимит приходят значением, как у LLM.
+ */
 export type Transcriber =
   | { readonly enabled: false }
   | {
       readonly enabled: true;
-      transcribe(clip: AudioClip, chatId: ChatId): Promise<string>;
+      transcribe(clip: AudioClip, chatId: ChatId): Promise<LlmResult<string>>;
     };
+
+/** Итог попытки засчитать один вызов API в дневной лимит. */
+export type BudgetDecision =
+  { readonly ok: true } | { readonly ok: false; readonly scope: BudgetScope };
+
+/**
+ * Дневной предохранитель расходов (решение владельца): не больше API_DAILY_LIMIT вызовов API в сутки на весь бот
+ * и API_DAILY_LIMIT_PER_CHAT на один чат. Адаптеры Anthropic и OpenRouter вызывают его перед каждым вызовом API.
+ */
+export interface CallBudget {
+  /**
+   * Засчитывает один вызов, если оба лимита позволяют. Вызывается перед каждой попыткой, в том числе повторной.
+   * chatId обязателен: служебных вызовов вне чата нет, иначе вызов обошёл бы лимит чата.
+   */
+  tryConsume(chatId: ChatId, nowMs: number): BudgetDecision;
+}
+
+/** Состояние приложения в базе. */
+export interface AppStateRepo {
+  /** Момент привязки номера, мс UTC; null, пока номер не привязан. Всё, что отправлено раньше, бот пропускает. */
+  getLinkedAtMs(): number | null;
+  /**
+   * Записывает момент привязки с перезаписью. Когда писать, решает вызывающий (whatsapp/connection.ts):
+   * новая привязка (isNewLogin) задаёт новую границу, обычные переподключения её не сдвигают.
+   */
+  setLinkedAtMs(ms: number): void;
+}
 
 /**
  * Несколько записей в базу одной транзакцией: всё или ничего. Синхронно, поверх db.transaction better-sqlite3,

@@ -1,4 +1,5 @@
 import type {
+  BudgetScope,
   ChatId,
   ClientProfile,
   HandoffReason,
@@ -7,18 +8,22 @@ import type {
 } from '../domain/types.js';
 import { notImplemented } from '../shared/todo.js';
 
+/** Причина в уведомлении: для лимита обязательно указать, какой лимит исчерпан. */
+export type NotificationReason =
+  | { readonly reason: Exclude<HandoffReason, 'limit'> }
+  | { readonly reason: 'limit'; readonly scope: BudgetScope };
+
 /** Данные для уведомления менеджеру. */
-export interface ManagerNotificationInput {
+export type ManagerNotificationInput = NotificationReason & {
   /** Имя из профиля WhatsApp: недоверенный текст. */
   readonly name: string | null;
   /** Номер клиента; null, если чат пришёл только с адресом @lid. */
   readonly phone: PhoneDigits | null;
   readonly level: InterestLevel;
   readonly profile: ClientProfile;
-  readonly reason: HandoffReason;
   /** ID чата в панели. */
   readonly chatId: ChatId;
-}
+};
 
 /**
  * Текст уведомления на номер менеджера: имя и номер клиента, уровень интереса, выжимка и причина передачи.
@@ -26,7 +31,8 @@ export interface ManagerNotificationInput {
  * TODO(этап 5): фиксированный шаблон; в выжимке все поля ClientProfile: бизнес, площадь, что учитывать, число вещей, есть ли 1С, задача, особенности.
  * TODO(этап 5): нет номера => «номер скрыт» и ID чата в панели.
  * TODO(этап 5): имя и каждое поле выжимки одной строкой (переводы строк убрать), без ссылок, с лимитом длины и пометкой «со слов клиента», чтобы инъекция не подделала строки шаблона и не доставила фишинг менеджеру.
+ * TODO(этап 3): reason 'limit' нужен уже на этапе 3 (предохранитель с первых реальных вызовов): «бот замолчал в этом чате: исчерпан лимит чата (API_DAILY_LIMIT_PER_CHAT)» или «исчерпан общий лимит бота на сутки (API_DAILY_LIMIT)», плюс ID чата и номер.
  */
 export function formatManagerNotification(input: ManagerNotificationInput): string {
-  return notImplemented('этап 5', 'handoff/notification.formatManagerNotification');
+  return notImplemented('этап 3', 'handoff/notification.formatManagerNotification');
 }

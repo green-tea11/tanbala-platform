@@ -49,7 +49,10 @@ export type ReviewedText = string & { readonly __brand: 'ReviewedText' };
  */
 export type InterestLevel = 'cold' | 'warm' | 'hot';
 
-/** Почему чат ушёл менеджеру. Уходит в уведомление, в панель и в таблицу handoffs. */
+/**
+ * Почему чат ушёл менеджеру. Уходит в уведомление, в панель и в таблицу handoffs.
+ * limit: исчерпан дневной лимит вызовов API (решение владельца): бот замолкает без фразы клиенту.
+ */
 export type HandoffReason =
   | 'hot'
   | 'no_answer'
@@ -57,15 +60,31 @@ export type HandoffReason =
   | 'asked_human'
   | 'complaint'
   | 'human_took_over'
-  | 'llm_error';
+  | 'llm_error'
+  | 'limit';
 
 /**
  * Повод фразы клиенту при передаче. Фраза фиксированная и выбирается по поводу, без LLM;
  * stopRequested: клиент просит больше не писать, тогда только извинение.
+ * Перехват человеком и лимит идут без фразы клиенту, поэтому их здесь нет.
  */
 export type HandoffNotice =
-  | { readonly reason: Exclude<HandoffReason, 'human_took_over' | 'complaint'> }
+  | { readonly reason: Exclude<HandoffReason, 'human_took_over' | 'complaint' | 'limit'> }
   | { readonly reason: 'complaint'; readonly stopRequested: boolean };
+
+/** Какой дневной лимит вызовов API исчерпан: одного чата или всего бота. */
+export type BudgetScope = 'chat' | 'global';
+
+/**
+ * Дневной предохранитель расходов (решение владельца): числа из .env, по умолчанию 500 и 40.
+ * При превышении бот замолкает в этом чате и уведомляет менеджера.
+ */
+export interface ApiLimits {
+  /** API_DAILY_LIMIT: вызовов API в сутки на весь бот (Anthropic и OpenRouter вместе). */
+  readonly apiCallsPerDay: number;
+  /** API_DAILY_LIMIT_PER_CHAT: вызовов API в сутки на один чат. */
+  readonly apiCallsPerChatPerDay: number;
+}
 
 /** Автор сообщения в истории чата. */
 export type Author = 'client' | 'bot' | 'human_phone' | 'human_panel';
@@ -76,8 +95,12 @@ export type MessageKind = 'text' | 'voice' | 'other';
 /** Отдельный вызов LLM из плана: ответ, проверка черновика, оценка интереса. Ключи config/models.json. */
 export type LlmPurpose = 'reply' | 'review' | 'interest';
 
-/** Откуда исходящее сообщение. Нужен в outbound_ids, чтобы отличить эхо бота от человека. */
-export type SendOrigin = 'bot_reply' | 'handoff_notice' | 'manager_notify' | 'panel';
+/**
+ * Откуда исходящее сообщение. Нужен в outbound_ids, чтобы отличить эхо бота от человека.
+ * voice_notice: фиксированная фраза в ответ на голосовое, пока расшифровки нет.
+ */
+export type SendOrigin =
+  'bot_reply' | 'handoff_notice' | 'voice_notice' | 'manager_notify' | 'panel';
 
 /**
  * Выжимка о клиенте для менеджера (раздел плана «Роль агента»).
@@ -213,9 +236,14 @@ export type LlmFailure =
   | 'budget_exceeded'
   | 'disabled';
 
-/** Результат вызова LLM: сбой приходит значением, а не исключением, и его нельзя не обработать. */
+/**
+ * Результат вызова LLM или расшифровки: сбой приходит значением, а не исключением, и его нельзя не обработать.
+ * budget_exceeded несёт scope: какой дневной лимит исчерпан (вызова API при этом не было).
+ */
 export type LlmResult<T> =
-  { readonly ok: true; readonly value: T } | { readonly ok: false; readonly failure: LlmFailure };
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly failure: Exclude<LlmFailure, 'budget_exceeded'> }
+  | { readonly ok: false; readonly failure: 'budget_exceeded'; readonly scope: BudgetScope };
 
 /**
  * Код нарушения из бесплатных проверок кодом (шаг 4 плана): тире, цены, валюта, проценты,
@@ -254,8 +282,8 @@ export type TokenUsageEntry = UsageSource & {
   readonly cacheRead: number;
   /** Запись в кэш промпта (usage.cache_creation_input_tokens; null в ответе API => 0). */
   readonly cacheWrite: number;
-  /** Внутренний ID чата, если вызов относится к чату. */
-  readonly chatId: ChatId | null;
+  /** Внутренний ID чата: каждый вызов относится к чату, служебных вызовов вне чата нет. */
+  readonly chatId: ChatId;
   /** Удался ли вызов: неудачные тоже пишутся. */
   readonly ok: boolean;
 };

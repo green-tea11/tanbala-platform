@@ -11,6 +11,12 @@ import { notImplemented } from '../shared/todo.js';
 /** Отправка не состоялась из-за лимита исходящих или аварийного выключателя автоответов. */
 export type SendBlocked = 'skipped_limit' | 'disabled';
 
+/**
+ * Вид уведомления менеджеру. У уведомлений о лимите своя квота: исчерпание общего лимита
+ * не вытесняет уведомления о горячих клиентах и других передачах.
+ */
+export type ManagerNotifyKind = 'handoff' | 'limit';
+
 /** Итог уведомления менеджеру: waId нужен для HandoffsRepo.setManagerNotified. */
 export type ManagerNotifyResult =
   | { readonly status: 'sent'; readonly waId: WaMessageId }
@@ -33,8 +39,17 @@ export interface Outbox {
     notice: HandoffNotice,
     replyToWaId: WaMessageId,
   ): Promise<'sent' | 'skipped_no_inbound' | SendBlocked>;
+  /**
+   * Ответ на голосовое, пока расшифровки нет: ровно «Сейчас не могу прослушать голосовое, напишите, пожалуйста,
+   * текстом» (решение владельца). Текст фиксированный, не параметр; как sendBotReply, учитывает статус manager,
+   * неотвеченное входящее, лимиты и рубильник.
+   */
+  sendVoiceNotice(
+    chatId: ChatId,
+    replyToWaId: WaMessageId,
+  ): Promise<'sent' | 'skipped_manager' | 'skipped_no_inbound' | SendBlocked>;
   /** Уведомление менеджеру на MANAGER_WHATSAPP: единственное исходящее не в ответ. */
-  notifyManager(text: string): Promise<ManagerNotifyResult>;
+  notifyManager(text: string, kind: ManagerNotifyKind): Promise<ManagerNotifyResult>;
   /** Ответ менеджера из панели от имени номера: чат сразу переходит в статус manager. */
   sendFromPanel(chatId: ChatId, text: string): Promise<'sent'>;
 }
@@ -57,7 +72,9 @@ export interface OutboxDeps {
  * TODO(этап 3): перед ответом статус «печатает» с паузой из messaging/typing.ts.
  * TODO(этап 3): лимиты исходящих на чат и в час и аварийный выключатель автоответов (итоги 'skipped_limit' и 'disabled'); отправлять только текст.
  * TODO(этап 3): фразы sendHandoffNotice: hot и asked_human: «передал вопрос специалисту, он вам напишет»; no_answer: «уточню у специалиста»; check_failed и llm_error: «передам вопрос специалисту»; complaint: извинение и «передал вопрос специалисту» (как в knowledge/whatsapp.md); complaint со stopRequested: только извинение. Несколько вариантов каждой фразы.
- * TODO(этап 5): notifyManager шлёт только на managerJid; нет его => 'no_manager'; лимит уведомлений в час => 'skipped_limit'.
+ * TODO(этап 3): sendVoiceNotice отправляет ровно одну фразу «Сейчас не могу прослушать голосовое, напишите, пожалуйста, текстом» без вариантов, origin 'voice_notice'.
+ * TODO(этап 3): notifyManager шлёт только на managerJid (нужен уже предохранителю дневных лимитов); нет его => 'no_manager'; лимит уведомлений в час => 'skipped_limit'.
+ * TODO(этап 3): квоты уведомлений раздельные по kind: уведомления 'limit' (при общем лимите их может быть много) идут своей квотой и не вытесняют уведомления 'handoff' о горячих клиентах.
  * TODO(этап 6): sendFromPanel пишет с origin 'panel' и переводит чат в статус manager (by 'panel').
  */
 export function createOutbox(deps: OutboxDeps): Outbox {
