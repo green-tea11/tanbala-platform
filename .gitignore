@@ -13,6 +13,8 @@ baileys_auth_info*/
 baileys_store*.json
 creds.json
 pre-key-*.json
+tctoken-*.json
+identity-key-*.json
 session-*.json
 sender-key-*.json
 app-state-sync-*.json

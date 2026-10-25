@@ -1,0 +1,188 @@
+// Интерфейсы внешних систем (порты). Реализации живут в адаптерах (whatsapp, llm, db, voice),
+// а конвейер и агент зависят только от этих интерфейсов: в тестах их заменяют моки.
+import type { z } from 'zod';
+import type {
+  AudioClip,
+  Chat,
+  ChatId,
+  ChatIdentity,
+  ChatStatus,
+  HandoffReason,
+  InterestAssessment,
+  InterestLevel,
+  Jid,
+  LlmPurpose,
+  LlmResult,
+  MediaRef,
+  NewMessage,
+  PhoneDigits,
+  SendOrigin,
+  StatusChange,
+  StoredMessage,
+  TokenUsageEntry,
+  WaMessageId,
+} from './types.js';
+
+/** Время и паузы. В тестах фейковые часы, чтобы не ждать по-настоящему. */
+export interface Clock {
+  /** Текущее время, мс UTC. */
+  now(): number;
+  /** Пауза; signal прерывает её при остановке (пауза «печатает» до 20 с, переподключение до 30 с). */
+  sleep(ms: number, signal?: AbortSignal): Promise<void>;
+}
+
+type LogFn = (context: Readonly<Record<string, unknown>>, message?: string) => void;
+
+/**
+ * Логгер приложения (pino). Подходит и Baileys (SocketConfig['logger']), и Fastify (FastifyBaseLogger):
+ * это проверяет tests/unit/domain/logger-port.test.ts. Текст сообщений, номера и ключи в контекст не передаются.
+ */
+export interface Logger {
+  level: string;
+  trace: LogFn;
+  debug: LogFn;
+  info: LogFn;
+  warn: LogFn;
+  error: LogFn;
+  fatal: LogFn;
+  /** Нужен Fastify. */
+  silent: LogFn;
+  /** options.level: свой уровень дочернего логгера, например warn для Baileys. */
+  child(bindings: Readonly<Record<string, unknown>>, options?: { level?: string }): Logger;
+}
+
+/** Отправка с номера бота. Получает только messaging/outbox.ts: единая точка исходящих. */
+export interface MessageSender {
+  /** Новый ID исходящего сообщения: записывается в outbound_ids до отправки. */
+  newMessageId(): WaMessageId;
+  /** Отправляет текст с заранее выданным ID (опция messageId в Baileys). */
+  sendText(jid: Jid, text: string, messageId: WaMessageId): Promise<void>;
+  /** Статус «печатает» (composing) или его снятие (paused). */
+  setTyping(jid: Jid, on: boolean): Promise<void>;
+}
+
+/** Что конвейеру нужно от входящих WhatsApp: отметки о прочтении, голосовые, номера. */
+export interface WhatsAppInbox {
+  markRead(jid: Jid, waIds: readonly WaMessageId[]): Promise<void>;
+  /** Скачивает голосовое в память, обрывая поток на maxBytes. */
+  downloadAudio(media: MediaRef, maxBytes: number): Promise<AudioClip>;
+  /** Номер для адреса @lid, если WhatsApp его сообщил; иначе null. */
+  resolvePhone(jid: Jid): Promise<PhoneDigits | null>;
+}
+
+/** Всё, что адаптер WhatsApp (whatsapp/connection.ts) даёт приложению. */
+export type WhatsAppGateway = MessageSender & WhatsAppInbox;
+
+/** Блок системного промпта. cache: true ставит точку кэша (cache_control) после блока. */
+export interface SystemBlock {
+  readonly text: string;
+  readonly cache: boolean;
+}
+
+/** Реплика для LLM. Текст клиента идёт только в роли user. */
+export interface ChatTurn {
+  readonly role: 'user' | 'assistant';
+  readonly text: string;
+}
+
+/**
+ * Запрос к LLM со структурным ответом, проверяемым схемой zod.
+ * temperature, top_p и top_k: с 21.10.2026 запрос с ними возвращает 400 на всех моделях, поэтому полей нет.
+ */
+export interface StructuredRequest<T> {
+  readonly purpose: LlmPurpose;
+  /** ID модели из config/models.json. */
+  readonly model: string;
+  readonly system: readonly SystemBlock[];
+  /** История и задание вызова; последняя реплика всегда user. */
+  readonly turns: readonly ChatTurn[];
+  /** Схема без transform: вход и выход совпадают, иначе её не перевести в JSON Schema. */
+  readonly schema: z.ZodType<T, T>;
+  readonly maxTokens: number;
+  /** Внутренний ID чата для лога токенов. */
+  readonly chatId: ChatId | null;
+}
+
+/** Клиент LLM. Отказ, обрезка, неверный формат и другие сбои приходят как { ok: false }, а не исключением. */
+export interface LlmClient {
+  structured<T>(request: StructuredRequest<T>): Promise<LlmResult<T>>;
+}
+
+/** Лог расхода API: одна запись на каждый вызов, включая неудачные. Время ставит сам лог. */
+export interface TokenLog {
+  record(entry: TokenUsageEntry): Promise<void>;
+}
+
+/** Расшифровка голосовых (этап 7). Выключена, пока нет ключа и модели OpenRouter. */
+export type Transcriber =
+  | { readonly enabled: false }
+  | {
+      readonly enabled: true;
+      transcribe(clip: AudioClip, chatId: ChatId): Promise<string>;
+    };
+
+/**
+ * Несколько записей в базу одной транзакцией: всё или ничего. Синхронно, поверх db.transaction better-sqlite3,
+ * поэтому внутри run только синхронные вызовы репозиториев, без await.
+ */
+export interface UnitOfWork {
+  run<T>(work: () => T): T;
+}
+
+/** Чаты и выжимки клиентов. */
+export interface ChatsRepo {
+  /** Находит или создаёт чат по адресам и обновляет имя из профиля. */
+  upsertByIdentity(identity: ChatIdentity, pushName: string | null, nowMs: number): Chat;
+  /** Ищет чат по любому из адресов (replyJid, lidJid, pnJid); новый не создаёт. */
+  findByJid(jid: Jid): Chat | null;
+  getById(id: ChatId): Chat | null;
+  setStatus(id: ChatId, change: StatusChange, nowMs: number): void;
+  saveAssessment(id: ChatId, assessment: InterestAssessment, nowMs: number): void;
+  listForPanel(query: {
+    readonly status?: ChatStatus;
+    readonly limit: number;
+    readonly offset: number;
+  }): readonly Chat[];
+}
+
+/** История сообщений чата. */
+export interface MessagesRepo {
+  /** Записывает сообщение, если такого waId в чате ещё нет. false: дубль. */
+  insertIfNew(message: NewMessage): boolean;
+  recent(chatId: ChatId, limit: number): readonly StoredMessage[];
+  isUnansweredInbound(chatId: ChatId, waId: WaMessageId): boolean;
+  markAnswered(chatId: ChatId, upToWaId: WaMessageId): void;
+}
+
+/** Запись об исходящем сообщении: создаётся до отправки. */
+export interface OutboundRecord {
+  readonly waId: WaMessageId;
+  readonly jid: Jid;
+  readonly origin: SendOrigin;
+  /** Текст нужен Baileys для повторной отправки (getMessage). */
+  readonly text: string;
+  readonly nowMs: number;
+}
+
+/** ID исходящих сообщений. Своё сообщение с неизвестным ID значит, что пишет человек. */
+export interface OutboundIdsRepo {
+  register(record: OutboundRecord): void;
+  setResult(waId: WaMessageId, result: 'sent' | 'failed'): void;
+  find(waId: WaMessageId): Pick<OutboundRecord, 'jid' | 'origin' | 'text'> | null;
+}
+
+/** Передачи чатов менеджеру. На чат не больше одной открытой передачи, поэтому адрес везде chatId. */
+export interface HandoffsRepo {
+  /** Открывает передачу со снимком выжимки. false: открытая уже есть, повтор ничего не дублирует. */
+  open(
+    chatId: ChatId,
+    reason: HandoffReason,
+    level: InterestLevel,
+    snapshot: string,
+    nowMs: number,
+  ): boolean;
+  findOpen(chatId: ChatId): { readonly reason: HandoffReason } | null;
+  /** waId уведомления менеджеру; null: не отправлено (видно в панели, отправку повторяют). */
+  setManagerNotified(chatId: ChatId, waId: WaMessageId | null): void;
+  resolve(chatId: ChatId, nowMs: number): void;
+}

@@ -25,6 +25,8 @@ describe('.gitignore', () => {
     'baileys_auth_info/creds.json',
     'creds.json',
     'pre-key-1.json',
+    'tctoken-1.json',
+    'identity-key-1.json',
     'qr.png',
     'data/tanbala.db',
     'data/tanbala.db-wal',
@@ -51,5 +53,16 @@ describe('.gitignore', () => {
     'docs/PLAN.md',
   ])('не прячет файлы проекта: %s', (path) => {
     expect(isIgnored(path)).toBe(false);
+  });
+
+  it('в индексе git нет файлов, которые должны игнорироваться (защита от git add -f .env)', () => {
+    const result = spawnSync('git', ['ls-files', '--cached', '--ignored', '--exclude-standard'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+    });
+    if (result.status !== 0) {
+      throw new Error(`git ls-files завершился с кодом ${String(result.status)}`);
+    }
+    expect(result.stdout.split('\n').filter(Boolean)).toEqual([]);
   });
 });

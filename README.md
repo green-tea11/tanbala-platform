@@ -27,6 +27,7 @@ src/cli.ts           точка входа
 src/main.ts          сборка приложения
 src/config/          .env и настройки: единственное место с process.env
 src/domain/          общие типы и интерфейсы внешних систем
+src/shared/          общее: notImplemented для заготовок, часы, логгер pino
 src/whatsapp/        Baileys: подключение, разбор входящих, переподключение
 src/messaging/       исходящие: единственный путь отправки
 src/pipeline/        обработка входящих по шагам плана

@@ -1,10 +1,7 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-
-const ROOT = fileURLToPath(new URL('../..', import.meta.url));
-const SRC = join(ROOT, 'src');
+import { listTsFiles, SRC } from '../helpers/source-files.js';
 
 // Внешняя библиотека подключается только в своей папке-адаптере.
 // Остальной код работает через интерфейсы из src/domain и тестируется на моках.
@@ -17,22 +14,21 @@ const BOUNDARIES: Readonly<Record<string, string>> = {
 
 const ENV_READERS = ['src/config/', 'src/cli.ts'];
 
+// Единая точка исходящих: вызовы отправки только в outbox и в адаптере WhatsApp.
+const SENDERS = ['src/messaging/outbox.ts', 'src/whatsapp/connection.ts'];
+
+// Точка входа одна: только она что-то запускает при импорте.
+const ENTRY_POINT = 'src/cli.ts';
+
 interface SourceFile {
   path: string;
   text: string;
 }
 
-function listSourceFiles(dir: string): string[] {
-  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) return listSourceFiles(full);
-    return entry.name.endsWith('.ts') ? [relative(ROOT, full).split(sep).join('/')] : [];
-  });
-}
-
-const sources: readonly SourceFile[] = existsSync(SRC)
-  ? listSourceFiles(SRC).map((path) => ({ path, text: readFileSync(join(ROOT, path), 'utf8') }))
-  : [];
+const sources: readonly SourceFile[] = listTsFiles(SRC).map((file) => ({
+  path: `src/${file}`,
+  text: readFileSync(join(SRC, file), 'utf8'),
+}));
 
 function importedModules(text: string): string[] {
   const pattern = /(?:from\s+|import\s*\(\s*|import\s+)['"]([^'"]+)['"]/g;
@@ -58,11 +54,12 @@ describe('архитектура src', () => {
     expect(violations).toEqual([]);
   });
 
-  it('process.env читается только в src/config и src/cli.ts', () => {
+  it('окружение читается только в src/config и src/cli.ts', () => {
+    const envAccess =
+      /process\.env|process\[['"]env['"]\]|\benv\b[^;]*=\s*process\b|from\s+['"](?:node:)?process['"]|loadEnvFile/;
     const violations = violationsOf(({ path, text }) => {
-      const readsEnv = /process\.env|\benv\b[^;]*=\s*process\b/.test(text);
       const allowed = ENV_READERS.some((reader) => path.startsWith(reader));
-      return readsEnv && !allowed ? [path] : [];
+      return envAccess.test(text) && !allowed ? [path] : [];
     });
     expect(violations).toEqual([]);
   });
@@ -77,6 +74,20 @@ describe('архитектура src', () => {
   it('модули экспортируют только именованное: без export default', () => {
     const violations = violationsOf(({ path, text }) =>
       /export\s+default\b/.test(text) ? [path] : [],
+    );
+    expect(violations).toEqual([]);
+  });
+
+  it('сообщения отправляются только через outbox и адаптер WhatsApp', () => {
+    const violations = violationsOf(({ path, text }) =>
+      /\.(?:sendText|sendMessage)\(/.test(text) && !SENDERS.includes(path) ? [path] : [],
+    );
+    expect(violations).toEqual([]);
+  });
+
+  it('только точка входа запускает код при импорте: верхнеуровневые await и void', () => {
+    const violations = violationsOf(({ path, text }) =>
+      /^(?:await|void)\s/m.test(text) && path !== ENTRY_POINT ? [path] : [],
     );
     expect(violations).toEqual([]);
   });

@@ -1,0 +1,57 @@
+import type { LlmPurpose, PhoneDigits } from '../domain/types.js';
+import { notImplemented } from '../shared/todo.js';
+
+/** ID моделей для трёх вызовов LLM. Источник: config/models.json, меняется без правки кода. */
+export type ModelsConfig = Readonly<Record<LlmPurpose, string>>;
+
+/** Расшифровка голосовых через OpenRouter. Модель распознавания речи: открытый вопрос плана. */
+export interface VoiceConfig {
+  /** OPENROUTER_API_KEY: передаётся явно. */
+  readonly apiKey: string;
+  readonly model: string;
+}
+
+/** Проверенные настройки приложения. Все пути абсолютные, от корня проекта. */
+export interface AppConfig {
+  /** VENMART_ANTHROPIC_KEY. null: ключ не задан, LLM выключен. */
+  readonly anthropicKey: string | null;
+  /** MANAGER_WHATSAPP. null: уведомлений нет, только отметка в панели. */
+  readonly managerPhone: PhoneDigits | null;
+  /** ADMIN_PASSWORD, по умолчанию admin. */
+  readonly adminPassword: string;
+  /** null: расшифровка голосовых выключена (нет ключа или модели). */
+  readonly voice: VoiceConfig | null;
+  /** WA_ENABLED. false: к WhatsApp не подключаться и QR не показывать. */
+  readonly waEnabled: boolean;
+  /** WHATSAPP_SESSION_DIR: папка сессии Baileys, полный доступ к номеру. */
+  readonly waSessionDir: string;
+  /** DATABASE_PATH: SQLite с перепиской (персональные данные). */
+  readonly databasePath: string;
+  /** TOKEN_LOG_PATH: лог расхода API. */
+  readonly tokenLogPath: string;
+  /** Папка knowledge/ с двумя файлами знаний. */
+  readonly knowledgeDir: string;
+  /** PANEL_HOST и PANEL_PORT. */
+  readonly panel: { readonly host: string; readonly port: number };
+  readonly models: ModelsConfig;
+}
+
+/**
+ * Собирает AppConfig из переменных окружения и config/models.json. Единственное место,
+ * где разбираются переменные из .env: остальной код получает готовый AppConfig.
+ * TODO(этап 2): схема zod; при ошибке назвать переменную, но не печатать её значение (там секреты).
+ * TODO(этап 2): пути из .env считать от root, а не от текущей папки процесса; сессию, базу и лог разрешать только внутри data/ корня проекта.
+ * TODO(этап 2): пустые VENMART_ANTHROPIC_KEY, OPENROUTER_API_KEY, MANAGER_WHATSAPP => null; MANAGER_WHATSAPP только цифры, приведение к PhoneDigits здесь.
+ * TODO(этап 2): WA_ENABLED только «true» или «false», по умолчанию false.
+ * TODO(этап 3): ANTHROPIC_CUSTOM_HEADERS в окружении => отказать в запуске: SDK подмешивает эти заголовки после ключа и может его подменить.
+ * TODO(этап 3): ANTHROPIC_BASE_URL в окружении => предупреждение в лог: baseURL передаём в SDK явно.
+ * TODO(этап 3): стандартную переменную ключа SDK не читать никогда: ключ только из VENMART_ANTHROPIC_KEY.
+ * TODO(этап 7): voice собирать, только когда есть и ключ OpenRouter, и модель.
+ */
+export function loadConfig(
+  env: Readonly<Record<string, string | undefined>>,
+  modelsJson: unknown,
+  root: string,
+): AppConfig {
+  return notImplemented('этап 2', 'config/env.loadConfig');
+}
