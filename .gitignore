@@ -1,0 +1,55 @@
+# Секреты: ключи и пароль. Шаблон .env.example коммитится
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Сессия WhatsApp (Baileys): полный доступ к номеру. Никуда не копировать
+data/whatsapp-session/
+auth_info*/
+auth_info*.json
+baileys_auth_info*/
+baileys_store*.json
+creds.json
+pre-key-*.json
+session-*.json
+sender-key-*.json
+app-state-sync-*.json
+lid-mapping-*.json
+device-list-*.json
+qr*.png
+
+# Данные: база с перепиской клиентов (персональные данные), голосовые, лог токенов
+data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.ogg
+*.opus
+token-usage*.jsonl
+
+# Зависимости, сборка, отчёты тестов
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Логи
+logs/
+*.log
+
+# Windows и редакторы
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+*.lnk
+.DS_Store
+.idea/
+.vscode/
+
+# Локальные настройки Claude Code
+.claude/settings.local.json
