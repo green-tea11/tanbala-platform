@@ -1,10 +1,16 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import type { Clock } from '../domain/ports.js';
-import { notImplemented } from './todo.js';
 
 /**
  * Системные часы для рабочего режима. В тестах вместо них фейковые часы.
- * TODO(этап 2): now через Date.now (мс UTC); sleep через setTimeout из node:timers/promises с передачей signal, чтобы остановка прерывала паузу.
+ * now: Date.now, мс UTC. sleep: setTimeout из node:timers/promises с передачей signal: остановка прерывает
+ * паузу, и промис отклоняется с AbortError (name 'AbortError'), поэтому код после паузы не выполняется.
  */
 export function createSystemClock(): Clock {
-  return notImplemented('этап 2', 'shared/clock.createSystemClock');
+  return {
+    now: (): number => Date.now(),
+    sleep: async (ms: number, signal?: AbortSignal): Promise<void> => {
+      await delay(ms, undefined, { signal });
+    },
+  };
 }

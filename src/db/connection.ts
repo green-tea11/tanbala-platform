@@ -1,20 +1,39 @@
-import type Database from 'better-sqlite3';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
+import Database from 'better-sqlite3';
 import type { UnitOfWork } from '../domain/ports.js';
-import { notImplemented } from '../shared/todo.js';
+
+/** База только в памяти: для тестов. Ей не нужны ни папка, ни WAL. */
+const MEMORY_PATH = ':memory:';
+
+/** Сколько ждать, пока другое соединение отпустит блокировку, прежде чем упасть с SQLITE_BUSY. */
+const BUSY_TIMEOUT_MS = 5000;
 
 /**
  * Открывает базу SQLite (DATABASE_PATH): диалоги, статусы, выжимки клиентов.
- * TODO(этап 2): создать папку файла; pragma journal_mode = WAL, foreign_keys = ON, busy_timeout.
+ * Создаёт папку файла; WAL (чтение не ждёт записи), внешние ключи и ожидание блокировки BUSY_TIMEOUT_MS.
  * TODO(этап 8): на VPS права 600 на файл базы; файлы -wal и -shm и бэкапы тоже содержат персональные данные.
  */
 export function openDatabase(path: string): Database.Database {
-  return notImplemented('этап 2', 'db/connection.openDatabase');
+  const isMemory = path === MEMORY_PATH;
+  if (!isMemory) mkdirSync(dirname(path), { recursive: true });
+  const db = new Database(path);
+  if (!isMemory) db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
+  db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
+  return db;
 }
 
 /**
  * Транзакции для нескольких записей подряд (перехват чата, передача менеджеру). Все репозитории на этом же соединении.
- * TODO(этап 3): run(work) через db.transaction(work)() better-sqlite3: синхронно, при исключении откат.
+ * run(work) выполняет work в db.transaction(...).immediate(): блокировка записи берётся сразу, поэтому прочитанное
+ * внутри не устареет до записи. Синхронно; исключение откатывает всё и пробрасывается; вложенный run
+ * становится точкой сохранения (SAVEPOINT). Промис из work запрещён: better-sqlite3 бросит TypeError и откатит.
  */
 export function createUnitOfWork(db: Database.Database): UnitOfWork {
-  return notImplemented('этап 3', 'db/connection.createUnitOfWork');
+  return {
+    run<T>(work: () => T): T {
+      return db.transaction(work).immediate();
+    },
+  };
 }

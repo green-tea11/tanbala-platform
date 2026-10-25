@@ -31,6 +31,44 @@ const EXCLUDED = new Set([
   'checks/code-checks.ts#countSentences',
   'checks/code-checks.ts#normalizeDraft',
   'checks/code-checks.ts#runCodeChecks',
+  // Этап 2: конфиг, логгер, часы (тесты в tests/unit/config и tests/unit/shared).
+  'config/env.ts#loadConfig',
+  'config/dotenv.ts#loadEnvironment',
+  'config/errors.ts#formatFatalError',
+  'shared/logger.ts#createLogger',
+  'shared/clock.ts#createSystemClock',
+  // Этап 2: база (тесты в tests/unit/db).
+  'db/connection.ts#openDatabase',
+  'db/connection.ts#createUnitOfWork',
+  'db/migrations.ts#runMigrations',
+  'db/time.ts#assertTimeMs',
+  'db/repos/app-state.ts#createAppStateRepo',
+  'db/repos/pairing-attempts.ts#createPairingGuard',
+  'db/repos/chats.ts#createChatsRepo',
+  'db/repos/messages.ts#createMessagesRepo',
+  'db/repos/backlog.ts#createBacklogRepo',
+  'db/repos/known-chats.ts#createKnownChatsRepo',
+  'db/process-lock.ts#acquireProcessLock',
+  // Этап 2: WhatsApp без сети (тесты в tests/unit/whatsapp).
+  'whatsapp/jid.ts#phoneToJid',
+  'whatsapp/jid.ts#jidToPhone',
+  'whatsapp/jid.ts#isPersonalJid',
+  'whatsapp/jid.ts#normalizeJid',
+  'whatsapp/reconnect.ts#decideOnDisconnect',
+  'whatsapp/inbound.ts#classifyUpsert',
+  // Этап 2: подключение к WhatsApp, QR, замок сессии (тесты на поддельном сокете).
+  'whatsapp/connection.ts#startWhatsApp',
+  'whatsapp/qr.ts#createQrPresenter',
+  'whatsapp/lid-resolver.ts#createLidResolver',
+  'whatsapp/lid-resolver.ts#jidOf',
+  'whatsapp/socket-config.ts#buildSocketConfig',
+  'whatsapp/socket-config.ts#fetchVersionWithTimeout',
+  'whatsapp/reconnect-policy.ts#createReconnectPolicy',
+  'whatsapp/offline-queue.ts#createOfflineQueueWatch',
+  'whatsapp/message-intake.ts#createMessageIntake',
+  // Этап 2: сборка приложения и сохранение входящих (тесты в tests/unit).
+  'main.ts#main',
+  'pipeline/recorder.ts#createInboundRecorder',
 ]);
 
 type AnyFunction = (...args: unknown[]) => unknown;
