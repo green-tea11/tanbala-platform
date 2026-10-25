@@ -5,17 +5,28 @@ import type {
   MessageSender,
   OutboundIdsRepo,
 } from '../domain/ports.js';
-import type { ChatId, HandoffNotice, Jid, ReviewedText, WaMessageId } from '../domain/types.js';
+import type {
+  ChatId,
+  HandoffNotice,
+  Jid,
+  PhoneDigits,
+  ReviewedText,
+  WaMessageId,
+} from '../domain/types.js';
 import { notImplemented } from '../shared/todo.js';
 
-/** Отправка не состоялась из-за лимита исходящих или аварийного выключателя автоответов. */
-export type SendBlocked = 'skipped_limit' | 'disabled';
+/**
+ * Отправка не состоялась: лимит исходящих, аварийный выключатель автоответов или закрытый режим
+ * (чат не из TEST_ALLOWLIST: вторая линия защиты после whatsapp/inbound.ts).
+ */
+export type SendBlocked = 'skipped_limit' | 'disabled' | 'skipped_test_mode';
 
 /**
  * Вид уведомления менеджеру. У уведомлений о лимите своя квота: исчерпание общего лимита
  * не вытесняет уведомления о горячих клиентах и других передачах.
+ * backlog: одно уведомление со списком чатов, где сообщения за время простоя старше порога.
  */
-export type ManagerNotifyKind = 'handoff' | 'limit';
+export type ManagerNotifyKind = 'handoff' | 'limit' | 'backlog';
 
 /** Итог уведомления менеджеру: waId нужен для HandoffsRepo.setManagerNotified. */
 export type ManagerNotifyResult =
@@ -62,6 +73,8 @@ export interface OutboxDeps {
   outboundIds: OutboundIdsRepo;
   clock: Clock;
   managerJid: Jid | null;
+  /** Закрытый режим: номера из TEST_ALLOWLIST; null, если режим выключен. */
+  testAllowlist: ReadonlySet<PhoneDigits> | null;
   random: () => number;
 }
 
@@ -74,7 +87,8 @@ export interface OutboxDeps {
  * TODO(этап 3): фразы sendHandoffNotice: hot и asked_human: «передал вопрос специалисту, он вам напишет»; no_answer: «уточню у специалиста»; check_failed и llm_error: «передам вопрос специалисту»; complaint: извинение и «передал вопрос специалисту» (как в knowledge/whatsapp.md); complaint со stopRequested: только извинение. Несколько вариантов каждой фразы.
  * TODO(этап 3): sendVoiceNotice отправляет ровно одну фразу «Сейчас не могу прослушать голосовое, напишите, пожалуйста, текстом» без вариантов, origin 'voice_notice'.
  * TODO(этап 3): notifyManager шлёт только на managerJid (нужен уже предохранителю дневных лимитов); нет его => 'no_manager'; лимит уведомлений в час => 'skipped_limit'.
- * TODO(этап 3): квоты уведомлений раздельные по kind: уведомления 'limit' (при общем лимите их может быть много) идут своей квотой и не вытесняют уведомления 'handoff' о горячих клиентах.
+ * TODO(этап 3): квоты уведомлений раздельные по kind: уведомления 'limit' (при общем лимите их может быть много) идут своей квотой и не вытесняют уведомления 'handoff' о горячих клиентах; 'backlog' одно на разбор офлайн-очереди.
+ * TODO(этап 2): закрытый режим (testAllowlist не null): перед любой отправкой в чат клиента (sendBotReply, sendHandoffNotice, sendVoiceNotice) номер чата должен быть в списке, иначе 'skipped_test_mode' без отправки; номер не известен => тоже отказ. Уведомления на managerJid разрешены. Вторая линия защиты: такие чаты уже отсекает whatsapp/inbound.ts.
  * TODO(этап 6): sendFromPanel пишет с origin 'panel' и переводит чат в статус manager (by 'panel').
  */
 export function createOutbox(deps: OutboxDeps): Outbox {

@@ -7,6 +7,8 @@ import { notImplemented } from '../shared/todo.js';
  * TODO(этап 2): client_profiles 1:1 с chats (бизнес, площадь, что учитывать, число вещей, есть ли 1С, задача, особенности, готовый текст выжимки).
  * TODO(этап 2): messages с UNIQUE(chat_id, wa_id); автор client, bot, human_phone или human_panel; вид text, voice или other; для голосовых текст расшифровки.
  * TODO(этап 2): app_state (ключ, значение): linked_at_ms, момент первой привязки номера.
+ * TODO(этап 2): pairing_attempts (время попытки, мс UTC): не больше двух привязок по QR за скользящие 24 часа (db/repos/pairing-attempts.ts).
+ * TODO(этап 2): backlog_chats (chat_id PK, время последнего сообщения простоя, notified_at или NULL): список простоя для одного уведомления менеджеру (db/repos/backlog.ts).
  * TODO(этап 3): outbound_ids (wa_id, jid, origin bot_reply, handoff_notice, voice_notice, manager_notify или panel, текст для getMessage, статус pending, sent или failed); запись создаётся ДО отправки.
  * TODO(этап 3): счётчики вызовов API по суткам (время Алматы): общий и по чатам, для дневного предохранителя.
  * TODO(этап 5): handoffs (причина, уровень, снимок выжимки, статус и ID уведомления); частичный уникальный индекс: не больше одной открытой передачи на чат.

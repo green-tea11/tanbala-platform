@@ -82,7 +82,7 @@ export type HandoffNotice =
 export type BudgetScope = 'chat' | 'global';
 
 /**
- * Дневной предохранитель расходов (решение владельца): числа из .env, по умолчанию 500 и 40.
+ * Дневной предохранитель расходов (решение владельца): числа из .env, по умолчанию 500 и 100.
  * При превышении бот замолкает в этом чате и уведомляет менеджера.
  */
 export interface ApiLimits {
@@ -179,6 +179,18 @@ export interface OwnMessage {
   /** Текст нужен, чтобы сохранить в истории слова менеджера с телефона. */
   readonly content: MessageContent;
   readonly tsMs: number;
+}
+
+/** Чат, где сообщения за время простоя бота старше порога BACKLOG_MAX_AGE_HOURS: бот на них не отвечал. */
+export interface BacklogChat {
+  /** ID чата в панели. */
+  readonly chatId: ChatId;
+  /** Имя из профиля WhatsApp: недоверенный текст. */
+  readonly name: string | null;
+  /** Номер клиента; null, если чат пришёл только с адресом @lid. */
+  readonly phone: PhoneDigits | null;
+  /** Время последнего такого сообщения, мс UTC. */
+  readonly lastMessageAtMs: number;
 }
 
 /** Сообщение для записи в историю чата. */

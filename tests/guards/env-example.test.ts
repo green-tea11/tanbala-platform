@@ -18,6 +18,9 @@ const REQUIRED_KEYS = [
   'TOKEN_LOG_PATH',
   'API_DAILY_LIMIT',
   'API_DAILY_LIMIT_PER_CHAT',
+  'BACKLOG_MAX_AGE_HOURS',
+  'TEST_MODE',
+  'TEST_ALLOWLIST',
   'PANEL_HOST',
   'PANEL_PORT',
 ];
@@ -63,9 +66,18 @@ describe('.env.example', () => {
     expect(example.get('PANEL_HOST')).toBe('127.0.0.1');
   });
 
-  it('задаёт предохранитель расходов: 500 вызовов API в сутки на бот и 40 на чат', () => {
+  it('задаёт предохранитель расходов: 500 вызовов API в сутки на бот и 100 на чат', () => {
     expect(example.get('API_DAILY_LIMIT')).toBe('500');
-    expect(example.get('API_DAILY_LIMIT_PER_CHAT')).toBe('40');
+    expect(example.get('API_DAILY_LIMIT_PER_CHAT')).toBe('100');
+  });
+
+  it('отвечает на сообщения за время простоя не старше 12 часов', () => {
+    expect(example.get('BACKLOG_MAX_AGE_HOURS')).toBe('12');
+  });
+
+  it('включает закрытый режим по умолчанию, список номеров заполняет владелец', () => {
+    expect(example.get('TEST_MODE')).toBe('true');
+    expect(example.get('TEST_ALLOWLIST')).toBe('');
   });
 
   it('держит WhatsApp выключенным, пока владелец не разрешит подключение', () => {

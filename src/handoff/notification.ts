@@ -1,4 +1,5 @@
 import type {
+  BacklogChat,
   BudgetScope,
   ChatId,
   ClientProfile,
@@ -35,4 +36,15 @@ export type ManagerNotificationInput = NotificationReason & {
  */
 export function formatManagerNotification(input: ManagerNotificationInput): string {
   return notImplemented('этап 3', 'handoff/notification.formatManagerNotification');
+}
+
+/**
+ * Одно уведомление менеджеру со списком чатов, на которые бот не ответил после простоя (решение владельца).
+ * Чистая функция, без LLM.
+ * TODO(этап 2): фиксированный шаблон: заголовок с порогом в часах и числом чатов, затем по строке на чат: имя, номер или «номер скрыт», ID чата, время последнего сообщения по Алматы.
+ * TODO(этап 2): имена одной строкой (переводы строк, Cc и Cf убрать), без ссылок, с лимитом длины; общий лимит длины сообщения: лишние чаты свернуть в «и ещё N чатов, список в панели».
+ * TODO(этап 2): в закрытом режиме сюда попадают только чаты из TEST_ALLOWLIST: остальные отсекает whatsapp/inbound.ts.
+ */
+export function formatBacklogNotification(chats: readonly BacklogChat[]): string {
+  return notImplemented('этап 2', 'handoff/notification.formatBacklogNotification');
 }

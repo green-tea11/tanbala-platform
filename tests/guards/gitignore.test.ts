@@ -28,6 +28,7 @@ describe('.gitignore', () => {
     'tctoken-1.json',
     'identity-key-1.json',
     'qr.png',
+    '.pairing-attempts.json',
     'data/tanbala.db',
     'data/tanbala.db-wal',
     'data/token-usage.jsonl',

@@ -3,6 +3,7 @@
 import type { z } from 'zod';
 import type {
   AudioClip,
+  BacklogChat,
   BudgetScope,
   Chat,
   ChatId,
@@ -139,6 +140,36 @@ export interface CallBudget {
    * chatId обязателен: служебных вызовов вне чата нет, иначе вызов обошёл бы лимит чата.
    */
   tryConsume(chatId: ChatId, nowMs: number): BudgetDecision;
+}
+
+/** Итог попытки начать привязку номера по QR. */
+export type PairingDecision =
+  | { readonly ok: true; readonly attemptsLeft: number }
+  | { readonly ok: false; readonly retryAfterMs: number };
+
+/**
+ * Защита от частых привязок по QR (решение владельца): не больше двух попыток за скользящие 24 часа,
+ * счётчик в базе, третью попытку запрещает код. Частые неудачи WhatsApp наказывает блокировкой привязки.
+ */
+export interface PairingGuard {
+  /**
+   * Засчитывает попытку, если лимит позволяет; иначе отказ и через сколько мс можно снова.
+   * Вызывается до запуска сокета и первого QR; одна попытка = один сеанс привязки (QR внутри него обновляется).
+   */
+  tryBeginAttempt(nowMs: number): PairingDecision;
+}
+
+/**
+ * Чаты простоя в базе: сообщения клиента старше порога BACKLOG_MAX_AGE_HOURS, на которые бот не ответил.
+ * Отметки в базе, а не в памяти: при падении список не теряется, при повторной доставке не дублируется.
+ */
+export interface BacklogRepo {
+  /** Отмечает чат простоя; повтор для того же чата только обновляет время последнего сообщения. */
+  markStale(chatId: ChatId, lastMessageAtMs: number): void;
+  /** Чаты простоя, о которых менеджеру ещё не сообщили (с именем и номером из чата). */
+  listPending(): readonly BacklogChat[];
+  /** Отметка «менеджеру сообщили»: ставится только после успешной отправки уведомления. */
+  markNotified(chatIds: readonly ChatId[], nowMs: number): void;
 }
 
 /** Состояние приложения в базе. */
