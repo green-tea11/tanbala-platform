@@ -52,7 +52,15 @@ export interface RunningApp {
    * Повторный вызов отдаёт тот же промис.
    */
   stop(): Promise<void>;
+  /**
+   * Остановка закончилась (база закрыта, замок снят), даже если с ошибкой; не отклоняется. 'requested': по stop(),
+   * иначе причина, по которой WhatsApp остановился сам: cli.ts ставит по ней код выхода 1 для службы этапа 8.
+   */
+  readonly stopped: Promise<AppStopReason>;
 }
+
+/** Почему приложение остановилось: по команде stop() или WhatsApp остановился сам (причина адаптера). */
+export type AppStopReason = 'requested' | WhatsAppStopReason;
 
 /** Уровень лога приложения; у Baileys свой уровень warn (whatsapp/connection.ts). */
 const LOG_LEVEL = 'info';
@@ -79,7 +87,8 @@ const STOP_MESSAGES: Readonly<Record<WhatsAppStopReason, string>> = {
     'Попытка засчитана (не больше двух за 24 часа): запустите бота снова вручную, когда будете готовы сканировать QR',
   replaced:
     'WhatsApp остановлен: номер подключён в другом месте с этой же сессией (например, запущен второй экземпляр бота). ' +
-    'Остановите лишний экземпляр и запустите бота снова',
+    'Остановите лишний экземпляр и запустите бота снова. ' +
+    'Если второго экземпляра нет, отвяжите устройство в телефоне и удалите папку сессии',
   forbidden:
     'WhatsApp остановлен: сервер отказал в доступе (код 403), возможна блокировка номера. ' +
     'Проверьте номер в телефоне; сам бот не переподключается',
@@ -126,9 +135,15 @@ interface AppContext {
 
 /** Подключение к WhatsApp этого запуска: меняется только в main. */
 interface WhatsAppLink {
-  connection: WhatsAppConnection | null;
-  /** Остановилось само (onStopped): сокет уже закрыт, stop() его не трогает. */
-  stoppedBySelf: boolean;
+  /** Запуск подключения; null, пока WhatsApp не запускали (или он выключен). */
+  started: Promise<WhatsAppConnection> | null;
+}
+
+/** Остановка этого запуска: приложение для cli.ts и остановка по причине для самоостановки WhatsApp. */
+interface Lifecycle {
+  readonly app: RunningApp;
+  /** Остановка по причине; первая причина попадает в app.stopped. */
+  stopWith(reason: AppStopReason): Promise<void>;
 }
 
 /** Тот же отказ PairingLimitError, но текст для владельца: время следующей попытки по Алматы. */
@@ -148,7 +163,7 @@ class PairingLimitExplained extends PairingLimitError {
  * В whatsapp/connection.ts уходят: состояние приложения (граница привязки, отметка неполной истории), PairingGuard
  * (не больше двух привязок по QR за 24 часа, копия счётчика .pairing-attempts.json в корне проекта), список
  * закрытого режима, порог простоя в мс и показ QR в терминал и в data/qr.png. WhatsApp остановился сам =>
- * понятный лог владельцу и та же остановка, что у stop().
+ * понятный лог владельцу и та же остановка, что у stop(), а причина приходит в RunningApp.stopped.
  * Ошибка запуска: SafeError (ConfigError, ProcessLockBusyError, LinkBoundaryMissingError, PairingLimitError
  * со временем следующей попытки по Алматы) пишется в лог своим текстом, прочие без текста в сообщении; база
  * закрывается, замок снимается, ошибка всплывает в cli.ts.
@@ -195,17 +210,20 @@ async function startLocked(
 ): Promise<RunningApp> {
   const clock = createSystemClock();
   const storage = openStorage(config, logger, clock);
-  const link: WhatsAppLink = { connection: null, stoppedBySelf: false };
-  const app = runningApp(link, storage, lock, logger);
+  const link: WhatsAppLink = { started: null };
+  const lifecycle = createLifecycle(link, storage, lock, logger);
   try {
     if (!config.waEnabled) {
       logger.warn({}, 'WhatsApp выключен (WA_ENABLED=false)');
-      return app;
+      return lifecycle.app;
     }
     const context: AppContext = { config, root: options.root, logger, clock, storage };
+    const deps = whatsAppDeps(context, onStoppedOf(lifecycle, logger));
     const start = options.startWhatsApp ?? startWhatsApp;
-    link.connection = await start(whatsAppDeps(context, onStoppedOf(link, app, logger)));
-    return app;
+    // Ссылка на запуск есть до вызова адаптера: самоостановка во время запуска дождётся его и остановит подключение.
+    link.started = Promise.resolve().then(() => start(deps));
+    await link.started;
+    return lifecycle.app;
   } catch (error: unknown) {
     storage.close();
     throw error;
@@ -310,16 +328,14 @@ function assembleStorage(
 
 // WhatsApp.
 
-/** WhatsApp остановился сам: понятный лог владельцу и та же остановка, что у stop(), без повторной остановки сокета. */
+/** WhatsApp остановился сам: понятный лог владельцу и та же остановка, что у stop(), с причиной в app.stopped. */
 function onStoppedOf(
-  link: WhatsAppLink,
-  app: RunningApp,
+  lifecycle: Lifecycle,
   logger: Logger,
 ): (reason: WhatsAppStopReason) => Promise<void> {
   return (reason) => {
-    link.stoppedBySelf = true;
     logger.error({ reason }, STOP_MESSAGES[reason]);
-    return app.stop();
+    return lifecycle.stopWith(reason);
   };
 }
 
@@ -378,21 +394,32 @@ function settle(work: () => void): Promise<void> {
 
 // Остановка.
 
-function runningApp(
+/** Остановка один раз: повторные вызовы и самоостановка WhatsApp получают тот же промис. */
+function createLifecycle(
   link: WhatsAppLink,
   storage: Storage,
   lock: ProcessLock,
   logger: Logger,
-): RunningApp {
+): Lifecycle {
   let stopping: Promise<void> | null = null;
-  return {
-    stop: () => {
-      stopping ??= shutdown(link, storage, lock, logger);
-      return stopping;
-    },
+  // Исполнитель промиса вызывается сразу: markStopped назначена до первого использования.
+  let markStopped!: (reason: AppStopReason) => void;
+  const stopped = new Promise<AppStopReason>((resolve) => {
+    markStopped = resolve;
+  });
+  const stopWith = (reason: AppStopReason): Promise<void> => {
+    stopping ??= shutdown(link, storage, lock, logger).finally(() => {
+      markStopped(reason);
+    });
+    return stopping;
   };
+  return { app: { stop: () => stopWith('requested'), stopped }, stopWith };
 }
 
+/**
+ * WhatsApp, база, замок. stop() адаптера вызывается и после самоостановки (повторный вызов безопасен): он дожидается
+ * очереди событий, поэтому последние события пишутся в ещё открытую базу.
+ */
 async function shutdown(
   link: WhatsAppLink,
   storage: Storage,
@@ -400,11 +427,23 @@ async function shutdown(
   logger: Logger,
 ): Promise<void> {
   try {
-    if (link.connection !== null && !link.stoppedBySelf) await link.connection.stop();
+    const connection = await startedConnection(link);
+    if (connection !== null) await connection.stop();
   } finally {
     closeStorage(storage, lock);
   }
   logger.info({ ignored: storage.recorder.ignoredCount() }, 'Бот остановлен');
+}
+
+/** Подключение, если его запускали и запуск удался; самоостановка во время запуска его дожидается. */
+async function startedConnection(link: WhatsAppLink): Promise<WhatsAppConnection | null> {
+  if (link.started === null) return null;
+  try {
+    return await link.started;
+  } catch {
+    // Запуск не удался: его ошибку разбирает main, останавливать нечего.
+    return null;
+  }
 }
 
 /** Замок снимается после закрытия базы: следующий экземпляр не начнёт, пока эта ещё открыта. */

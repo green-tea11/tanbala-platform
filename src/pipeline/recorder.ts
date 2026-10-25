@@ -42,7 +42,10 @@ export interface InboundRecorder {
   onEvent(event: WaEvent): Promise<void>;
   /** Чаты первой синхронизации (messaging-history.set) в known_chats одной транзакцией. */
   onHistoryChats(chats: readonly HistoryChat[]): void;
-  /** Сколько сообщений пропущено с записью в known_chats (not_allowlisted, before_link): для лога счётчиком. */
+  /**
+   * Сколько сообщений пропущено с записью в known_chats (not_allowlisted, before_link, undecryptable):
+   * для лога счётчиком.
+   */
   ignoredCount(): number;
 }
 
@@ -69,9 +72,10 @@ const LID_SUFFIX = '@lid';
  * client: чат через upsertByIdentity (имя из профиля обновляется, статус не меняется), сообщение клиента и все
  * адреса чата в known_chats, одной транзакцией. stale: то же плюс отметка простоя временем сообщения; повторная
  * доставка того же waId чат не отмечает (pipeline/backlog.ts). own: сообщение с телефона (author human_phone) в чате,
- * найденном по адресу, или в новом чате с этим адресом. ignore с адресом (not_allowlisted, before_link): только
- * known_chats и счётчик, без логов; прочие ignore: ничего. Логи без текста, имён, номеров и адресов: только ID чата
- * и вид сообщения. Записи синхронные (better-sqlite3), stop() здесь не вызывается и не ожидается.
+ * найденном по адресу, или в новом чате с этим адресом. ignore с адресом (not_allowlisted, before_link и
+ * undecryptable: сообщение не расшифровалось, но чат с перепиской): только known_chats и счётчик, без логов; прочие
+ * ignore: ничего. Логи без текста, имён, номеров и адресов: только ID чата и вид сообщения. Записи синхронные
+ * (better-sqlite3), stop() здесь не вызывается и не ожидается.
  */
 export function createInboundRecorder(deps: InboundRecorderDeps): InboundRecorder {
   let ignored = 0;

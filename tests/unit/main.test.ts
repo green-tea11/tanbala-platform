@@ -212,6 +212,7 @@ describe('main: WA_ENABLED=false', () => {
 
     expect(databaseOpen(harness.dbPath)).toBe(false);
     expect(lockFree(harness.lockPath)).toBe(true);
+    await expect(app.stopped).resolves.toBe('requested');
     expect(harness.records()).toContainEqual(
       expect.objectContaining({ level: INFO, msg: 'Бот остановлен', ignored: 0 }),
     );
@@ -467,7 +468,7 @@ describe('main: WA_ENABLED=true, зависимости WhatsApp', () => {
 });
 
 describe('main: остановка с WhatsApp', () => {
-  it('stop останавливает WhatsApp один раз, закрывает базу и снимает замок', async () => {
+  it('stop останавливает WhatsApp один раз, закрывает базу и снимает замок; stopped: requested', async () => {
     const harness = useHarness();
     const { connection, stop } = fakeConnection();
     const app = await harness.run(ENABLED_ENV, { startWhatsApp: fakeStart(connection) });
@@ -478,9 +479,10 @@ describe('main: остановка с WhatsApp', () => {
     expect(stop).toHaveBeenCalledTimes(1);
     expect(databaseOpen(harness.dbPath)).toBe(false);
     expect(lockFree(harness.lockPath)).toBe(true);
+    await expect(app.stopped).resolves.toBe('requested');
   });
 
-  it('сбой остановки WhatsApp: база закрыта и замок снят, ошибка всплывает', async () => {
+  it('сбой остановки WhatsApp: база закрыта и замок снят, ошибка всплывает, stopped всё равно приходит', async () => {
     const harness = useHarness();
     const { connection } = fakeConnection(() => Promise.reject(new Error('сокет завис')));
     const app = await harness.run(ENABLED_ENV, { startWhatsApp: fakeStart(connection) });
@@ -489,12 +491,68 @@ describe('main: остановка с WhatsApp', () => {
 
     expect(databaseOpen(harness.dbPath)).toBe(false);
     expect(lockFree(harness.lockPath)).toBe(true);
+    await expect(app.stopped).resolves.toBe('requested');
+  });
+
+  it('самоостановка: база закрывается после остановки подключения, события его очереди записываются', async () => {
+    const harness = useHarness();
+    const holder: { deps: WhatsAppDeps | null } = { deps: null };
+    // Повторный stop() адаптера дожидается его очереди: последнее событие приходит во время остановки.
+    const { connection, stop } = fakeConnection(
+      () => holder.deps?.onEvent(CLIENT_EVENT) ?? Promise.resolve(),
+    );
+    const startWhatsApp: StartWhatsApp = vi.fn((deps: WhatsAppDeps) => {
+      holder.deps = deps;
+      return Promise.resolve(connection);
+    });
+    const app = await harness.run(ENABLED_ENV, { startWhatsApp });
+
+    await depsOf(startWhatsApp).onStopped('gave_up');
+
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(count(harness.dbPath, 'messages')).toBe(1);
+    expect(databaseOpen(harness.dbPath)).toBe(false);
+    await expect(app.stopped).resolves.toBe('gave_up');
+  });
+
+  it('самоостановка во время запуска: остановка дожидается запуска и останавливает подключение', async () => {
+    const harness = useHarness();
+    const { connection, stop } = fakeConnection();
+    const startWhatsApp: StartWhatsApp = vi.fn((deps: WhatsAppDeps) => {
+      void deps.onStopped('forbidden');
+      return Promise.resolve(connection);
+    });
+
+    const app = await harness.run(ENABLED_ENV, { startWhatsApp });
+
+    await expect(app.stopped).resolves.toBe('forbidden');
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(databaseOpen(harness.dbPath)).toBe(false);
+    expect(lockFree(harness.lockPath)).toBe(true);
+  });
+
+  it('самоостановка, затем отказ запуска: всплывает ошибка запуска, база закрыта, замок снят', async () => {
+    const harness = useHarness();
+    const startWhatsApp: StartWhatsApp = vi.fn((deps: WhatsAppDeps) => {
+      void deps.onStopped('reconnect_failed');
+      return Promise.reject(new Error('Сбой открытия сокета'));
+    });
+
+    await expect(harness.run(ENABLED_ENV, { startWhatsApp })).rejects.toThrow(
+      'Сбой открытия сокета',
+    );
+
+    expect(databaseOpen(harness.dbPath)).toBe(false);
+    expect(lockFree(harness.lockPath)).toBe(true);
   });
 
   it.each<[WhatsAppStopReason, RegExp]>([
     ['logged_out', /сессия отозвана в телефоне.*новая привязка/],
     ['pairing_timeout', /QR не отсканирован.*связь оборвалась.*засчитана.*вручную/],
-    ['replaced', /подключён в другом месте/],
+    [
+      'replaced',
+      /подключён в другом месте.*Если второго экземпляра нет, отвяжите устройство в телефоне и удалите папку сессии/,
+    ],
     ['forbidden', /отказал в доступе/],
     ['gave_up', /переподключиться не удалось/],
     ['reconnect_failed', /сбой при переподключении/],
@@ -503,7 +561,7 @@ describe('main: остановка с WhatsApp', () => {
     ['link_save_failed', /момент привязки не записался в базу.*привяжите номер заново/],
     ['handler_failed', /сбоев подряд.*выше в логе/],
   ])(
-    'onStopped(%s): понятный лог владельцу, база закрыта, замок снят, события дальше не пишутся',
+    'onStopped(%s): понятный лог владельцу, подключение остановлено, база закрыта, замок снят, stopped с причиной',
     async (reason, text) => {
       const harness = useHarness();
       const { connection, stop } = fakeConnection();
@@ -520,15 +578,17 @@ describe('main: остановка с WhatsApp', () => {
           msg: expect.stringMatching(text) as unknown,
         }),
       );
+      expect(stop).toHaveBeenCalledTimes(1);
       expect(databaseOpen(harness.dbPath)).toBe(false);
       expect(lockFree(harness.lockPath)).toBe(true);
+      await expect(app.stopped).resolves.toBe(reason);
       await expect(deps.onEvent(CLIENT_EVENT)).resolves.toBeUndefined();
       await expect(
         deps.onHistoryChats([{ jid: CLIENT_JID, lastMessageAtMs: 1 }]),
       ).resolves.toBeUndefined();
       await expect(deps.onOfflineQueueDone()).resolves.toBeUndefined();
       await app.stop();
-      expect(stop).not.toHaveBeenCalled();
+      expect(stop).toHaveBeenCalledTimes(1);
       expect(count(harness.dbPath, 'messages')).toBe(0);
       expect(count(harness.dbPath, 'known_chats')).toBe(0);
     },

@@ -362,7 +362,8 @@ describe('pipeline/recorder: своё сообщение с номера бот�
 });
 
 describe('pipeline/recorder: пропуски (ignore)', () => {
-  it.each(['not_allowlisted', 'before_link'] as const)(
+  // undecryptable: заглушка CIPHERTEXT, сообщение не расшифровалось; чат всё равно с перепиской (этап 8).
+  it.each(['not_allowlisted', 'before_link', 'undecryptable'] as const)(
     '%s: только known_chats, без переписки и без логов; растёт счётчик',
     async (reason) => {
       const { db, recorder, entries } = setup();
