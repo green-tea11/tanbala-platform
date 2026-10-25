@@ -43,6 +43,12 @@ export type ChatControl =
 export type ReviewedText = string & { readonly __brand: 'ReviewedText' };
 
 /**
+ * Ответ модели после нормализации Unicode NFKC. Приводит к бренду только конвейер (этап 4) перед
+ * проверками кодом: checks/code-checks.runCodeChecks принимает только такой текст.
+ */
+export type NormalizedText = string & { readonly __brand: 'NormalizedText' };
+
+/**
  * Уровень интереса клиента (раздел плана «Передача менеджеру»).
  * cold: спрашивает в общем; warm: рассказывает о бизнесе и задаче;
  * hot: основное о бизнесе собрано, и клиент спрашивает цену, сроки, договор или просит человека.
@@ -244,24 +250,6 @@ export type LlmResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly failure: Exclude<LlmFailure, 'budget_exceeded'> }
   | { readonly ok: false; readonly failure: 'budget_exceeded'; readonly scope: BudgetScope };
-
-/**
- * Код нарушения из бесплатных проверок кодом (шаг 4 плана): тире, цены, валюта, проценты,
- * стоп-слова, ссылки, жаргон, любой текст в квадратных скобках, разметка, эмодзи, списки, длина.
- */
-export type CheckViolation =
-  | 'dash'
-  | 'price'
-  | 'currency'
-  | 'percent'
-  | 'stop_word'
-  | 'link'
-  | 'jargon'
-  | 'brackets'
-  | 'markup'
-  | 'emoji'
-  | 'list'
-  | 'too_long';
 
 /** Какой провайдер и какой вызов: Claude делает три вызова плана, OpenRouter только расшифровку. */
 export type UsageSource =

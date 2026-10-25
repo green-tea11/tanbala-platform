@@ -14,7 +14,24 @@ import { listTsFiles, SRC } from '../helpers/source-files.js';
 const NOT_IMPORTABLE = new Set(['cli.ts']);
 
 // Уже реализованные функции: ключ 'модуль#функция'.
-const EXCLUDED = new Set(['shared/todo.ts#notImplemented']);
+const EXCLUDED = new Set([
+  'shared/todo.ts#notImplemented',
+  // Этап 4: проверки кодом перенесены из docs/reference/checks.py, тесты в tests/unit/checks.
+  'checks/code-checks.ts#checkBrackets',
+  'checks/code-checks.ts#checkContacts',
+  'checks/code-checks.ts#checkDashes',
+  'checks/code-checks.ts#checkHomoglyphs',
+  'checks/code-checks.ts#checkJargon',
+  'checks/code-checks.ts#checkLength',
+  'checks/code-checks.ts#checkLinks',
+  'checks/code-checks.ts#checkMarkup',
+  'checks/code-checks.ts#checkPrices',
+  'checks/code-checks.ts#checkStopWords',
+  'checks/code-checks.ts#checkStyle',
+  'checks/code-checks.ts#countSentences',
+  'checks/code-checks.ts#normalizeDraft',
+  'checks/code-checks.ts#runCodeChecks',
+]);
 
 type AnyFunction = (...args: unknown[]) => unknown;
 

@@ -1,5 +1,5 @@
+import type { CheckFinding } from '../checks/code-checks.js';
 import type {
-  CheckViolation,
   HandoffReason,
   InterestAssessment,
   ReplyDraft,
@@ -8,11 +8,14 @@ import type {
 } from '../domain/types.js';
 import { notImplemented } from '../shared/todo.js';
 
-/** Чем закончились проверки черновика с исходом answer: без ревью черновик не уходит никогда. */
+/**
+ * Чем закончились проверки черновика с исходом answer: без ревью черновик не уходит никогда.
+ * Нарушения проверок кодом (checks/code-checks.ts) уходят модели замечаниями при повторе.
+ */
 export type DraftGate =
   | {
       readonly kind: 'code_failed';
-      readonly violations: readonly [CheckViolation, ...CheckViolation[]];
+      readonly findings: readonly [CheckFinding, ...CheckFinding[]];
     }
   | { readonly kind: 'reviewed'; readonly review: ReviewResult };
 

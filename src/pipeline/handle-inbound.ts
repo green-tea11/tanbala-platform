@@ -42,7 +42,7 @@ export type PipelineOutcome =
  * TODO(этап 3): LlmResult с ok: false (сбой API, отказ, неверный ответ, 'disabled') => так же статус manager и фраза «передам вопрос специалисту».
  * TODO(этап 3): failure 'budget_exceeded' (исчерпан дневной лимит API_DAILY_LIMIT или API_DAILY_LIMIT_PER_CHAT, вызова API не было) => бот замолкает в этом чате: статус manager (by 'bot'), фразы клиенту нет, уведомление менеджеру через outbox.notifyManager(text, 'limit') с указанием лимита (scope); с этапа 5 то же через handoff.handOff({ reason: 'limit', scope }).
  * TODO(этап 3): шаг 6: ответ через outbox.sendBotReply, затем markRead. До этапа 4 проверок нет: временное приведение текста черновика к ReviewedText допустимо только при подключённом тестовом номере, с TODO(этап 4) на удаление этого приведения.
- * TODO(этап 4): перед проверками кодом нормализовать текст ответа LLM (NFKC, убрать символы Cf и Cc, кроме \n): проверяется и уходит клиенту один и тот же текст.
+ * TODO(этап 4): текст ответа LLM сначала через checks/code-checks.normalizeDraft (NFKC, без Cf и Cc, кроме \n), затем runCodeChecks: проверяется и уходит клиенту один и тот же текст.
  * TODO(этап 4): шаг 4: бесплатные проверки кодом (checks/code-checks.ts); шаг 5: agent.reviewDraft; развилка через pipeline/decide.ts: один повтор с замечаниями, потом передача 'check_failed'.
  * TODO(этап 4): agent.assessInterest параллельно с ответом (при горячем клиенте уходит одно сообщение, а не два); chats.saveAssessment.
  * TODO(этап 5): все передачи через handoff.handOff: hot, no_answer, asked_human, complaint, check_failed, llm_error, limit, с уведомлением менеджеру.
