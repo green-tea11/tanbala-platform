@@ -8,12 +8,15 @@ import type {
   ClientProfile,
   HandoffNotice,
   InboundMessage,
+  InterestAssessment,
+  InterestLevel,
   Jid,
   LlmResult,
   MediaRef,
   MessageContent,
   PhoneDigits,
   ReplyDraft,
+  ReviewResult,
   StoredMessage,
   WaMessageId,
 } from '../../../src/domain/types.js';
@@ -89,6 +92,12 @@ function answer(value: string = ANSWER): LlmResult<ReplyDraft> {
   return { ok: true, value: { outcome: 'answer', text: value } };
 }
 
+function assessed(level: InterestLevel): LlmResult<InterestAssessment> {
+  return { ok: true, value: { level, profile: EMPTY_PROFILE, reason: 'по разговору' } };
+}
+
+const REVIEW_OK: LlmResult<ReviewResult> = { ok: true, value: { ok: true } };
+
 /** Шаг, во время которого человек подключается к чату: статус меняется на manager. */
 type JoinStep = 'transcribe' | 'read' | 'draft';
 
@@ -97,6 +106,10 @@ interface Options {
   readonly status?: Status | null;
   readonly joinOn?: JoinStep;
   readonly drafts?: readonly LlmResult<ReplyDraft>[];
+  /** Ответы проверки черновика по порядку вызовов; последний повторяется. */
+  readonly reviews?: readonly LlmResult<ReviewResult>[];
+  /** Ответ оценки интереса; по умолчанию холодный клиент. */
+  readonly assessment?: LlmResult<InterestAssessment>;
   readonly transcriber?: Transcriber;
   readonly testAllowlist?: ReadonlySet<PhoneDigits> | null;
   readonly found?: Chat | null;
@@ -115,6 +128,9 @@ interface Harness {
   readonly calls: string[];
   readonly logs: { readonly level: string; readonly context: unknown }[];
   readonly contexts: ConversationContext[];
+  /** Замечания, с которыми вызывали draftReply (undefined: первый черновик), и тексты, отданные на проверку. */
+  readonly feedbacks: (readonly string[] | undefined)[];
+  readonly reviewed: string[];
   readonly outbox: Mocked<'outbox'>;
   readonly inbox: Mocked<'inbox'>;
   readonly setTyping: Mock<PipelineDeps['typing']['setTyping']>;
@@ -144,7 +160,10 @@ function setup(options: Options = {}): Harness {
   const calls: string[] = [];
   const logs: Harness['logs'] = [];
   const contexts: ConversationContext[] = [];
+  const feedbacks: Harness['feedbacks'] = [];
+  const reviewed: string[] = [];
   const drafts = [...(options.drafts ?? [answer()])];
+  const reviews = [...(options.reviews ?? [REVIEW_OK])];
   let status = options.status === undefined ? 'bot' : options.status;
   const join = (step: JoinStep): void => {
     if (options.joinOn === step) status = 'manager';
@@ -196,6 +215,9 @@ function setup(options: Options = {}): Harness {
       setStatus: (_id, change) => {
         calls.push(`status:${change.status}:${change.by}`);
       },
+      saveAssessment: (_id, assessment) => {
+        calls.push(`save:${assessment.level}`);
+      },
     },
     messages: {
       recent: () => HISTORY,
@@ -208,12 +230,23 @@ function setup(options: Options = {}): Harness {
       },
     },
     agent: {
-      draftReply: (context) => {
-        calls.push('draft');
+      draftReply: (context, feedback) => {
+        calls.push(feedback === undefined ? 'draft' : 'draft:retry');
         contexts.push(context);
+        feedbacks.push(feedback);
         join('draft');
         const next = drafts.length > 1 ? drafts.shift() : drafts[0];
         return Promise.resolve(next ?? answer());
+      },
+      reviewDraft: (_context, text) => {
+        calls.push('review');
+        reviewed.push(text);
+        const next = reviews.length > 1 ? reviews.shift() : reviews[0];
+        return Promise.resolve(next ?? REVIEW_OK);
+      },
+      assessInterest: () => {
+        calls.push('assess');
+        return Promise.resolve(options.assessment ?? assessed('cold'));
       },
     },
     outbox,
@@ -225,7 +258,7 @@ function setup(options: Options = {}): Harness {
     clock,
     logger: createLogger(logs),
   };
-  return { deps, calls, logs, contexts, outbox, inbox, setTyping };
+  return { deps, calls, logs, contexts, feedbacks, reviewed, outbox, inbox, setTyping };
 }
 
 function batchOf(
@@ -253,7 +286,10 @@ const SEND_STEPS = (replyTo: string): string[] => [
   `answered:${replyTo}`,
 ];
 
-const REPLY_STEPS = (replyTo: string): string[] => ['draft', ...SEND_STEPS(replyTo)];
+/** Черновик и оценка параллельно, оценка сохранена, ревью, затем отправка. */
+const CHECKED_STEPS = ['draft', 'assess', 'save:cold', 'review'];
+
+const REPLY_STEPS = (replyTo: string): string[] => [...CHECKED_STEPS, ...SEND_STEPS(replyTo)];
 
 describe('pipeline/handle-inbound: статус, закрытый режим и пустые пачки', () => {
   it('чат ведёт менеджер: бот молчит, не отмечает прочитанным и не зовёт LLM', async () => {
@@ -311,7 +347,7 @@ describe('pipeline/handle-inbound: статус, закрытый режим и 
 
   it.each<[JoinStep, string[]]>([
     ['read', ['read:A1']],
-    ['draft', ['read:A1', 'draft']],
+    ['draft', ['read:A1', ...CHECKED_STEPS]],
   ])('человек подключился (шаг %s): статус перечитан, дальше бот молчит', async (joinOn, steps) => {
     const h = setup({ joinOn });
 
@@ -330,7 +366,9 @@ describe('pipeline/handle-inbound: ответ', () => {
 
     expect(outcome).toEqual({ kind: 'replied' });
     expect(h.calls).toEqual(['read:A1,P2', ...REPLY_STEPS('P2')]);
-    expect(h.contexts).toEqual([{ chatId: CHAT_ID, history: HISTORY, profile: EMPTY_PROFILE }]);
+    expect(h.contexts).toEqual([
+      { chatId: CHAT_ID, history: HISTORY, profile: EMPTY_PROFILE, level: 'cold' },
+    ]);
     expect(h.logs).toContainEqual({
       level: 'info',
       context: { chatId: CHAT_ID, outcome: 'replied' },
@@ -343,7 +381,7 @@ describe('pipeline/handle-inbound: ответ', () => {
     const outcome = await run(h, batchOf([text('A1')], [[text('A2')], [text('A3')]]));
 
     expect(outcome).toEqual({ kind: 'replied' });
-    expect(h.calls).toEqual(['read:A1', 'draft', 'read:A2', ...REPLY_STEPS('A2')]);
+    expect(h.calls).toEqual(['read:A1', 'draft', 'assess', 'read:A2', ...REPLY_STEPS('A2')]);
     expect(h.outbox.sendBotReply).toHaveBeenCalledTimes(1);
   });
 
@@ -355,7 +393,7 @@ describe('pipeline/handle-inbound: ответ', () => {
     expect(outcome).toEqual({ kind: 'replied' });
     expect(h.calls).toEqual([
       'read:A1',
-      'draft',
+      ...CHECKED_STEPS,
       'typing:on',
       `sleep:${TYPING_MS + 1}`,
       'typing:off',
@@ -382,19 +420,13 @@ describe('pipeline/handle-inbound: ответ', () => {
     expect(h.calls).not.toContain('answered:A1');
   });
 
-  it('без закрытого режима непроверенный ответ не уходит: передача check_failed', async () => {
+  it('без закрытого режима ответ проходит те же проверки и уходит', async () => {
     const h = setup({ testAllowlist: null });
 
     const outcome = await run(h, batchOf([text('A1')]));
 
-    expect(outcome).toEqual({ kind: 'handed_off', reason: 'check_failed' });
-    expect(h.calls).toEqual([
-      'read:A1',
-      'draft',
-      'status:manager:bot',
-      'notice:{"reason":"check_failed"}:A1',
-      'answered:A1',
-    ]);
+    expect(outcome).toEqual({ kind: 'replied' });
+    expect(h.calls).toEqual(['read:A1', ...REPLY_STEPS('A1')]);
   });
 
   it('сбой отметки прочтения и «печатает» не мешает ответу: пишется в лог', async () => {
@@ -415,7 +447,7 @@ describe('pipeline/handle-inbound: ответ', () => {
 
     await expect(run(h, batchOf([text('A1')]))).rejects.toThrow('Пауза прервана');
 
-    expect(h.calls).toEqual(['read:A1', 'draft', 'typing:on', 'typing:off']);
+    expect(h.calls).toEqual(['read:A1', ...CHECKED_STEPS, 'typing:on', 'typing:off']);
   });
 });
 
@@ -486,6 +518,8 @@ describe('pipeline/handle-inbound: передача менеджеру', () => {
       expect(h.calls).toEqual([
         'read:A1,A2',
         'draft',
+        'assess',
+        'save:cold',
         'status:manager:bot',
         `notice:${notice}:A2`,
         'answered:A2',
@@ -499,7 +533,7 @@ describe('pipeline/handle-inbound: передача менеджеру', () => {
     const outcome = await run(h, batchOf([text('A1')]));
 
     expect(outcome).toEqual({ kind: 'handed_off', reason: 'limit' });
-    expect(h.calls).toEqual(['read:A1', 'draft', 'status:manager:bot']);
+    expect(h.calls).toEqual(['read:A1', 'draft', 'assess', 'save:cold', 'status:manager:bot']);
     expect(levels(h, 'warn')).toContainEqual({ chatId: CHAT_ID, scope: 'chat' });
   });
 
@@ -514,6 +548,8 @@ describe('pipeline/handle-inbound: передача менеджеру', () => {
       expect(h.calls).toEqual([
         'read:A1',
         'draft',
+        'assess',
+        'save:cold',
         'status:manager:bot',
         'notice:{"reason":"llm_error"}:A1',
         'answered:A1',
@@ -533,7 +569,7 @@ describe('pipeline/handle-inbound: передача менеджеру', () => {
       const outcome = await run(h, batchOf([text('A1')]));
 
       expect(outcome).toEqual({ kind: 'silent', reason: 'manager_mode' });
-      expect(h.calls).toEqual(['read:A1', 'draft']);
+      expect(h.calls).toEqual(['read:A1', 'draft', 'assess', 'save:cold']);
     },
   );
 
@@ -544,7 +580,128 @@ describe('pipeline/handle-inbound: передача менеджеру', () => {
     const outcome = await run(h, batchOf([text('A1')]));
 
     expect(outcome).toEqual({ kind: 'handed_off', reason: 'asked_human' });
-    expect(h.calls).toEqual(['read:A1', 'draft', 'status:manager:bot']);
+    expect(h.calls).toEqual(['read:A1', 'draft', 'assess', 'save:cold', 'status:manager:bot']);
+  });
+});
+
+describe('pipeline/handle-inbound: проверки, оценка интереса и повтор (этап 4)', () => {
+  const DASHED = 'Учёт — это просто. Что вы храните?';
+  const SECOND = 'Цена зависит от задачи. Что вы хотите учитывать?';
+
+  it('горячий клиент: оценка сохранена, клиенту одна фраза передачи, текст ответа не уходит', async () => {
+    const h = setup({ assessment: assessed('hot') });
+
+    const outcome = await run(h, batchOf([text('A1')]));
+
+    expect(outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
+    expect(h.calls).toEqual([
+      'read:A1',
+      'draft',
+      'assess',
+      'save:hot',
+      'review',
+      'status:manager:bot',
+      'notice:{"reason":"hot"}:A1',
+      'answered:A1',
+    ]);
+    expect(h.outbox.sendBotReply).not.toHaveBeenCalled();
+    expect(h.outbox.sendHandoffNotice).toHaveBeenCalledTimes(1);
+  });
+
+  it('горячий клиент с голосовым в пачке: фразы про голосовое нет, только фраза передачи', async () => {
+    const h = setup({ assessment: assessed('hot') });
+
+    const outcome = await run(h, batchOf([text('T1'), voice('V1')]));
+
+    expect(outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
+    expect(h.outbox.sendVoiceNotice).not.toHaveBeenCalled();
+  });
+
+  it('нарушение проверок кодом: повтор с замечаниями, клиенту уходит только второй черновик', async () => {
+    const h = setup({ drafts: [answer(DASHED), answer(SECOND)] });
+
+    const outcome = await run(h, batchOf([text('A1')]));
+
+    expect(outcome).toEqual({ kind: 'replied' });
+    expect(h.calls).toEqual([
+      'read:A1',
+      'draft',
+      'assess',
+      'save:cold',
+      'draft:retry',
+      'review',
+      'typing:on',
+      `sleep:${TYPING_MS + 1}`,
+      'typing:off',
+      `reply:${SECOND}:A1`,
+      'answered:A1',
+    ]);
+    expect(h.feedbacks[0]).toBeUndefined();
+    expect(h.feedbacks[1]?.[0]).toContain('тире');
+    expect(h.outbox.sendBotReply).toHaveBeenCalledTimes(1);
+  });
+
+  it('ревью не пропустило два раза: передача check_failed с фразой, текст модели не уходит', async () => {
+    const failed: LlmResult<ReviewResult> = { ok: true, value: { ok: false, problems: ['срок'] } };
+    const h = setup({ drafts: [answer(), answer(SECOND)], reviews: [failed] });
+
+    const outcome = await run(h, batchOf([text('A1')]));
+
+    expect(outcome).toEqual({ kind: 'handed_off', reason: 'check_failed' });
+    expect(h.calls).toEqual([
+      'read:A1',
+      'draft',
+      'assess',
+      'save:cold',
+      'review',
+      'draft:retry',
+      'review',
+      'status:manager:bot',
+      'notice:{"reason":"check_failed"}:A1',
+      'answered:A1',
+    ]);
+    expect(h.feedbacks[1]).toEqual(['срок']);
+    expect(h.outbox.sendBotReply).not.toHaveBeenCalled();
+  });
+
+  it('уходит ровно тот текст, который проверен: после нормализации, и пауза считается по нему', async () => {
+    const h = setup({ drafts: [answer('Учёт​ подбираем под задачу. Что вы храните?')] });
+
+    const outcome = await run(h, batchOf([text('A1')]));
+
+    expect(outcome).toEqual({ kind: 'replied' });
+    expect(h.reviewed).toEqual([ANSWER]);
+    expect(h.calls).toContain(`reply:${ANSWER}:A1`);
+    expect(h.calls).toContain(`sleep:${TYPING_MS}`);
+  });
+
+  it('сбой ревью: статус manager и фраза llm_error, текст модели без проверки не уходит', async () => {
+    const h = setup({ reviews: [{ ok: false, failure: 'unavailable' }] });
+
+    const outcome = await run(h, batchOf([text('A1')]));
+
+    expect(outcome).toEqual({ kind: 'handed_off', reason: 'llm_error' });
+    expect(h.outbox.sendBotReply).not.toHaveBeenCalled();
+    expect(h.calls).toContain('notice:{"reason":"llm_error"}:A1');
+  });
+
+  it('лимит API на оценке интереса: статус manager без фразы клиенту, ответ не уходит', async () => {
+    const h = setup({ assessment: { ok: false, failure: 'budget_exceeded', scope: 'global' } });
+
+    const outcome = await run(h, batchOf([text('A1')]));
+
+    expect(outcome).toEqual({ kind: 'handed_off', reason: 'limit' });
+    expect(h.calls).toEqual(['read:A1', 'draft', 'assess', 'status:manager:bot']);
+    expect(levels(h, 'warn')).toContainEqual({ chatId: CHAT_ID, scope: 'global' });
+  });
+
+  it('сбой оценки интереса не останавливает ответ: он уходит после проверок, оценка не сохраняется', async () => {
+    const h = setup({ assessment: { ok: false, failure: 'unavailable' } });
+
+    const outcome = await run(h, batchOf([text('A1')]));
+
+    expect(outcome).toEqual({ kind: 'replied' });
+    expect(h.calls).toEqual(['read:A1', 'draft', 'assess', 'review', ...SEND_STEPS('A1')]);
   });
 });
 
@@ -580,7 +737,7 @@ describe('pipeline/handle-inbound: голосовые', () => {
     const outcome = await run(h, batchOf([text('T1'), voice('V1')]));
 
     expect(outcome).toEqual({ kind: 'replied' });
-    expect(h.calls).toEqual(['read:T1,V1', 'draft', 'voice:V1', ...SEND_STEPS('V1')]);
+    expect(h.calls).toEqual(['read:T1,V1', ...CHECKED_STEPS, 'voice:V1', ...SEND_STEPS('V1')]);
   });
 
   it.each<[string, LlmResult<ReplyDraft>]>([

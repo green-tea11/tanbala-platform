@@ -100,17 +100,92 @@ CREATE TABLE api_usage (
 `;
 
 /**
+ * Версия 3 (этап 4). client_profiles: выжимка о клиенте 1:1 с чатом (первичный ключ chat_id). Поля ClientProfile
+ * только со слов клиента, NULL значит «не выяснили»; has_1c: 1 есть 1С, 0 нет, NULL не выяснили. reason: почему модель
+ * выбрала уровень интереса, updated_at_ms: время последней оценки. Строки нет, пока клиента не оценивали.
+ */
+const SCHEMA_V3 = `
+CREATE TABLE client_profiles (
+  chat_id INTEGER PRIMARY KEY REFERENCES chats (id),
+  business TEXT,
+  area TEXT,
+  scope TEXT,
+  item_count TEXT,
+  has_1c INTEGER CHECK (has_1c IN (0, 1)),
+  problem TEXT,
+  specifics TEXT,
+  reason TEXT NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+) STRICT;
+`;
+
+/**
+ * Версия 4 (этап 5).
+ * handoffs: передачи чатов менеджеру. reason и level закреплены CHECK; snapshot: снимок выжимки на момент передачи;
+ * resolved_at_ms NULL, пока передача открыта; закрытие не раньше открытия. Частичный уникальный индекс: на чат не
+ * больше одной открытой передачи, закрытых сколько угодно (история). Индекс по chat_id нужен слиянию чатов и внешнему ключу.
+ * manager_notifications: уведомления менеджеру, текст целиком, пишутся ДО отправки со статусом pending.
+ * status: sent доставлено, no_manager номер менеджера не задан, skipped_limit исчерпана часовая квота (оба только в
+ * панели), failed сбой отправки (будет повтор). wa_id: ID отправленного сообщения; attempts: сколько раз пробовали.
+ * chat_id пуст только у списка чатов простоя (backlog), остальные уведомления относятся к чату клиента.
+ * Индексы: по чату (последнее уведомление в карточке клиента), по времени (список в панели без сортировки всей
+ * таблицы) и повторов; последний частичный (только pending и failed): растущая история отправленных ему не мешает.
+ */
+const SCHEMA_V4 = `
+CREATE TABLE handoffs (
+  id INTEGER PRIMARY KEY,
+  chat_id INTEGER NOT NULL REFERENCES chats (id),
+  reason TEXT NOT NULL CHECK (reason IN (
+    'hot', 'no_answer', 'check_failed', 'asked_human', 'complaint', 'human_took_over', 'llm_error', 'limit'
+  )),
+  level TEXT NOT NULL CHECK (level IN ('cold', 'warm', 'hot')),
+  snapshot TEXT NOT NULL,
+  opened_at_ms INTEGER NOT NULL,
+  resolved_at_ms INTEGER,
+  CHECK (resolved_at_ms IS NULL OR resolved_at_ms >= opened_at_ms)
+) STRICT;
+
+CREATE INDEX handoffs_chat ON handoffs (chat_id);
+CREATE UNIQUE INDEX handoffs_one_open_per_chat ON handoffs (chat_id) WHERE resolved_at_ms IS NULL;
+
+CREATE TABLE manager_notifications (
+  id INTEGER PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('handoff', 'limit', 'backlog')),
+  chat_id INTEGER REFERENCES chats (id),
+  text TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'sent', 'no_manager', 'skipped_limit', 'failed')),
+  wa_id TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  CHECK ((chat_id IS NULL) = (kind = 'backlog'))
+) STRICT;
+
+CREATE INDEX manager_notifications_chat ON manager_notifications (chat_id, created_at_ms);
+CREATE INDEX manager_notifications_created ON manager_notifications (created_at_ms);
+CREATE INDEX manager_notifications_retry ON manager_notifications (created_at_ms)
+  WHERE status IN ('pending', 'failed');
+`;
+
+/**
+ * Версия 5 (этап 6). Индекс сообщений по чату и времени: панель берёт время последнего сообщения каждого чата и
+ * страницы переписки по времени без просмотра всех сообщений чата (UNIQUE по chat_id и wa_id время не покрывает).
+ */
+const SCHEMA_V5 = `
+CREATE INDEX messages_chat_ts ON messages (chat_id, ts_ms);
+`;
+
+/**
  * Миграции по порядку: элемент i переводит схему с версии i на i + 1.
  * Выпущенную миграцию не править: изменения схемы только новой версией в конце списка.
  */
-const MIGRATIONS: readonly string[] = [SCHEMA_V1, SCHEMA_V2];
+const MIGRATIONS: readonly string[] = [SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5];
 
 /**
  * Применяет миграции схемы по номеру версии в PRAGMA user_version: идемпотентно, все недостающие версии
  * одной транзакцией (сбой откатывает и таблицы, и номер версии). Схема новее кода => явная ошибка.
  * targetVersion: до какой версии поднимать (по умолчанию до последней); нужен тестам перехода со старой схемы.
- * TODO(этап 4): client_profiles 1:1 с chats (бизнес, площадь, что учитывать, число вещей, есть ли 1С, задача, особенности, готовый текст выжимки).
- * TODO(этап 5): handoffs (причина, уровень, снимок выжимки, статус и ID уведомления); частичный уникальный индекс: не больше одной открытой передачи на чат.
  */
 export function runMigrations(
   db: Database.Database,

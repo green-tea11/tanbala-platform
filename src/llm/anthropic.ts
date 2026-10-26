@@ -50,8 +50,9 @@ const SDK_LOG_CONTEXT = { module: 'anthropic-sdk' } as const;
 const NO_TOKENS: TokenCounts = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
 /**
- * effort по типу вызова: размышления Haiku 5.5 входят в output_tokens и в max_tokens.
- * TODO(этап 4): effort проверки и оценки интереса выбрать по логу токенов.
+ * effort по типу вызова: размышления Haiku 5.5 входят в output_tokens и в max_tokens. Ответ, проверка черновика и
+ * оценка интереса идут с low: ответы короткие, а модель размышляет сама (adaptive thinking).
+ * TODO(этап 8): уровень effort проверки и оценки интереса подобрать по логу токенов и качеству на живых чатах.
  */
 const EFFORT: Readonly<Record<LlmPurpose, Effort>> = {
   reply: 'low',

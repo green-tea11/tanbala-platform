@@ -16,7 +16,6 @@ import type {
   HandoffReason,
   InboundMessage,
   PhoneDigits,
-  ReplyDraft,
   ReviewedText,
   WaMessageId,
 } from '../domain/types.js';
@@ -24,12 +23,13 @@ import { isChatAllowlisted } from '../messaging/allowlist.js';
 import type { Outbox, SendBlocked } from '../messaging/outbox.js';
 import { MAX_AUDIO_BYTES } from '../voice/transcriber.js';
 import type { ClientBatch } from './batcher.js';
+import { decideReply, requestDraft, type ReplyVerdict } from './reply-flow.js';
 
 /** Зависимости конвейера обработки сообщения. TODO(этап 5): сервис передачи handoff/handoff.ts. */
 export interface PipelineDeps {
-  readonly chats: Pick<ChatsRepo, 'getById' | 'findByJid' | 'setStatus'>;
+  readonly chats: Pick<ChatsRepo, 'getById' | 'findByJid' | 'setStatus' | 'saveAssessment'>;
   readonly messages: Pick<MessagesRepo, 'recent' | 'markAnswered' | 'setTranscript'>;
-  readonly agent: Pick<Agent, 'draftReply'>;
+  readonly agent: Pick<Agent, 'draftReply' | 'reviewDraft' | 'assessInterest'>;
   readonly outbox: Pick<Outbox, 'sendBotReply' | 'sendHandoffNotice' | 'sendVoiceNotice'>;
   readonly transcriber: Transcriber;
   readonly inbox: Pick<WhatsAppInbox, 'markRead' | 'downloadAudio'>;
@@ -39,8 +39,7 @@ export interface PipelineDeps {
   typingDelayMs(text: string): number;
   /**
    * Закрытый режим: номера из TEST_ALLOWLIST; null, если режим выключен. Чат не из списка отсекается до оплачиваемых
-   * вызовов API (то же правило, что у outbox). Только в закрытом режиме до этапа 4 черновик уходит без проверок;
-   * иначе передача 'check_failed'.
+   * вызовов API (то же правило, что у outbox).
    */
   readonly testAllowlist: ReadonlySet<PhoneDigits> | null;
   readonly clock: Clock;
@@ -119,23 +118,23 @@ type Heard =
  *    фразы про голосовое нет. В пачке простоя (старше OFFLINE_BATCH_AGE_MS) с текстом ОДИН ответ на чат без фразы
  *    (решение владельца). Исчерпан лимит на расшифровке => как лимит у LLM.
  * 3. Статус перечитывается (расшифровка идёт до минуты), отметка о прочтении (сбой не мешает ответу), снова статус,
- *    затем agent.draftReply с историей HISTORY_MESSAGES.
- * 4. answer => «печатает» с паузой typingDelayMs (сбой статуса не мешает ответу), затем outbox.sendBotReply
- *    на последнее сообщение пачки. Пришли новые сообщения (ClientBatch.takeNewer), пока писался черновик или шла
- *    пауза => ответ перегенерируется один раз с ними, уходит один ответ.
- * 5. Временно (до сервиса передачи этапа 5, без уведомления менеджеру): no_answer, asked_human,
- *    complaint => статус manager (by 'bot') и фиксированная фраза через outbox.sendHandoffNotice; сбой LLM
- *    (в том числе 'disabled') => то же с фразой «передам вопрос специалисту» (llm_error); 'budget_exceeded' => статус
- *    manager без фразы клиенту (уведомление менеджеру появится на этапе 5). Перед каждой отправкой статус чата
- *    перечитывается: человек мог подключиться, пока LLM писал ответ.
+ *    затем черновик и оценка интереса параллельно (pipeline/reply-flow.requestDraft, история HISTORY_MESSAGES).
+ *    Пришли новые сообщения (ClientBatch.takeNewer), пока шли вызовы => пачка обрабатывается заново вместе с ними.
+ * 4. Решение (pipeline/reply-flow.decideReply): оценка интереса сохраняется, текст ответа проходит нормализацию,
+ *    проверки кодом и второй вызов LLM, развилка pipeline/decide.decideAction, при провале один повтор с замечаниями.
+ *    Вердикт send => «печатает» с паузой typingDelayMs (сбой статуса не мешает ответу), затем outbox.sendBotReply
+ *    на последнее сообщение пачки того самого проверенного текста. Пришли новые сообщения, пока шла пауза =>
+ *    ответ перегенерируется один раз с ними, уходит один ответ.
+ * 5. Временно (до сервиса передачи этапа 5, без уведомления менеджеру): вердикт handoff (hot, no_answer,
+ *    asked_human, complaint, check_failed, llm_error) => статус manager (by 'bot') и фиксированная фраза по причине
+ *    через outbox.sendHandoffNotice; горячему клиенту уходит одна фраза передачи, а не два сообщения. Вердикт limit
+ *    (исчерпан дневной лимит API) => статус manager без фразы клиенту (уведомление менеджеру появится на этапе 5).
+ *    Перед каждой отправкой статус чата перечитывается: человек мог подключиться, пока LLM писал ответ.
  * 6. markAnswered один раз в конце пачки и только если что-то ушло: иначе второй ответ пачки получил бы
  *    'skipped_no_inbound'.
  * Сбой отправки исключением повторяется один раз (sendWithRetry), затем ошибка в лог «клиент остался без ответа»;
  * при передаче статус manager остаётся, и это видно в логе. Сбой базы приходит отказом промиса: его пишет в лог
  * pipeline/batcher.ts.
- * TODO(этап 4): текст ответа LLM сначала через checks/code-checks.normalizeDraft (NFKC, без Cf и Cc, кроме \n), затем runCodeChecks: проверяется и уходит клиенту один и тот же текст.
- * TODO(этап 4): шаг 4: бесплатные проверки кодом (checks/code-checks.ts); шаг 5: agent.reviewDraft; развилка через pipeline/decide.ts: один повтор с замечаниями, потом передача 'check_failed'.
- * TODO(этап 4): agent.assessInterest параллельно с ответом (при горячем клиенте уходит одно сообщение, а не два); chats.saveAssessment.
  * TODO(этап 5): все передачи через handoff.handOff: hot, no_answer, asked_human, complaint, check_failed, llm_error, limit, с уведомлением менеджеру.
  */
 export async function handleClientBatch(
@@ -320,20 +319,32 @@ async function draftAndAnswer(
   chat: Chat,
   turn: Turn,
 ): Promise<PipelineOutcome> {
-  const chatId = chat.id;
   // Отметка о прочтении ушла в сеть: человек мог подключиться.
-  if (isManagerNow(deps, chatId)) return SILENT_MANAGER;
-  const result = await deps.agent.draftReply(contextOf(deps, chat));
+  if (isManagerNow(deps, chat.id)) return SILENT_MANAGER;
+  const context = contextOf(deps, chat);
+  const drafted = await requestDraft(deps, context);
   const regenerated = regenerate(deps, batch, turn);
   if (regenerated !== null) return regenerated;
-  if (!result.ok) {
-    if (result.failure === 'budget_exceeded') return goSilent(deps, chatId, result.scope);
-    deps.logger.warn({ chatId, failure: result.failure }, 'Черновик ответа не получен');
-    return handOff(deps, chatId, turn, { reason: 'llm_error' });
+  const verdict = await decideReply(deps, context, drafted);
+  return act(deps, batch, chat, turn, verdict);
+}
+
+/** Вердикт хода ответа: отправить проверенный текст, передать менеджеру или замолчать из-за лимита API. */
+function act(
+  deps: PipelineDeps,
+  batch: ClientBatch,
+  chat: Chat,
+  turn: Turn,
+  verdict: ReplyVerdict,
+): Promise<PipelineOutcome> {
+  switch (verdict.kind) {
+    case 'send':
+      return sendAnswer(deps, batch, chat, turn, verdict.text);
+    case 'handoff':
+      return handOff(deps, chat.id, turn, verdict.notice);
+    case 'limit':
+      return Promise.resolve(goSilent(deps, chat.id, verdict.scope));
   }
-  const draft = result.value;
-  if (draft.outcome !== 'answer') return handOff(deps, chatId, turn, noticeOf(draft));
-  return sendAnswer(deps, batch, chat, turn, draft.text);
 }
 
 /** Новые сообщения чата во время ответа: обработать пачку заново вместе с ними, но только один раз. */
@@ -351,7 +362,7 @@ function regenerate(
 
 function contextOf(deps: PipelineDeps, chat: Chat): ConversationContext {
   const history = deps.messages.recent(chat.id, HISTORY_MESSAGES);
-  return { chatId: chat.id, history, profile: chat.profile };
+  return { chatId: chat.id, history, profile: chat.profile, level: chat.level };
 }
 
 async function sendAnswer(
@@ -359,10 +370,9 @@ async function sendAnswer(
   batch: ClientBatch,
   chat: Chat,
   start: Turn,
-  text: string,
+  text: ReviewedText,
 ): Promise<PipelineOutcome> {
   const chatId = chat.id;
-  if (deps.testAllowlist === null) return handOff(deps, chatId, start, { reason: 'check_failed' });
   if (isManagerNow(deps, chatId)) return SILENT_MANAGER;
   const noticed = await voiceNotice(deps, chatId, start, true);
   if ('kind' in noticed) return noticed;
@@ -370,10 +380,8 @@ async function sendAnswer(
   await typingPause(deps, chat, text);
   const regenerated = regenerate(deps, batch, turn);
   if (regenerated !== null) return regenerated;
-  // TODO(этап 4): удалить это приведение: в ReviewedText текст приводит только pipeline/decide.ts после проверок.
-  const reviewed = text as ReviewedText;
   const result = await sendWithRetry(deps, chatId, 'ответ не ушёл', () =>
-    deps.outbox.sendBotReply(chatId, reviewed, lastId(turn)),
+    deps.outbox.sendBotReply(chatId, text, lastId(turn)),
   );
   if (result === SEND_FAILED) return SEND_FAILED_OUTCOME;
   if (result === 'sent') return finish(deps, chatId, turn, { kind: 'replied' });
@@ -464,12 +472,6 @@ function goSilent(deps: PipelineDeps, chatId: ChatId, scope: BudgetScope): Pipel
   deps.chats.setStatus(chatId, { status: 'manager', by: 'bot' }, deps.clock.now());
   deps.logger.warn({ chatId, scope }, 'Дневной лимит вызовов API исчерпан: бот замолкает в чате');
   return { kind: 'handed_off', reason: 'limit' };
-}
-
-function noticeOf(draft: Exclude<ReplyDraft, { outcome: 'answer' }>): HandoffNotice {
-  return draft.outcome === 'complaint'
-    ? { reason: 'complaint', stopRequested: draft.stopRequested }
-    : { reason: draft.outcome };
 }
 
 /** Конец пачки, когда что-то ушло: входящие пачки отмечаются отвеченными один раз; ничего не ушло => duplicate. */

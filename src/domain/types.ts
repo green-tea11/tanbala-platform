@@ -244,6 +244,47 @@ export interface InterestAssessment {
   readonly reason: string;
 }
 
+/** Открытая передача чата менеджеру: причина, уровень интереса на момент передачи и время. */
+export interface OpenHandoff {
+  readonly reason: HandoffReason;
+  readonly level: InterestLevel;
+  readonly openedAtMs: number;
+}
+
+/** Вид уведомления менеджеру: передача чата, исчерпанный лимит или список чатов простоя. */
+export type ManagerNotificationKind = 'handoff' | 'limit' | 'backlog';
+
+/**
+ * Судьба уведомления менеджеру, видна в панели. pending: записано, отправка идёт; sent: доставлено на
+ * MANAGER_WHATSAPP; no_manager: номер менеджера не задан, уведомление только в панели (в логе строка без
+ * номеров и текста); skipped_limit: исчерпана часовая квота уведомлений, только в панели; failed: сбой
+ * отправки, будет повтор.
+ */
+export type ManagerNotificationStatus =
+  'pending' | 'sent' | 'no_manager' | 'skipped_limit' | 'failed';
+
+/** Уведомление менеджеру в базе: текст целиком, чтобы панель показала его и при пустом MANAGER_WHATSAPP. */
+export interface ManagerNotification {
+  readonly id: number;
+  readonly kind: ManagerNotificationKind;
+  /** Чат клиента; null у списка чатов простоя. */
+  readonly chatId: ChatId | null;
+  readonly text: string;
+  readonly status: ManagerNotificationStatus;
+  /** Сколько раз пробовали отправить. */
+  readonly attempts: number;
+  readonly createdAtMs: number;
+  readonly updatedAtMs: number;
+}
+
+/** Строка списка чатов в панели. */
+export interface PanelChatRow {
+  readonly chat: Chat;
+  /** Время последнего сообщения в чате (любого автора), мс UTC; null, если сообщений нет. */
+  readonly lastMessageAtMs: number | null;
+  readonly openHandoff: OpenHandoff | null;
+}
+
 /** Почему вызов LLM не дал годного результата. Любой отказ ведёт к передаче специалисту (fail-closed). */
 export type LlmFailure =
   | 'refusal'

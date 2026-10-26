@@ -2,26 +2,10 @@ import type Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { createChatsRepo } from '../../../../src/db/repos/chats.js';
 import type { ChatsRepo } from '../../../../src/domain/ports.js';
-import type {
-  ChatId,
-  ChatIdentity,
-  InterestAssessment,
-  Jid,
-} from '../../../../src/domain/types.js';
-import { NotImplementedError } from '../../../../src/shared/todo.js';
-import { errorOf, insertChat, LID_A, LID_B, PN_A, PN_B, useMigratedDb } from '../fixture.js';
+import type { ChatId, ChatIdentity, Jid } from '../../../../src/domain/types.js';
+import { EMPTY_PROFILE, insertChat, LID_A, LID_B, PN_A, PN_B, useMigratedDb } from '../fixture.js';
 
 const T0 = 1_761_400_000_000;
-
-const EMPTY_PROFILE = {
-  business: null,
-  area: null,
-  scope: null,
-  itemCount: null,
-  has1C: null,
-  problem: null,
-  specifics: null,
-};
 
 const LID_ONLY: ChatIdentity = { replyJid: LID_A, lidJid: LID_A, pnJid: null };
 const PN_ONLY: ChatIdentity = { replyJid: PN_A, lidJid: null, pnJid: PN_A };
@@ -430,27 +414,5 @@ describe('createChatsRepo: setStatus', () => {
       repo.setStatus(id, { status: 'manager', by: 'bot' }, nowMs);
     }).toThrow(RangeError);
     expect(repo.getById(id)?.control).toEqual({ status: 'bot', by: null });
-  });
-});
-
-describe('createChatsRepo: методы следующих этапов', () => {
-  const assessment: InterestAssessment = { level: 'warm', profile: EMPTY_PROFILE, reason: 'x' };
-
-  it.each([
-    [
-      'saveAssessment',
-      'этап 4',
-      (repo: ChatsRepo) => {
-        repo.saveAssessment(1 as ChatId, assessment, T0);
-      },
-    ],
-    ['listForPanel', 'этап 6', (repo: ChatsRepo) => repo.listForPanel({ limit: 10, offset: 0 })],
-  ] as const)('%s пока заготовка', (name, stage, call) => {
-    const { repo } = setup();
-
-    const error = errorOf(() => call(repo));
-
-    expect(error).toBeInstanceOf(NotImplementedError);
-    expect(error).toMatchObject({ stage, feature: `db/repos/chats.${name}` });
   });
 });

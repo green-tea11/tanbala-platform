@@ -15,8 +15,13 @@ import type {
   Jid,
   LlmPurpose,
   LlmResult,
+  ManagerNotification,
+  ManagerNotificationKind,
+  ManagerNotificationStatus,
   MediaRef,
   NewMessage,
+  OpenHandoff,
+  PanelChatRow,
   PhoneDigits,
   SendOrigin,
   StatusChange,
@@ -232,12 +237,16 @@ export interface ChatsRepo {
   findByJid(jid: Jid): Chat | null;
   getById(id: ChatId): Chat | null;
   setStatus(id: ChatId, change: StatusChange, nowMs: number): void;
+  /** Уровень интереса и выжимка одной транзакцией (выжимка в client_profiles, 1:1 с чатом). */
   saveAssessment(id: ChatId, assessment: InterestAssessment, nowMs: number): void;
+  /** Чаты для панели: сверху чаты с самым свежим сообщением; status фильтрует, limit и offset для страниц. */
   listForPanel(query: {
     readonly status?: ChatStatus;
     readonly limit: number;
     readonly offset: number;
-  }): readonly Chat[];
+  }): readonly PanelChatRow[];
+  /** Сколько чатов в списке панели с тем же фильтром: для страниц. */
+  countForPanel(query: { readonly status?: ChatStatus }): number;
 }
 
 /** История сообщений чата. */
@@ -252,6 +261,14 @@ export interface MessagesRepo {
    * Так следующие ответы видят в истории, что клиент сказал голосом. false: нет такого голосового без текста.
    */
   setTranscript(chatId: ChatId, waId: WaMessageId, text: string): boolean;
+  /**
+   * Переписка для панели: до limit сообщений чата строго раньше сообщения beforeId (без него самые свежие),
+   * по возрастанию времени.
+   */
+  history(
+    chatId: ChatId,
+    query: { readonly limit: number; readonly beforeId?: number },
+  ): readonly StoredMessage[];
 }
 
 /** Запись об исходящем сообщении: создаётся до отправки. */
@@ -283,8 +300,47 @@ export interface HandoffsRepo {
     snapshot: string,
     nowMs: number,
   ): boolean;
-  findOpen(chatId: ChatId): { readonly reason: HandoffReason } | null;
-  /** waId уведомления менеджеру; null: не отправлено (видно в панели, отправку повторяют). */
-  setManagerNotified(chatId: ChatId, waId: WaMessageId | null): void;
+  findOpen(chatId: ChatId): OpenHandoff | null;
+  /** Закрывает открытую передачу (возврат чата боту из панели); нет открытой => ничего. */
   resolve(chatId: ChatId, nowMs: number): void;
+}
+
+/**
+ * Уведомления менеджеру: каждое пишется в базу до отправки. Панель показывает их и при пустом MANAGER_WHATSAPP,
+ * сбой отправки повторяется. Судьба уведомления о передаче хранится здесь, а не в handoffs.
+ */
+export interface ManagerNotificationsRepo {
+  /** Записывает уведомление со статусом pending и attempts 0; возвращает его id. */
+  add(entry: {
+    readonly kind: ManagerNotificationKind;
+    readonly chatId: ChatId | null;
+    readonly text: string;
+    readonly nowMs: number;
+  }): number;
+  /** Итог попытки отправки: новый статус, waId при sent (иначе null), attempts + 1. */
+  setResult(
+    id: number,
+    result: {
+      readonly status: Exclude<ManagerNotificationStatus, 'pending'>;
+      readonly waId: WaMessageId | null;
+    },
+    nowMs: number,
+  ): void;
+  /**
+   * Что отправить повторно: failed и зависшие pending (updatedAtMs не позже staleBeforeMs) с attempts меньше
+   * maxAttempts; старые первыми, не больше limit.
+   */
+  listRetryable(query: {
+    readonly maxAttempts: number;
+    readonly staleBeforeMs: number;
+    readonly limit: number;
+  }): readonly ManagerNotification[];
+  /** Для панели: новые сверху. */
+  listRecent(query: {
+    readonly limit: number;
+    readonly offset: number;
+  }): readonly ManagerNotification[];
+  countAll(): number;
+  /** Последнее уведомление по чату: для карточки клиента в панели. */
+  latestForChat(chatId: ChatId): ManagerNotification | null;
 }

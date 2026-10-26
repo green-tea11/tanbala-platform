@@ -1,81 +1,18 @@
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { describe, expect, it } from 'vitest';
 import { createAgent, type ConversationContext } from '../../../src/agent/agent.js';
-import type { Knowledge } from '../../../src/agent/knowledge.js';
 import { buildSystem } from '../../../src/agent/prompts.js';
-import type { LlmClient, StructuredRequest } from '../../../src/domain/ports.js';
-import type {
-  ChatId,
-  ClientProfile,
-  LlmResult,
-  ReplyDraft,
-  StoredMessage,
-} from '../../../src/domain/types.js';
-import { NotImplementedError } from '../../../src/shared/todo.js';
-
-const KNOWLEDGE: Knowledge = {
-  owner: '# Tanbala: что должен знать агент\n',
-  whatsapp: '# Tanbala в WhatsApp\n',
-  version: 'v1',
-};
-const MODELS = {
-  reply: 'claude-haiku-5-5',
-  review: 'claude-review-model',
-  interest: 'claude-interest-model',
-} as const;
-const CHAT_ID = 11 as ChatId;
-const BASE_TS = Date.UTC(2026, 9, 26, 6, 0, 0);
-
-const EMPTY_PROFILE: ClientProfile = {
-  business: null,
-  area: null,
-  scope: null,
-  itemCount: null,
-  has1C: null,
-  problem: null,
-  specifics: null,
-};
-
-function history(count: number): StoredMessage[] {
-  return Array.from({ length: count }, (_, index) => ({
-    id: index + 1,
-    chatId: CHAT_ID,
-    author: index % 2 === 0 ? 'client' : 'bot',
-    kind: 'text',
-    text: `сообщение ${index + 1}`,
-    tsMs: BASE_TS + index * 1000,
-  }));
-}
-
-function context(overrides: Partial<ConversationContext> = {}): ConversationContext {
-  return {
-    chatId: CHAT_ID,
-    history: [
-      {
-        id: 1,
-        chatId: CHAT_ID,
-        author: 'client',
-        kind: 'text',
-        text: 'Здравствуйте, сколько стоит учёт?',
-        tsMs: BASE_TS,
-      },
-    ],
-    profile: EMPTY_PROFILE,
-    ...overrides,
-  };
-}
-
-/** LlmClient, который запоминает запрос и отвечает заданным значением (как будто прошло схему). */
-function fakeLlm(answer: LlmResult<unknown>) {
-  const requests: StructuredRequest<unknown>[] = [];
-  const llm: LlmClient = {
-    structured: <T>(request: StructuredRequest<T>): Promise<LlmResult<T>> => {
-      requests.push(request);
-      return Promise.resolve(answer as LlmResult<T>);
-    },
-  };
-  return { requests, llm };
-}
+import type { ClientProfile, LlmResult, ReplyDraft } from '../../../src/domain/types.js';
+import {
+  CHAT_ID,
+  context,
+  EMPTY_PROFILE,
+  fakeLlm,
+  history,
+  KNOWLEDGE,
+  MODELS,
+  onlyRequest,
+} from './fakes.js';
 
 async function draft(
   answer: LlmResult<unknown>,
@@ -85,11 +22,7 @@ async function draft(
   const { requests, llm } = fakeLlm(answer);
   const agent = createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS });
   const result = await agent.draftReply(ctx, feedback);
-  const request = requests[0];
-  if (request === undefined) {
-    throw new Error('LLM не вызван');
-  }
-  return { result, request };
+  return { result, request: onlyRequest(requests) };
 }
 
 const ANSWER = {
@@ -133,7 +66,7 @@ describe('createAgent: draftReply, запрос', () => {
     expect(last?.text).toContain('В ответе названа цена');
   });
 
-  it('выжимка пустая (до этапа 4) и замечаний нет: блока данных нет, последняя реплика слова клиента', async () => {
+  it('выжимка пустая и замечаний нет: блока данных нет, последняя реплика слова клиента', async () => {
     const { request } = await draft({ ok: true, value: ANSWER });
 
     expect(request.turns.at(-1)).toEqual({
@@ -236,12 +169,34 @@ describe('createAgent: draftReply, нормализация ответа мод�
   });
 });
 
-describe('createAgent: этап 4', () => {
-  it('проверка черновика и оценка интереса пока заготовки', () => {
-    const { llm } = fakeLlm({ ok: false, failure: 'disabled' });
+describe('createAgent: три вызова', () => {
+  it('первый блок system (знания с кэшем) одинаков байт в байт у ответа, проверки и оценки интереса', async () => {
+    const { requests, llm } = fakeLlm({ ok: false, failure: 'disabled' });
     const agent = createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS });
 
-    expect(() => agent.reviewDraft(context(), 'черновик')).toThrow(NotImplementedError);
-    expect(() => agent.assessInterest(context())).toThrow(NotImplementedError);
+    await agent.draftReply(context());
+    await agent.reviewDraft(context(), 'Какой у вас бизнес?');
+    await agent.assessInterest(context());
+
+    expect(requests.map(({ purpose }) => purpose)).toEqual(['reply', 'review', 'interest']);
+    const knowledgeBlocks = requests.map(({ system }) => system[0]);
+    expect(knowledgeBlocks[0]?.cache).toBe(true);
+    expect(knowledgeBlocks[1]).toEqual(knowledgeBlocks[0]);
+    expect(knowledgeBlocks[2]).toEqual(knowledgeBlocks[0]);
+    expect(knowledgeBlocks[1]?.text).toBe(knowledgeBlocks[0]?.text);
+    expect(knowledgeBlocks[2]?.text).toBe(knowledgeBlocks[0]?.text);
+  });
+
+  it('после знаний у каждого вызова своя инструкция без кэша', async () => {
+    const { requests, llm } = fakeLlm({ ok: false, failure: 'disabled' });
+    const agent = createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS });
+
+    await agent.draftReply(context());
+    await agent.reviewDraft(context(), 'Какой у вас бизнес?');
+    await agent.assessInterest(context());
+
+    expect(requests.every(({ system }) => system.length === 2)).toBe(true);
+    expect(requests.every(({ system }) => system[1]?.cache === false)).toBe(true);
+    expect(new Set(requests.map(({ system }) => system[1]?.text)).size).toBe(3);
   });
 });

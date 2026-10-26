@@ -267,3 +267,175 @@ describe('createMessagesRepo: setTranscript', () => {
     ]);
   });
 });
+
+describe('createMessagesRepo: history', () => {
+  const texts = (messages: readonly { readonly text: string | null }[]): (string | null)[] =>
+    messages.map((stored) => stored.text);
+
+  const idOf = (db: Database.Database, waId: string): number =>
+    Number(db.prepare('SELECT id FROM messages WHERE wa_id = ?').pluck().get(waId));
+
+  /** Записывает M1..Mcount с шагом в секунду; текст равен waId. */
+  function seed(db: Database.Database, chatId: ChatId, count: number): void {
+    const repo = createMessagesRepo(db);
+    db.transaction(() => {
+      for (let index = 1; index <= count; index += 1) {
+        repo.insertIfNew(message(chatId, `M${index}`, index * 1000));
+      }
+    })();
+  }
+
+  it('без beforeId: самые свежие limit сообщений по возрастанию времени, любых авторов и видов', () => {
+    const { db, chatId } = setup();
+    const repo = createMessagesRepo(db);
+    repo.insertIfNew(message(chatId, 'W1', 0));
+    repo.insertIfNew(message(chatId, 'W2', 1000, { author: 'bot' }));
+    repo.insertIfNew(message(chatId, 'W3', 2000, { author: 'human_phone' }));
+    repo.insertIfNew(message(chatId, 'W4', 3000, { author: 'human_panel' }));
+    repo.insertIfNew(message(chatId, 'W5', 4000, { kind: 'voice', text: null }));
+
+    const page = repo.history(chatId, { limit: 4 });
+
+    expect(page).toEqual([
+      expect.objectContaining({ id: idOf(db, 'W2'), author: 'bot', text: 'W2', tsMs: T + 1000 }),
+      expect.objectContaining({ author: 'human_phone', text: 'W3' }),
+      expect.objectContaining({ author: 'human_panel', text: 'W4' }),
+      expect.objectContaining({ author: 'client', kind: 'voice', text: null, chatId }),
+    ]);
+  });
+
+  it('beforeId: только строго раньше этого сообщения, само оно и более поздние не входят', () => {
+    const { db, chatId } = setup();
+    seed(db, chatId, 5);
+    const repo = createMessagesRepo(db);
+
+    const page = repo.history(chatId, { limit: 10, beforeId: idOf(db, 'M4') });
+
+    expect(texts(page)).toEqual(['M1', 'M2', 'M3']);
+  });
+
+  it('листается назад страницами без пропусков и повторов до начала переписки', () => {
+    const { db, chatId } = setup();
+    seed(db, chatId, 7);
+    const repo = createMessagesRepo(db);
+
+    const newest = repo.history(chatId, { limit: 3 });
+    const middle = repo.history(chatId, { limit: 3, beforeId: newest[0]?.id });
+    const oldest = repo.history(chatId, { limit: 3, beforeId: middle[0]?.id });
+    const beyond = repo.history(chatId, { limit: 3, beforeId: oldest[0]?.id });
+
+    expect(texts(newest)).toEqual(['M5', 'M6', 'M7']);
+    expect(texts(middle)).toEqual(['M2', 'M3', 'M4']);
+    expect(texts(oldest)).toEqual(['M1']);
+    expect(beyond).toEqual([]);
+  });
+
+  it('курсор идёт по времени сообщения, а не по порядку записи', () => {
+    const { db, chatId } = setup();
+    const repo = createMessagesRepo(db);
+    repo.insertIfNew(message(chatId, 'T300', 3000));
+    repo.insertIfNew(message(chatId, 'T100', 1000));
+    repo.insertIfNew(message(chatId, 'T200', 2000));
+
+    // Порядок на экране T100, T200, T300; у T300 самый маленький id, но он самый поздний по времени.
+    expect(texts(repo.history(chatId, { limit: 10, beforeId: idOf(db, 'T300') }))).toEqual([
+      'T100',
+      'T200',
+    ]);
+    expect(texts(repo.history(chatId, { limit: 10, beforeId: idOf(db, 'T200') }))).toEqual([
+      'T100',
+    ]);
+    expect(texts(repo.history(chatId, { limit: 10, beforeId: idOf(db, 'T100') }))).toEqual([]);
+  });
+
+  it('при равном времени курсор различает сообщения по порядку записи', () => {
+    const { db, chatId } = setup();
+    const repo = createMessagesRepo(db);
+    repo.insertIfNew(message(chatId, 'S1', 5000));
+    repo.insertIfNew(message(chatId, 'S2', 5000));
+    repo.insertIfNew(message(chatId, 'S3', 5000));
+
+    expect(texts(repo.history(chatId, { limit: 10, beforeId: idOf(db, 'S3') }))).toEqual([
+      'S1',
+      'S2',
+    ]);
+    expect(texts(repo.history(chatId, { limit: 1, beforeId: idOf(db, 'S3') }))).toEqual(['S2']);
+  });
+
+  it('сообщения другого чата не попадают ни в страницу, ни в курсор', () => {
+    const { db, chatId, otherChatId } = setup();
+    const repo = createMessagesRepo(db);
+    repo.insertIfNew(message(chatId, 'A1', 1000));
+    repo.insertIfNew(message(otherChatId, 'X1', 500));
+    repo.insertIfNew(message(otherChatId, 'X2', 2000));
+
+    expect(texts(repo.history(chatId, { limit: 10 }))).toEqual(['A1']);
+    expect(repo.history(chatId, { limit: 10, beforeId: idOf(db, 'X2') })).toEqual([]);
+  });
+
+  it('неизвестный beforeId, limit 0 и пустой чат: пустой список', () => {
+    const { db, chatId } = setup();
+    const repo = createMessagesRepo(db);
+    expect(repo.history(chatId, { limit: 10 })).toEqual([]);
+    repo.insertIfNew(message(chatId, 'W1', 0));
+
+    expect(repo.history(chatId, { limit: 10, beforeId: 9999 })).toEqual([]);
+    expect(repo.history(chatId, { limit: 0 })).toEqual([]);
+  });
+
+  it('recent и history без курсора отдают одно и то же', () => {
+    const { db, chatId } = setup();
+    seed(db, chatId, 12);
+    const repo = createMessagesRepo(db);
+
+    expect(repo.history(chatId, { limit: 5 })).toEqual(repo.recent(chatId, 5));
+  });
+
+  it.each([-1, 1.5, Number.NaN])('неверный limit %s: RangeError', (limit) => {
+    const { db, chatId } = setup();
+
+    expect(() => createMessagesRepo(db).history(chatId, { limit })).toThrow(RangeError);
+  });
+
+  it.each([0, -1, 1.5, Number.NaN])('неверный beforeId %s: RangeError', (beforeId) => {
+    const { db, chatId } = setup();
+
+    expect(() => createMessagesRepo(db).history(chatId, { limit: 10, beforeId })).toThrow(
+      RangeError,
+    );
+  });
+
+  it('испорченный автор в базе: явная ошибка, а не догадка', () => {
+    const { db, chatId } = setup();
+    const repo = createMessagesRepo(db);
+    repo.insertIfNew(message(chatId, 'W1', 0));
+    db.pragma('ignore_check_constraints = ON');
+    db.prepare("UPDATE messages SET author = 'system'").run();
+
+    expect(() => repo.history(chatId, { limit: 10 })).toThrow(/автор/);
+  });
+
+  it('большая переписка: 5000 сообщений листаются страницами по 50 без потерь и повторов', () => {
+    const { db, chatId, otherChatId } = setup();
+    seed(db, chatId, 5000);
+    seed(db, otherChatId, 300);
+    const repo = createMessagesRepo(db);
+
+    const ids: number[] = [];
+    let beforeId: number | undefined;
+    let pages = 0;
+    for (;;) {
+      const page = repo.history(chatId, { limit: 50, beforeId });
+      const first = page[0];
+      if (first === undefined) break;
+      ids.unshift(...page.map((stored) => stored.id));
+      beforeId = first.id;
+      pages += 1;
+    }
+
+    expect(pages).toBe(100);
+    expect(ids).toHaveLength(5000);
+    expect(new Set(ids).size).toBe(5000);
+    expect(ids).toEqual([...ids].sort((left, right) => left - right));
+  });
+});

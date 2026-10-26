@@ -26,6 +26,7 @@ import {
 } from '../../src/whatsapp/connection.js';
 import type { WaEvent } from '../../src/whatsapp/inbound.js';
 import { ROOT as PROJECT_ROOT } from '../helpers/source-files.js';
+import { scriptedLlm } from './pipeline/scripted-llm.js';
 
 // main во временном корне (os.tmpdir) с копией config/models.json. Настоящий адаптер WhatsApp и сокет Baileys
 // в тестах недостижимы: каждый вызов main получает шов startWhatsApp, по умолчанию отказывающий (useHarness).
@@ -58,11 +59,16 @@ const TABLES = [
   'app_state',
   'backlog_chats',
   'chats',
+  'client_profiles',
+  'handoffs',
   'known_chats',
+  'manager_notifications',
   'messages',
   'outbound_ids',
   'pairing_attempts',
 ];
+/** Последняя версия схемы на момент проверки: новые миграции версию только повышают. */
+const MIN_SCHEMA_VERSION = 5;
 const LOCK_BUSY_TEXT = 'Бот уже запущен: папка данных занята другим процессом';
 const STRANGER_PHONE = '77000000005';
 const STRANGER_JID = `${STRANGER_PHONE}@s.whatsapp.net` as Jid;
@@ -238,7 +244,9 @@ describe('main: WA_ENABLED=false', () => {
       expect.objectContaining({ level: INFO, msg: 'Бот остановлен' }),
     );
     readDb(harness.dbPath, (db) => {
-      expect(db.pragma('user_version', { simple: true })).toBe(2);
+      expect(Number(db.pragma('user_version', { simple: true }))).toBeGreaterThanOrEqual(
+        MIN_SCHEMA_VERSION,
+      );
       const tables = db
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
         .pluck()
@@ -898,14 +906,8 @@ describe('main: ответы клиентам (этап 3)', () => {
     const { connection, sendText, markRead, setTyping } = sendingConnection();
     const startWhatsApp = fakeStart(connection);
     const reply = 'Расскажите, пожалуйста, что вы храните?';
-    // Ответ модели в форме схемы агента: значение проходит через ту же схему, что и настоящий ответ.
-    const llm: LlmClient = {
-      structured: (request) =>
-        Promise.resolve({
-          ok: true,
-          value: request.schema.parse({ outcome: 'answer', text: reply, stopRequested: false }),
-        }),
-    };
+    // Ответы модели по назначению вызова в форме схем агента: значение проходит через те же схемы, что и настоящее.
+    const { llm, purposes } = scriptedLlm({ replies: [reply] });
     await harness.run(
       { ...KEY_ENV, MANAGER_WHATSAPP: MANAGER_PHONE },
       { startWhatsApp, clock: IMMEDIATE_CLOCK, createLlm: () => llm },
@@ -927,6 +929,7 @@ describe('main: ответы клиентам (этап 3)', () => {
     ]);
     expect(chatRow(harness.dbPath)).toEqual({ status: 'bot', statusBy: null });
     expect(count(harness.dbPath, 'messages')).toBe(2);
+    expect(purposes().sort()).toEqual(['interest', 'reply', 'review']);
   });
 
   it('повтор того же сообщения не запускает второй ответ', async () => {
@@ -942,21 +945,22 @@ describe('main: ответы клиентам (этап 3)', () => {
     const deps = depsOf(startWhatsApp);
 
     await deps.onEvent(CLIENT_EVENT);
-    await vi.waitFor(() => expect(structured).toHaveBeenCalledTimes(1));
+    // Черновик и оценка интереса идут параллельно: два вызова на одну пачку.
+    await vi.waitFor(() => expect(structured).toHaveBeenCalledTimes(2));
     await deps.onEvent(CLIENT_EVENT);
     await nextTurn();
 
-    expect(structured).toHaveBeenCalledTimes(1);
+    expect(structured).toHaveBeenCalledTimes(2);
   });
 
   it('stop дожидается пачки: ответ уходит до остановки WhatsApp и закрытия базы', async () => {
     const harness = useHarness();
     writeKnowledge(harness.root);
-    let release: (value: LlmResult<never>) => void = () => undefined;
+    const releases: ((value: LlmResult<never>) => void)[] = [];
     const structured = vi.fn(
       () =>
         new Promise<LlmResult<never>>((resolve) => {
-          release = resolve;
+          releases.push(resolve);
         }),
     );
     const { connection, sendText, stop } = sendingConnection();
@@ -972,7 +976,7 @@ describe('main: ответы клиентам (этап 3)', () => {
     const stopping = app.stop();
     await nextTurn();
     expect(stop).not.toHaveBeenCalled();
-    release(UNAVAILABLE);
+    for (const release of releases) release(UNAVAILABLE);
     await stopping;
 
     expect(sendText).toHaveBeenCalledTimes(1);

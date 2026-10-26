@@ -5,13 +5,38 @@ import type Database from 'better-sqlite3';
 import { onTestFinished } from 'vitest';
 import { openDatabase } from '../../../src/db/connection.js';
 import { runMigrations } from '../../../src/db/migrations.js';
-import type { ChatId, Jid } from '../../../src/domain/types.js';
+import type { ChatId, ClientProfile, Jid } from '../../../src/domain/types.js';
 
 // Адреса только фиктивные: номера вида 7700000000N и @lid без реальных людей.
 export const PN_A = '77000000001@s.whatsapp.net' as Jid;
 export const LID_A = '100000000000001@lid' as Jid;
 export const PN_B = '77000000002@s.whatsapp.net' as Jid;
 export const LID_B = '100000000000002@lid' as Jid;
+
+/** Выжимка, в которой ничего не выяснили. */
+export const EMPTY_PROFILE: ClientProfile = {
+  business: null,
+  area: null,
+  scope: null,
+  itemCount: null,
+  has1C: null,
+  problem: null,
+  specifics: null,
+};
+
+/** Заполненная выжимка; overrides меняют отдельные поля. */
+export function profileOf(overrides: Partial<ClientProfile> = {}): ClientProfile {
+  return {
+    business: 'Магазин одежды',
+    area: '300 м²',
+    scope: 'где лежит каждая вещь',
+    itemCount: 'около 5000 вещей',
+    has1C: true,
+    problem: 'пересорт при приёмке',
+    specifics: 'два склада',
+    ...overrides,
+  };
+}
 
 /** Временная папка в os.tmpdir(): после теста выполняет отложенную очистку и удаляет себя. */
 export interface TempDir {

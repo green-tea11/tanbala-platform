@@ -226,6 +226,19 @@ describe('createAnthropicLlm: запрос', () => {
     });
   });
 
+  it.each(['reply', 'review', 'interest'] as const)(
+    'вызов %s: effort low в запросе и тот же вид вызова в логе расхода',
+    async (purpose) => {
+      const { create, records, deps } = setup();
+
+      await createAnthropicLlm(deps).structured({ ...REQUEST, purpose });
+
+      expect(sentParams(create).output_config?.effort).toBe('low');
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({ provider: 'anthropic', purpose, model: MODEL });
+    },
+  );
+
   it('сначала засчитывает вызов в дневной лимит, затем вызывает API, пишет расход и только потом проверяет схему', async () => {
     const { calls, deps } = setup();
     const schema = z.object({ answer: z.string() });

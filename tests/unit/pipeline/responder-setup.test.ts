@@ -16,6 +16,7 @@ import {
 } from '../../../src/pipeline/responder-setup.js';
 import { ROOT as PROJECT_ROOT } from '../../helpers/source-files.js';
 import { useMigratedDb, useTempDir } from '../db/fixture.js';
+import { scriptedLlm } from './scripted-llm.js';
 
 // Настоящие репозитории на SQLite в памяти, LLM поддельный, подключение WhatsApp поддельное: сети нет.
 
@@ -64,14 +65,8 @@ function configWith(env: Readonly<Record<string, string>>): AppConfig {
   return loadConfig({ ...base, ...env }, MODELS, root).config;
 }
 
-/** LLM отвечает answer в форме схемы агента. */
-const ANSWERING_LLM: LlmClient = {
-  structured: (request) =>
-    Promise.resolve({
-      ok: true,
-      value: request.schema.parse({ outcome: 'answer', text: REPLY, stopRequested: false }),
-    }),
-};
+/** LLM отвечает по назначению вызова в форме схем агента: черновик answer, проверка пройдена, клиент холодный. */
+const ANSWERING_LLM: LlmClient = scriptedLlm({ replies: [REPLY] }).llm;
 
 function storageOf(config: AppConfig): ResponderStorage {
   const db = useMigratedDb();

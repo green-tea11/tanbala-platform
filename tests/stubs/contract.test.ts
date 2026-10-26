@@ -93,6 +93,24 @@ const EXCLUDED = new Set([
   'messaging/allowlist.ts#isChatAllowlisted',
   'pipeline/responder-setup.ts#assembleResponder',
   'whatsapp/voice-media.ts#createWhatsAppAudioDownload',
+  // Этап 4: проверка черновика и оценка интереса (тесты в tests/unit/agent).
+  'agent/clean-text.ts#cleanLine',
+  'agent/profile.ts#profileText',
+  'agent/review.ts#normalizeReview',
+  'agent/review.ts#reviewCallData',
+  'agent/interest.ts#normalizeInterest',
+  'agent/interest.ts#interestCallData',
+  // Этап 4: развилка и поток черновика (тесты в tests/unit/pipeline).
+  'pipeline/decide.ts#decideAction',
+  'pipeline/reply-flow.ts#requestDraft',
+  'pipeline/reply-flow.ts#decideReply',
+  // Этапы 4–6: база (тесты в tests/unit/db).
+  'db/values.ts#assertCount',
+  'db/values.ts#oneOf',
+  'db/repos/chat-merge.ts#mergeColumns',
+  'db/repos/chat-merge.ts#createChatAbsorber',
+  'db/repos/handoffs.ts#createHandoffsRepo',
+  'db/repos/manager-notifications.ts#createManagerNotificationsRepo',
 ]);
 
 type AnyFunction = (...args: unknown[]) => unknown;

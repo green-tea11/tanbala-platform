@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { openDatabase } from '../../../src/db/connection.js';
 import { runMigrations } from '../../../src/db/migrations.js';
+import { HANDOFF_REASONS, LEVELS } from '../../../src/db/values.js';
 import {
   errorOf,
   insertChat,
@@ -35,24 +36,32 @@ const STAGE_2_TABLES = [
   'pairing_attempts',
 ];
 
+const STAGE_3_TABLES = [...STAGE_2_TABLES, 'api_usage', 'outbound_ids'].sort();
+
 const CURRENT_TABLES = [
   'api_usage',
   'app_state',
   'backlog_chats',
   'chats',
+  'client_profiles',
+  'handoffs',
   'known_chats',
+  'manager_notifications',
   'messages',
   'outbound_ids',
   'pairing_attempts',
 ];
 
+/** Последняя версия схемы: этап 2 дал версию 1, этап 3 версию 2, этапы 4, 5 и 6 версии 3, 4 и 5. */
+const CURRENT_VERSION = 5;
+
 describe('runMigrations', () => {
-  it('новая база получает версию 2 и ровно таблицы этапов 2 и 3', () => {
+  it('новая база получает последнюю версию и ровно таблицы этапов с 2 по 5', () => {
     const db = useMemoryDb();
 
     runMigrations(db);
 
-    expect(userVersion(db)).toBe(2);
+    expect(userVersion(db)).toBe(CURRENT_VERSION);
     expect(tableNames(db)).toEqual(CURRENT_TABLES);
   });
 
@@ -62,11 +71,11 @@ describe('runMigrations', () => {
 
     runMigrations(db);
 
-    expect(userVersion(db)).toBe(2);
+    expect(userVersion(db)).toBe(CURRENT_VERSION);
     expect(db.prepare('SELECT count(*) FROM chats').pluck().get()).toBe(1);
   });
 
-  it('база этапа 2 (версия 1) переходит на версию 2, переписка сохраняется неотвеченной', () => {
+  it('база этапа 2 (версия 1) переходит на текущую версию, переписка сохраняется неотвеченной', () => {
     const db = useMemoryDb();
     runMigrations(db, 1);
     expect(tableNames(db)).toEqual(STAGE_2_TABLES);
@@ -77,11 +86,33 @@ describe('runMigrations', () => {
 
     runMigrations(db);
 
-    expect(userVersion(db)).toBe(2);
+    expect(userVersion(db)).toBe(CURRENT_VERSION);
     expect(tableNames(db)).toEqual(CURRENT_TABLES);
     expect(db.prepare('SELECT chat_id, wa_id, answered FROM messages').all()).toEqual([
       { chat_id: chatId, wa_id: 'W1', answered: 0 },
     ]);
+  });
+
+  it('живая база этапа 3 (версия 2) переходит на текущую: данные на месте, новые таблицы пустые', () => {
+    const db = useMemoryDb();
+    runMigrations(db, 2);
+    expect(tableNames(db)).toEqual(STAGE_3_TABLES);
+    const chatId = insertChat(db, { replyJid: PN_A, pushName: 'Айгерим' });
+    db.prepare(
+      "INSERT INTO messages (chat_id, wa_id, author, kind, text, ts_ms) VALUES (?, 'W1', 'client', 'text', 'x', 1)",
+    ).run(chatId);
+
+    runMigrations(db);
+
+    expect(userVersion(db)).toBe(CURRENT_VERSION);
+    expect(tableNames(db)).toEqual(CURRENT_TABLES);
+    expect(db.prepare('SELECT id, push_name, interest_level FROM chats').all()).toEqual([
+      { id: chatId, push_name: 'Айгерим', interest_level: 'cold' },
+    ]);
+    expect(db.prepare('SELECT count(*) FROM messages').pluck().get()).toBe(1);
+    for (const table of ['client_profiles', 'handoffs', 'manager_notifications']) {
+      expect(db.prepare(`SELECT count(*) FROM ${table}`).pluck().get()).toBe(0);
+    }
   });
 
   it('сбой версии 2 откатывает только её: база остаётся на версии 1 с данными', () => {
@@ -100,13 +131,47 @@ describe('runMigrations', () => {
     ).not.toContain('answered');
   });
 
-  it.each([-1, 1.5, 3])('неверная целевая версия %s: RangeError, база не меняется', (target) => {
+  it('сбой версии 4 откатывает и версию 3 из того же запуска: база остаётся на версии 2', () => {
     const db = useMemoryDb();
+    runMigrations(db, 2);
+    insertChat(db, { replyJid: PN_A });
+    db.exec('CREATE TABLE handoffs (x INTEGER)');
 
     expect(() => {
-      runMigrations(db, target);
-    }).toThrow(RangeError);
-    expect(userVersion(db)).toBe(0);
+      runMigrations(db);
+    }).toThrow(/handoffs/);
+    expect(userVersion(db)).toBe(2);
+    expect(db.prepare('SELECT count(*) FROM chats').pluck().get()).toBe(1);
+    expect(tableNames(db)).not.toContain('client_profiles');
+    expect(tableNames(db)).not.toContain('manager_notifications');
+  });
+
+  it.each([-1, 1.5, CURRENT_VERSION + 1])(
+    'неверная целевая версия %s: RangeError, база не меняется',
+    (target) => {
+      const db = useMemoryDb();
+
+      expect(() => {
+        runMigrations(db, target);
+      }).toThrow(RangeError);
+      expect(userVersion(db)).toBe(0);
+    },
+  );
+
+  it('каждая промежуточная версия поднимается отдельно: 3, затем 4, затем 5', () => {
+    const db = useMemoryDb();
+
+    runMigrations(db, 3);
+    expect(tableNames(db)).toContain('client_profiles');
+    expect(tableNames(db)).not.toContain('handoffs');
+
+    runMigrations(db, 4);
+    expect(tableNames(db)).toContain('handoffs');
+    expect(tableNames(db)).toContain('manager_notifications');
+    expect(userVersion(db)).toBe(4);
+
+    runMigrations(db, 5);
+    expect(userVersion(db)).toBe(CURRENT_VERSION);
   });
 
   it('схема новее кода: явная ошибка, база не меняется', () => {
@@ -141,8 +206,292 @@ describe('runMigrations', () => {
     const second = dir.track(openDatabase(path));
     runMigrations(second);
 
-    expect(userVersion(second)).toBe(2);
+    expect(userVersion(second)).toBe(CURRENT_VERSION);
     expect(tableNames(second)).toEqual(CURRENT_TABLES);
+  });
+});
+
+describe('индексы этапов 5 и 6', () => {
+  it('все созданы: передачи, уведомления (чат, время, повторы) и сообщения для панели', () => {
+    const db = useMigratedDb();
+
+    const names = db
+      .prepare(
+        "SELECT name FROM sqlite_schema WHERE type = 'index' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+      )
+      .pluck()
+      .all();
+
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'handoffs_chat',
+        'handoffs_one_open_per_chat',
+        'manager_notifications_chat',
+        'manager_notifications_created',
+        'manager_notifications_retry',
+        'messages_chat_ts',
+      ]),
+    );
+  });
+});
+
+describe('схема версии 5 (этап 6)', () => {
+  it('индекс сообщений по чату и времени создан: последнее сообщение и страницы переписки для панели', () => {
+    const db = useMigratedDb();
+
+    expect(
+      db
+        .prepare("SELECT name FROM pragma_index_info('messages_chat_ts') ORDER BY seqno")
+        .pluck()
+        .all(),
+    ).toEqual(['chat_id', 'ts_ms']);
+  });
+});
+
+describe('схема версии 4 (этап 5): handoffs', () => {
+  const insertHandoff = (
+    db: Database.Database,
+    values: {
+      chatId: number;
+      reason?: string;
+      level?: string;
+      openedAt?: number;
+      resolvedAt?: number | null;
+    },
+  ): void => {
+    db.prepare(
+      `INSERT INTO handoffs (chat_id, reason, level, snapshot, opened_at_ms, resolved_at_ms)
+       VALUES (@chatId, @reason, @level, 'снимок', @openedAt, @resolvedAt)`,
+    ).run({
+      chatId: values.chatId,
+      reason: values.reason ?? 'hot',
+      level: values.level ?? 'hot',
+      openedAt: values.openedAt ?? 10,
+      resolvedAt: values.resolvedAt ?? null,
+    });
+  };
+
+  it('открытая передача одна на чат: вторая открытая отклоняется, у другого чата своя', () => {
+    const db = useMigratedDb();
+    const first = insertChat(db, { replyJid: PN_A });
+    const second = insertChat(db, { replyJid: LID_A });
+    insertHandoff(db, { chatId: first });
+
+    expect(errorOf(() => insertHandoff(db, { chatId: first, reason: 'complaint' }))).toMatchObject({
+      code: 'SQLITE_CONSTRAINT_UNIQUE',
+    });
+    expect(errorOf(() => insertHandoff(db, { chatId: second }))).toBeUndefined();
+  });
+
+  it('закрытых передач у чата может быть сколько угодно, и после них открывается новая', () => {
+    const db = useMigratedDb();
+    const chatId = insertChat(db, { replyJid: PN_A });
+
+    insertHandoff(db, { chatId, openedAt: 10, resolvedAt: 20 });
+    insertHandoff(db, { chatId, openedAt: 30, resolvedAt: 40 });
+    insertHandoff(db, { chatId, openedAt: 50 });
+
+    expect(db.prepare('SELECT count(*) FROM handoffs').pluck().get()).toBe(3);
+  });
+
+  it.each([
+    ['причина вне списка', { reason: 'spam' }],
+    ['уровень вне списка', { level: 'lukewarm' }],
+    ['закрытие раньше открытия', { openedAt: 20, resolvedAt: 10 }],
+  ])('отклоняет: %s', (_label, values) => {
+    const db = useMigratedDb();
+    const chatId = insertChat(db, { replyJid: PN_A });
+
+    expect(errorOf(() => insertHandoff(db, { chatId, ...values }))).toMatchObject({
+      code: 'SQLITE_CONSTRAINT_CHECK',
+    });
+  });
+
+  it.each([...HANDOFF_REASONS])(
+    'причина %s допустима (список в коде и CHECK совпадают)',
+    (reason) => {
+      const db = useMigratedDb();
+      const chatId = insertChat(db, { replyJid: PN_A });
+
+      expect(errorOf(() => insertHandoff(db, { chatId, reason }))).toBeUndefined();
+    },
+  );
+
+  it.each([...LEVELS])('уровень %s допустим (список в коде и CHECK совпадают)', (level) => {
+    const db = useMigratedDb();
+    const chatId = insertChat(db, { replyJid: PN_A });
+
+    expect(errorOf(() => insertHandoff(db, { chatId, level }))).toBeUndefined();
+  });
+
+  it('передача только для существующего чата', () => {
+    const db = useMigratedDb();
+
+    expect(errorOf(() => insertHandoff(db, { chatId: 404 }))).toMatchObject({
+      code: 'SQLITE_CONSTRAINT_FOREIGNKEY',
+    });
+  });
+
+  it('снимок обязателен', () => {
+    const db = useMigratedDb();
+    const chatId = insertChat(db, { replyJid: PN_A });
+
+    expect(
+      errorOf(() =>
+        db
+          .prepare(
+            `INSERT INTO handoffs (chat_id, reason, level, snapshot, opened_at_ms)
+             VALUES (?, 'hot', 'hot', NULL, 1)`,
+          )
+          .run(chatId),
+      ),
+    ).toMatchObject({ code: 'SQLITE_CONSTRAINT_NOTNULL' });
+  });
+});
+
+describe('схема версии 4 (этап 5): manager_notifications', () => {
+  const insertNotification = (
+    db: Database.Database,
+    values: { kind?: string; chatId?: number | null; status?: string; attempts?: number },
+  ): void => {
+    const chatId = values.chatId === undefined ? 1 : values.chatId;
+    db.prepare(
+      `INSERT INTO manager_notifications (kind, chat_id, text, status, attempts, created_at_ms, updated_at_ms)
+       VALUES (@kind, @chatId, 'текст', @status, @attempts, 1, 1)`,
+    ).run({
+      kind: values.kind ?? 'handoff',
+      chatId,
+      status: values.status ?? 'pending',
+      attempts: values.attempts ?? 0,
+    });
+  };
+
+  it('по умолчанию pending, ноль попыток, без ID сообщения', () => {
+    const db = useMigratedDb();
+    insertChat(db, { replyJid: PN_A });
+
+    db.prepare(
+      `INSERT INTO manager_notifications (kind, chat_id, text, created_at_ms, updated_at_ms)
+       VALUES ('handoff', 1, 'текст', 1, 1)`,
+    ).run();
+
+    expect(db.prepare('SELECT status, attempts, wa_id FROM manager_notifications').get()).toEqual({
+      status: 'pending',
+      attempts: 0,
+      wa_id: null,
+    });
+  });
+
+  it.each([
+    ['вид вне списка', { kind: 'spam' }],
+    ['статус вне списка', { status: 'lost' }],
+    ['отрицательное число попыток', { attempts: -1 }],
+    ['передача без чата', { kind: 'handoff', chatId: null }],
+    ['лимит без чата', { kind: 'limit', chatId: null }],
+    ['список простоя с чатом', { kind: 'backlog', chatId: 1 }],
+  ])('отклоняет: %s', (_label, values) => {
+    const db = useMigratedDb();
+    insertChat(db, { replyJid: PN_A });
+
+    expect(errorOf(() => insertNotification(db, values))).toMatchObject({
+      code: 'SQLITE_CONSTRAINT_CHECK',
+    });
+  });
+
+  it.each(['pending', 'sent', 'no_manager', 'skipped_limit', 'failed'])(
+    'статус %s допустим',
+    (status) => {
+      const db = useMigratedDb();
+      insertChat(db, { replyJid: PN_A });
+
+      expect(errorOf(() => insertNotification(db, { status }))).toBeUndefined();
+    },
+  );
+
+  it('список чатов простоя записывается без чата', () => {
+    const db = useMigratedDb();
+
+    expect(
+      errorOf(() => insertNotification(db, { kind: 'backlog', chatId: null })),
+    ).toBeUndefined();
+  });
+
+  it('уведомление только для существующего чата', () => {
+    const db = useMigratedDb();
+
+    expect(errorOf(() => insertNotification(db, { chatId: 404 }))).toMatchObject({
+      code: 'SQLITE_CONSTRAINT_FOREIGNKEY',
+    });
+  });
+});
+
+describe('схема версии 3 (этап 4): client_profiles', () => {
+  const insertProfile = (
+    db: Database.Database,
+    chatId: number,
+    overrides: Readonly<Record<string, unknown>> = {},
+  ): void => {
+    db.prepare(
+      `INSERT INTO client_profiles
+         (chat_id, business, area, scope, item_count, has_1c, problem, specifics, reason, updated_at_ms)
+       VALUES (@chatId, @business, @area, @scope, @itemCount, @has1c, @problem, @specifics, @reason, @updatedAtMs)`,
+    ).run({
+      chatId,
+      business: null,
+      area: null,
+      scope: null,
+      itemCount: null,
+      has1c: null,
+      problem: null,
+      specifics: null,
+      reason: 'причина',
+      updatedAtMs: 1,
+      ...overrides,
+    });
+  };
+
+  it('выжимка 1:1 с чатом: вторая строка того же чата отклоняется', () => {
+    const db = useMigratedDb();
+    const chatId = insertChat(db, { replyJid: PN_A });
+    insertProfile(db, chatId);
+
+    expect(errorOf(() => insertProfile(db, chatId))).toMatchObject({
+      code: 'SQLITE_CONSTRAINT_PRIMARYKEY',
+    });
+  });
+
+  it.each([0, 1, null])('has_1c = %s допустим', (has1c) => {
+    const db = useMigratedDb();
+    const chatId = insertChat(db, { replyJid: PN_A });
+
+    expect(errorOf(() => insertProfile(db, chatId, { has1c }))).toBeUndefined();
+  });
+
+  it('has_1c вне 0 и 1 отклоняется', () => {
+    const db = useMigratedDb();
+    const chatId = insertChat(db, { replyJid: PN_A });
+
+    expect(errorOf(() => insertProfile(db, chatId, { has1c: 2 }))).toMatchObject({
+      code: 'SQLITE_CONSTRAINT_CHECK',
+    });
+  });
+
+  it('выжимка только для существующего чата', () => {
+    const db = useMigratedDb();
+
+    expect(errorOf(() => insertProfile(db, 404))).toMatchObject({
+      code: 'SQLITE_CONSTRAINT_FOREIGNKEY',
+    });
+  });
+
+  it('причина оценки обязательна, остальные поля выжимки могут быть пустыми', () => {
+    const db = useMigratedDb();
+    const chatId = insertChat(db, { replyJid: PN_A });
+
+    expect(errorOf(() => insertProfile(db, chatId, { reason: null }))).toMatchObject({
+      code: 'SQLITE_CONSTRAINT_NOTNULL',
+    });
+    expect(errorOf(() => insertProfile(db, chatId))).toBeUndefined();
   });
 });
 

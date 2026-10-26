@@ -1,18 +1,22 @@
 import { z } from 'zod';
 import type { ModelsConfig } from '../config/env.js';
-import type { LlmClient } from '../domain/ports.js';
+import type { LlmClient, SystemBlock } from '../domain/ports.js';
 import type {
   ChatId,
   ClientProfile,
   InterestAssessment,
+  InterestLevel,
+  LlmPurpose,
   LlmResult,
   ReplyDraft,
   ReviewResult,
   StoredMessage,
 } from '../domain/types.js';
-import { notImplemented } from '../shared/todo.js';
+import { interestCallData, interestSchema, normalizeInterest } from './interest.js';
 import type { Knowledge } from './knowledge.js';
+import { profileText } from './profile.js';
 import { buildSystem, buildTurns } from './prompts.js';
+import { EMPTY_DRAFT_REVIEW, normalizeReview, reviewCallData, reviewSchema } from './review.js';
 
 /** Что агент знает о разговоре. */
 export interface ConversationContext {
@@ -20,6 +24,11 @@ export interface ConversationContext {
   readonly history: readonly StoredMessage[];
   /** Текущая выжимка о клиенте. */
   readonly profile: ClientProfile;
+  /**
+   * Уровень интереса, который хранится у чата сейчас (Chat.level). Его видит оценка интереса в данных вызова;
+   * конвейер передаёт chat.level. Не передан => оценка идёт без текущего уровня.
+   */
+  readonly level?: InterestLevel;
 }
 
 /**
@@ -32,9 +41,12 @@ export interface Agent {
     context: ConversationContext,
     feedback?: readonly string[],
   ): Promise<LlmResult<ReplyDraft>>;
-  /** Проверка текста черновика: нет ли фактов не из знаний, обещаний цен, скидок, сроков или объёмов работ. */
+  /**
+   * Проверка текста черновика: нет ли фактов не из знаний, обещаний цен, скидок, сроков или объёмов работ.
+   * Результат нормализован: ok true только без замечаний, ok false всегда с замечанием. Пустой черновик не проходит.
+   */
   reviewDraft(context: ConversationContext, draftText: string): Promise<LlmResult<ReviewResult>>;
-  /** Уровень интереса и обновлённая выжимка для менеджера. */
+  /** Уровень интереса и обновлённая выжимка для менеджера: известное раньше сохраняется, если клиент не поправил. */
   assessInterest(context: ConversationContext): Promise<LlmResult<InterestAssessment>>;
 }
 
@@ -48,8 +60,11 @@ export interface AgentDeps {
 /** Сколько последних сообщений истории уходит в промпт: столько же конвейеру достаточно брать из базы. */
 export const HISTORY_MESSAGES = 30;
 
-/** Ответ одна или две фразы, но размышления Haiku 5.5 входят в max_tokens: запас, чтобы не получить truncated. */
-const REPLY_MAX_TOKENS = 4096;
+/**
+ * Ответ, проверка и оценка короткие (одна или две фразы, несколько полей), но размышления Haiku 5.5 входят
+ * в max_tokens: запас, чтобы не получить truncated.
+ */
+const MAX_TOKENS = 4096;
 
 const INVALID_OUTPUT = { ok: false, failure: 'invalid_output' } as const;
 
@@ -89,31 +104,6 @@ function normalizeReplyDraft(raw: RawReplyDraft): LlmResult<ReplyDraft> {
   }
 }
 
-function has1CText(has1C: boolean | null): string | null {
-  if (has1C === null) {
-    return null;
-  }
-  return has1C ? 'есть' : 'нет';
-}
-
-/** Выжимка для данных вызова: только выясненные поля; ничего не выяснили (до этапа 4 всегда так) => null. */
-function profileText(profile: ClientProfile): string | null {
-  const fields: readonly (readonly [string, string | null])[] = [
-    ['Бизнес', profile.business],
-    ['Площадь', profile.area],
-    ['Что учитывать', profile.scope],
-    ['Примерное число вещей', profile.itemCount],
-    ['1С', has1CText(profile.has1C)],
-    ['Задача', profile.problem],
-    ['Особенности', profile.specifics],
-  ];
-  const known = fields.flatMap(([label, value]) => (value === null ? [] : [`${label}: ${value}`]));
-  if (known.length === 0) {
-    return null;
-  }
-  return ['Что клиент уже рассказал о себе (выжимка системы):', ...known].join('\n');
-}
-
 /** Данные вызова ответа: выясненное о клиенте и непустые замечания проверки; нет ни того, ни другого => null. */
 function replyCallData(profile: ClientProfile, feedback: readonly string[]): string | null {
   const problems = feedback.map((item) => item.trim()).filter((item) => item !== '');
@@ -126,39 +116,75 @@ function replyCallData(profile: ClientProfile, feedback: readonly string[]): str
   return parts.length === 0 ? null : parts.join('\n\n');
 }
 
+/** Один вызов LLM: что в нём общее для трёх назначений (история, лимит токенов, чат) и что своё (модель, инструкция). */
+type Ask = <T>(
+  purpose: LlmPurpose,
+  schema: z.ZodType<T, T>,
+  context: ConversationContext,
+  callData: string | null,
+) => Promise<LlmResult<T>>;
+
+/**
+ * system строится один раз на назначение: блок знаний у трёх вызовов один и тот же (кэш общий), после него
+ * инструкция вызова. Модель берётся из конфига по назначению.
+ */
+function createAsk(deps: AgentDeps): Ask {
+  const systems: Readonly<Record<LlmPurpose, readonly SystemBlock[]>> = {
+    reply: buildSystem(deps.knowledge, 'reply'),
+    review: buildSystem(deps.knowledge, 'review'),
+    interest: buildSystem(deps.knowledge, 'interest'),
+  };
+  return (purpose, schema, context, callData) =>
+    deps.llm.structured({
+      purpose,
+      model: deps.models[purpose],
+      system: systems[purpose],
+      turns: buildTurns(context.history, HISTORY_MESSAGES, callData),
+      schema,
+      maxTokens: MAX_TOKENS,
+      chatId: context.chatId,
+    });
+}
+
 /**
  * Создаёт агента поверх LlmClient. Модели из config/models.json: по умолчанию Haiku везде.
- * Все вызовы: system = buildSystem(knowledge, purpose) (знания с кэшем, затем инструкция вызова без кэша);
- * turns = buildTurns(history, HISTORY_MESSAGES, данные вызова): данные в последней реплике user в блоке «данные».
+ * Все вызовы: system = buildSystem(knowledge, purpose) (знания с кэшем, затем инструкция вызова без кэша; блок
+ * знаний у трёх вызовов один и тот же, поэтому кэш общий); turns = buildTurns(history, HISTORY_MESSAGES, данные
+ * вызова): данные в последней реплике user в блоке «данные». Сбой LLM возвращается как есть, значением.
  * draftReply: модель models.reply, данные вызова: текущая выжимка и замечания проверки (feedback); схема
- * replyDraftSchema, ответ нормализуется в ReplyDraft. Сбой LLM возвращается как есть.
- * TODO(этап 4): reviewDraft: модель models.review, данные вызова: текст черновика, не репликой assistant; схема ReviewResult.
- * TODO(этап 4): assessInterest: модель models.interest, данные вызова: текущая выжимка; схема InterestAssessment.
- * TODO(этап 4): противоречивый ответ проверки (например, ok: true вместе с замечаниями) нормализовать здесь один раз; ошибка разбора => LlmResult invalid_output, не угадывать (fail-closed).
+ * replyDraftSchema, ответ нормализуется в ReplyDraft.
+ * reviewDraft: модель models.review, данные вызова: текст черновика (не репликой assistant); схема reviewSchema,
+ * противоречия снимает normalizeReview. Пустой черновик не проходит и LLM не вызывает.
+ * assessInterest: модель models.interest, данные вызова: текущий уровень и выжимка; схема interestSchema,
+ * normalizeInterest чистит поля и сохраняет известное раньше.
  */
 export function createAgent(deps: AgentDeps): Agent {
-  const replySystem = buildSystem(deps.knowledge, 'reply');
+  const ask = createAsk(deps);
   return {
     async draftReply(
       context: ConversationContext,
       feedback: readonly string[] = [],
     ): Promise<LlmResult<ReplyDraft>> {
-      const result = await deps.llm.structured<RawReplyDraft>({
-        purpose: 'reply',
-        model: deps.models.reply,
-        system: replySystem,
-        turns: buildTurns(
-          context.history,
-          HISTORY_MESSAGES,
-          replyCallData(context.profile, feedback),
-        ),
-        schema: replyDraftSchema,
-        maxTokens: REPLY_MAX_TOKENS,
-        chatId: context.chatId,
-      });
+      const callData = replyCallData(context.profile, feedback);
+      const result = await ask('reply', replyDraftSchema, context, callData);
       return result.ok ? normalizeReplyDraft(result.value) : result;
     },
-    reviewDraft: () => notImplemented('этап 4', 'agent/agent.reviewDraft'),
-    assessInterest: () => notImplemented('этап 4', 'agent/agent.assessInterest'),
+    async reviewDraft(
+      context: ConversationContext,
+      draftText: string,
+    ): Promise<LlmResult<ReviewResult>> {
+      if (draftText.trim() === '') {
+        return { ok: true, value: EMPTY_DRAFT_REVIEW };
+      }
+      const result = await ask('review', reviewSchema, context, reviewCallData(draftText));
+      return result.ok ? { ok: true, value: normalizeReview(result.value) } : result;
+    },
+    async assessInterest(context: ConversationContext): Promise<LlmResult<InterestAssessment>> {
+      const callData = interestCallData(context.profile, context.level);
+      const result = await ask('interest', interestSchema, context, callData);
+      return result.ok
+        ? { ok: true, value: normalizeInterest(result.value, context.profile) }
+        : result;
+    },
   };
 }
