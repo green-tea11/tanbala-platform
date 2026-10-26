@@ -1,4 +1,6 @@
-import { notImplemented } from '../shared/todo.js';
+import { createHash } from 'node:crypto';
+import { basename } from 'node:path';
+import { SafeError } from '../shared/safe-error.js';
 
 /** Тексты двух файлов знаний и их общая версия. */
 export interface Knowledge {
@@ -12,13 +14,41 @@ export interface Knowledge {
 
 /**
  * Читает оба файла знаний целиком (раздел плана «Знания агента»: без RAG, весь текст в промпте).
- * readText передаётся параметром, чтобы тесты обходились без диска.
- * TODO(этап 3): тексты байт в байт, без обрезки и правок: любая разница ломает кэш промпта.
- * TODO(этап 3): version: sha256 от обоих текстов; пустой или отсутствующий файл => понятная ошибка при старте.
+ * readText передаётся параметром, чтобы тесты обходились без диска (в рабочем режиме readFile в utf8).
+ * Тексты байт в байт, без обрезки и правок: любая разница ломает кэш промпта.
+ * version: sha256 от обоих текстов по порядку. Пустой, пробельный или нечитаемый файл => SafeError
+ * с именем файла при старте; исходная ошибка чтения лежит в cause.
  */
-export function loadKnowledge(
+export async function loadKnowledge(
   paths: { readonly owner: string; readonly whatsapp: string },
   readText: (path: string) => Promise<string>,
 ): Promise<Knowledge> {
-  return notImplemented('этап 3', 'agent/knowledge.loadKnowledge');
+  const [owner, whatsapp] = await Promise.all([
+    readKnowledgeFile(paths.owner, readText),
+    readKnowledgeFile(paths.whatsapp, readText),
+  ]);
+  return { owner, whatsapp, version: knowledgeVersion(owner, whatsapp) };
+}
+
+async function readKnowledgeFile(
+  path: string,
+  readText: (path: string) => Promise<string>,
+): Promise<string> {
+  let text: string;
+  try {
+    text = await readText(path);
+  } catch (error: unknown) {
+    throw new SafeError(`Файл знаний не прочитан: ${basename(path)}`, { cause: error });
+  }
+  if (text.trim() === '') {
+    throw new SafeError(`Файл знаний пуст: ${basename(path)}`);
+  }
+  return text;
+}
+
+/** JSON-массив вместо склейки: тексты «ab» + «c» и «a» + «bc» дают разные версии. */
+function knowledgeVersion(owner: string, whatsapp: string): string {
+  return createHash('sha256')
+    .update(JSON.stringify([owner, whatsapp]))
+    .digest('hex');
 }

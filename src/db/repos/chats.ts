@@ -5,9 +5,11 @@ import type {
   ChatControl,
   ChatId,
   ChatIdentity,
+  ChatStatus,
   ClientProfile,
   InterestLevel,
   Jid,
+  StatusChange,
 } from '../../domain/types.js';
 import { notImplemented } from '../../shared/todo.js';
 import { assertTimeMs } from '../time.js';
@@ -59,13 +61,13 @@ const EMPTY_PROFILE: ClientProfile = Object.freeze({
  * Чаты и выжимки клиентов в SQLite. Здесь числовой id из базы приводится к ChatId.
  * Только подготовленные запросы с параметрами.
  * upsertByIdentity ищет чат по всем адресам (reply_jid, lid_jid, pn_jid). Нашлось несколько (для @lid стал известен
- * номер или наоборот) => сливает их в старший: история и отметка простоя переезжают, статус менеджера и более
- * горячий интерес не теряются. Новые адреса и имя важнее старых, имя null известное не стирает; reply_jid всегда
- * адрес последнего сообщения. phone: цифры из pn_jid для уведомления менеджеру.
+ * номер или наоборот) => сливает их в старший: история, отметка простоя, исходящие и дневные счётчики вызовов API
+ * переезжают, статус менеджера и более горячий интерес не теряются. Новые адреса и имя важнее старых, имя null
+ * известное не стирает; reply_jid всегда адрес последнего сообщения. phone: цифры из pn_jid для уведомления менеджеру.
  * findByJid ищет по тем же трём адресам и не создаёт чат. Chat.control собирается из статуса и status_by
  * (status_by пуст => { status: 'bot', by: null }). Выжимки до этапа 4 нет: profile пустой.
+ * setStatus хранит StatusChange: статус, кто и когда (nowMs); неизвестный чат => явная ошибка.
  * TODO(этап 6): сортировку для панели брать из белого списка колонок.
- * TODO(этап 3): setStatus хранит StatusChange (статус, кто, когда).
  * TODO(этап 4): saveAssessment обновляет уровень интереса и client_profiles в одной транзакции.
  * TODO(этап 4): при слиянии чатов (absorb) переносить и client_profiles, на этапе 5 так же handoffs: иначе внешний ключ не даст удалить слитый чат.
  * TODO(этап 6): listForPanel с пагинацией (limit, offset).
@@ -103,7 +105,11 @@ export function createChatsRepo(db: Database.Database): ChatsRepo {
       const row = statements.byId.get(id);
       return row === undefined ? null : toChat(row);
     },
-    setStatus: () => notImplemented('этап 3', 'db/repos/chats.setStatus'),
+    setStatus(id: ChatId, change: StatusChange, nowMs: number): void {
+      assertTimeMs(nowMs, 'nowMs');
+      const result = statements.setStatus.run({ id, ...change, nowMs });
+      if (result.changes === 0) throw new Error(`Чат #${id} не найден: статус не изменён`);
+    },
     saveAssessment: () => notImplemented('этап 4', 'db/repos/chats.saveAssessment'),
     listForPanel: () => notImplemented('этап 6', 'db/repos/chats.listForPanel'),
   };
@@ -145,6 +151,19 @@ function prepareStatements(db: Database.Database) {
          END`,
     ),
     dropBacklog: db.prepare<[number]>('DELETE FROM backlog_chats WHERE chat_id = ?'),
+    moveOutbound: db.prepare<{ survivor: number; absorbed: number }>(
+      'UPDATE outbound_ids SET chat_id = @survivor WHERE chat_id = @absorbed',
+    ),
+    // Дневные счётчики вызовов API складываются по дням: лимит чата учитывает вызовы обоих адресов.
+    mergeUsage: db.prepare<{ survivor: number; absorbed: number }>(
+      `INSERT INTO api_usage (day, chat_id, count)
+       SELECT day, @survivor, count FROM api_usage WHERE chat_id = @absorbed
+       ON CONFLICT (day, chat_id) DO UPDATE SET count = api_usage.count + excluded.count`,
+    ),
+    dropUsage: db.prepare<[number]>('DELETE FROM api_usage WHERE chat_id = ?'),
+    setStatus: db.prepare<{ id: ChatId; status: ChatStatus; by: string; nowMs: number }>(
+      'UPDATE chats SET status = @status, status_by = @by, status_changed_at = @nowMs WHERE id = @id',
+    ),
     // Сообщение с тем же wa_id уже есть в оставшемся чате: строка остаётся на месте и удаляется ниже.
     moveMessages: db.prepare<{ survivor: number; absorbed: number }>(
       'UPDATE OR IGNORE messages SET chat_id = @survivor WHERE chat_id = @absorbed',
@@ -156,10 +175,16 @@ function prepareStatements(db: Database.Database) {
 
 type Statements = ReturnType<typeof prepareStatements>;
 
-/** Переносит в оставшийся чат историю и отметку простоя слитого чата и удаляет его строку. */
+/**
+ * Переносит в оставшийся чат историю, отметку простоя, исходящие и счётчики вызовов API слитого чата
+ * и удаляет его строку.
+ */
 function absorb(statements: Statements, survivor: number, absorbed: number): void {
   statements.mergeBacklog.run({ survivor, absorbed });
   statements.dropBacklog.run(absorbed);
+  statements.moveOutbound.run({ survivor, absorbed });
+  statements.mergeUsage.run({ survivor, absorbed });
+  statements.dropUsage.run(absorbed);
   statements.moveMessages.run({ survivor, absorbed });
   statements.dropMessages.run(absorbed);
   statements.dropChat.run(absorbed);

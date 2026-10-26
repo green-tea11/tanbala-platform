@@ -35,14 +35,25 @@ const STAGE_2_TABLES = [
   'pairing_attempts',
 ];
 
+const CURRENT_TABLES = [
+  'api_usage',
+  'app_state',
+  'backlog_chats',
+  'chats',
+  'known_chats',
+  'messages',
+  'outbound_ids',
+  'pairing_attempts',
+];
+
 describe('runMigrations', () => {
-  it('новая база получает версию 1 и ровно таблицы этапа 2', () => {
+  it('новая база получает версию 2 и ровно таблицы этапов 2 и 3', () => {
     const db = useMemoryDb();
 
     runMigrations(db);
 
-    expect(userVersion(db)).toBe(1);
-    expect(tableNames(db)).toEqual(STAGE_2_TABLES);
+    expect(userVersion(db)).toBe(2);
+    expect(tableNames(db)).toEqual(CURRENT_TABLES);
   });
 
   it('повторный запуск ничего не меняет и не трогает данные', () => {
@@ -51,8 +62,51 @@ describe('runMigrations', () => {
 
     runMigrations(db);
 
+    expect(userVersion(db)).toBe(2);
+    expect(db.prepare('SELECT count(*) FROM chats').pluck().get()).toBe(1);
+  });
+
+  it('база этапа 2 (версия 1) переходит на версию 2, переписка сохраняется неотвеченной', () => {
+    const db = useMemoryDb();
+    runMigrations(db, 1);
+    expect(tableNames(db)).toEqual(STAGE_2_TABLES);
+    const chatId = insertChat(db, { replyJid: PN_A });
+    db.prepare(
+      "INSERT INTO messages (chat_id, wa_id, author, kind, text, ts_ms) VALUES (?, 'W1', 'client', 'text', 'x', 1)",
+    ).run(chatId);
+
+    runMigrations(db);
+
+    expect(userVersion(db)).toBe(2);
+    expect(tableNames(db)).toEqual(CURRENT_TABLES);
+    expect(db.prepare('SELECT chat_id, wa_id, answered FROM messages').all()).toEqual([
+      { chat_id: chatId, wa_id: 'W1', answered: 0 },
+    ]);
+  });
+
+  it('сбой версии 2 откатывает только её: база остаётся на версии 1 с данными', () => {
+    const db = useMemoryDb();
+    runMigrations(db, 1);
+    insertChat(db, { replyJid: PN_A });
+    db.exec('CREATE TABLE outbound_ids (x INTEGER)');
+
+    expect(() => {
+      runMigrations(db);
+    }).toThrow(/outbound_ids/);
     expect(userVersion(db)).toBe(1);
     expect(db.prepare('SELECT count(*) FROM chats').pluck().get()).toBe(1);
+    expect(
+      db.prepare('SELECT name FROM pragma_table_info(?)').pluck().all('messages'),
+    ).not.toContain('answered');
+  });
+
+  it.each([-1, 1.5, 3])('неверная целевая версия %s: RangeError, база не меняется', (target) => {
+    const db = useMemoryDb();
+
+    expect(() => {
+      runMigrations(db, target);
+    }).toThrow(RangeError);
+    expect(userVersion(db)).toBe(0);
   });
 
   it('схема новее кода: явная ошибка, база не меняется', () => {
@@ -77,7 +131,7 @@ describe('runMigrations', () => {
     expect(tableNames(db)).toEqual(['known_chats']);
   });
 
-  it('файл базы после переоткрытия остаётся на версии 1', () => {
+  it('файл базы после переоткрытия остаётся на текущей версии', () => {
     const dir = useTempDir();
     const path = join(dir.path, 'tanbala.db');
     const first = dir.track(openDatabase(path));
@@ -87,8 +141,102 @@ describe('runMigrations', () => {
     const second = dir.track(openDatabase(path));
     runMigrations(second);
 
-    expect(userVersion(second)).toBe(1);
-    expect(tableNames(second)).toEqual(STAGE_2_TABLES);
+    expect(userVersion(second)).toBe(2);
+    expect(tableNames(second)).toEqual(CURRENT_TABLES);
+  });
+});
+
+describe('схема версии 2', () => {
+  const insertOutbound = (
+    db: Database.Database,
+    values: { chatId: number | null; origin: string; status?: string },
+  ): void => {
+    db.prepare(
+      `INSERT INTO outbound_ids (wa_id, chat_id, jid, origin, text, status, created_at)
+       VALUES ('OUT-1', @chatId, 'x@lid', @origin, 'текст', @status, 1)`,
+    ).run({ chatId: values.chatId, origin: values.origin, status: values.status ?? 'pending' });
+  };
+
+  it('новое сообщение не отвечено, исходящее по умолчанию pending', () => {
+    const db = useMigratedDb();
+    const chatId = insertChat(db, { replyJid: PN_A });
+    db.prepare(
+      "INSERT INTO messages (chat_id, wa_id, author, kind, text, ts_ms) VALUES (?, 'W1', 'client', 'text', 'x', 1)",
+    ).run(chatId);
+    db.prepare(
+      `INSERT INTO outbound_ids (wa_id, chat_id, jid, origin, text, created_at)
+       VALUES ('OUT-1', ?, 'x@lid', 'bot_reply', 'текст', 1)`,
+    ).run(chatId);
+
+    expect(db.prepare('SELECT answered FROM messages').pluck().get()).toBe(0);
+    expect(db.prepare('SELECT status FROM outbound_ids').pluck().get()).toBe('pending');
+  });
+
+  it.each([
+    ['отметка ответа вне 0 и 1', "UPDATE messages SET answered = 2 WHERE wa_id = 'W1'"],
+    [
+      'источник исходящего вне списка',
+      "INSERT INTO outbound_ids (wa_id, chat_id, jid, origin, text, created_at) VALUES ('O2', 1, 'x@lid', 'spam', 't', 1)",
+    ],
+    [
+      'статус исходящего вне списка',
+      "INSERT INTO outbound_ids (wa_id, chat_id, jid, origin, text, status, created_at) VALUES ('O2', 1, 'x@lid', 'bot_reply', 't', 'lost', 1)",
+    ],
+    [
+      'ответ клиенту без чата',
+      "INSERT INTO outbound_ids (wa_id, chat_id, jid, origin, text, created_at) VALUES ('O2', NULL, 'x@lid', 'bot_reply', 't', 1)",
+    ],
+    [
+      'уведомление менеджеру с чатом клиента',
+      "INSERT INTO outbound_ids (wa_id, chat_id, jid, origin, text, created_at) VALUES ('O2', 1, 'x@lid', 'manager_notify', 't', 1)",
+    ],
+    [
+      'отрицательный счётчик вызовов',
+      "INSERT INTO api_usage (day, chat_id, count) VALUES ('2026-10-26', 0, -1)",
+    ],
+    [
+      'отрицательный чат в счётчике',
+      "INSERT INTO api_usage (day, chat_id, count) VALUES ('2026-10-26', -1, 1)",
+    ],
+    [
+      'день не в формате ГГГГ-ММ-ДД',
+      "INSERT INTO api_usage (day, chat_id, count) VALUES ('26.10.2026', 0, 1)",
+    ],
+  ])('отклоняет: %s', (_label, sql) => {
+    const db = useMigratedDb();
+    const chatId = insertChat(db, { replyJid: PN_A });
+    db.prepare(
+      "INSERT INTO messages (chat_id, wa_id, author, kind, text, ts_ms) VALUES (?, 'W1', 'client', 'text', 'x', 1)",
+    ).run(chatId);
+
+    expect(errorOf(() => db.prepare(sql).run())).toMatchObject({ code: 'SQLITE_CONSTRAINT_CHECK' });
+  });
+
+  it('исходящее с несуществующим чатом: ошибка внешнего ключа', () => {
+    const db = useMigratedDb();
+
+    expect(errorOf(() => insertOutbound(db, { chatId: 404, origin: 'bot_reply' }))).toMatchObject({
+      code: 'SQLITE_CONSTRAINT_FOREIGNKEY',
+    });
+  });
+
+  it('уведомление менеджеру без чата допустимо; ID исходящего уникален', () => {
+    const db = useMigratedDb();
+    insertOutbound(db, { chatId: null, origin: 'manager_notify', status: 'sent' });
+
+    expect(
+      errorOf(() => insertOutbound(db, { chatId: null, origin: 'manager_notify' })),
+    ).toMatchObject({ code: 'SQLITE_CONSTRAINT_PRIMARYKEY' });
+  });
+
+  it('счётчик вызовов один на день и чат', () => {
+    const db = useMigratedDb();
+    const insert = db.prepare(
+      "INSERT INTO api_usage (day, chat_id, count) VALUES ('2026-10-26', 0, 1)",
+    );
+    insert.run();
+
+    expect(errorOf(() => insert.run())).toMatchObject({ code: 'SQLITE_CONSTRAINT_PRIMARYKEY' });
   });
 });
 

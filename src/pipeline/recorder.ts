@@ -36,10 +36,13 @@ export interface InboundRecorderDeps {
   clock: Clock;
 }
 
-/** Обработчик событий WhatsApp на этапе 2: только записывает, ничего не отправляет и не отмечает прочитанным. */
+/** Запись событий WhatsApp: только записывает, ничего не отправляет и не отмечает прочитанным. */
 export interface InboundRecorder {
-  /** Разобранное событие whatsapp/inbound.ts. Сбой записи приходит отказом промиса. */
-  onEvent(event: WaEvent): Promise<void>;
+  /**
+   * Разобранное событие whatsapp/inbound.ts. Для client и stale: чат и новое ли сообщение (main отдаёт в очередь
+   * ответа только новые); для own и ignore null. Сбой записи приходит отказом промиса.
+   */
+  onEvent(event: WaEvent): Promise<RecordedInbound | null>;
   /** Чаты первой синхронизации (messaging-history.set) в known_chats одной транзакцией. */
   onHistoryChats(chats: readonly HistoryChat[]): void;
   /** Сколько сообщений пропущено с запуска по каждой причине: снимок, следующие события его не меняют. */
@@ -48,6 +51,12 @@ export interface InboundRecorder {
 
 /** Счётчики пропусков по причинам whatsapp/inbound.ts. */
 export type IgnoreStats = Readonly<Record<IgnoreReason, number>>;
+
+/** Итог записи входящего клиента: чат и было ли сообщение новым (false: повторная доставка того же waId). */
+export interface RecordedInbound {
+  readonly chatId: ChatId;
+  readonly isNew: boolean;
+}
 
 type IgnoreEvent = Extract<WaEvent, { readonly type: 'ignore' }>;
 
@@ -76,30 +85,23 @@ const LOGGED_REASONS: ReadonlySet<IgnoreReason> = new Set<IgnoreReason>([
   'undecryptable',
 ]);
 
-/** Общие поля входящего и своего сообщения, которые попадают в историю. */
-type Recordable = Pick<InboundMessage | OwnMessage, 'waId' | 'content' | 'tsMs'>;
-
 /** Колонки сообщения из его содержимого: текст есть только у текстового, голосовое без текста до этапа 7. */
 interface MessageColumns {
   readonly kind: MessageKind;
   readonly text: string | null;
 }
 
-/** Итог записи одного сообщения: чат и было ли сообщение новым (false: повторная доставка того же waId). */
-interface Saved {
-  readonly chatId: ChatId;
-  readonly isNew: boolean;
-}
-
 /** Сервер адресов @lid: в OwnMessage.chatJid адрес уже нормализован (whatsapp/jid.normalizeJid). */
 const LID_SUFFIX = '@lid';
 
 /**
- * Записывает события WhatsApp этапа 2 (бот ничего не отправляет, не отмечает прочитанным, LLM не вызывает).
+ * Записывает события WhatsApp (сам ничего не отправляет, не отмечает прочитанным, LLM не вызывает).
  * client: чат через upsertByIdentity (имя из профиля обновляется, статус не меняется), сообщение клиента и все
  * адреса чата в known_chats, одной транзакцией. stale: то же плюс отметка простоя временем сообщения; повторная
- * доставка того же waId чат не отмечает (pipeline/backlog.ts). own: сообщение с телефона (author human_phone) в чате,
- * найденном по адресу, или в новом чате с этим адресом. ignore: счётчик по причине (ignoreStats); редкие причины
+ * доставка того же waId чат не отмечает (pipeline/backlog.ts). own: чат, найденный по адресу, или новый чат с этим
+ * адресом, и его адреса в known_chats; само сообщение не пишется: эхо бота от человека отличает pipeline/takeover.ts,
+ * он и пишет сообщение человека (иначе ответ бота попал бы в историю как сообщение с телефона, а менеджер, написавший
+ * первым, не нашёл бы чата). ignore: счётчик по причине (ignoreStats); редкие причины
  * (manager, self, before_link, undecryptable) ещё и строкой в лог, частые только счётчиком. ignore с адресом
  * (not_allowlisted, before_link и undecryptable: сообщение не расшифровалось, но чат с перепиской) запоминает чат
  * в known_chats. Логи без текста, имён, номеров и адресов: только ID чата, вид сообщения или причина пропуска.
@@ -117,21 +119,19 @@ export function createInboundRecorder(deps: InboundRecorderDeps): InboundRecorde
     }
     if ('chatJid' in event) deps.knownChats.touch(event.chatJid, event.tsMs, 'message');
   };
-  const record = (event: WaEvent): void => {
+  const record = (event: WaEvent): RecordedInbound | null => {
     if (event.type === 'client' || event.type === 'stale') {
-      recordInbound(deps, event.message, event.type === 'stale');
-    } else if (event.type === 'own') {
-      recordOwn(deps, event.message);
-    } else {
-      recordIgnore(event);
+      return recordInbound(deps, event.message, event.type === 'stale');
     }
+    if (event.type === 'own') recordOwn(deps, event.message);
+    else recordIgnore(event);
+    return null;
   };
   return {
     // Промис нужен порту WhatsAppDeps.onEvent: исключение записи становится его отказом, а не броском.
     onEvent: (event) =>
-      new Promise<void>((resolve) => {
-        record(event);
-        resolve();
+      new Promise<RecordedInbound | null>((resolve) => {
+        resolve(record(event));
       }),
     onHistoryChats: (chats) => {
       recordHistory(deps, chats);
@@ -145,9 +145,13 @@ function incremented(stats: IgnoreStats, reason: IgnoreReason): IgnoreStats {
   return Object.freeze({ ...stats, [reason]: stats[reason] + 1 });
 }
 
-function recordInbound(deps: InboundRecorderDeps, message: InboundMessage, stale: boolean): void {
+function recordInbound(
+  deps: InboundRecorderDeps,
+  message: InboundMessage,
+  stale: boolean,
+): RecordedInbound {
   const nowMs = deps.clock.now();
-  const saved = deps.unitOfWork.run((): Saved => {
+  const saved = deps.unitOfWork.run((): RecordedInbound => {
     const chat = deps.chats.upsertByIdentity(message.identity, message.pushName, nowMs);
     const isNew = deps.messages.insertIfNew(toNewMessage(chat.id, 'client', message));
     if (stale && isNew) deps.backlog.markStale(chat.id, message.tsMs);
@@ -159,21 +163,18 @@ function recordInbound(deps: InboundRecorderDeps, message: InboundMessage, stale
     ? `Сохранено старое входящее (простой): чат #${saved.chatId} отмечен для менеджера, вид ${kind}`
     : `Сохранено входящее: чат #${saved.chatId}, вид ${kind}`;
   logSaved(deps.logger, saved, kind, text);
+  return saved;
 }
 
+/** Своё сообщение: чат по адресу (или новый с этим адресом) и known_chats; сообщение пишет pipeline/takeover.ts. */
 function recordOwn(deps: InboundRecorderDeps, message: OwnMessage): void {
   const nowMs = deps.clock.now();
-  const saved = deps.unitOfWork.run((): Saved => {
+  deps.unitOfWork.run(() => {
     const chat =
       deps.chats.findByJid(message.chatJid) ??
       deps.chats.upsertByIdentity(identityOf(message.chatJid), null, nowMs);
-    const isNew = deps.messages.insertIfNew(toNewMessage(chat.id, 'human_phone', message));
     touchChat(deps.knownChats, chat, message.tsMs);
-    return { chatId: chat.id, isNew };
   });
-  const { kind } = columnsOf(message.content);
-  const text = `Сохранено сообщение с телефона: чат #${saved.chatId}, вид ${kind}`;
-  logSaved(deps.logger, saved, kind, text);
 }
 
 /** Чаты синхронизации без времени получают момент синхронизации: чат всё равно известен до переключения этапа 8. */
@@ -191,7 +192,7 @@ function recordHistory(deps: InboundRecorderDeps, chats: readonly HistoryChat[])
   );
 }
 
-function toNewMessage(chatId: ChatId, author: Author, message: Recordable): NewMessage {
+function toNewMessage(chatId: ChatId, author: Author, message: InboundMessage): NewMessage {
   const { waId, content, tsMs } = message;
   return { chatId, waId, author, ...columnsOf(content), tsMs };
 }
@@ -215,7 +216,7 @@ function identityOf(jid: Jid): ChatIdentity {
   return { replyJid: jid, lidJid: isLid ? jid : null, pnJid: isLid ? null : jid };
 }
 
-function logSaved(logger: Logger, saved: Saved, kind: MessageKind, text: string): void {
+function logSaved(logger: Logger, saved: RecordedInbound, kind: MessageKind, text: string): void {
   if (!saved.isNew) {
     logger.debug({ chatId: saved.chatId }, `Повтор сообщения пропущен: чат #${saved.chatId}`);
     return;

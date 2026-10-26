@@ -218,8 +218,8 @@ describe('pipeline/recorder: сообщение клиента (client)', () => 
   it('повтор того же waId не дублирует сообщение и пишется в лог только на debug', async () => {
     const { db, recorder, entries } = setup();
 
-    await recorder.onEvent(client());
-    await recorder.onEvent(client());
+    await expect(recorder.onEvent(client())).resolves.toEqual({ chatId: 1, isNew: true });
+    await expect(recorder.onEvent(client())).resolves.toEqual({ chatId: 1, isNew: false });
 
     expect(messagesOf(db)).toHaveLength(1);
     expect(entries.map((entry) => entry.level)).toEqual(['info', 'debug']);
@@ -270,7 +270,7 @@ describe('pipeline/recorder: старое сообщение за время п�
   it('сохраняет сообщение клиента и отмечает чат простоя временем сообщения', async () => {
     const { db, recorder, entries } = setup();
 
-    await recorder.onEvent(stale());
+    await expect(recorder.onEvent(stale())).resolves.toEqual({ chatId: 1, isNew: true });
 
     expect(messagesOf(db)).toEqual([
       expect.objectContaining({ chatId: 1, author: 'client', kind: 'text', tsMs: NOW - DAY_MS }),
@@ -312,60 +312,43 @@ describe('pipeline/recorder: своё сообщение с номера бот�
     ['с номером', CLIENT_PN, null, CLIENT_PN],
     ['@lid', CLIENT_LID, CLIENT_LID, null],
   ])(
-    'чата нет: создаётся по адресу %s, сообщение человека с телефона',
+    'чата нет: создаётся по адресу %s и попадает в known_chats; само сообщение пишет pipeline/takeover.ts',
     async (_label, jid, lidJid, pnJid) => {
       const { db, recorder, entries } = setup();
 
-      await recorder.onEvent({ type: 'own', message: own({ chatJid: jid }) });
+      const recorded = await recorder.onEvent({ type: 'own', message: own({ chatJid: jid }) });
 
+      expect(recorded).toBeNull();
       expect(chatsOf(db)).toEqual([
         { id: 1, replyJid: jid, lidJid, pnJid, pushName: null, status: 'bot' },
       ]);
-      expect(messagesOf(db)).toEqual([
-        {
-          chatId: 1,
-          waId: 'OWN-1',
-          author: 'human_phone',
-          kind: 'text',
-          text: OWN_TEXT,
-          tsMs: NOW - MINUTE_MS,
-        },
-      ]);
+      expect(messagesOf(db)).toEqual([]);
       expect(knownOf(db)).toEqual([{ jid, atMs: NOW - MINUTE_MS, source: 'message' }]);
-      expect(entries).toEqual([
-        {
-          level: 'info',
-          context: { chatId: 1, kind: 'text' },
-          message: 'Сохранено сообщение с телефона: чат #1, вид text',
-        },
-      ]);
+      expect(entries).toEqual([]);
     },
   );
 
-  it('чат уже есть: найден по любому адресу, сообщение в нём, нового чата нет', async () => {
+  it('чат уже есть: найден по любому адресу, нового чата нет, в known_chats все его адреса', async () => {
     const { db, recorder } = setup();
     await recorder.onEvent(client({ identity: LID_WITH_PN, tsMs: NOW - 2 * MINUTE_MS }));
 
     await recorder.onEvent({ type: 'own', message: own({ chatJid: CLIENT_PN, content: VOICE }) });
 
     expect(chatsOf(db)).toHaveLength(1);
-    expect(messagesOf(db)).toEqual([
-      expect.objectContaining({ chatId: 1, author: 'client' }),
-      expect.objectContaining({ chatId: 1, author: 'human_phone', kind: 'voice', text: null }),
-    ]);
+    expect(messagesOf(db)).toEqual([expect.objectContaining({ chatId: 1, author: 'client' })]);
     expect(knownOf(db)).toEqual([
       { jid: CLIENT_LID, atMs: NOW - MINUTE_MS, source: 'message' },
       { jid: CLIENT_PN, atMs: NOW - MINUTE_MS, source: 'message' },
     ]);
   });
 
-  it('повтор своего сообщения не дублируется', async () => {
+  it('повтор своего сообщения: чат один, сообщений нет', async () => {
     const { db, recorder } = setup();
 
     await recorder.onEvent({ type: 'own', message: own() });
     await recorder.onEvent({ type: 'own', message: own() });
 
-    expect(messagesOf(db)).toHaveLength(1);
+    expect(messagesOf(db)).toEqual([]);
     expect(chatsOf(db)).toHaveLength(1);
   });
 });
@@ -420,7 +403,7 @@ describe('pipeline/recorder: пропуски (ignore)', () => {
   ])('%s: в базу ничего, счётчик растёт; строка в лог: %s', async (reason, logged) => {
     const { db, recorder, entries } = setup();
 
-    await recorder.onEvent({ type: 'ignore', reason });
+    await expect(recorder.onEvent({ type: 'ignore', reason })).resolves.toBeNull();
 
     expect(knownOf(db)).toEqual([]);
     expect(chatsOf(db)).toEqual([]);

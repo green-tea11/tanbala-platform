@@ -6,8 +6,8 @@ const config = JSON.parse(
 ) as Record<string, unknown>;
 
 describe('config/models.json', () => {
-  it('задаёт модели ровно для трёх вызовов: ответ, проверка, интерес', () => {
-    expect(Object.keys(config).sort()).toEqual(['interest', 'reply', 'review']);
+  it('задаёт модели для трёх вызовов Claude и для расшифровки голосовых', () => {
+    expect(Object.keys(config).sort()).toEqual(['interest', 'reply', 'review', 'transcribe']);
   });
 
   it.each(['reply', 'review', 'interest'])(
@@ -16,4 +16,8 @@ describe('config/models.json', () => {
       expect(config[purpose]).toMatch(/^claude-[a-z0-9-]+$/);
     },
   );
+
+  it('модель расшифровки задана в формате OpenRouter «провайдер/модель»', () => {
+    expect(config.transcribe).toMatch(/^[a-z0-9-]+\/[a-z0-9.-]+$/);
+  });
 });

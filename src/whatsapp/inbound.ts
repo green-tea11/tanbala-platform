@@ -19,7 +19,7 @@ import type {
   PhoneDigits,
   WaMessageId,
 } from '../domain/types.js';
-import { jidToPhone, normalizeJid } from './jid.js';
+import { jidToPhone, normalizeJid, phoneToJid } from './jid.js';
 
 /**
  * Почему сообщение пропущено без обработки.
@@ -208,7 +208,7 @@ export function classifyUpsert(message: WAMessage, context: ClassifyContext): Wa
   if (fromMe) return { type: 'own', message: { waId, chatJid, content: parsedContent, tsMs } };
   const inbound: InboundMessage = {
     waId,
-    identity: identityOf(chatJid, altJid),
+    identity: identityOf(chatJid, altJid, context.chatPhone),
     pushName: cleanUntrusted(message.pushName, INVISIBLE, MAX_PUSH_NAME_CHARS),
     content: parsedContent,
     tsMs,
@@ -277,13 +277,18 @@ function matchesAny(known: ReadonlySet<Jid>, candidates: readonly (Jid | null)[]
   return candidates.some((jid) => jid !== null && normalized.has(jid));
 }
 
-/** Отвечать на remoteJid; @lid и адрес с номером берутся из remoteJid и remoteJidAlt по их серверу. */
-function identityOf(chatJid: Jid, altJid: Jid | null): ChatIdentity {
+/**
+ * Отвечать на remoteJid; @lid и адрес с номером берутся из remoteJid и remoteJidAlt по их серверу. Адреса с номером
+ * в ключе нет, а номер определил адаптер (getPNForLID): адрес с номером из него, иначе закрытый режим outbox
+ * не узнал бы номер чата и отсёк ответ уже после оплаченных вызовов API.
+ */
+function identityOf(chatJid: Jid, altJid: Jid | null, chatPhone: PhoneDigits | null): ChatIdentity {
   const addresses = altJid === null ? [chatJid] : [chatJid, altJid];
+  const pnJid = addresses.find((jid) => isPnUser(jid)) ?? null;
   return {
     replyJid: chatJid,
     lidJid: addresses.find((jid) => isLidUser(jid)) ?? null,
-    pnJid: addresses.find((jid) => isPnUser(jid)) ?? null,
+    pnJid: pnJid ?? (chatPhone === null ? null : phoneToJid(chatPhone)),
   };
 }
 

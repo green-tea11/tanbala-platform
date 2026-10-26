@@ -201,6 +201,43 @@ describe('createChatsRepo: слияние чатов одного человек
     expect(column(db, lidChat.id, 'last_inbound_at')).toBe(T0 + 2);
   });
 
+  it('исходящие слитого чата переезжают в оставшийся', () => {
+    const { db, repo } = setup();
+    const lidChat = repo.upsertByIdentity(LID_ONLY, null, T0);
+    const pnChat = repo.upsertByIdentity(PN_ONLY, null, T0);
+    db.prepare(
+      `INSERT INTO outbound_ids (wa_id, chat_id, jid, origin, text, created_at)
+       VALUES ('OUT-1', ?, ?, 'bot_reply', 'текст', ?)`,
+    ).run(pnChat.id, PN_A, T0);
+
+    repo.upsertByIdentity(BOTH_VIA_LID, null, T0 + 1);
+
+    expect(db.prepare('SELECT wa_id, chat_id FROM outbound_ids').all()).toEqual([
+      { wa_id: 'OUT-1', chat_id: lidChat.id },
+    ]);
+  });
+
+  it('счётчики вызовов API слитого чата складываются в оставшийся по каждому дню', () => {
+    const { db, repo } = setup();
+    const lidChat = repo.upsertByIdentity(LID_ONLY, null, T0);
+    const pnChat = repo.upsertByIdentity(PN_ONLY, null, T0);
+    const count = db.prepare('INSERT INTO api_usage (day, chat_id, count) VALUES (?, ?, ?)');
+    count.run('2026-10-25', pnChat.id, 1);
+    count.run('2026-10-26', lidChat.id, 2);
+    count.run('2026-10-26', pnChat.id, 3);
+    count.run('2026-10-26', 0, 5);
+
+    repo.upsertByIdentity(BOTH_VIA_LID, null, T0 + 1);
+
+    expect(
+      db.prepare('SELECT day, chat_id, count FROM api_usage ORDER BY day, chat_id').all(),
+    ).toEqual([
+      { day: '2026-10-25', chat_id: lidChat.id, count: 1 },
+      { day: '2026-10-26', chat_id: 0, count: 5 },
+      { day: '2026-10-26', chat_id: lidChat.id, count: 5 },
+    ]);
+  });
+
   it('одно и то же сообщение в обоих чатах остаётся одной строкой', () => {
     const { db, repo } = setup();
     const lidChat = repo.upsertByIdentity(LID_ONLY, null, T0);
@@ -351,17 +388,55 @@ describe('createChatsRepo: findByJid и getById', () => {
   });
 });
 
+describe('createChatsRepo: setStatus', () => {
+  it.each([
+    { status: 'manager', by: 'phone' },
+    { status: 'manager', by: 'bot' },
+    { status: 'manager', by: 'panel' },
+    { status: 'bot', by: 'panel' },
+  ] as const)('хранит смену $status ($by): статус, кто и когда', (change) => {
+    const { db, repo } = setup();
+    const id = insertChat(db, { replyJid: PN_A });
+
+    repo.setStatus(id, change, T0 + 5);
+
+    expect(repo.getById(id)?.control).toEqual(change);
+    expect(column(db, id, 'status_changed_at')).toBe(T0 + 5);
+  });
+
+  it('меняет только свой чат', () => {
+    const { db, repo } = setup();
+    const id = insertChat(db, { replyJid: PN_A });
+    const other = insertChat(db, { replyJid: PN_B });
+
+    repo.setStatus(id, { status: 'manager', by: 'phone' }, T0);
+
+    expect(repo.getById(other)?.control).toEqual({ status: 'bot', by: null });
+  });
+
+  it('неизвестный чат: явная ошибка', () => {
+    const { repo } = setup();
+
+    expect(() => {
+      repo.setStatus(404 as ChatId, { status: 'manager', by: 'bot' }, T0);
+    }).toThrow(/404/);
+  });
+
+  it.each([-1, 1.5, Number.NaN])('неверное время %s: RangeError, статус не меняется', (nowMs) => {
+    const { db, repo } = setup();
+    const id = insertChat(db, { replyJid: PN_A });
+
+    expect(() => {
+      repo.setStatus(id, { status: 'manager', by: 'bot' }, nowMs);
+    }).toThrow(RangeError);
+    expect(repo.getById(id)?.control).toEqual({ status: 'bot', by: null });
+  });
+});
+
 describe('createChatsRepo: методы следующих этапов', () => {
   const assessment: InterestAssessment = { level: 'warm', profile: EMPTY_PROFILE, reason: 'x' };
 
   it.each([
-    [
-      'setStatus',
-      'этап 3',
-      (repo: ChatsRepo) => {
-        repo.setStatus(1 as ChatId, { status: 'manager', by: 'phone' }, T0);
-      },
-    ],
     [
       'saveAssessment',
       'этап 4',

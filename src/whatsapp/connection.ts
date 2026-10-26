@@ -10,8 +10,7 @@ import {
   type WAVersion,
 } from 'baileys';
 import type { PairingDecision } from '../domain/ports.js';
-import type { WaMessageId } from '../domain/types.js';
-import { notImplemented } from '../shared/todo.js';
+import type { Jid, WaMessageId } from '../domain/types.js';
 import {
   LinkBoundaryMissingError,
   PairingLimitError,
@@ -22,6 +21,7 @@ import {
   type WhatsAppStopReason,
 } from './connection-types.js';
 import { classifyUpsert } from './inbound.js';
+import { isPersonalJid } from './jid.js';
 import { createLidResolver, type LidResolver } from './lid-resolver.js';
 import { createMessageIntake, type MessageIntake } from './message-intake.js';
 import {
@@ -33,6 +33,7 @@ import { createQrPresenter } from './qr.js';
 import { createReconnectPolicy, type ReconnectPolicy } from './reconnect-policy.js';
 import { decideOnDisconnect } from './reconnect.js';
 import { buildSocketConfig, fetchVersionWithTimeout } from './socket-config.js';
+import { createVoiceStore, createWhatsAppAudioDownload, type VoiceStore } from './voice-media.js';
 
 export type {
   FetchedVersion,
@@ -58,9 +59,18 @@ const SESSION_DIR_MODE = 0o700;
 type Seams = Required<
   Pick<
     WhatsAppDeps,
-    'createSocket' | 'loadAuthState' | 'fetchVersion' | 'presenter' | 'classify' | 'decide'
+    | 'createSocket'
+    | 'loadAuthState'
+    | 'fetchVersion'
+    | 'presenter'
+    | 'classify'
+    | 'decide'
+    | 'downloadMedia'
   >
 >;
+
+/** Кому шлюз может писать в закрытом режиме: клиенту из списка или ещё и менеджеру (только отправка). */
+type Audience = 'client' | 'client_or_manager';
 
 /** Один сокет: разбор адресов, офлайн-очередь, таймеры и отписка от его событий. */
 interface Link {
@@ -80,6 +90,8 @@ interface Session {
   readonly abort: AbortController;
   readonly policy: ReconnectPolicy;
   readonly intake: MessageIntake;
+  /** Голосовые клиентов в памяти до скачивания (whatsapp/voice-media.ts). */
+  readonly voices: VoiceStore;
   /** Версия WhatsApp Web: запрашивается один раз на запуск. */
   version: Promise<WAVersion | null> | null;
   link: Link | null;
@@ -127,13 +139,16 @@ class SessionSaveFailedError extends Error {
  * не слит), частые неудачи WhatsApp наказывает блокировкой привязки, поэтому лимит попыток; зависание буфера событий
  * (issue #2810) страхует таймер офлайн-очереди; у пользователей с username бывает только @lid без номера (issue #2742),
  * в закрытом режиме такой чат пропускается.
+ * Шлюз (этап 3): sendText через sendMessage(jid, { text, linkPreview: null }, { messageId }), иначе при пакете
+ * link-preview-js Baileys сам скачает ссылку из текста; setTyping через sendPresenceUpdate('composing' | 'paused');
+ * markRead через readMessages. Перед каждым действием адрес проверяется isPersonalJid, а в закрытом режиме номер
+ * чата по TEST_ALLOWLIST (отправка ещё и на номер менеджера): чужой чат не получит ни сообщения, ни отметки прочтения,
+ * ни статуса «печатает». Не подключено => ошибка. Голосовые: сырой WAMessage только в памяти (whatsapp/voice-media.ts:
+ * TTL и потолок, в базу не пишется), запоминается сразу после разбора и только для события client; downloadAudio
+ * качает потоком только по directPath с сервера медиа WhatsApp (url отправителя не используется), обрывает на maxBytes
+ * и по сроку; не нашлось => ошибка, конвейер ответит фразой про голосовое.
  * TODO(этап 8): часы VPS синхронизировать (chrony): при отстающих или спешащих часах свежие сообщения уйдут в before_link или stale.
  * TODO(этап 8): на VPS права 700 на папку сессии, новая привязка, сессию не копировать.
- * TODO(этап 3): sendText через sendMessage(jid, { text, linkPreview: null }, { messageId }): иначе при пакете link-preview-js Baileys сам скачает ссылку из текста; перед отправкой повторить проверку isPersonalJid.
- * TODO(этап 3): setTyping через sendPresenceUpdate('composing' | 'paused', jid).
- * TODO(этап 3): закрытый режим: markRead и setTyping повторно проверяют номер чата по testAllowlist, не только отправка (outbox): чужой чат не получит ни отметки прочтения, ни статуса «печатает».
- * TODO(этап 7): WAMessage голосового держать только в памяти (кэш с коротким TTL и потолком размера) под ключом MediaRef; downloadAudio качает потоком через downloadMediaMessage и обрывает на maxBytes; не нашлось => передача менеджеру; сырые WAMessage в базу не писать (по mediaKey и directPath можно расшифровать медиа).
- * TODO(этап 7): кэш голосовых заполнять только после события 'client' (чужие голосовые в память не попадают).
  */
 export async function startWhatsApp(deps: WhatsAppDeps): Promise<WhatsAppConnection> {
   const session = createSession(deps);
@@ -150,6 +165,7 @@ export async function startWhatsApp(deps: WhatsAppDeps): Promise<WhatsAppConnect
 
 function createSession(deps: WhatsAppDeps): Session {
   const seams = resolveSeams(deps);
+  const voices = createVoiceStore({ clock: deps.clock, download: seams.downloadMedia });
   const session: Session = {
     deps,
     seams,
@@ -157,9 +173,15 @@ function createSession(deps: WhatsAppDeps): Session {
     policy: createReconnectPolicy({ decide: seams.decide, clock: deps.clock, logger: deps.logger }),
     intake: createMessageIntake({
       deps,
-      classify: seams.classify,
+      // Голосовое запоминается сразу после разбора и только для события client: до onEvent и конвейера.
+      classify: (message, context) => {
+        const event = seams.classify(message, context);
+        voices.remember(message, event);
+        return event;
+      },
       onTooManyFailures: () => stopBySelf(session, 'handler_failed'),
     }),
+    voices,
     version: null,
     link: null,
     pairing: false,
@@ -188,19 +210,55 @@ function resolveSeams(deps: WhatsAppDeps): Seams {
       }),
     classify: deps.classify ?? classifyUpsert,
     decide: deps.decide ?? decideOnDisconnect,
+    downloadMedia: deps.downloadMedia ?? createWhatsAppAudioDownload(),
   };
 }
 
 function createConnection(session: Session): WhatsAppConnection {
   return {
     newMessageId: () => generateMessageIDV2(session.link?.sock.user?.id) as WaMessageId,
-    sendText: () => notImplemented('этап 3', 'whatsapp/connection.sendText'),
-    setTyping: () => notImplemented('этап 3', 'whatsapp/connection.setTyping'),
-    markRead: () => notImplemented('этап 3', 'whatsapp/connection.markRead'),
-    downloadAudio: () => notImplemented('этап 7', 'whatsapp/connection.downloadAudio'),
+    sendText: async (jid, text, messageId) => {
+      const sock = await allowedSocket(session, jid, 'client_or_manager');
+      await sock.sendMessage(jid, { text, linkPreview: null }, { messageId });
+    },
+    setTyping: async (jid, on) => {
+      const sock = await allowedSocket(session, jid, 'client');
+      await sock.sendPresenceUpdate(on ? 'composing' : 'paused', jid);
+    },
+    markRead: async (jid, waIds) => {
+      if (waIds.length === 0) return;
+      const sock = await allowedSocket(session, jid, 'client');
+      await sock.readMessages(waIds.map((id) => ({ remoteJid: jid, id, fromMe: false })));
+    },
+    downloadAudio: (media, maxBytes) => session.voices.download(media, maxBytes),
     resolvePhone: (jid) => session.link?.resolver.phoneOf(jid) ?? Promise.resolve(null),
     stop: () => stopSession(session),
   };
+}
+
+// Шлюз: отправка, «печатает», прочтение и голосовые.
+
+/**
+ * Сокет для действия в чате. Только личный чат (whatsapp/jid.isPersonalJid) и открытый запуск; в закрытом режиме
+ * номер чата (для @lid через сопоставление) обязан быть в TEST_ALLOWLIST, отправка ещё и на номер менеджера:
+ * вторая линия защиты после whatsapp/inbound.ts и messaging/outbox.ts. Номер не определён => отказ.
+ */
+async function allowedSocket(session: Session, jid: Jid, audience: Audience): Promise<WaSocket> {
+  const link = connectedLink(session);
+  if (!isPersonalJid(jid)) throw new Error('Адрес не личного чата: действие WhatsApp отменено');
+  const { testAllowlist, managerPhone } = session.deps;
+  if (testAllowlist === null) return link.sock;
+  const phone = await link.resolver.phoneOf(jid);
+  const manager = audience === 'client_or_manager' && phone !== null && phone === managerPhone;
+  if (phone === null || (!testAllowlist.has(phone) && !manager)) {
+    throw new Error('Закрытый режим: чат не из TEST_ALLOWLIST, действие WhatsApp отменено');
+  }
+  return link.sock;
+}
+
+function connectedLink(session: Session): Link {
+  if (session.stopped || session.link === null) throw new Error('WhatsApp не подключён');
+  return session.link;
 }
 
 // Сокет: сессия, версия, проверки до запуска, подписка на события.

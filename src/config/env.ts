@@ -9,10 +9,11 @@ export type EnvVars = Readonly<Record<string, string | undefined>>;
 /** ID моделей для трёх вызовов LLM. Источник: config/models.json, меняется без правки кода. */
 export type ModelsConfig = Readonly<Record<LlmPurpose, string>>;
 
-/** Расшифровка голосовых через OpenRouter. Модель распознавания речи: открытый вопрос плана. */
+/** Расшифровка голосовых через OpenRouter. */
 export interface VoiceConfig {
   /** OPENROUTER_API_KEY: передаётся явно. */
   readonly apiKey: string;
+  /** ID модели OpenRouter из config/models.json (ключ transcribe). */
   readonly model: string;
 }
 
@@ -32,7 +33,7 @@ export interface AppConfig {
   readonly managerPhone: PhoneDigits | null;
   /** ADMIN_PASSWORD, по умолчанию admin. */
   readonly adminPassword: string;
-  /** null: расшифровка голосовых выключена (нет ключа или модели). */
+  /** null: OPENROUTER_API_KEY не задан, расшифровка голосовых выключена. */
   readonly voice: VoiceConfig | null;
   /** WA_ENABLED. false: к WhatsApp не подключаться и QR не показывать. */
   readonly waEnabled: boolean;
@@ -111,7 +112,8 @@ const PROBLEMS = {
   port: `целое число от 1 до ${MAX_PORT}`,
   host: 'адрес без пробелов',
   model: 'нужен ID модели Claude вида claude-...',
-  modelsShape: 'нужен объект с полями reply, review, interest',
+  transcribeModel: 'нужен ID модели OpenRouter без пробелов, например elevenlabs/scribe-v2',
+  modelsShape: 'нужен объект с полями reply, review, interest, transcribe',
   customHeaders:
     'уберите переменную из окружения: SDK Anthropic подмешивает эти заголовки к запросам и может подменить ключ',
 } as const;
@@ -191,6 +193,7 @@ function envSchema(root: string) {
     integerInRange(1, Number.MAX_SAFE_INTEGER, PROBLEMS.positiveInteger);
   return z.object({
     VENMART_ANTHROPIC_KEY: z.string().optional(),
+    OPENROUTER_API_KEY: z.string().optional(),
     // Приведение к PhoneDigits после проверки формата: граница config.
     MANAGER_WHATSAPP: z
       .string()
@@ -223,10 +226,22 @@ type EnvValues = z.output<ReturnType<typeof envSchema>>;
 
 const claudeModelId = z.string({ error: PROBLEMS.model }).regex(CLAUDE_MODEL_ID, PROBLEMS.model);
 
+/** Модель расшифровки не Claude: ID OpenRouter вида провайдер/модель, проверяется только на пустоту и пробелы. */
+const transcribeModelId = z
+  .string({ error: PROBLEMS.transcribeModel })
+  .regex(NO_WHITESPACE, PROBLEMS.transcribeModel);
+
 const modelsSchema = z.object(
-  { reply: claudeModelId, review: claudeModelId, interest: claudeModelId },
+  {
+    reply: claudeModelId,
+    review: claudeModelId,
+    interest: claudeModelId,
+    transcribe: transcribeModelId,
+  },
   { error: PROBLEMS.modelsShape },
 );
+
+type ModelsValues = z.output<typeof modelsSchema>;
 
 /** Пустое значение и значение из пробелов значат «переменная не задана»; остальные обрезаются по краям. */
 function normalizeEnv(env: EnvVars, names: readonly string[]): Record<string, string | undefined> {
@@ -266,13 +281,16 @@ function collectWarnings(env: EnvVars, allowlist: ReadonlySet<PhoneDigits>): str
   ];
 }
 
-function buildConfig(env: EnvValues, models: ModelsConfig, root: string): AppConfig {
+function buildConfig(env: EnvValues, models: ModelsValues, root: string): AppConfig {
+  const { transcribe, ...claudeModels } = models;
   return {
     anthropicKey: env.VENMART_ANTHROPIC_KEY ?? null,
     managerPhone: env.MANAGER_WHATSAPP ?? null,
     adminPassword: env.ADMIN_PASSWORD,
-    // Модель OpenRouter не выбрана (этап 7): голос выключен при любом OPENROUTER_API_KEY.
-    voice: null,
+    voice:
+      env.OPENROUTER_API_KEY === undefined
+        ? null
+        : { apiKey: env.OPENROUTER_API_KEY, model: transcribe },
     waEnabled: env.WA_ENABLED,
     waSessionDir: env.WHATSAPP_SESSION_DIR,
     databasePath: env.DATABASE_PATH,
@@ -280,7 +298,7 @@ function buildConfig(env: EnvValues, models: ModelsConfig, root: string): AppCon
     knowledgeDir: resolve(root, KNOWLEDGE_DIR),
     pairingMirrorPath: resolve(root, PAIRING_MIRROR_FILE),
     panel: { host: env.PANEL_HOST, port: env.PANEL_PORT },
-    models,
+    models: claudeModels,
     limits: {
       apiCallsPerDay: env.API_DAILY_LIMIT,
       apiCallsPerChatPerDay: env.API_DAILY_LIMIT_PER_CHAT,
@@ -300,8 +318,9 @@ function buildConfig(env: EnvValues, models: ModelsConfig, root: string): AppCon
  * TEST_MODE=false => отказ в запуске: выключение закрытого режима появится на этапе 8.
  * Предупреждения (ANTHROPIC_BASE_URL в окружении; пустой TEST_ALLOWLIST: бот не отвечает никому)
  * возвращаются в warnings: логгера на этом шаге ещё нет, их пишет в лог вызывающий.
+ * voice собирается при непустом OPENROUTER_API_KEY, модель из ключа transcribe в config/models.json
+ * (обязателен всегда, как модели Claude); без ключа voice null и расшифровка выключена.
  * TODO(этап 3): стандартную переменную ключа SDK не читать никогда: ключ только из VENMART_ANTHROPIC_KEY.
- * TODO(этап 7): voice собирать, только когда есть и ключ OpenRouter, и модель.
  */
 export function loadConfig(env: EnvVars, modelsJson: unknown, root: string): LoadedConfig {
   const schema = envSchema(root);

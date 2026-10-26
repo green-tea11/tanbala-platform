@@ -247,11 +247,18 @@ export interface MessagesRepo {
   recent(chatId: ChatId, limit: number): readonly StoredMessage[];
   isUnansweredInbound(chatId: ChatId, waId: WaMessageId): boolean;
   markAnswered(chatId: ChatId, upToWaId: WaMessageId): void;
+  /**
+   * Расшифровка голосового: текст пишется, только если это голосовое и текста у него ещё нет (вид остаётся voice).
+   * Так следующие ответы видят в истории, что клиент сказал голосом. false: нет такого голосового без текста.
+   */
+  setTranscript(chatId: ChatId, waId: WaMessageId, text: string): boolean;
 }
 
 /** Запись об исходящем сообщении: создаётся до отправки. */
 export interface OutboundRecord {
   readonly waId: WaMessageId;
+  /** Чат клиента; null у уведомления менеджеру: его чат не чат клиента. */
+  readonly chatId: ChatId | null;
   readonly jid: Jid;
   readonly origin: SendOrigin;
   /** Текст нужен Baileys для повторной отправки (getMessage). */

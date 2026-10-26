@@ -13,7 +13,8 @@ import Database from 'better-sqlite3';
 import { describe, expect, it, onTestFinished, vi, type Mock } from 'vitest';
 import { ConfigError, formatFatalError } from '../../src/config/errors.js';
 import { acquireProcessLock, ProcessLockBusyError } from '../../src/db/process-lock.js';
-import type { Jid, WaMessageId } from '../../src/domain/types.js';
+import type { Clock, LlmClient } from '../../src/domain/ports.js';
+import type { Jid, LlmResult, WaMessageId } from '../../src/domain/types.js';
 import { main, type MainOptions, type RunningApp } from '../../src/main.js';
 import { SafeError } from '../../src/shared/safe-error.js';
 import {
@@ -53,11 +54,13 @@ const DISABLED_ENV: EnvInput = {
 };
 const ENABLED_ENV: EnvInput = { ...DISABLED_ENV, WA_ENABLED: 'true' };
 const TABLES = [
+  'api_usage',
   'app_state',
   'backlog_chats',
   'chats',
   'known_chats',
   'messages',
+  'outbound_ids',
   'pairing_attempts',
 ];
 const LOCK_BUSY_TEXT = 'Бот уже запущен: папка данных занята другим процессом';
@@ -235,7 +238,7 @@ describe('main: WA_ENABLED=false', () => {
       expect.objectContaining({ level: INFO, msg: 'Бот остановлен' }),
     );
     readDb(harness.dbPath, (db) => {
-      expect(db.pragma('user_version', { simple: true })).toBe(1);
+      expect(db.pragma('user_version', { simple: true })).toBe(2);
       const tables = db
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
         .pluck()
@@ -762,6 +765,246 @@ describe('main: отказ запуска WhatsApp', () => {
         msg: 'Бот не запущен',
         err: expect.objectContaining({ message: 'Сбой открытия сокета' }) as unknown,
       }),
+    );
+    expect(databaseOpen(harness.dbPath)).toBe(false);
+    expect(lockFree(harness.lockPath)).toBe(true);
+  });
+});
+
+describe('main: ответы клиентам (этап 3)', () => {
+  const KEY = 'sk-test-not-a-real-key';
+  const OPENROUTER_KEY = 'or-test-not-a-real-key';
+  const KEY_ENV: EnvInput = { ...ENABLED_ENV, VENMART_ANTHROPIC_KEY: KEY };
+  const NO_KEY_TEXT =
+    'Ключ Claude не задан (VENMART_ANTHROPIC_KEY): бот только принимает и сохраняет сообщения, ответов нет';
+  /** Паузы склейки и «печатает» без ожидания: время настоящее, паузы мгновенные. */
+  const IMMEDIATE_CLOCK: Clock = { now: () => Date.now(), sleep: () => Promise.resolve() };
+  const UNAVAILABLE: LlmResult<never> = { ok: false, failure: 'unavailable' };
+  const OWN_EVENT: WaEvent = {
+    type: 'own',
+    message: {
+      waId: 'PHONE-1' as WaMessageId,
+      chatJid: CLIENT_JID,
+      content: { kind: 'text', text: 'Добрый день, это менеджер Tanbala' },
+      tsMs: Date.UTC(2026, 9, 25, 9, 1, 0),
+    },
+  };
+
+  /** Подключение, которое «отправляет»: шлюз конвейера и outbox доходят до него. */
+  function sendingConnection(): {
+    readonly connection: WhatsAppConnection;
+    readonly sendText: Mock<WhatsAppConnection['sendText']>;
+    readonly markRead: Mock<WhatsAppConnection['markRead']>;
+    readonly setTyping: Mock<WhatsAppConnection['setTyping']>;
+    readonly stop: Mock<() => Promise<void>>;
+  } {
+    const sendText = vi.fn<WhatsAppConnection['sendText']>(() => Promise.resolve());
+    const markRead = vi.fn<WhatsAppConnection['markRead']>(() => Promise.resolve());
+    const setTyping = vi.fn<WhatsAppConnection['setTyping']>(() => Promise.resolve());
+    const stop = vi.fn(() => Promise.resolve());
+    const connection: WhatsAppConnection = {
+      ...fakeConnection().connection,
+      sendText,
+      setTyping,
+      markRead,
+      stop,
+    };
+    return { connection, sendText, markRead, setTyping, stop };
+  }
+
+  function writeKnowledge(root: string): void {
+    mkdirSync(join(root, 'knowledge'));
+    writeFileSync(join(root, 'knowledge', 'tanbala-agent.md'), 'Учёт вещей на RFID-метках.');
+    writeFileSync(join(root, 'knowledge', 'whatsapp.md'), 'Отвечай коротко.');
+  }
+
+  function llmOf(structured: () => Promise<LlmResult<never>>): () => LlmClient {
+    return () => ({ structured });
+  }
+
+  function chatRow(dbPath: string): unknown {
+    return readDb(dbPath, (db) =>
+      db.prepare('SELECT status, status_by AS statusBy FROM chats').get(),
+    );
+  }
+
+  async function nextTurn(): Promise<void> {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+
+  it('без ключа Claude: предупреждение, входящие сохраняются, ответа нет', async () => {
+    const harness = useHarness();
+    const { connection, sendText } = sendingConnection();
+    const startWhatsApp = fakeStart(connection);
+    await harness.run(ENABLED_ENV, { startWhatsApp, clock: IMMEDIATE_CLOCK });
+
+    await depsOf(startWhatsApp).onEvent(CLIENT_EVENT);
+    await nextTurn();
+
+    expect(harness.records()).toContainEqual(
+      expect.objectContaining({ level: WARN, msg: NO_KEY_TEXT }),
+    );
+    expect(count(harness.dbPath, 'messages')).toBe(1);
+    expect(sendText).not.toHaveBeenCalled();
+  });
+
+  it('человек написал с телефона: сообщение в истории, чат переходит к нему, бот молчит', async () => {
+    const harness = useHarness();
+    const startWhatsApp = fakeStart(fakeConnection().connection);
+    await harness.run(ENABLED_ENV, { startWhatsApp });
+    const deps = depsOf(startWhatsApp);
+
+    await deps.onEvent(CLIENT_EVENT);
+    await deps.onEvent(OWN_EVENT);
+
+    expect(chatRow(harness.dbPath)).toEqual({ status: 'manager', statusBy: 'phone' });
+    expect(count(harness.dbPath, 'messages')).toBe(2);
+    expect(harness.records()).toContainEqual(
+      expect.objectContaining({ level: INFO, result: 'human_took_over' }),
+    );
+    expect(JSON.stringify(harness.records())).not.toContain('это менеджер');
+  });
+
+  it('с ключом: пачка в конвейер, сбой LLM => чат менеджеру и фраза через шлюз; getSentText из outbound_ids', async () => {
+    const harness = useHarness();
+    writeKnowledge(harness.root);
+    const { connection, sendText } = sendingConnection();
+    const startWhatsApp = fakeStart(connection);
+    await harness.run(KEY_ENV, {
+      startWhatsApp,
+      clock: IMMEDIATE_CLOCK,
+      createLlm: llmOf(() => Promise.resolve(UNAVAILABLE)),
+    });
+    const deps = depsOf(startWhatsApp);
+
+    await deps.onEvent(CLIENT_EVENT);
+    await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(1));
+
+    const [jid, text, waId] = sendText.mock.calls[0] ?? [];
+    expect([jid, waId]).toEqual([CLIENT_JID, 'OUT-1']);
+    expect(text).toMatch(/специалисту/);
+    expect(chatRow(harness.dbPath)).toEqual({ status: 'manager', statusBy: 'bot' });
+    await expect(deps.getSentText('OUT-1' as WaMessageId, CLIENT_JID)).resolves.toBe(text);
+    await expect(deps.getSentText('OUT-1' as WaMessageId, STRANGER_JID)).resolves.toBeNull();
+    expect(harness.records()).toContainEqual(
+      expect.objectContaining({ level: INFO, voice: false }),
+    );
+    expect(JSON.stringify(harness.records())).not.toContain(KEY);
+  });
+
+  it('с ключом: ответ клиенту с прочтением и «печатает»; эхо своей отправки не забирает чат', async () => {
+    const harness = useHarness();
+    writeKnowledge(harness.root);
+    const { connection, sendText, markRead, setTyping } = sendingConnection();
+    const startWhatsApp = fakeStart(connection);
+    const reply = 'Расскажите, пожалуйста, что вы храните?';
+    // Ответ модели в форме схемы агента: значение проходит через ту же схему, что и настоящий ответ.
+    const llm: LlmClient = {
+      structured: (request) =>
+        Promise.resolve({
+          ok: true,
+          value: request.schema.parse({ outcome: 'answer', text: reply, stopRequested: false }),
+        }),
+    };
+    await harness.run(
+      { ...KEY_ENV, MANAGER_WHATSAPP: MANAGER_PHONE },
+      { startWhatsApp, clock: IMMEDIATE_CLOCK, createLlm: () => llm },
+    );
+    const deps = depsOf(startWhatsApp);
+
+    await deps.onEvent(CLIENT_EVENT);
+    await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(1));
+    await deps.onEvent({
+      type: 'own',
+      message: { ...OWN_EVENT.message, waId: 'OUT-1' as WaMessageId },
+    });
+
+    expect(sendText).toHaveBeenCalledWith(CLIENT_JID, reply, 'OUT-1');
+    expect(markRead).toHaveBeenCalledWith(CLIENT_JID, ['WA-1']);
+    expect(setTyping.mock.calls).toEqual([
+      [CLIENT_JID, true],
+      [CLIENT_JID, false],
+    ]);
+    expect(chatRow(harness.dbPath)).toEqual({ status: 'bot', statusBy: null });
+    expect(count(harness.dbPath, 'messages')).toBe(2);
+  });
+
+  it('повтор того же сообщения не запускает второй ответ', async () => {
+    const harness = useHarness();
+    writeKnowledge(harness.root);
+    const structured = vi.fn(() => Promise.resolve(UNAVAILABLE));
+    const startWhatsApp = fakeStart(sendingConnection().connection);
+    await harness.run(KEY_ENV, {
+      startWhatsApp,
+      clock: IMMEDIATE_CLOCK,
+      createLlm: () => ({ structured }),
+    });
+    const deps = depsOf(startWhatsApp);
+
+    await deps.onEvent(CLIENT_EVENT);
+    await vi.waitFor(() => expect(structured).toHaveBeenCalledTimes(1));
+    await deps.onEvent(CLIENT_EVENT);
+    await nextTurn();
+
+    expect(structured).toHaveBeenCalledTimes(1);
+  });
+
+  it('stop дожидается пачки: ответ уходит до остановки WhatsApp и закрытия базы', async () => {
+    const harness = useHarness();
+    writeKnowledge(harness.root);
+    let release: (value: LlmResult<never>) => void = () => undefined;
+    const structured = vi.fn(
+      () =>
+        new Promise<LlmResult<never>>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const { connection, sendText, stop } = sendingConnection();
+    const startWhatsApp = fakeStart(connection);
+    const app = await harness.run(KEY_ENV, {
+      startWhatsApp,
+      clock: IMMEDIATE_CLOCK,
+      createLlm: () => ({ structured }),
+    });
+    await depsOf(startWhatsApp).onEvent(CLIENT_EVENT);
+    await vi.waitFor(() => expect(structured).toHaveBeenCalled());
+
+    const stopping = app.stop();
+    await nextTurn();
+    expect(stop).not.toHaveBeenCalled();
+    release(UNAVAILABLE);
+    await stopping;
+
+    expect(sendText).toHaveBeenCalledTimes(1);
+    expect(sendText.mock.invocationCallOrder[0]).toBeLessThan(
+      stop.mock.invocationCallOrder[0] ?? 0,
+    );
+    expect(databaseOpen(harness.dbPath)).toBe(false);
+  });
+
+  it('ключ OpenRouter задан: расшифровка голосовых включена, ключи в лог не попадают', async () => {
+    const harness = useHarness();
+    writeKnowledge(harness.root);
+
+    await harness.run(
+      { ...KEY_ENV, WA_ENABLED: 'false', OPENROUTER_API_KEY: OPENROUTER_KEY },
+      { createLlm: llmOf(() => Promise.resolve(UNAVAILABLE)) },
+    );
+
+    expect(harness.records()).toContainEqual(expect.objectContaining({ level: INFO, voice: true }));
+    const logged = JSON.stringify(harness.records());
+    expect(logged).not.toContain(KEY);
+    expect(logged).not.toContain(OPENROUTER_KEY);
+  });
+
+  it('с ключом, но без файлов знаний: запуск отклонён понятной ошибкой, база закрыта, замок снят', async () => {
+    const harness = useHarness();
+
+    const error = await errorOf(harness.run(KEY_ENV));
+
+    expect(error).toBeInstanceOf(SafeError);
+    expect(harness.records()).toContainEqual(
+      expect.objectContaining({ level: ERROR, msg: (error as SafeError).message }),
     );
     expect(databaseOpen(harness.dbPath)).toBe(false);
     expect(lockFree(harness.lockPath)).toBe(true);

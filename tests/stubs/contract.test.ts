@@ -69,6 +69,30 @@ const EXCLUDED = new Set([
   // Этап 2: сборка приложения и сохранение входящих (тесты в tests/unit).
   'main.ts#main',
   'pipeline/recorder.ts#createInboundRecorder',
+  // Этап 3: Claude и агент (тесты в tests/unit/llm и tests/unit/agent).
+  'llm/anthropic.ts#createAnthropicLlm',
+  'llm/token-log.ts#createJsonlTokenLog',
+  'agent/knowledge.ts#loadKnowledge',
+  'agent/prompts.ts#buildSystem',
+  'agent/prompts.ts#buildTurns',
+  'agent/agent.ts#createAgent',
+  // Этап 3: расшифровка голосовых через OpenRouter (тесты в tests/unit/voice).
+  'voice/transcriber.ts#createOpenRouterTranscriber',
+  'voice/transcriber.ts#createDisabledTranscriber',
+  // Этап 3: база v2, исходящие, лимиты, перехват (тесты в tests/unit/db, messaging, pipeline).
+  'db/repos/outbound-ids.ts#createOutboundIdsRepo',
+  'db/repos/call-budget.ts#createCallBudget',
+  'messaging/outbox.ts#createOutbox',
+  'messaging/typing.ts#typingDelayMs',
+  'pipeline/takeover.ts#handleOwnMessage',
+  // Этап 3: конвейер ответа, склейка, голосовые в памяти (тесты в tests/unit/pipeline и whatsapp).
+  'pipeline/batcher.ts#createChatBatcher',
+  'pipeline/handle-inbound.ts#handleClientBatch',
+  'whatsapp/voice-media.ts#createVoiceStore',
+  // Этап 3, правки по ревью: общее правило закрытого режима, скачивание голосовых, сборка ответов.
+  'messaging/allowlist.ts#isChatAllowlisted',
+  'pipeline/responder-setup.ts#assembleResponder',
+  'whatsapp/voice-media.ts#createWhatsAppAudioDownload',
 ]);
 
 type AnyFunction = (...args: unknown[]) => unknown;

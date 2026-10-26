@@ -16,7 +16,6 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vite
 import type { Clock, Logger, PairingDecision } from '../../../src/domain/ports.js';
 import type { Jid, MediaRef, PhoneDigits, WaMessageId } from '../../../src/domain/types.js';
 import { SafeError } from '../../../src/shared/safe-error.js';
-import { NotImplementedError } from '../../../src/shared/todo.js';
 import {
   LINKED_AT_SKEW_MS,
   LinkBoundaryMissingError,
@@ -50,6 +49,7 @@ import {
   STABLE_CONNECTION_MS,
 } from '../../../src/whatsapp/reconnect-policy.js';
 import { VERSION_FETCH_TIMEOUT_MS } from '../../../src/whatsapp/socket-config.js';
+import type { MediaDownload } from '../../../src/whatsapp/voice-media.js';
 
 // Все тесты на поддельном сокете, близком к Baileys rc14: close приходит из end() отдельной пачкой, затем буфер
 // событий уничтожается и обработчики снимаются. К WhatsApp никто не подключается, сеть заблокирована (tests/setup).
@@ -201,6 +201,9 @@ interface FakeSocket {
   readonly config: UserFacingSocketConfig;
   readonly end: Mock<(error: Error | undefined) => Promise<void>>;
   readonly flush: Mock<() => boolean>;
+  readonly sendMessage: Mock<WaSocket['sendMessage']>;
+  readonly sendPresenceUpdate: Mock<WaSocket['sendPresenceUpdate']>;
+  readonly readMessages: Mock<WaSocket['readMessages']>;
   /** Есть ли подписчик: Baileys снимает обработчики при закрытии, адаптер отписывается сам. */
   listening(): boolean;
   emit(events: Partial<BaileysEventMap>): void;
@@ -247,6 +250,9 @@ function createFakeSocket(
     handler = undefined;
     return Promise.resolve();
   });
+  const sendMessage = vi.fn<WaSocket['sendMessage']>(() => Promise.resolve(undefined));
+  const sendPresenceUpdate = vi.fn<WaSocket['sendPresenceUpdate']>(() => Promise.resolve());
+  const readMessages = vi.fn<WaSocket['readMessages']>(() => Promise.resolve());
   const socket: WaSocket = {
     ev: {
       process: (next) => {
@@ -265,12 +271,18 @@ function createFakeSocket(
       },
     },
     end,
+    sendMessage,
+    sendPresenceUpdate,
+    readMessages,
   };
   return {
     config,
     socket,
     end,
     flush,
+    sendMessage,
+    sendPresenceUpdate,
+    readMessages,
     listening: () => handler !== undefined,
     emit,
     buffer: (events) => {
@@ -330,6 +342,7 @@ interface Harness {
   readonly onOfflineQueueDone: Mock<() => Promise<void>>;
   readonly onHistoryChats: Mock<(chats: readonly HistoryChat[]) => Promise<void>>;
   readonly onStopped: Mock<(reason: WhatsAppStopReason) => void | Promise<void>>;
+  readonly downloadMedia: Mock<MediaDownload>;
   socket(index: number): FakeSocket;
 }
 
@@ -381,6 +394,7 @@ function setup(options: SetupOptions = {}): Harness {
       Promise.resolve(),
     ),
     onStopped: vi.fn<(reason: WhatsAppStopReason) => void | Promise<void>>(),
+    downloadMedia: vi.fn<MediaDownload>(() => Promise.resolve(byteChunks('ogg', '-opus'))),
     socket: (index: number): FakeSocket => {
       const fake = sockets[index];
       if (fake === undefined) throw new Error(`Сокет ${String(index)} не создан`);
@@ -411,8 +425,17 @@ function setup(options: SetupOptions = {}): Harness {
     presenter: { show: harness.show, clear: harness.clear },
     classify: harness.classify,
     decide: harness.decide,
+    downloadMedia: harness.downloadMedia,
   };
   return { ...harness, deps };
+}
+
+/** Поток байтов голосового из строк, как поток расшифрованного медиа Baileys. */
+async function* byteChunks(...parts: readonly string[]): AsyncGenerator<unknown> {
+  for (const part of parts) {
+    await Promise.resolve();
+    yield Buffer.from(part);
+  }
 }
 
 async function start(deps: WhatsAppDeps): Promise<WhatsAppConnection> {
@@ -460,15 +483,6 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
     resolve = done;
   });
   return { promise, resolve };
-}
-
-function thrownBy(work: () => unknown): unknown {
-  try {
-    work();
-  } catch (error: unknown) {
-    return error;
-  }
-  return undefined;
 }
 
 beforeEach(async () => {
@@ -1228,20 +1242,113 @@ describe('whatsapp/connection: шлюз этапа 2', () => {
     await expect(connection.resolvePhone(CLIENT_LID as Jid)).resolves.toBe(CLIENT_PHONE);
     await expect(connection.resolvePhone('999@lid' as Jid)).resolves.toBeNull();
   });
+});
 
-  it('отправка, «печатает», отметка прочтения и голосовые не реализованы до своих этапов', async () => {
-    const connection = await start(setup().deps);
+describe('whatsapp/connection: шлюз этапа 3', () => {
+  const ALLOWLIST: ReadonlySet<PhoneDigits> = new Set([CLIENT_PHONE as PhoneDigits]);
+  const VOICE_MIME = 'audio/ogg; codecs=opus';
+
+  function voiceMessage(id: string, key: Partial<WAMessageKey> = {}): WAMessage {
+    return {
+      key: { id, remoteJid: CLIENT_PN, fromMe: false, ...key },
+      messageTimestamp: NOW / 1000,
+      message: { audioMessage: { ptt: true, mimetype: VOICE_MIME, seconds: 3 } },
+    };
+  }
+
+  it('sendText: текст без предпросмотра ссылок с заранее выданным ID; @lid по сопоставлению с номером', async () => {
+    const h = setup({ testAllowlist: ALLOWLIST, pnForLid: { [CLIENT_LID]: CLIENT_PN } });
+    const connection = await startOpen(h);
+
+    await connection.sendText(CLIENT_PN as Jid, 'Добрый день', 'OUT-1' as WaMessageId);
+    await connection.sendText(CLIENT_LID as Jid, 'Ещё', 'OUT-2' as WaMessageId);
+
+    expect(h.socket(0).sendMessage.mock.calls).toEqual([
+      [CLIENT_PN, { text: 'Добрый день', linkPreview: null }, { messageId: 'OUT-1' }],
+      [CLIENT_LID, { text: 'Ещё', linkPreview: null }, { messageId: 'OUT-2' }],
+    ]);
+  });
+
+  it('закрытый режим: чат не из списка, неизвестный номер и не личный чат отклоняются; менеджеру можно', async () => {
+    const h = setup({ testAllowlist: ALLOWLIST, managerPhone: MANAGER_PHONE });
+    const connection = await startOpen(h);
+    const id = 'OUT-1' as WaMessageId;
+
+    await expect(connection.sendText(OTHER_PN as Jid, 'т', id)).rejects.toThrow('TEST_ALLOWLIST');
+    await expect(connection.sendText(CLIENT_LID as Jid, 'т', id)).rejects.toThrow('TEST_ALLOWLIST');
+    await expect(connection.sendText(GROUP as Jid, 'т', id)).rejects.toThrow('не личного чата');
+    await connection.sendText(MANAGER_PN as Jid, 'уведомление', id);
+
+    expect(h.socket(0).sendMessage.mock.calls.map(([jid]) => jid)).toEqual([MANAGER_PN]);
+  });
+
+  it('setTyping и markRead: только чаты из списка (менеджер тоже нет); пустой список ID ничего не шлёт', async () => {
+    const h = setup({ testAllowlist: ALLOWLIST, managerPhone: MANAGER_PHONE });
+    const connection = await startOpen(h);
     const jid = CLIENT_PN as Jid;
-    const waId = 'ID1' as WaMessageId;
 
-    expect(thrownBy(() => connection.sendText(jid, 'текст', waId))).toMatchObject({
-      stage: 'этап 3',
-      feature: 'whatsapp/connection.sendText',
-    });
-    expect(thrownBy(() => connection.setTyping(jid, true))).toMatchObject({ stage: 'этап 3' });
-    expect(thrownBy(() => connection.markRead(jid, [waId]))).toMatchObject({ stage: 'этап 3' });
-    expect(thrownBy(() => connection.downloadAudio('ref' as MediaRef, 1024))).toBeInstanceOf(
-      NotImplementedError,
+    await connection.setTyping(jid, true);
+    await connection.setTyping(jid, false);
+    await connection.markRead(jid, ['A1' as WaMessageId, 'A2' as WaMessageId]);
+    await connection.markRead(jid, []);
+
+    const sock = h.socket(0);
+    expect(sock.sendPresenceUpdate.mock.calls).toEqual([
+      ['composing', CLIENT_PN],
+      ['paused', CLIENT_PN],
+    ]);
+    expect(sock.readMessages.mock.calls).toEqual([
+      [
+        [
+          { remoteJid: CLIENT_PN, id: 'A1', fromMe: false },
+          { remoteJid: CLIENT_PN, id: 'A2', fromMe: false },
+        ],
+      ],
+    ]);
+    await expect(connection.setTyping(MANAGER_PN as Jid, true)).rejects.toThrow('TEST_ALLOWLIST');
+    await expect(connection.markRead(OTHER_PN as Jid, ['B1' as WaMessageId])).rejects.toThrow(
+      'TEST_ALLOWLIST',
     );
+    expect(sock.sendPresenceUpdate).toHaveBeenCalledTimes(2);
+    expect(sock.readMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it('без закрытого режима проверяется только личный чат; после остановки шлюз отказывает', async () => {
+    const h = setup();
+    const connection = await startOpen(h);
+
+    await connection.sendText(OTHER_PN as Jid, 'т', 'OUT-1' as WaMessageId);
+    await expect(connection.setTyping(GROUP as Jid, true)).rejects.toThrow('не личного чата');
+    await connection.stop();
+
+    await expect(connection.sendText(OTHER_PN as Jid, 'т', 'OUT-2' as WaMessageId)).rejects.toThrow(
+      'не подключён',
+    );
+    expect(h.socket(0).sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('downloadAudio: голосовое клиента после разбора качается потоком', async () => {
+    const h = setup({ testAllowlist: ALLOWLIST });
+    const connection = await startOpen(h);
+    const source = voiceMessage('V1');
+    upsert(h, [source]);
+    await until(() => expect(h.calls).toEqual(['event:V1']));
+
+    const clip = await connection.downloadAudio('V1' as MediaRef, 1024);
+
+    expect(Buffer.from(clip.data).toString()).toBe('ogg-opus');
+    expect(clip.mimeType).toBe(VOICE_MIME);
+    expect(h.downloadMedia).toHaveBeenCalledWith(source);
+  });
+
+  it('downloadAudio: своё голосовое и неизвестная ссылка не скачиваются', async () => {
+    const h = setup({ testAllowlist: ALLOWLIST });
+    const connection = await startOpen(h);
+    upsert(h, [voiceMessage('V2', { fromMe: true })]);
+    await until(() => expect(h.calls).toEqual(['event:V2']));
+
+    await expect(connection.downloadAudio('V2' as MediaRef, 1024)).rejects.toThrow('не найдено');
+    await expect(connection.downloadAudio('V9' as MediaRef, 1024)).rejects.toThrow('не найдено');
+    expect(h.downloadMedia).not.toHaveBeenCalled();
   });
 });

@@ -3,6 +3,7 @@ import type {
   BaileysEventMap,
   UserFacingSocketConfig,
   WAMessage,
+  WAMessageKey,
   WAVersion,
 } from 'baileys';
 import type {
@@ -17,6 +18,7 @@ import { SafeError } from '../shared/safe-error.js';
 import type { ClassifyContext, WaEvent } from './inbound.js';
 import type { QrPresenter } from './qr.js';
 import type { DisconnectContext, ReconnectDecision } from './reconnect.js';
+import type { MediaDownload } from './voice-media.js';
 
 // Типы, зависимости и ошибки запуска подключения к WhatsApp (whatsapp/connection.ts).
 
@@ -38,6 +40,16 @@ export interface WaSocket {
   readonly user?: { readonly id: string; readonly lid?: string | undefined } | undefined;
   readonly signalRepository: { readonly lidMapping: LidMapping };
   end(error: Error | undefined): Promise<void>;
+  /** Отправка: только текст, без предпросмотра ссылок, с заранее выданным ID. */
+  sendMessage(
+    jid: string,
+    content: { readonly text: string; readonly linkPreview: null },
+    options: { readonly messageId: string },
+  ): Promise<unknown>;
+  /** Статус «печатает» (composing) и его снятие (paused). */
+  sendPresenceUpdate(type: 'composing' | 'paused', toJid: string): Promise<void>;
+  /** Отметка о прочтении. */
+  readMessages(keys: WAMessageKey[]): Promise<void>;
 }
 
 /** Сессия Baileys из папки авторизации и её сохранение после creds.update. */
@@ -128,6 +140,8 @@ export interface WhatsAppDeps {
   classify?: (message: WAMessage, context: ClassifyContext) => WaEvent;
   /** Решение после разрыва; по умолчанию whatsapp/reconnect.decideOnDisconnect. */
   decide?: (context: DisconnectContext) => ReconnectDecision;
+  /** Скачивание голосового потоком; по умолчанию whatsapp/voice-media.createWhatsAppAudioDownload. */
+  downloadMedia?: MediaDownload;
 }
 
 /** Подключённый номер: шлюз для приложения плюс остановка. */

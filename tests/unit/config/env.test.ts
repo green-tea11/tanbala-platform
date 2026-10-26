@@ -11,14 +11,17 @@ type EnvInput = Readonly<Record<string, string | undefined>>;
 
 // Корень вымышленный: loadConfig только считает пути и не трогает файловую систему.
 const ROOT = resolve('/srv/tanbala');
-const MODELS = {
+const CLAUDE_MODELS = {
   reply: 'claude-haiku-5-5',
   review: 'claude-haiku-5-5',
   interest: 'claude-haiku-5-5',
 };
+const TRANSCRIBE_MODEL = 'elevenlabs/scribe-v2';
+const MODELS = { ...CLAUDE_MODELS, transcribe: TRANSCRIBE_MODEL };
 const PHONE_A = '77011234567';
 const PHONE_B = '77027654321';
 const SECRET_KEY = 'sk-ant-test-secret-value';
+const OPENROUTER_KEY = 'sk-or-v1-test-secret-value';
 const EMPTY_ALLOWLIST_WARNING = expect.stringContaining('TEST_ALLOWLIST') as unknown;
 
 function load(env: EnvInput, models: unknown = MODELS): ReturnType<typeof loadConfig> {
@@ -71,7 +74,7 @@ describe('config/env loadConfig: значения по умолчанию', () =
       knowledgeDir: join(ROOT, 'knowledge'),
       pairingMirrorPath: join(ROOT, '.pairing-attempts.json'),
       panel: { host: '127.0.0.1', port: 3100 },
-      models: MODELS,
+      models: CLAUDE_MODELS,
       limits: { apiCallsPerDay: 500, apiCallsPerChatPerDay: 100 },
       backlogMaxAgeHours: 12,
       testMode: { enabled: true, allowlist: new Set() },
@@ -103,6 +106,7 @@ describe('config/env loadConfig: значения по умолчанию', () =
     const { config, warnings } = loadConfig(template, models, PROJECT_ROOT);
 
     expect(config.waEnabled).toBe(false);
+    expect(config.voice).toBeNull();
     expect(config.testMode).toEqual({ enabled: true, allowlist: new Set() });
     expect(config.databasePath).toBe(join(PROJECT_ROOT, 'data', 'tanbala.db'));
     expect(config.limits).toEqual({ apiCallsPerDay: 500, apiCallsPerChatPerDay: 100 });
@@ -136,8 +140,15 @@ describe('config/env loadConfig: ключи и пароль', () => {
     expect(load({}).config.adminPassword).toBe('admin');
   });
 
-  it('с ключом OpenRouter голос всё равно выключен: модель распознавания не выбрана', () => {
-    expect(load({ OPENROUTER_API_KEY: 'sk-or-test' }).config.voice).toBeNull();
+  it('OPENROUTER_API_KEY включает расшифровку: ключ с обрезкой пробелов, модель из transcribe', () => {
+    expect(load({ OPENROUTER_API_KEY: ` ${OPENROUTER_KEY}\t` }).config.voice).toEqual({
+      apiKey: OPENROUTER_KEY,
+      model: TRANSCRIBE_MODEL,
+    });
+  });
+
+  it.each([undefined, '', '   '])('без ключа OpenRouter (%j) расшифровка выключена', (key) => {
+    expect(load({ OPENROUTER_API_KEY: key }).config.voice).toBeNull();
   });
 });
 
@@ -317,19 +328,23 @@ describe('config/env loadConfig: пути', () => {
 });
 
 describe('config/env loadConfig: config/models.json', () => {
-  it('модели передаются как есть, лишние поля не мешают', () => {
+  it('модели Claude передаются как есть, модель расшифровки уходит в voice, лишние поля не мешают', () => {
     const models = {
       reply: 'claude-sonnet-5',
       review: 'claude-haiku-5-5',
       interest: 'claude-3-5-haiku-20241022',
+      transcribe: 'openai/whisper-large-v3:free',
       comment: 'черновик',
     };
 
-    expect(load({}, models).config.models).toEqual({
+    const { config } = load({ OPENROUTER_API_KEY: OPENROUTER_KEY }, models);
+
+    expect(config.models).toEqual({
       reply: 'claude-sonnet-5',
       review: 'claude-haiku-5-5',
       interest: 'claude-3-5-haiku-20241022',
     });
+    expect(config.voice?.model).toBe('openai/whisper-large-v3:free');
   });
 
   it.each([undefined, null, 'claude-haiku-5-5', [], 42])(
@@ -339,11 +354,20 @@ describe('config/env loadConfig: config/models.json', () => {
     },
   );
 
-  it('отсутствующая модель названа по ключу', () => {
-    const problems = modelProblems({ reply: 'claude-haiku-5-5', review: 'claude-haiku-5-5' });
+  it.each(['interest', 'transcribe'])('отсутствующая модель %s названа по ключу', (key) => {
+    const problems = modelProblems({ ...MODELS, [key]: undefined });
 
-    expect(problems).toEqual([expect.stringMatching(/^config\/models\.json: interest: /)]);
+    expect(problems).toEqual([expect.stringMatching(`^config/models\\.json: ${key}: `)]);
   });
+
+  it.each(['', '   ', 'elevenlabs/ scribe-v2', 42, null])(
+    'модель расшифровки %j отклоняется: нужна непустая строка без пробелов',
+    (model) => {
+      const problems = modelProblems({ ...MODELS, transcribe: model });
+
+      expect(problems).toEqual([expect.stringMatching(/^config\/models\.json: transcribe: /)]);
+    },
+  );
 
   it.each(['gpt-4o', '', 'Claude-Haiku', 'claude haiku', 'claude-', 42])(
     'ID модели не Claude отклоняется: %s',
@@ -402,7 +426,12 @@ describe('config/env loadConfig: ошибки', () => {
   it('ни проблемы, ни текст ошибки не содержат ключей и номеров', () => {
     let failure: unknown = null;
     try {
-      load({ VENMART_ANTHROPIC_KEY: SECRET_KEY, MANAGER_WHATSAPP: `+${PHONE_A}`, PANEL_PORT: 'x' });
+      load({
+        VENMART_ANTHROPIC_KEY: SECRET_KEY,
+        OPENROUTER_API_KEY: OPENROUTER_KEY,
+        MANAGER_WHATSAPP: `+${PHONE_A}`,
+        PANEL_PORT: 'x',
+      });
     } catch (error: unknown) {
       failure = error;
     }
@@ -411,6 +440,7 @@ describe('config/env loadConfig: ошибки', () => {
     const error = failure as ConfigError;
     const visible = `${error.message}\n${error.problems.join('\n')}`;
     expect(visible).not.toContain(SECRET_KEY);
+    expect(visible).not.toContain(OPENROUTER_KEY);
     expect(visible).not.toContain(PHONE_A);
   });
 });

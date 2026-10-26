@@ -682,6 +682,22 @@ describe('classifyUpsert: адреса клиента', () => {
     });
   });
 
+  it('@lid без remoteJidAlt, номер определил адаптер (getPNForLID): адрес с номером из него', () => {
+    const event = classify({}, { remoteJid: CLIENT_LID }, { chatPhone: CLIENT_PHONE });
+
+    expect(inboundOf(event).identity).toEqual({
+      replyJid: CLIENT_LID,
+      lidJid: CLIENT_LID,
+      pnJid: CLIENT_PN,
+    });
+  });
+
+  it('@lid без remoteJidAlt и без номера: адреса с номером нет', () => {
+    const event = classify({}, { remoteJid: CLIENT_LID }, { chatPhone: null });
+
+    expect(inboundOf(event).identity.pnJid).toBeNull();
+  });
+
   it('remoteJidAlt с суффиксом устройства нормализуется', () => {
     const event = classify(
       {},
