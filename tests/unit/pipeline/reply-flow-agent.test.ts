@@ -94,10 +94,11 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
     expect(model.requests[4]?.turns.at(-1)?.text).toContain(SECOND);
   });
 
-  it('горячий клиент: передача hot, текст ответа не уходит', async () => {
-    const { verdict, saveAssessment } = await run({ replies: [FIRST], level: 'hot' });
+  it('горячий клиент: передача hot без вызова проверки, текст ответа не уходит', async () => {
+    const { verdict, model, saveAssessment } = await run({ replies: [FIRST], level: 'hot' });
 
     expect(verdict).toEqual({ kind: 'handoff', notice: { reason: 'hot' } });
+    expect(model.purposes()).toEqual(['reply', 'interest']);
     expect(saveAssessment).toHaveBeenCalledWith(
       CHAT_ID,
       expect.objectContaining({ level: 'hot' }),

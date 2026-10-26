@@ -28,6 +28,7 @@ const DASH: CheckFinding = { code: 'dash', detail: 'тире: «—» в «…у
 const PRICE: CheckFinding = { code: 'price', detail: 'цена: «5 000 тг» в «…стоит 5 000 тг…»' };
 
 const PASSED: DraftGate = { kind: 'reviewed', review: { ok: true } };
+const SKIPPED: DraftGate = { kind: 'skipped' };
 const CODE_FAILED: DraftGate = { kind: 'code_failed', findings: [DASH, PRICE] };
 const REVIEW_FAILED: DraftGate = {
   kind: 'reviewed',
@@ -110,6 +111,8 @@ describe('pipeline/decide: ответ answer', () => {
   it.each<[string, DraftGate, 1 | 2]>([
     ['проверки кодом не пройдены, попытка 1', CODE_FAILED, 1],
     ['проверка не пройдена, попытка 2', REVIEW_FAILED, 2],
+    ['проверки пропущены, попытка 1', SKIPPED, 1],
+    ['проверки пропущены, попытка 2', SKIPPED, 2],
   ])('горячий клиент важнее неудачной проверки (%s): повтора нет, передача hot', (_c, gate, n) => {
     expect(decideAction(answer(gate, n, assessment('hot')))).toEqual({
       kind: 'handoff',
@@ -151,6 +154,24 @@ describe('pipeline/decide: повтор и check_failed', () => {
   });
 });
 
+describe('pipeline/decide: проверки пропущены (горячий клиент)', () => {
+  it.each<[string, InterestAssessment | null]>([
+    ['оценки нет', null],
+    ['холодный', assessment('cold')],
+    ['тёплый', assessment('warm')],
+  ])(
+    'клиент не горячий (%s): пропуск проверок не повод отправить, передача check_failed без повтора',
+    (_case, assessed) => {
+      for (const attempt of [1, 2] as const) {
+        expect(decideAction(answer(SKIPPED, attempt, assessed))).toEqual({
+          kind: 'handoff',
+          reason: 'check_failed',
+        });
+      }
+    },
+  );
+});
+
 describe('pipeline/decide: без проверки текст не уходит', () => {
   it.each<[string, DraftGate]>([
     ['проверки кодом не пройдены', CODE_FAILED],
@@ -159,6 +180,7 @@ describe('pipeline/decide: без проверки текст не уходит'
       'проверка без замечаний не пройдена',
       { kind: 'reviewed', review: { ok: false, problems: [] } },
     ],
+    ['проверки пропущены', SKIPPED],
   ])('%s: ни на одной попытке не send', (_case, gate) => {
     for (const attempt of [1, 2] as const) {
       for (const assessed of [null, assessment('cold'), assessment('warm'), assessment('hot')]) {

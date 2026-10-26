@@ -111,6 +111,17 @@ const EXCLUDED = new Set([
   'db/repos/chat-merge.ts#createChatAbsorber',
   'db/repos/handoffs.ts#createHandoffsRepo',
   'db/repos/manager-notifications.ts#createManagerNotificationsRepo',
+  // Этап 5: передача менеджеру, уведомления, простой (тесты в tests/unit/handoff и pipeline).
+  'handoff/handoff.ts#createHandoffService',
+  'handoff/notification.ts#formatManagerNotification',
+  'handoff/notification.ts#formatBacklogNotification',
+  'handoff/notifier.ts#createManagerNotifier',
+  'pipeline/backlog.ts#createBacklogCollector',
+  'pipeline/sending.ts#errorName',
+  'pipeline/sending.ts#sendWithRetry',
+  'pipeline/sending.ts#typingPause',
+  'pipeline/voices.ts#transcribeVoices',
+  'pipeline/services.ts#assembleServices',
 ]);
 
 type AnyFunction = (...args: unknown[]) => unknown;

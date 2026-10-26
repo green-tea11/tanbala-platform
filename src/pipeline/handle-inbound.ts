@@ -19,18 +19,27 @@ import type {
   ReviewedText,
   WaMessageId,
 } from '../domain/types.js';
+import type { HandOffRequest, HandoffService } from '../handoff/handoff.js';
 import { isChatAllowlisted } from '../messaging/allowlist.js';
 import type { Outbox, SendBlocked } from '../messaging/outbox.js';
-import { MAX_AUDIO_BYTES } from '../voice/transcriber.js';
 import type { ClientBatch } from './batcher.js';
 import { decideReply, requestDraft, type ReplyVerdict } from './reply-flow.js';
+import { errorName, SEND_FAILED, sendWithRetry, typingPause } from './sending.js';
+import { transcribeVoices } from './voices.js';
 
-/** Зависимости конвейера обработки сообщения. TODO(этап 5): сервис передачи handoff/handoff.ts. */
+export { SEND_RETRY_DELAY_MS } from './sending.js';
+
+/** Зависимости конвейера обработки сообщения. */
 export interface PipelineDeps {
-  readonly chats: Pick<ChatsRepo, 'getById' | 'findByJid' | 'setStatus' | 'saveAssessment'>;
+  readonly chats: Pick<ChatsRepo, 'getById' | 'findByJid' | 'saveAssessment'>;
   readonly messages: Pick<MessagesRepo, 'recent' | 'markAnswered' | 'setTranscript'>;
   readonly agent: Pick<Agent, 'draftReply' | 'reviewDraft' | 'assessInterest'>;
-  readonly outbox: Pick<Outbox, 'sendBotReply' | 'sendHandoffNotice' | 'sendVoiceNotice'>;
+  readonly outbox: Pick<Outbox, 'sendBotReply' | 'sendVoiceNotice'>;
+  /**
+   * Сервис передачи менеджеру (handoff/handoff.ts): статус manager, запись передачи, фраза клиенту с повтором
+   * отправки и уведомление менеджеру. Конвейер его только вызывает и не оборачивает в повтор.
+   */
+  readonly handoff: Pick<HandoffService, 'handOff'>;
   readonly transcriber: Transcriber;
   readonly inbox: Pick<WhatsAppInbox, 'markRead' | 'downloadAudio'>;
   /** Статус «печатает»: outbox только отправляет, паузу перед ответом держит конвейер. */
@@ -56,11 +65,10 @@ export type PipelineOutcome =
     }
   | { readonly kind: 'blocked'; readonly reason: SendBlocked }
   | { readonly kind: 'handed_off'; readonly reason: HandoffReason }
+  /** Сервис передачи не смог записать передачу (чата нет, сбой базы): ошибка в логе, клиент остался без ответа. */
+  | { readonly kind: 'handoff_failed'; readonly reason: HandoffReason }
   /** Отправка упала исключением и после повтора: клиент остался без ответа (ошибка в логе). */
   | { readonly kind: 'send_failed' };
-
-/** Пауза перед повтором отправки, упавшей исключением: за это время сокет успевает переподключиться. */
-export const SEND_RETRY_DELAY_MS = 5_000;
 
 /**
  * Пачка старше этого к началу обработки пришла из офлайн-очереди (бот был выключен): живая пачка ждёт
@@ -68,14 +76,8 @@ export const SEND_RETRY_DELAY_MS = 5_000;
  */
 const OFFLINE_BATCH_AGE_MS = 2 * 60_000;
 
-/** Лимит расшифровки в символах, как у текста сообщения (whatsapp/inbound.MAX_TEXT_CHARS). */
-const MAX_TRANSCRIPT_CHARS = 4096;
-
 const SILENT_MANAGER: PipelineOutcome = { kind: 'silent', reason: 'manager_mode' };
 const SEND_FAILED_OUTCOME: PipelineOutcome = { kind: 'send_failed' };
-
-/** Отправка не удалась и после повтора. */
-const SEND_FAILED = Symbol('send-failed');
 
 /** Что уже сделано с пачкой: переходит в перегенерацию, чтобы не повторять расшифровку и фразы. */
 interface Turn {
@@ -96,12 +98,6 @@ interface Noticed {
   readonly turn: Turn;
   readonly result: 'sent' | 'not_sent' | 'failed';
 }
-
-/** Расшифровка одного голосового. */
-type Heard =
-  | { readonly kind: 'text'; readonly text: string }
-  | { readonly kind: 'unheard' }
-  | { readonly kind: 'budget'; readonly scope: BudgetScope };
 
 /**
  * Обрабатывает пачку сообщений клиента по шагам раздела плана «Как обрабатывается сообщение». Сообщения уже записаны
@@ -125,17 +121,18 @@ type Heard =
  *    Вердикт send => «печатает» с паузой typingDelayMs (сбой статуса не мешает ответу), затем outbox.sendBotReply
  *    на последнее сообщение пачки того самого проверенного текста. Пришли новые сообщения, пока шла пауза =>
  *    ответ перегенерируется один раз с ними, уходит один ответ.
- * 5. Временно (до сервиса передачи этапа 5, без уведомления менеджеру): вердикт handoff (hot, no_answer,
- *    asked_human, complaint, check_failed, llm_error) => статус manager (by 'bot') и фиксированная фраза по причине
- *    через outbox.sendHandoffNotice; горячему клиенту уходит одна фраза передачи, а не два сообщения. Вердикт limit
- *    (исчерпан дневной лимит API) => статус manager без фразы клиенту (уведомление менеджеру появится на этапе 5).
- *    Перед каждой отправкой статус чата перечитывается: человек мог подключиться, пока LLM писал ответ.
- * 6. markAnswered один раз в конце пачки и только если что-то ушло: иначе второй ответ пачки получил бы
- *    'skipped_no_inbound'.
- * Сбой отправки исключением повторяется один раз (sendWithRetry), затем ошибка в лог «клиент остался без ответа»;
- * при передаче статус manager остаётся, и это видно в логе. Сбой базы приходит отказом промиса: его пишет в лог
+ * 5. Все передачи через сервис deps.handoff (handoff/handoff.ts): вердикт handoff (hot, no_answer, asked_human,
+ *    complaint, check_failed, llm_error) => handOff с причиной и ответом на последнее сообщение пачки; вердикт limit
+ *    (исчерпан дневной лимит API) => handOff limit со scope, без фразы клиенту. Статус manager, запись передачи,
+ *    фразу клиенту (с повтором отправки) и уведомление менеджеру делает сервис; горячему клиенту уходит одна фраза
+ *    передачи, а не два сообщения. Перед передачей статус чата перечитывается: человек мог подключиться, пока LLM
+ *    писал ответ. handOff бросает, только если передачу не записать (чата нет, сбой базы): ошибка в лог без текста,
+ *    итог handoff_failed, «отвечено» не ставится.
+ * 6. markAnswered один раз в конце пачки и только если что-то ушло (ответ, фраза про голосовое или записанная
+ *    передача с фразой): иначе второй ответ пачки получил бы 'skipped_no_inbound'.
+ * Сбой отправки ответа или фразы про голосовое исключением повторяется один раз (pipeline/sending.sendWithRetry),
+ * затем ошибка в лог «клиент остался без ответа». Сбой базы приходит отказом промиса: его пишет в лог
  * pipeline/batcher.ts.
- * TODO(этап 5): все передачи через handoff.handOff: hot, no_answer, asked_human, complaint, check_failed, llm_error, limit, с уведомлением менеджеру.
  */
 export async function handleClientBatch(
   deps: PipelineDeps,
@@ -167,11 +164,12 @@ async function processTurn(
   }
   const heard = await transcribeVoices(deps, chat.id, start);
   if ('scope' in heard) return goSilent(deps, chat.id, heard.scope);
-  const answerable = hasText(heard);
+  const transcribed: Turn = { ...start, ...heard };
+  const answerable = hasText(transcribed);
   if (!answerable && heard.unheard.size === 0) return { kind: 'silent', reason: 'no_text' };
   // Расшифровка идёт до минуты: человек мог подключиться.
   if (isManagerNow(deps, chat.id)) return SILENT_MANAGER;
-  const read = await markRead(deps, chat, heard);
+  const read = await markRead(deps, chat, transcribed);
   if (answerable) return draftAndAnswer(deps, batch, chat, read);
   return answerVoiceOnly(deps, chat.id, read);
 }
@@ -201,64 +199,6 @@ function currentChat(
 
 function isManagerNow(deps: PipelineDeps, chatId: ChatId): boolean {
   return deps.chats.getById(chatId)?.control.status !== 'bot';
-}
-
-// Голосовые.
-
-async function transcribeVoices(
-  deps: PipelineDeps,
-  chatId: ChatId,
-  turn: Turn,
-): Promise<Turn | { readonly scope: BudgetScope }> {
-  const transcripts = new Map(turn.transcripts);
-  const unheard = new Set(turn.unheard);
-  for (const message of turn.messages) {
-    const { content, waId } = message;
-    if (content.kind !== 'voice' || transcripts.has(waId) || unheard.has(waId)) continue;
-    const heard = await transcribe(deps, chatId, content.media);
-    if (heard.kind === 'budget') return { scope: heard.scope };
-    if (heard.kind === 'text') {
-      saveTranscript(deps, chatId, waId, heard.text);
-      transcripts.set(waId, heard.text);
-    } else {
-      unheard.add(waId);
-    }
-  }
-  return { ...turn, transcripts, unheard };
-}
-
-async function transcribe(
-  deps: PipelineDeps,
-  chatId: ChatId,
-  media: Extract<InboundMessage['content'], { kind: 'voice' }>['media'],
-): Promise<Heard> {
-  const { transcriber } = deps;
-  if (!transcriber.enabled) return { kind: 'unheard' };
-  try {
-    const clip = await deps.inbox.downloadAudio(media, MAX_AUDIO_BYTES);
-    const result = await transcriber.transcribe(clip, chatId);
-    if (result.ok) return heardText(result.value);
-    if (result.failure === 'budget_exceeded') return { kind: 'budget', scope: result.scope };
-    deps.logger.warn({ chatId, failure: result.failure }, 'Голосовое не расшифровано');
-  } catch (error: unknown) {
-    deps.logger.warn({ chatId, err: error }, 'Голосовое не скачано или не расшифровано');
-  }
-  return { kind: 'unheard' };
-}
-
-/** Расшифровка в базу: следующие ответы видят в истории, что клиент сказал голосом. */
-function saveTranscript(deps: PipelineDeps, chatId: ChatId, waId: WaMessageId, text: string): void {
-  if (!deps.messages.setTranscript(chatId, waId, text)) {
-    deps.logger.warn(
-      { chatId },
-      'Расшифровка голосового не записана: в базе нет такого голосового без текста',
-    );
-  }
-}
-
-function heardText(raw: string): Heard {
-  const text = Array.from(raw.trim()).slice(0, MAX_TRANSCRIPT_CHARS).join('');
-  return text === '' ? { kind: 'unheard' } : { kind: 'text', text };
 }
 
 function hasText(turn: Turn): boolean {
@@ -343,7 +283,7 @@ function act(
     case 'handoff':
       return handOff(deps, chat.id, turn, verdict.notice);
     case 'limit':
-      return Promise.resolve(goSilent(deps, chat.id, verdict.scope));
+      return goSilent(deps, chat.id, verdict.scope);
   }
 }
 
@@ -390,65 +330,9 @@ async function sendAnswer(
   return { kind: 'blocked', reason: result };
 }
 
-/**
- * Отправка через outbox. Сбой исключением (например, старый закрытый сокет при переподключении) повторяется один раз
- * после паузы SEND_RETRY_DELAY_MS; второй сбой => ошибка в лог «клиент остался без ответа» (без номера и текста).
- */
-async function sendWithRetry<T>(
-  deps: PipelineDeps,
-  chatId: ChatId,
-  what: string,
-  send: () => Promise<T>,
-): Promise<T | typeof SEND_FAILED> {
-  try {
-    return await send();
-  } catch (error: unknown) {
-    deps.logger.warn(
-      { chatId, errorName: errorName(error) },
-      `Сбой отправки, повтор: чат #${chatId}`,
-    );
-  }
-  await deps.clock.sleep(SEND_RETRY_DELAY_MS);
-  try {
-    return await send();
-  } catch (error: unknown) {
-    deps.logger.error(
-      { chatId, errorName: errorName(error) },
-      `Клиент остался без ответа: ${what}, чат #${chatId}`,
-    );
-    return SEND_FAILED;
-  }
-}
+// Передача менеджеру: всё делает сервис handoff/handoff.ts.
 
-function errorName(error: unknown): string {
-  return error instanceof Error ? error.name : typeof error;
-}
-
-/** «Печатает» на время паузы; статус снимается и при прерванной паузе (остановка), сбой статуса только в лог. */
-async function typingPause(deps: PipelineDeps, chat: Chat, text: string): Promise<void> {
-  const jid = chat.identity.replyJid;
-  await presence(deps, chat.id, () => deps.typing.setTyping(jid, true));
-  try {
-    await deps.clock.sleep(deps.typingDelayMs(text));
-  } finally {
-    await presence(deps, chat.id, () => deps.typing.setTyping(jid, false));
-  }
-}
-
-async function presence(
-  deps: PipelineDeps,
-  chatId: ChatId,
-  work: () => Promise<void>,
-): Promise<void> {
-  try {
-    await work();
-  } catch (error: unknown) {
-    deps.logger.warn({ chatId, err: error }, 'Статус «печатает» не отправлен');
-  }
-}
-
-// Передача менеджеру (временно до этапа 5: без уведомления менеджеру).
-
+/** Передача с фразой клиенту на последнее сообщение пачки; после неё пачка отмечается отвеченной. */
 async function handOff(
   deps: PipelineDeps,
   chatId: ChatId,
@@ -456,22 +340,46 @@ async function handOff(
   notice: HandoffNotice,
 ): Promise<PipelineOutcome> {
   if (isManagerNow(deps, chatId)) return SILENT_MANAGER;
-  deps.chats.setStatus(chatId, { status: 'manager', by: 'bot' }, deps.clock.now());
-  const result = await sendWithRetry(deps, chatId, 'фраза передачи не ушла, чат у менеджера', () =>
-    deps.outbox.sendHandoffNotice(chatId, notice, lastId(turn)),
-  );
-  const outcome: PipelineOutcome = { kind: 'handed_off', reason: notice.reason };
-  if (result === 'sent') return finish(deps, chatId, turn, outcome);
-  if (result !== SEND_FAILED) deps.logger.warn({ chatId, result }, 'Фраза передачи не отправлена');
-  return outcome;
+  const request: HandOffRequest = { ...notice, replyToWaId: lastId(turn) };
+  if (!(await requestHandOff(deps, chatId, request))) {
+    return { kind: 'handoff_failed', reason: notice.reason };
+  }
+  return finish(deps, chatId, turn, { kind: 'handed_off', reason: notice.reason });
 }
 
-/** Дневной лимит API исчерпан: бот замолкает в чате без фразы клиенту (решение владельца). */
-function goSilent(deps: PipelineDeps, chatId: ChatId, scope: BudgetScope): PipelineOutcome {
+/** Дневной лимит API исчерпан: бот замолкает в чате без фразы клиенту (решение владельца), менеджеру уходит уведомление. */
+async function goSilent(
+  deps: PipelineDeps,
+  chatId: ChatId,
+  scope: BudgetScope,
+): Promise<PipelineOutcome> {
   if (isManagerNow(deps, chatId)) return SILENT_MANAGER;
-  deps.chats.setStatus(chatId, { status: 'manager', by: 'bot' }, deps.clock.now());
   deps.logger.warn({ chatId, scope }, 'Дневной лимит вызовов API исчерпан: бот замолкает в чате');
+  if (!(await requestHandOff(deps, chatId, { reason: 'limit', scope }))) {
+    return { kind: 'handoff_failed', reason: 'limit' };
+  }
   return { kind: 'handed_off', reason: 'limit' };
+}
+
+/**
+ * Вызов сервиса передачи. Он бросает, только если передачу не записать (чата нет, сбой базы); ошибка идёт в лог
+ * без текста сообщений и номеров, пачка не падает. Сбои фразы клиенту и уведомления сервис разбирает сам.
+ */
+async function requestHandOff(
+  deps: PipelineDeps,
+  chatId: ChatId,
+  request: HandOffRequest,
+): Promise<boolean> {
+  try {
+    await deps.handoff.handOff(chatId, request);
+    return true;
+  } catch (error: unknown) {
+    deps.logger.error(
+      { chatId, reason: request.reason, errorName: errorName(error) },
+      `Передача менеджеру не записана: чат #${chatId}`,
+    );
+    return false;
+  }
 }
 
 /** Конец пачки, когда что-то ушло: входящие пачки отмечаются отвеченными один раз; ничего не ушло => duplicate. */
@@ -498,6 +406,7 @@ const OUTCOME_TEXT: Readonly<Record<PipelineOutcome['kind'], string>> = {
   silent: 'Бот промолчал',
   blocked: 'Ответ не отправлен',
   handed_off: 'Чат передан менеджеру',
+  handoff_failed: 'Передача менеджеру не удалась',
   send_failed: 'Клиент остался без ответа',
 };
 

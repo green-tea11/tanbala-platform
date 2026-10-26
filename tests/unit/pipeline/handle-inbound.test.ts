@@ -6,7 +6,6 @@ import type {
   Chat,
   ChatId,
   ClientProfile,
-  HandoffNotice,
   InboundMessage,
   InterestAssessment,
   InterestLevel,
@@ -20,6 +19,7 @@ import type {
   StoredMessage,
   WaMessageId,
 } from '../../../src/domain/types.js';
+import type { HandOffRequest, HandoffService } from '../../../src/handoff/handoff.js';
 import type { SendBlocked } from '../../../src/messaging/outbox.js';
 import type { ClientBatch } from '../../../src/pipeline/batcher.js';
 import {
@@ -115,6 +115,8 @@ interface Options {
   readonly found?: Chat | null;
   /** Что вернёт setTranscript: записалась ли расшифровка. */
   readonly transcriptSaved?: boolean;
+  /** Передача не записалась: handOff отклоняется этой ошибкой. */
+  readonly handOffFails?: Error;
 }
 
 type Mocked<K extends keyof PipelineDeps> = {
@@ -133,6 +135,7 @@ interface Harness {
   readonly reviewed: string[];
   readonly outbox: Mocked<'outbox'>;
   readonly inbox: Mocked<'inbox'>;
+  readonly handOff: Mock<HandoffService['handOff']>;
   readonly setTyping: Mock<PipelineDeps['typing']['setTyping']>;
 }
 
@@ -173,10 +176,6 @@ function setup(options: Options = {}): Harness {
       calls.push(`reply:${reply}:${replyTo}`);
       return Promise.resolve('sent' as const);
     }),
-    sendHandoffNotice: vi.fn((_chat, notice: HandoffNotice, replyTo) => {
-      calls.push(`notice:${JSON.stringify(notice)}:${replyTo}`);
-      return Promise.resolve('sent' as const);
-    }),
     sendVoiceNotice: vi.fn((_chat, replyTo) => {
       calls.push(`voice:${replyTo}`);
       return Promise.resolve('sent' as const);
@@ -198,6 +197,13 @@ function setup(options: Options = {}): Harness {
     calls.push(`typing:${on ? 'on' : 'off'}`);
     return Promise.resolve();
   });
+  // Как настоящий сервис передачи: чат уходит менеджеру, и бот в нём молчит.
+  const handOff = vi.fn<HandoffService['handOff']>((_chatId, request) => {
+    calls.push(`handoff:${request.reason}`);
+    if (options.handOffFails !== undefined) return Promise.reject(options.handOffFails);
+    status = 'manager';
+    return Promise.resolve();
+  });
   const clock: Clock = {
     now: () => NOW,
     sleep: (ms) => {
@@ -212,9 +218,6 @@ function setup(options: Options = {}): Harness {
         return status === null ? null : chatWith(status);
       },
       findByJid: () => options.found ?? null,
-      setStatus: (_id, change) => {
-        calls.push(`status:${change.status}:${change.by}`);
-      },
       saveAssessment: (_id, assessment) => {
         calls.push(`save:${assessment.level}`);
       },
@@ -250,6 +253,7 @@ function setup(options: Options = {}): Harness {
       },
     },
     outbox,
+    handoff: { handOff },
     transcriber: options.transcriber ?? { enabled: false },
     inbox,
     typing: { setTyping },
@@ -258,7 +262,7 @@ function setup(options: Options = {}): Harness {
     clock,
     logger: createLogger(logs),
   };
-  return { deps, calls, logs, contexts, feedbacks, reviewed, outbox, inbox, setTyping };
+  return { deps, calls, logs, contexts, feedbacks, reviewed, outbox, inbox, handOff, setTyping };
 }
 
 function batchOf(
@@ -476,17 +480,6 @@ describe('pipeline/handle-inbound: сбой отправки исключени�
     expect(h.calls).not.toContain('answered:A1');
   });
 
-  it('фраза передачи не ушла: чат у менеджера, это видно в логе ошибкой', async () => {
-    const h = setup({ drafts: [{ ok: true, value: { outcome: 'asked_human' } }] });
-    h.outbox.sendHandoffNotice.mockRejectedValue(new Error('Connection Closed'));
-
-    const outcome = await run(h, batchOf([text('A1')]));
-
-    expect(outcome).toEqual({ kind: 'handed_off', reason: 'asked_human' });
-    expect(h.calls).toContain('status:manager:bot');
-    expect(levels(h, 'error')).toEqual([{ chatId: CHAT_ID, errorName: 'Error' }]);
-  });
-
   it('фраза про голосовое не ушла: клиент остался без ответа', async () => {
     const h = setup();
     h.outbox.sendVoiceNotice.mockRejectedValue(new Error('Connection Closed'));
@@ -498,60 +491,72 @@ describe('pipeline/handle-inbound: сбой отправки исключени�
   });
 });
 
-describe('pipeline/handle-inbound: передача менеджеру', () => {
-  it.each<[string, ReplyDraft, string]>([
-    ['нет ответа в знаниях', { outcome: 'no_answer' }, '{"reason":"no_answer"}'],
-    ['просит человека', { outcome: 'asked_human' }, '{"reason":"asked_human"}'],
+describe('pipeline/handle-inbound: передача менеджеру (через сервис передачи)', () => {
+  it.each<[string, ReplyDraft, HandOffRequest]>([
+    [
+      'нет ответа в знаниях',
+      { outcome: 'no_answer' },
+      { reason: 'no_answer', replyToWaId: 'A2' as WaMessageId },
+    ],
+    [
+      'просит человека',
+      { outcome: 'asked_human' },
+      { reason: 'asked_human', replyToWaId: 'A2' as WaMessageId },
+    ],
     [
       'жалоба с просьбой не писать',
       { outcome: 'complaint', stopRequested: true },
-      '{"reason":"complaint","stopRequested":true}',
+      { reason: 'complaint', stopRequested: true, replyToWaId: 'A2' as WaMessageId },
     ],
   ])(
-    '%s: статус manager (бот), фраза по причине на последнее сообщение',
-    async (_case, draft, notice) => {
+    '%s: handOff с причиной и ответом на последнее сообщение пачки',
+    async (_case, draft, request) => {
       const h = setup({ drafts: [{ ok: true, value: draft }] });
 
       const outcome = await run(h, batchOf([text('A1'), text('A2')]));
 
       expect(outcome).toEqual({ kind: 'handed_off', reason: draft.outcome });
+      expect(h.handOff).toHaveBeenCalledWith(CHAT_ID, request);
       expect(h.calls).toEqual([
         'read:A1,A2',
         'draft',
         'assess',
         'save:cold',
-        'status:manager:bot',
-        `notice:${notice}:A2`,
+        `handoff:${draft.outcome}`,
         'answered:A2',
       ]);
     },
   );
 
-  it('дневной лимит API: статус manager без фразы клиенту', async () => {
+  it('дневной лимит API: handOff limit со scope, без фразы клиенту и без «отвечено»', async () => {
     const h = setup({ drafts: [{ ok: false, failure: 'budget_exceeded', scope: 'chat' }] });
 
     const outcome = await run(h, batchOf([text('A1')]));
 
     expect(outcome).toEqual({ kind: 'handed_off', reason: 'limit' });
-    expect(h.calls).toEqual(['read:A1', 'draft', 'assess', 'save:cold', 'status:manager:bot']);
+    expect(h.handOff).toHaveBeenCalledWith(CHAT_ID, { reason: 'limit', scope: 'chat' });
+    expect(h.calls).toEqual(['read:A1', 'draft', 'assess', 'save:cold', 'handoff:limit']);
     expect(levels(h, 'warn')).toContainEqual({ chatId: CHAT_ID, scope: 'chat' });
   });
 
   it.each(['unavailable', 'invalid_output', 'refusal'] as const)(
-    'сбой LLM (%s): статус manager и фраза «передам вопрос специалисту»',
+    'сбой LLM (%s): handOff llm_error с ответом на последнее сообщение',
     async (failure) => {
       const h = setup({ drafts: [{ ok: false, failure }] });
 
       const outcome = await run(h, batchOf([text('A1')]));
 
       expect(outcome).toEqual({ kind: 'handed_off', reason: 'llm_error' });
+      expect(h.handOff).toHaveBeenCalledWith(CHAT_ID, {
+        reason: 'llm_error',
+        replyToWaId: 'A1',
+      });
       expect(h.calls).toEqual([
         'read:A1',
         'draft',
         'assess',
         'save:cold',
-        'status:manager:bot',
-        'notice:{"reason":"llm_error"}:A1',
+        'handoff:llm_error',
         'answered:A1',
       ]);
       expect(levels(h, 'warn')).toContainEqual({ chatId: CHAT_ID, failure });
@@ -570,25 +575,32 @@ describe('pipeline/handle-inbound: передача менеджеру', () => {
 
       expect(outcome).toEqual({ kind: 'silent', reason: 'manager_mode' });
       expect(h.calls).toEqual(['read:A1', 'draft', 'assess', 'save:cold']);
+      expect(h.handOff).not.toHaveBeenCalled();
     },
   );
 
-  it('фраза передачи не ушла: статус всё равно manager, «отвечено» не ставится', async () => {
-    const h = setup({ drafts: [{ ok: true, value: { outcome: 'asked_human' } }] });
-    h.outbox.sendHandoffNotice.mockResolvedValue('skipped_test_mode');
+  it.each<[string, LlmResult<ReplyDraft>, string]>([
+    ['с фразой клиенту', { ok: true, value: { outcome: 'asked_human' } }, 'asked_human'],
+    ['лимит без фразы', { ok: false, failure: 'budget_exceeded', scope: 'global' }, 'limit'],
+  ])(
+    'передача не записана (%s): ошибка в лог без текста, итог handoff_failed, «отвечено» не ставится',
+    async (_case, draft, reason) => {
+      const h = setup({ drafts: [draft], handOffFails: new TypeError('база недоступна') });
 
-    const outcome = await run(h, batchOf([text('A1')]));
+      const outcome = await run(h, batchOf([text('A1')]));
 
-    expect(outcome).toEqual({ kind: 'handed_off', reason: 'asked_human' });
-    expect(h.calls).toEqual(['read:A1', 'draft', 'assess', 'save:cold', 'status:manager:bot']);
-  });
+      expect(outcome).toEqual({ kind: 'handoff_failed', reason });
+      expect(levels(h, 'error')).toEqual([{ chatId: CHAT_ID, reason, errorName: 'TypeError' }]);
+      expect(h.calls).not.toContain('answered:A1');
+    },
+  );
 });
 
 describe('pipeline/handle-inbound: проверки, оценка интереса и повтор (этап 4)', () => {
   const DASHED = 'Учёт — это просто. Что вы храните?';
   const SECOND = 'Цена зависит от задачи. Что вы хотите учитывать?';
 
-  it('горячий клиент: оценка сохранена, клиенту одна фраза передачи, текст ответа не уходит', async () => {
+  it('горячий клиент: оценка сохранена, проверки пропущены, одна передача hot, текст ответа не уходит', async () => {
     const h = setup({ assessment: assessed('hot') });
 
     const outcome = await run(h, batchOf([text('A1')]));
@@ -599,13 +611,13 @@ describe('pipeline/handle-inbound: проверки, оценка интерес
       'draft',
       'assess',
       'save:hot',
-      'review',
-      'status:manager:bot',
-      'notice:{"reason":"hot"}:A1',
+      'handoff:hot',
       'answered:A1',
     ]);
+    expect(h.handOff).toHaveBeenCalledTimes(1);
+    expect(h.handOff).toHaveBeenCalledWith(CHAT_ID, { reason: 'hot', replyToWaId: 'A1' });
+    expect(h.reviewed).toEqual([]);
     expect(h.outbox.sendBotReply).not.toHaveBeenCalled();
-    expect(h.outbox.sendHandoffNotice).toHaveBeenCalledTimes(1);
   });
 
   it('горячий клиент с голосовым в пачке: фразы про голосовое нет, только фраза передачи', async () => {
@@ -656,16 +668,16 @@ describe('pipeline/handle-inbound: проверки, оценка интерес
       'review',
       'draft:retry',
       'review',
-      'status:manager:bot',
-      'notice:{"reason":"check_failed"}:A1',
+      'handoff:check_failed',
       'answered:A1',
     ]);
+    expect(h.handOff).toHaveBeenCalledWith(CHAT_ID, { reason: 'check_failed', replyToWaId: 'A1' });
     expect(h.feedbacks[1]).toEqual(['срок']);
     expect(h.outbox.sendBotReply).not.toHaveBeenCalled();
   });
 
   it('уходит ровно тот текст, который проверен: после нормализации, и пауза считается по нему', async () => {
-    const h = setup({ drafts: [answer('Учёт​ подбираем под задачу. Что вы храните?')] });
+    const h = setup({ drafts: [answer('Учёт\u200B подбираем под задачу. Что вы храните?')] });
 
     const outcome = await run(h, batchOf([text('A1')]));
 
@@ -675,23 +687,24 @@ describe('pipeline/handle-inbound: проверки, оценка интерес
     expect(h.calls).toContain(`sleep:${TYPING_MS}`);
   });
 
-  it('сбой ревью: статус manager и фраза llm_error, текст модели без проверки не уходит', async () => {
+  it('сбой ревью: handOff llm_error, текст модели без проверки не уходит', async () => {
     const h = setup({ reviews: [{ ok: false, failure: 'unavailable' }] });
 
     const outcome = await run(h, batchOf([text('A1')]));
 
     expect(outcome).toEqual({ kind: 'handed_off', reason: 'llm_error' });
     expect(h.outbox.sendBotReply).not.toHaveBeenCalled();
-    expect(h.calls).toContain('notice:{"reason":"llm_error"}:A1');
+    expect(h.handOff).toHaveBeenCalledWith(CHAT_ID, { reason: 'llm_error', replyToWaId: 'A1' });
   });
 
-  it('лимит API на оценке интереса: статус manager без фразы клиенту, ответ не уходит', async () => {
+  it('лимит API на оценке интереса: handOff limit без фразы клиенту, ответ не уходит', async () => {
     const h = setup({ assessment: { ok: false, failure: 'budget_exceeded', scope: 'global' } });
 
     const outcome = await run(h, batchOf([text('A1')]));
 
     expect(outcome).toEqual({ kind: 'handed_off', reason: 'limit' });
-    expect(h.calls).toEqual(['read:A1', 'draft', 'assess', 'status:manager:bot']);
+    expect(h.calls).toEqual(['read:A1', 'draft', 'assess', 'handoff:limit']);
+    expect(h.handOff).toHaveBeenCalledWith(CHAT_ID, { reason: 'limit', scope: 'global' });
     expect(levels(h, 'warn')).toContainEqual({ chatId: CHAT_ID, scope: 'global' });
   });
 
@@ -864,7 +877,8 @@ describe('pipeline/handle-inbound: голосовые', () => {
     const outcome = await run(h, batchOf([text('T1'), voice('V1')]));
 
     expect(outcome).toEqual({ kind: 'handed_off', reason: 'limit' });
-    expect(h.calls).toEqual(['download:V1', 'status:manager:bot']);
+    expect(h.calls).toEqual(['download:V1', 'handoff:limit']);
+    expect(h.handOff).toHaveBeenCalledWith(CHAT_ID, { reason: 'limit', scope: 'global' });
   });
 
   it('перегенерация: уже расшифрованное не расшифровывается снова, фраза про голосовое одна', async () => {

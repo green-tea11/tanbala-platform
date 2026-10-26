@@ -1,0 +1,687 @@
+import { describe, expect, it } from 'vitest';
+import type { ChatsRepo, Clock, HandoffsRepo } from '../../../src/domain/ports.js';
+import type {
+  Chat,
+  ChatControl,
+  ChatId,
+  HandoffNotice,
+  Jid,
+  ManagerNotificationKind,
+  ManagerNotificationStatus,
+  StatusChange,
+  WaMessageId,
+} from '../../../src/domain/types.js';
+import {
+  createHandoffService,
+  PHRASE_RETRY_DELAY_MS,
+  type HandOffRequest,
+  type HandoffService,
+} from '../../../src/handoff/handoff.js';
+import {
+  formatManagerNotification,
+  type NotificationReason,
+} from '../../../src/handoff/notification.js';
+import type { ManagerNotifier, NotifyContext } from '../../../src/handoff/notifier.js';
+import type { Outbox } from '../../../src/messaging/outbox.js';
+import {
+  chatIdOf,
+  CLIENT_PHONE,
+  createFakeLogger,
+  createFakeUnitOfWork,
+  createManualClock,
+  FULL_PROFILE,
+  loggedText,
+  makeChat,
+  T0,
+  type LogEntry,
+} from './fakes.js';
+
+const CHAT_ID = chatIdOf(12);
+const IN_1 = 'IN-1' as WaMessageId;
+
+type Phrase = Awaited<ReturnType<Outbox['sendHandoffNotice']>>;
+
+interface OpenedHandoff {
+  readonly chatId: ChatId;
+  readonly reason: string;
+  readonly level: string;
+  readonly snapshot: string;
+  readonly nowMs: number;
+}
+
+interface StatusChangeCall {
+  readonly id: ChatId;
+  readonly change: StatusChange;
+  readonly nowMs: number;
+}
+
+interface NoticeCall {
+  readonly chatId: ChatId;
+  readonly notice: HandoffNotice;
+  readonly replyToWaId: WaMessageId;
+}
+
+interface NotifyCall {
+  readonly kind: ManagerNotificationKind;
+  readonly chatId: ChatId | null;
+  readonly text: string;
+  readonly context: NotifyContext | undefined;
+}
+
+interface SetupOptions {
+  /** Чат в базе; null: чата нет. */
+  readonly chat?: Chat | null;
+  /** Открытая передача уже есть. */
+  readonly alreadyOpen?: boolean;
+  /** Что ответит отправка фразы клиенту. */
+  readonly phrase?: Phrase | Error;
+  /** Ответы отправки фразы по порядку вызовов; когда они кончились, действует phrase. */
+  readonly phraseScript?: readonly (Phrase | Error)[];
+  /** Отправка фразы бросает не ошибку, а это значение (например, строку). */
+  readonly phraseThrows?: { readonly value: unknown };
+  /** Что ответит отправка уведомления менеджеру. */
+  readonly notify?: ManagerNotificationStatus | Error;
+  /** Смена статуса чата падает этой ошибкой. */
+  readonly setStatusError?: Error;
+  /** Запись передачи падает этой ошибкой. */
+  readonly openError?: Error;
+}
+
+interface Harness {
+  readonly service: HandoffService;
+  readonly events: string[];
+  readonly logs: LogEntry[];
+  readonly opened: OpenedHandoff[];
+  readonly resolved: { readonly chatId: ChatId; readonly nowMs: number }[];
+  readonly statusChanges: StatusChangeCall[];
+  readonly notices: NoticeCall[];
+  readonly notifications: NotifyCall[];
+}
+
+function setup(options: SetupOptions = {}): Harness {
+  const events: string[] = [];
+  const logs: LogEntry[] = [];
+  const opened: OpenedHandoff[] = [];
+  const resolved: { chatId: ChatId; nowMs: number }[] = [];
+  const statusChanges: StatusChangeCall[] = [];
+  const notices: NoticeCall[] = [];
+  const notifications: NotifyCall[] = [];
+  let chat = options.chat === undefined ? makeChat() : options.chat;
+  let isOpen = options.alreadyOpen === true;
+  const unexpected = (): never => {
+    throw new Error('Неожиданный вызов');
+  };
+  const chats: ChatsRepo = {
+    upsertByIdentity: unexpected,
+    findByJid: unexpected,
+    getById: (id) => (chat !== null && chat.id === id ? chat : null),
+    setStatus: (id, change, nowMs) => {
+      events.push('chats.setStatus');
+      if (options.setStatusError !== undefined) throw options.setStatusError;
+      statusChanges.push({ id, change, nowMs });
+      if (chat !== null) chat = { ...chat, control: controlAfter(change) };
+    },
+    saveAssessment: unexpected,
+    listForPanel: unexpected,
+    countForPanel: unexpected,
+  };
+  const handoffs: HandoffsRepo = {
+    open: (chatId, reason, level, snapshot, nowMs) => {
+      events.push('handoffs.open');
+      if (options.openError !== undefined) throw options.openError;
+      opened.push({ chatId, reason, level, snapshot, nowMs });
+      if (isOpen) return false;
+      isOpen = true;
+      return true;
+    },
+    findOpen: unexpected,
+    resolve: (chatId, nowMs) => {
+      events.push('handoffs.resolve');
+      resolved.push({ chatId, nowMs });
+      isOpen = false;
+    },
+  };
+  const outbox: Pick<Outbox, 'sendHandoffNotice'> = {
+    sendHandoffNotice: (chatId, notice, replyToWaId) => {
+      events.push('outbox.sendHandoffNotice');
+      const phrase = options.phraseScript?.[notices.length] ?? options.phrase ?? 'sent';
+      notices.push({ chatId, notice, replyToWaId });
+      if (options.phraseThrows !== undefined) throw options.phraseThrows.value;
+      return phrase instanceof Error ? Promise.reject(phrase) : Promise.resolve(phrase);
+    },
+  };
+  const notifier: Pick<ManagerNotifier, 'notify'> = {
+    notify: (kind, chatId, text, context) => {
+      events.push('notifier.notify');
+      notifications.push({ kind, chatId, text, context });
+      const result = options.notify ?? 'sent';
+      return result instanceof Error ? Promise.reject(result) : Promise.resolve(result);
+    },
+  };
+  const clock: Clock = {
+    ...createManualClock(),
+    sleep: (ms) => {
+      events.push(`clock.sleep:${ms}`);
+      return Promise.resolve();
+    },
+  };
+  const service = createHandoffService({
+    chats,
+    handoffs,
+    unitOfWork: createFakeUnitOfWork(events),
+    outbox,
+    notifier,
+    clock,
+    logger: createFakeLogger(logs),
+  });
+  return { service, events, logs, opened, resolved, statusChanges, notices, notifications };
+}
+
+const FULL_FLOW = [
+  'tx:begin',
+  'handoffs.open',
+  'chats.setStatus',
+  'tx:commit',
+  'outbox.sendHandoffNotice',
+  'notifier.notify',
+];
+
+type PlainReason = 'hot' | 'no_answer' | 'check_failed' | 'asked_human' | 'llm_error';
+
+/** Запрос передачи с фразой клиенту, кроме жалобы (у неё свой параметр). */
+function plainRequest(reason: PlainReason): HandOffRequest {
+  return { reason, replyToWaId: IN_1 };
+}
+
+function controlAfter(change: StatusChange): ChatControl {
+  return change.status === 'manager'
+    ? { status: 'manager', by: change.by }
+    : { status: 'bot', by: change.by };
+}
+
+/** Текст уведомления для чата по умолчанию (makeChat) с заданной причиной. */
+function notificationFor(reason: NotificationReason): string {
+  return formatManagerNotification({
+    ...reason,
+    name: 'Иван Петров',
+    phone: CLIENT_PHONE,
+    level: 'warm',
+    profile: FULL_PROFILE,
+    chatId: CHAT_ID,
+  });
+}
+
+describe('createHandoffService: handOff с фразой клиенту', () => {
+  it('горячий клиент: запись передачи и статус manager в одной транзакции, затем фраза, затем уведомление', async () => {
+    const h = setup();
+
+    await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
+
+    expect(h.events).toEqual(FULL_FLOW);
+    expect(h.opened).toEqual([
+      {
+        chatId: CHAT_ID,
+        reason: 'hot',
+        level: 'warm',
+        snapshot: JSON.stringify(FULL_PROFILE),
+        nowMs: T0,
+      },
+    ]);
+    expect(h.statusChanges).toEqual([
+      { id: CHAT_ID, change: { status: 'manager', by: 'bot' }, nowMs: T0 },
+    ]);
+    expect(h.notices).toEqual([{ chatId: CHAT_ID, notice: { reason: 'hot' }, replyToWaId: IN_1 }]);
+    expect(h.notifications).toEqual([
+      {
+        kind: 'handoff',
+        chatId: CHAT_ID,
+        text: notificationFor({ reason: 'hot' }),
+        context: { reason: 'hot' },
+      },
+    ]);
+  });
+
+  it('текст уведомления: имя, номер, уровень и выжимка чата из базы', async () => {
+    const h = setup({ chat: makeChat({ level: 'hot', pushName: 'Анна' }) });
+
+    await h.service.handOff(CHAT_ID, { reason: 'asked_human', replyToWaId: IN_1 });
+
+    const text = h.notifications[0]?.text ?? '';
+    expect(text).toContain('клиент просит живого человека');
+    expect(text).toContain('Имя в WhatsApp: Анна');
+    expect(text).toContain('Номер: +77000000001');
+    expect(text).toContain('Уровень интереса: горячий');
+    expect(text).toContain('Бизнес: магазин одежды');
+    expect(h.opened[0]?.level).toBe('hot');
+  });
+
+  it.each(['no_answer', 'check_failed', 'asked_human', 'llm_error'] as const)(
+    'повод %s: фраза этого повода и уведомление handoff',
+    async (reason) => {
+      const h = setup();
+
+      await h.service.handOff(CHAT_ID, plainRequest(reason));
+
+      expect(h.events).toEqual(FULL_FLOW);
+      expect(h.notices).toEqual([{ chatId: CHAT_ID, notice: { reason }, replyToWaId: IN_1 }]);
+      expect(h.opened[0]?.reason).toBe(reason);
+      expect(h.notifications[0]).toMatchObject({ kind: 'handoff', context: { reason } });
+      expect(h.notifications[0]?.text).toBe(notificationFor({ reason }));
+    },
+  );
+
+  it.each([true, false])(
+    'жалоба, клиент просит больше не писать: %s; повод передаётся фразе как есть',
+    async (stopRequested) => {
+      const h = setup();
+
+      await h.service.handOff(CHAT_ID, { reason: 'complaint', stopRequested, replyToWaId: IN_1 });
+
+      expect(h.events).toEqual(FULL_FLOW);
+      expect(h.notices).toEqual([
+        { chatId: CHAT_ID, notice: { reason: 'complaint', stopRequested }, replyToWaId: IN_1 },
+      ]);
+      expect(h.notifications[0]?.text).toBe(notificationFor({ reason: 'complaint' }));
+    },
+  );
+
+  it('номера нет (чат только с @lid): в уведомлении «номер скрыт» и ID чата', async () => {
+    const lid = '100000000000001@lid' as Jid;
+    const h = setup({
+      chat: makeChat({ identity: { replyJid: lid, lidJid: lid, pnJid: null } }),
+    });
+
+    await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
+
+    expect(h.notifications[0]?.text).toContain('Номер: номер скрыт, чат ищите в панели по ID 12');
+  });
+
+  it('номер берётся из адреса без суффикса устройства', async () => {
+    const jid = '77000000001:7@s.whatsapp.net' as Jid;
+    const h = setup({ chat: makeChat({ identity: { replyJid: jid, lidJid: null, pnJid: jid } }) });
+
+    await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
+
+    expect(h.notifications[0]?.text).toContain('Номер: +77000000001\n');
+  });
+
+  it('open вернул false (передача уже открыта): ни фразы, ни уведомления, ни смены статуса', async () => {
+    const h = setup({
+      alreadyOpen: true,
+      chat: makeChat({ control: { status: 'manager', by: 'bot' } }),
+    });
+
+    await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
+
+    expect(h.events).toEqual(['tx:begin', 'handoffs.open', 'tx:commit']);
+    expect(h.statusChanges).toEqual([]);
+    expect(h.notices).toEqual([]);
+    expect(h.notifications).toEqual([]);
+  });
+
+  it('повтор той же передачи подряд ничего не дублирует', async () => {
+    const h = setup();
+
+    await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
+    await h.service.handOff(CHAT_ID, { reason: 'no_answer', replyToWaId: IN_1 });
+
+    expect(h.notices).toHaveLength(1);
+    expect(h.notifications).toHaveLength(1);
+    expect(h.statusChanges).toHaveLength(1);
+    expect(h.opened).toHaveLength(2);
+  });
+
+  it('человек уже ведёт чат, а бот в это время дописал ответ: передача не открывается второй раз', async () => {
+    const h = setup({
+      alreadyOpen: true,
+      chat: makeChat({ control: { status: 'manager', by: 'phone' } }),
+    });
+
+    await h.service.handOff(CHAT_ID, { reason: 'check_failed', replyToWaId: IN_1 });
+
+    expect(h.statusChanges).toEqual([]);
+    expect(h.notices).toEqual([]);
+    expect(h.notifications).toEqual([]);
+  });
+
+  it('чата нет: отказ, ничего не записано и не отправлено', async () => {
+    const h = setup({ chat: null });
+
+    await expect(h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 })).rejects.toThrow(
+      /не найден/,
+    );
+    expect(h.events).toEqual([]);
+  });
+
+  it('смена статуса не удалась: запись передачи откатывается, фразы и уведомления нет', async () => {
+    const failure = new Error('база недоступна');
+    const h = setup({ setStatusError: failure });
+
+    await expect(h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 })).rejects.toBe(
+      failure,
+    );
+    expect(h.events).toEqual(['tx:begin', 'handoffs.open', 'chats.setStatus', 'tx:rollback']);
+    expect(h.notices).toEqual([]);
+    expect(h.notifications).toEqual([]);
+  });
+
+  it('запись передачи не удалась: статус не меняется, фразы и уведомления нет', async () => {
+    const failure = new Error('база недоступна');
+    const h = setup({ openError: failure });
+
+    await expect(h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 })).rejects.toBe(
+      failure,
+    );
+    expect(h.events).toEqual(['tx:begin', 'handoffs.open', 'tx:rollback']);
+  });
+
+  it('исключение отправки фразы (сокет переподключается): один повтор через 5 с, затем уведомление менеджеру', async () => {
+    const h = setup({ phraseScript: [new Error('Connection Closed'), 'sent'] });
+
+    await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
+
+    expect(PHRASE_RETRY_DELAY_MS).toBe(5_000);
+    expect(h.events).toEqual([
+      'tx:begin',
+      'handoffs.open',
+      'chats.setStatus',
+      'tx:commit',
+      'outbox.sendHandoffNotice',
+      'clock.sleep:5000',
+      'outbox.sendHandoffNotice',
+      'notifier.notify',
+    ]);
+    expect(h.notices).toEqual([
+      { chatId: CHAT_ID, notice: { reason: 'hot' }, replyToWaId: IN_1 },
+      { chatId: CHAT_ID, notice: { reason: 'hot' }, replyToWaId: IN_1 },
+    ]);
+    expect(h.logs.filter((entry) => entry.level === 'error')).toEqual([]);
+    expect(h.logs.filter((entry) => entry.level === 'warn')).toEqual([
+      expect.objectContaining({ context: { chatId: CHAT_ID, errorName: 'Error' } }),
+    ]);
+  });
+
+  it.each(['hot', 'no_answer', 'check_failed', 'asked_human', 'llm_error'] as const)(
+    'оба раза исключение (повод %s): ошибка «клиент остался без фразы передачи» без текста и номера, уведомление менеджеру всё равно уходит',
+    async (reason) => {
+      const h = setup({ phrase: new Error('Connection Closed') });
+
+      await expect(h.service.handOff(CHAT_ID, plainRequest(reason))).resolves.toBeUndefined();
+
+      expect(h.notices).toHaveLength(2);
+      expect(h.notifications).toHaveLength(1);
+      expect(h.statusChanges).toHaveLength(1);
+      expect(h.logs.filter((entry) => entry.level === 'error')).toEqual([
+        expect.objectContaining({
+          context: { chatId: CHAT_ID, reason, errorName: 'Error' },
+          message: expect.stringContaining('Клиент остался без фразы передачи') as unknown,
+        }),
+      ]);
+      for (const secret of ['Иван', '77000000001', 'магазин одежды']) {
+        expect(loggedText(h.logs)).not.toContain(secret);
+      }
+    },
+  );
+
+  it('брошена не ошибка, а строка: в лог идёт только тип значения', async () => {
+    const h = setup({ phraseThrows: { value: 'Connection Closed: 77000000001' } });
+
+    await expect(
+      h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 }),
+    ).resolves.toBeUndefined();
+
+    expect(h.logs.filter((entry) => entry.level === 'error')).toEqual([
+      expect.objectContaining({ context: { chatId: CHAT_ID, reason: 'hot', errorName: 'string' } }),
+    ]);
+    expect(loggedText(h.logs)).not.toContain('77000000001');
+  });
+
+  it('жалоба: повтор фразы идёт с теми же параметрами, повод в строке ошибки', async () => {
+    const h = setup({ phrase: new Error('Connection Closed') });
+
+    await h.service.handOff(CHAT_ID, {
+      reason: 'complaint',
+      stopRequested: true,
+      replyToWaId: IN_1,
+    });
+
+    expect(h.notices).toEqual([
+      { chatId: CHAT_ID, notice: { reason: 'complaint', stopRequested: true }, replyToWaId: IN_1 },
+      { chatId: CHAT_ID, notice: { reason: 'complaint', stopRequested: true }, replyToWaId: IN_1 },
+    ]);
+    expect(h.logs.filter((entry) => entry.level === 'error')[0]?.context).toMatchObject({
+      reason: 'complaint',
+    });
+  });
+
+  it.each(['skipped_limit', 'skipped_test_mode', 'skipped_no_inbound', 'disabled'] as const)(
+    'фраза не отправлена, но без исключения (%s): без повтора, строка warn, уведомление менеджеру уходит',
+    async (phrase) => {
+      const h = setup({ phrase });
+
+      await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
+
+      expect(h.notices).toHaveLength(1);
+      expect(h.events).not.toContain('clock.sleep:5000');
+      expect(h.notifications).toHaveLength(1);
+      expect(h.logs.filter((entry) => entry.level === 'warn')).toEqual([
+        expect.objectContaining({ context: { chatId: CHAT_ID, result: phrase } }),
+      ]);
+      expect(h.logs.filter((entry) => entry.level === 'error')).toEqual([]);
+    },
+  );
+
+  it('повтор вернул отказ без исключения: больше не повторяется, результат в warn', async () => {
+    const h = setup({ phraseScript: [new Error('Connection Closed'), 'skipped_limit'] });
+
+    await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
+
+    expect(h.notices).toHaveLength(2);
+    expect(h.logs.filter((entry) => entry.level === 'warn')).toEqual([
+      expect.objectContaining({ context: { chatId: CHAT_ID, errorName: 'Error' } }),
+      expect.objectContaining({ context: { chatId: CHAT_ID, result: 'skipped_limit' } }),
+    ]);
+    expect(h.logs.filter((entry) => entry.level === 'error')).toEqual([]);
+  });
+
+  it('уведомление не записалось: передача остаётся, ошибка в лог, наружу не бросается', async () => {
+    const failure = new Error('база недоступна');
+    const h = setup({ notify: failure });
+
+    await expect(
+      h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 }),
+    ).resolves.toBeUndefined();
+
+    expect(h.statusChanges).toHaveLength(1);
+    expect(h.logs.filter((entry) => entry.level === 'error')).toEqual([
+      expect.objectContaining({
+        context: { err: failure, chatId: CHAT_ID, kind: 'handoff' },
+      }),
+    ]);
+  });
+
+  it.each(['no_manager', 'skipped_limit', 'failed', 'sent'] as const)(
+    'итог уведомления %s не меняет передачу: она уже записана',
+    async (notify) => {
+      const h = setup({ notify });
+
+      await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
+
+      expect(h.events).toEqual(FULL_FLOW);
+    },
+  );
+
+  it('в лог не попадают имя, номер и выжимка клиента', async () => {
+    const h = setup();
+
+    await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
+
+    const logged = loggedText(h.logs);
+    expect(h.logs.length).toBeGreaterThan(0);
+    for (const secret of ['Иван', '77000000001', 'магазин одежды', 'путаница']) {
+      expect(logged).not.toContain(secret);
+    }
+  });
+});
+
+describe('createHandoffService: handOff без фразы клиенту', () => {
+  it.each(['chat', 'global'] as const)(
+    'лимит, область %s: статус manager (by bot), фразы нет, уведомление вида limit',
+    async (scope) => {
+      const h = setup();
+
+      await h.service.handOff(CHAT_ID, { reason: 'limit', scope });
+
+      expect(h.events).toEqual([
+        'tx:begin',
+        'handoffs.open',
+        'chats.setStatus',
+        'tx:commit',
+        'notifier.notify',
+      ]);
+      expect(h.opened[0]).toMatchObject({ chatId: CHAT_ID, reason: 'limit' });
+      expect(h.statusChanges).toEqual([
+        { id: CHAT_ID, change: { status: 'manager', by: 'bot' }, nowMs: T0 },
+      ]);
+      expect(h.notices).toEqual([]);
+      expect(h.notifications).toEqual([
+        {
+          kind: 'limit',
+          chatId: CHAT_ID,
+          text: notificationFor({ reason: 'limit', scope }),
+          context: { reason: 'limit' },
+        },
+      ]);
+      expect(h.notifications[0]?.text).toContain(
+        scope === 'chat' ? 'API_DAILY_LIMIT_PER_CHAT' : 'исчерпан общий лимит бота на сутки',
+      );
+    },
+  );
+
+  it('лимит при уже открытой передаче: молча, без второго уведомления', async () => {
+    const h = setup({
+      alreadyOpen: true,
+      chat: makeChat({ control: { status: 'manager', by: 'bot' } }),
+    });
+
+    await h.service.handOff(CHAT_ID, { reason: 'limit', scope: 'global' });
+
+    expect(h.notifications).toEqual([]);
+  });
+
+  it.each(['phone', 'panel'] as const)(
+    'человек подключился (%s): запись передачи и статус manager от его имени, без фразы и без уведомления',
+    async (by) => {
+      const h = setup();
+
+      await h.service.handOff(CHAT_ID, { reason: 'human_took_over', by });
+
+      expect(h.events).toEqual(['tx:begin', 'handoffs.open', 'chats.setStatus', 'tx:commit']);
+      expect(h.opened[0]).toMatchObject({ chatId: CHAT_ID, reason: 'human_took_over' });
+      expect(h.statusChanges).toEqual([
+        { id: CHAT_ID, change: { status: 'manager', by }, nowMs: T0 },
+      ]);
+      expect(h.notices).toEqual([]);
+      expect(h.notifications).toEqual([]);
+    },
+  );
+
+  it('чат передал бот, потом написал человек: передача уже есть, но статус переходит к человеку', async () => {
+    const h = setup({
+      alreadyOpen: true,
+      chat: makeChat({ control: { status: 'manager', by: 'bot' } }),
+    });
+
+    await h.service.handOff(CHAT_ID, { reason: 'human_took_over', by: 'phone' });
+
+    expect(h.events).toEqual(['tx:begin', 'handoffs.open', 'chats.setStatus', 'tx:commit']);
+    expect(h.statusChanges).toEqual([
+      { id: CHAT_ID, change: { status: 'manager', by: 'phone' }, nowMs: T0 },
+    ]);
+    expect(h.notifications).toEqual([]);
+  });
+
+  it.each([
+    ['phone', 'phone'],
+    ['phone', 'panel'],
+    ['panel', 'phone'],
+  ] as const)(
+    'чат уже ведёт человек (%s), пишет он же или другой (%s): время перехвата не сдвигается',
+    async (current, by) => {
+      const h = setup({
+        alreadyOpen: true,
+        chat: makeChat({ control: { status: 'manager', by: current } }),
+      });
+
+      await h.service.handOff(CHAT_ID, { reason: 'human_took_over', by });
+
+      expect(h.statusChanges).toEqual([]);
+      expect(h.events).toEqual(['tx:begin', 'handoffs.open', 'tx:commit']);
+    },
+  );
+
+  it('статус bot при открытой передаче (рассинхрон): чат всё равно уходит менеджеру', async () => {
+    const h = setup({ alreadyOpen: true });
+
+    await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
+
+    expect(h.statusChanges).toEqual([
+      { id: CHAT_ID, change: { status: 'manager', by: 'bot' }, nowMs: T0 },
+    ]);
+    expect(h.notices).toEqual([]);
+    expect(h.notifications).toEqual([]);
+  });
+});
+
+describe('createHandoffService: returnToBot', () => {
+  it('закрывает передачу и ставит статус bot (by panel) одной транзакцией', async () => {
+    const h = setup({
+      alreadyOpen: true,
+      chat: makeChat({ control: { status: 'manager', by: 'bot' } }),
+    });
+
+    await h.service.returnToBot(CHAT_ID);
+
+    expect(h.events).toEqual(['tx:begin', 'handoffs.resolve', 'chats.setStatus', 'tx:commit']);
+    expect(h.resolved).toEqual([{ chatId: CHAT_ID, nowMs: T0 }]);
+    expect(h.statusChanges).toEqual([
+      { id: CHAT_ID, change: { status: 'bot', by: 'panel' }, nowMs: T0 },
+    ]);
+    expect(h.notices).toEqual([]);
+    expect(h.notifications).toEqual([]);
+  });
+
+  it('после возврата новая передача открывается заново', async () => {
+    const h = setup({
+      alreadyOpen: true,
+      chat: makeChat({ control: { status: 'manager', by: 'bot' } }),
+    });
+    await h.service.returnToBot(CHAT_ID);
+
+    await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
+
+    expect(h.notices).toHaveLength(1);
+    expect(h.notifications).toHaveLength(1);
+  });
+
+  it('чата нет: отказ промиса, а не исключение при вызове', async () => {
+    const h = setup({ chat: null });
+
+    const returned = h.service.returnToBot(CHAT_ID);
+
+    await expect(returned).rejects.toThrow(/не найден/);
+    expect(h.events).toEqual([]);
+  });
+
+  it('смена статуса не удалась: передача остаётся открытой (откат), отказ промиса', async () => {
+    const failure = new Error('база недоступна');
+    const h = setup({
+      alreadyOpen: true,
+      chat: makeChat({ control: { status: 'manager', by: 'bot' } }),
+      setStatusError: failure,
+    });
+
+    await expect(h.service.returnToBot(CHAT_ID)).rejects.toBe(failure);
+    expect(h.events).toEqual(['tx:begin', 'handoffs.resolve', 'chats.setStatus', 'tx:rollback']);
+  });
+});

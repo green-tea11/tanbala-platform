@@ -10,13 +10,16 @@ import type {
 /**
  * Чем закончились проверки черновика с исходом answer: без ревью черновик не уходит никогда.
  * Нарушения проверок кодом (checks/code-checks.ts) уходят модели замечаниями при повторе.
+ * skipped: проверки не запускались, потому что клиент горячий и черновик ему не уходит, а вызов ревью стоил бы денег.
+ * Для клиента, который не горячий, пропуск проверок отправкой не кончается никогда.
  */
 export type DraftGate =
   | {
       readonly kind: 'code_failed';
       readonly findings: readonly [CheckFinding, ...CheckFinding[]];
     }
-  | { readonly kind: 'reviewed'; readonly review: ReviewResult };
+  | { readonly kind: 'reviewed'; readonly review: ReviewResult }
+  | { readonly kind: 'skipped' };
 
 /** Всё, что известно о черновике к моменту решения. kind на верхнем уровне сужает тип без проверки полей. */
 export type DecisionInput =
@@ -59,11 +62,12 @@ const GENERIC_FEEDBACK =
  * одна фраза передачи, а не два сообщения. Иначе проверки кодом или второй вызов не пройдены: попытка 1 => retry
  * с замечаниями (нарушения кода или замечания проверки), попытка 2 => 'check_failed'.
  * send только при gate reviewed и review.ok; здесь и только здесь текст приводится к ReviewedText. Без ревью
- * черновик не отправляется никогда.
+ * черновик не отправляется никогда: gate skipped у клиента, который не горячий, это check_failed без повтора.
  */
 export function decideAction(input: DecisionInput): Decision {
   if (input.kind === 'handoff_outcome') return handoffFor(input.draft);
   if (input.assessment?.level === 'hot') return { kind: 'handoff', reason: 'hot' };
+  if (input.gate.kind === 'skipped') return { kind: 'handoff', reason: 'check_failed' };
   const feedback = feedbackOf(input.gate);
   if (feedback === null) return { kind: 'send', text: input.draft.text as ReviewedText };
   return input.attempt === 1
@@ -78,7 +82,9 @@ function handoffFor(draft: Exclude<ReplyDraft, { outcome: 'answer' }>): Decision
 }
 
 /** Замечания для повтора; null, если оба вида проверок пройдены. Всегда новый массив. */
-function feedbackOf(gate: DraftGate): readonly string[] | null {
+function feedbackOf(
+  gate: Exclude<DraftGate, { readonly kind: 'skipped' }>,
+): readonly string[] | null {
   if (gate.kind === 'code_failed') return gate.findings.map((finding) => finding.detail);
   if (gate.review.ok) return null;
   return gate.review.problems.length === 0 ? [GENERIC_FEEDBACK] : [...gate.review.problems];

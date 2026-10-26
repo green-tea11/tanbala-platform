@@ -65,9 +65,12 @@ type Judgement =
   | { readonly kind: 'verdict'; readonly verdict: ReplyVerdict }
   | { readonly kind: 'retry'; readonly feedback: readonly string[] };
 
-/** Итог проверок черновика: пройдены кодом или вторым вызовом, либо второй вызов не дал результата. */
+/**
+ * Итог проверок черновика: пройдены кодом или вторым вызовом, пропущены у горячего клиента либо второй вызов
+ * не дал результата.
+ */
 type Checked =
-  | { readonly kind: 'checked'; readonly text: NormalizedText; readonly gate: DraftGate }
+  | { readonly kind: 'checked'; readonly text: string; readonly gate: DraftGate }
   | { readonly kind: 'failed'; readonly verdict: ReplyVerdict };
 
 /**
@@ -98,9 +101,10 @@ export async function requestDraft(
  * исходы no_answer, asked_human, complaint => передача по своей причине; answer => normalizeDraft, проверки кодом
  * (checks/code-checks.runCodeChecks), второй вызов agent.reviewDraft (только если проверки кодом пройдены), затем
  * pipeline/decide.decideAction: проверяется и уходит один и тот же нормализованный текст. Не прошёл: один повтор
- * agent.draftReply с замечаниями (оценка заново не запрашивается), второй провал => check_failed. Вызовов API на
- * ответ три (черновик, оценка, проверка), с повтором пять. В лог только ID чата, номер попытки, виды нарушений
- * (CheckCode) и числа: фрагменты текста клиента и модели в нём недопустимы.
+ * agent.draftReply с замечаниями (оценка заново не запрашивается), второй провал => check_failed. Горячий клиент
+ * (оценка hot): проверки кодом и ревью пропускаются, сразу hot. Вызовов API на ответ три (черновик, оценка,
+ * проверка), с повтором пять, горячему клиенту два. В лог только ID чата, номер попытки, виды нарушений (CheckCode)
+ * и числа: фрагменты текста клиента и модели в нём недопустимы.
  */
 export async function decideReply(
   deps: ReplyFlowDeps,
@@ -182,7 +186,9 @@ async function judge(
     const input = { kind: 'handoff_outcome', draft: reply, assessment: flow.assessment } as const;
     return judgementOf(decideAction(input));
   }
-  const checked = await checkDraft(flow, reply.text, attempt);
+  const checked = isHot(flow.assessment)
+    ? skippedCheck(reply.text)
+    : await checkDraft(flow, reply.text, attempt);
   if (checked.kind === 'failed') return verdictOf(checked.verdict);
   return judgementOf(
     decideAction({
@@ -193,6 +199,19 @@ async function judge(
       assessment: flow.assessment,
     }),
   );
+}
+
+/**
+ * Горячему клиенту черновик не уходит (pipeline/decide.decideAction вернёт hot), поэтому проверки кодом и вызов
+ * ревью не нужны: экономится вызов API. Правило то же, что в decideAction; если они разойдутся, пропущенные
+ * проверки не дадут отправки (check_failed).
+ */
+function isHot(assessment: InterestAssessment | null): boolean {
+  return assessment?.level === 'hot';
+}
+
+function skippedCheck(text: string): Checked {
+  return { kind: 'checked', text, gate: { kind: 'skipped' } };
 }
 
 /**

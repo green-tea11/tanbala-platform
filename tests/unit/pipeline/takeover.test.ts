@@ -1,36 +1,38 @@
 import type Database from 'better-sqlite3';
-import { describe, expect, it } from 'vitest';
-import { createUnitOfWork } from '../../../src/db/connection.js';
+import { describe, expect, it, vi } from 'vitest';
 import { createChatsRepo } from '../../../src/db/repos/chats.js';
 import { createMessagesRepo } from '../../../src/db/repos/messages.js';
 import { createOutboundIdsRepo } from '../../../src/db/repos/outbound-ids.js';
-import type { ChatsRepo, OutboundIdsRepo } from '../../../src/domain/ports.js';
+import type { MessagesRepo, OutboundIdsRepo } from '../../../src/domain/ports.js';
 import type { ChatId, MediaRef, OwnMessage, WaMessageId } from '../../../src/domain/types.js';
+import type { HandoffService } from '../../../src/handoff/handoff.js';
 import { handleOwnMessage, type TakeoverDeps } from '../../../src/pipeline/takeover.js';
 import { insertChat, LID_A, PN_A, PN_B, useMigratedDb } from '../db/fixture.js';
+
+// База настоящая (SQLite в памяти), сервис передачи поддельный: статус и запись передачи проверяет его собственный тест.
 
 const T0 = 1_761_400_000_000;
 
 interface Harness {
   readonly db: Database.Database;
   readonly deps: TakeoverDeps;
-  readonly chats: ChatsRepo;
   readonly outboundIds: OutboundIdsRepo;
+  readonly handOff: ReturnType<typeof vi.fn<HandoffService['handOff']>>;
   readonly chatId: ChatId;
 }
 
-function setup(wrapChats: (chats: ChatsRepo) => ChatsRepo = (chats) => chats): Harness {
+function setup(wrapMessages: (messages: MessagesRepo) => MessagesRepo = (m) => m): Harness {
   const db = useMigratedDb();
-  const chats = createChatsRepo(db);
   const outboundIds = createOutboundIdsRepo(db);
+  const handOff = vi.fn<HandoffService['handOff']>(() => Promise.resolve());
   const deps: TakeoverDeps = {
     outboundIds,
-    chats: wrapChats(chats),
-    messages: createMessagesRepo(db),
-    unitOfWork: createUnitOfWork(db),
+    chats: createChatsRepo(db),
+    messages: wrapMessages(createMessagesRepo(db)),
+    handoff: { handOff },
   };
   const chatId = insertChat(db, { replyJid: LID_A, lidJid: LID_A, pnJid: PN_A });
-  return { db, deps, chats, outboundIds, chatId };
+  return { db, deps, outboundIds, handOff, chatId };
 }
 
 function own(overrides: Partial<OwnMessage> = {}): OwnMessage {
@@ -49,12 +51,8 @@ function storedMessages(db: Database.Database): unknown[] {
     .all();
 }
 
-function statusChangedAt(db: Database.Database, chatId: ChatId): unknown {
-  return db.prepare('SELECT status_changed_at FROM chats WHERE id = ?').pluck().get(chatId);
-}
-
 describe('handleOwnMessage', () => {
-  it('ID есть в outbound_ids: эхо своей отправки, ничего не меняется', async () => {
+  it('ID есть в outbound_ids: эхо своей отправки, ничего не пишется и передачи нет', async () => {
     const h = setup();
     h.outboundIds.register({
       waId: 'OUT-1' as WaMessageId,
@@ -69,11 +67,11 @@ describe('handleOwnMessage', () => {
       'bot_echo',
     );
     expect(storedMessages(h.db)).toEqual([]);
-    expect(h.chats.getById(h.chatId)?.control).toEqual({ status: 'bot', by: null });
+    expect(h.handOff).not.toHaveBeenCalled();
   });
 
   it.each([PN_A, LID_A])(
-    'неизвестный ID в чате %s: пишет человек; сообщение human_phone, чат у менеджера (phone) со временем сообщения',
+    'неизвестный ID в чате %s: пишет человек; сообщение human_phone и handOff human_took_over с телефона',
     async (chatJid) => {
       const h = setup();
 
@@ -89,17 +87,30 @@ describe('handleOwnMessage', () => {
           ts_ms: T0,
         },
       ]);
-      expect(h.chats.getById(h.chatId)?.control).toEqual({ status: 'manager', by: 'phone' });
-      expect(statusChangedAt(h.db, h.chatId)).toBe(T0);
+      expect(h.handOff).toHaveBeenCalledTimes(1);
+      expect(h.handOff).toHaveBeenCalledWith(h.chatId, { reason: 'human_took_over', by: 'phone' });
     },
   );
 
-  it('чат не найден: not_client_chat, новый чат не создаётся, ничего не пишется', async () => {
+  it('сообщение человека уже в истории к моменту передачи', async () => {
+    const h = setup();
+    h.handOff.mockImplementation(() => {
+      expect(storedMessages(h.db)).toHaveLength(1);
+      return Promise.resolve();
+    });
+
+    await handleOwnMessage(h.deps, own());
+
+    expect(h.handOff).toHaveBeenCalledTimes(1);
+  });
+
+  it('чат не найден: not_client_chat, новый чат не создаётся, ничего не пишется и передачи нет', async () => {
     const h = setup();
 
     await expect(handleOwnMessage(h.deps, own({ chatJid: PN_B }))).resolves.toBe('not_client_chat');
-    expect(h.chats.findByJid(PN_B)).toBeNull();
+
     expect(storedMessages(h.db)).toEqual([]);
+    expect(h.handOff).not.toHaveBeenCalled();
   });
 
   it('голосовое с телефона хранится без текста', async () => {
@@ -114,48 +125,40 @@ describe('handleOwnMessage', () => {
     await handleOwnMessage(h.deps, own({ content: voice }));
 
     expect(storedMessages(h.db)).toEqual([expect.objectContaining({ kind: 'voice', text: null })]);
+    expect(h.handOff).toHaveBeenCalledTimes(1);
   });
 
-  it('чат уже ведёт человек с телефона: время перехвата не сдвигается, сообщение сохраняется', async () => {
-    const h = setup();
-    h.chats.setStatus(h.chatId, { status: 'manager', by: 'phone' }, T0 - 5000);
-
-    await expect(handleOwnMessage(h.deps, own())).resolves.toBe('human_took_over');
-
-    expect(statusChangedAt(h.db, h.chatId)).toBe(T0 - 5000);
-    expect(storedMessages(h.db)).toHaveLength(1);
-  });
-
-  it('чат передал бот: человек с телефона забирает его себе', async () => {
-    const h = setup();
-    h.chats.setStatus(h.chatId, { status: 'manager', by: 'bot' }, T0 - 5000);
-
-    await handleOwnMessage(h.deps, own());
-
-    expect(h.chats.getById(h.chatId)?.control).toEqual({ status: 'manager', by: 'phone' });
-    expect(statusChangedAt(h.db, h.chatId)).toBe(T0);
-  });
-
-  it('повторная доставка того же сообщения: без дубля в истории', async () => {
+  it('повторная доставка того же сообщения: без дубля в истории, передачу повторяет сервис без дублей', async () => {
     const h = setup();
 
     await handleOwnMessage(h.deps, own());
     await expect(handleOwnMessage(h.deps, own())).resolves.toBe('human_took_over');
 
     expect(storedMessages(h.db)).toHaveLength(1);
+    expect(h.handOff).toHaveBeenCalledTimes(2);
   });
 
-  it('сбой смены статуса: запись сообщения откатывается, промис отклоняется', async () => {
+  it('передача не записалась: промис отклоняется той же ошибкой, сообщение человека в истории остаётся', async () => {
+    const h = setup();
     const failure = new Error('база недоступна');
-    const h = setup((chats) => ({
-      ...chats,
-      setStatus: () => {
+    h.handOff.mockRejectedValue(failure);
+
+    await expect(handleOwnMessage(h.deps, own())).rejects.toBe(failure);
+
+    expect(storedMessages(h.db)).toHaveLength(1);
+  });
+
+  it('сбой записи сообщения: промис отклоняется, передачи нет', async () => {
+    const failure = new Error('диск полон');
+    const h = setup((messages) => ({
+      ...messages,
+      insertIfNew: () => {
         throw failure;
       },
     }));
 
     await expect(handleOwnMessage(h.deps, own())).rejects.toBe(failure);
-    expect(storedMessages(h.db)).toEqual([]);
-    expect(h.chats.getById(h.chatId)?.control).toEqual({ status: 'bot', by: null });
+
+    expect(h.handOff).not.toHaveBeenCalled();
   });
 });

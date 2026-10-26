@@ -9,7 +9,9 @@ import { createAppStateRepo } from './db/repos/app-state.js';
 import { createBacklogRepo } from './db/repos/backlog.js';
 import { createCallBudget } from './db/repos/call-budget.js';
 import { createChatsRepo } from './db/repos/chats.js';
+import { createHandoffsRepo } from './db/repos/handoffs.js';
 import { createKnownChatsRepo } from './db/repos/known-chats.js';
+import { createManagerNotificationsRepo } from './db/repos/manager-notifications.js';
 import { createMessagesRepo } from './db/repos/messages.js';
 import { createOutboundIdsRepo } from './db/repos/outbound-ids.js';
 import { createPairingGuard } from './db/repos/pairing-attempts.js';
@@ -19,8 +21,10 @@ import type {
   CallBudget,
   ChatsRepo,
   Clock,
+  HandoffsRepo,
   LlmClient,
   Logger,
+  ManagerNotificationsRepo,
   MessagesRepo,
   OutboundIdsRepo,
   PairingGuard,
@@ -36,6 +40,7 @@ import {
   type InboundRecorder,
 } from './pipeline/recorder.js';
 import { assembleResponder } from './pipeline/responder-setup.js';
+import { assembleServices, type Services } from './pipeline/services.js';
 import { handleOwnMessage, type TakeoverDeps, type TakeoverResult } from './pipeline/takeover.js';
 import { createSystemClock } from './shared/clock.js';
 import { createLogger, type LogDestination } from './shared/logger.js';
@@ -159,6 +164,9 @@ interface Storage {
   readonly unitOfWork: UnitOfWork;
   /** Дневной предохранитель расходов API (API_DAILY_LIMIT и API_DAILY_LIMIT_PER_CHAT). */
   readonly budget: CallBudget;
+  /** Передачи чатов менеджеру и уведомления ему (этап 5). */
+  readonly handoffs: HandoffsRepo;
+  readonly notifications: ManagerNotificationsRepo;
   isOpen(): boolean;
   /** Закрывает базу; повторный вызов ничего не делает. */
   close(): void;
@@ -172,13 +180,15 @@ interface IgnoreSummary {
   stop(): void;
 }
 
-/** Что закрывает остановка, кроме WhatsApp: очередь ответов, таймер сводки, база и замок процесса. */
+/** Что закрывает остановка, кроме WhatsApp: очередь ответов, повтор уведомлений, таймер сводки, база и замок. */
 interface Resources {
   readonly storage: Storage;
   readonly lock: ProcessLock;
   readonly summary: IgnoreSummary;
   /** Очередь ответов клиентам; null без ключа Claude (бот только принимает). */
   readonly batcher: ChatBatcher | null;
+  /** Общие службы этапа 5: таймер повтора уведомлений менеджеру снимается до закрытия базы. */
+  readonly services: Services;
 }
 
 /** Всё, что собрано до подключения к WhatsApp. */
@@ -191,6 +201,7 @@ interface AppContext {
   readonly summary: IgnoreSummary;
   readonly batcher: ChatBatcher | null;
   readonly takeover: TakeoverDeps;
+  readonly services: Services;
 }
 
 /** Подключение к WhatsApp этого запуска: меняется только в main. */
@@ -234,8 +245,12 @@ class PairingLimitExplained extends PairingLimitError {
  * чат). getSentText отдаёт текст из outbound_ids только при совпадении jid.
  * stop: очередь ответов (накопленное уходит в обработку, ответы успевают уйти, пока WhatsApp подключён), WhatsApp
  * (он дожидается своей очереди событий, паузы прерывает AbortSignal), база, затем замок.
+ * Этап 5, общие службы pipeline/services.ts (создаются до WhatsApp, подключение им передаётся после запуска): один outbox,
+ * один notifier и один сервис передачи на всё приложение, им же пользуется перехват человеком. Событие stale пишет
+ * pipeline/recorder.ts; onOfflineQueueDone (после каждого открытия подключения) повторяет неотправленные уведомления
+ * менеджеру, запускает таймер повтора раз в 5 минут и отправляет одно уведомление со списком чатов простоя.
+ * stop снимает таймер повтора до остановки WhatsApp и до закрытия базы.
  * TODO(этап 8): переход TEST_MODE true => false: записать момент перехода в app_state как границу (сообщения чатов не из списка до неё не обрабатывать); до перехода предупредить менеджеров; как не ответить поверх менеджера в живых чатах рабочего номера: вопрос владельцу перед запуском.
- * TODO(этап 3): pipeline/backlog.ts: события 'stale' в add, onOfflineQueueDone в flush (одно уведомление менеджеру); пока stale пишет pipeline/recorder.ts, а onOfflineQueueDone только пишет в лог число чатов простоя.
  * TODO(этап 6): панель запускать после WhatsApp; stop закрывает её до базы.
  */
 export async function main(options: MainOptions): Promise<RunningApp> {
@@ -275,14 +290,22 @@ async function startLocked(
   const link: WhatsAppLink = { started: null };
   try {
     const { createLlm } = options;
-    const responder = await assembleResponder({ config, logger, clock, storage, createLlm });
+    const services = assembleServices({ config, logger, clock, storage });
+    const responder = await assembleResponder({
+      config,
+      logger,
+      clock,
+      storage,
+      services,
+      createLlm,
+    });
     const batcher = responder?.batcher ?? null;
-    const lifecycle = createLifecycle(link, { storage, lock, summary, batcher }, logger);
+    const lifecycle = createLifecycle(link, { storage, lock, summary, batcher, services }, logger);
     if (!config.waEnabled) {
       logger.warn({}, 'WhatsApp выключен (WA_ENABLED=false)');
       return lifecycle.app;
     }
-    const takeover = takeoverDepsOf(storage);
+    const takeover = takeoverDepsOf(storage, services);
     const context: AppContext = {
       config,
       root: options.root,
@@ -292,12 +315,14 @@ async function startLocked(
       summary,
       batcher,
       takeover,
+      services,
     };
     const deps = whatsAppDeps(context, onStoppedOf(lifecycle, logger));
     const start = options.startWhatsApp ?? startWhatsApp;
     // Ссылка на запуск есть до вызова адаптера: самоостановка во время запуска дождётся его и остановит подключение.
     link.started = Promise.resolve().then(() => start(deps));
     const connection = await link.started;
+    services.connect(connection);
     responder?.connect(connection);
     return lifecycle.app;
   } catch (error: unknown) {
@@ -407,6 +432,8 @@ function assembleStorage(db: Database, config: AppConfig, logger: Logger, clock:
     outboundIds: createOutboundIdsRepo(db),
     unitOfWork,
     budget: createCallBudget(db, config.limits),
+    handoffs: createHandoffsRepo(db),
+    notifications: createManagerNotificationsRepo(db),
     isOpen: () => db.open,
     // close в better-sqlite3 сам ничего не делает с уже закрытой базой.
     close: () => {
@@ -415,11 +442,12 @@ function assembleStorage(db: Database, config: AppConfig, logger: Logger, clock:
   };
 }
 
-// Ответы клиентам (этап 3): сборка в pipeline/responder-setup.ts.
+// Ответы клиентам (этап 3): сборка в pipeline/responder-setup.ts; службы этапа 5 в pipeline/services.ts.
 
-function takeoverDepsOf(storage: Storage): TakeoverDeps {
-  const { outboundIds, chats, messages, unitOfWork } = storage;
-  return { outboundIds, chats, messages, unitOfWork };
+/** Перехват человеком пользуется тем же сервисом передачи, что и конвейер ответов. */
+function takeoverDepsOf(storage: Storage, services: Services): TakeoverDeps {
+  const { outboundIds, chats, messages } = storage;
+  return { outboundIds, chats, messages, handoff: services.handoff };
 }
 
 /**
@@ -462,7 +490,7 @@ function whatsAppDeps(
   context: AppContext,
   onStopped: (reason: WhatsAppStopReason) => Promise<void>,
 ): WhatsAppDeps {
-  const { config, root, logger, clock, storage, summary } = context;
+  const { config, root, logger, clock, storage, summary, services } = context;
   const { recorder } = storage;
   return {
     sessionDir: config.waSessionDir,
@@ -477,12 +505,13 @@ function whatsAppDeps(
     onHistoryChats: (chats) =>
       whileOpen(storage, () => settle(() => recorder.onHistoryChats(chats))),
     onOfflineQueueDone: () =>
-      whileOpen(storage, () =>
-        settle(() => {
-          logBacklog(storage.backlog, logger);
+      whileOpen(storage, async () => {
+        try {
+          await services.onOfflineQueueDone();
+        } finally {
           summary.log();
-        }),
-      ),
+        }
+      }),
     onStopped,
     getSentText: (waId, jid) =>
       new Promise<string | null>((resolve) => {
@@ -528,15 +557,6 @@ function ignoreSummaryText(stats: IgnoreStats): string {
   return parts.length === 0 ? 'ничего' : parts.join(', ');
 }
 
-/** Офлайн-очередь разобрана (после каждого подключения, иногда дважды): пока только число чатов простоя в лог. */
-function logBacklog(backlog: BacklogRepo, logger: Logger): void {
-  const count = backlog.listPending().length;
-  logger.info(
-    { count },
-    `Офлайн-очередь разобрана: чатов простоя без уведомления менеджеру: ${count}`,
-  );
-}
-
 /** WhatsApp остановился сам и база закрыта: поздние события некуда записать, они пропускаются. */
 function whileOpen(storage: Storage, work: () => Promise<void>): Promise<void> {
   return storage.isOpen() ? work() : Promise.resolve();
@@ -570,17 +590,22 @@ function createLifecycle(link: WhatsAppLink, resources: Resources, logger: Logge
 }
 
 /**
- * Очередь ответов, WhatsApp, таймер сводки, база, замок, затем итоговая сводка пропусков. Очередь первой: ответы
- * уходят, пока WhatsApp подключён. stop() адаптера вызывается и после самоостановки (повторный вызов безопасен):
- * он дожидается очереди событий, поэтому последние события пишутся в ещё открытую базу.
+ * Очередь ответов, повтор уведомлений менеджеру, WhatsApp, таймер сводки, база, замок, затем итоговая сводка
+ * пропусков. Очередь первой: ответы и передачи уходят, пока WhatsApp подключён. Повтор уведомлений снимается
+ * до остановки WhatsApp: с закрытым сокетом попытки только тратили бы их лимит. stop() адаптера вызывается и после
+ * самоостановки (повторный вызов безопасен): он дожидается очереди событий, поэтому последние события пишутся
+ * в ещё открытую базу.
  */
 async function shutdown(link: WhatsAppLink, resources: Resources, logger: Logger): Promise<void> {
   try {
     await resources.batcher?.drain();
+    await resources.services.stop();
     const connection = await startedConnection(link);
     if (connection !== null) await connection.stop();
   } finally {
     resources.summary.stop();
+    // Повторный вызов безопасен: нужен, если выше что-то упало раньше остановки служб.
+    await resources.services.stop();
     closeStorage(resources.storage, resources.lock);
   }
   resources.summary.log();

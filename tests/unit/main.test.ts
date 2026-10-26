@@ -48,6 +48,8 @@ const HOUR_MS = 3_600_000;
 const CLIENT_PHONE = '77000000002';
 const CLIENT_JID = `${CLIENT_PHONE}@s.whatsapp.net` as Jid;
 const MANAGER_PHONE = '77000000009';
+const MANAGER_JID = `${MANAGER_PHONE}@s.whatsapp.net` as Jid;
+const FIVE_MINUTES_MS = 5 * 60_000;
 const DISABLED_ENV: EnvInput = {
   WA_ENABLED: 'false',
   TEST_MODE: 'true',
@@ -153,8 +155,9 @@ function fakeConnection(stop: () => Promise<void> = () => Promise.resolve()): {
   readonly stop: Mock<() => Promise<void>>;
 } {
   const stopMock = vi.fn(stop);
+  let sent = 0;
   const connection: WhatsAppConnection = {
-    newMessageId: () => 'OUT-1' as WaMessageId,
+    newMessageId: () => `OUT-${(sent += 1)}` as WaMessageId,
     sendText: () => Promise.reject(new Error('этап 2 ничего не отправляет')),
     setTyping: () => Promise.reject(new Error('этап 2 ничего не отправляет')),
     markRead: () => Promise.reject(new Error('этап 2 ничего не отмечает')),
@@ -203,6 +206,18 @@ function readDb<T>(dbPath: string, read: (db: Database.Database) => T): T {
   } finally {
     db.close();
   }
+}
+
+/** Подменяет только setInterval и clearInterval: база, файлы и логгер работают по-настоящему. */
+function useFakeIntervals(): void {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+}
+
+function rows(dbPath: string, sql: string): unknown[] {
+  return readDb(dbPath, (db) => db.prepare(sql).all());
 }
 
 function count(dbPath: string, table: string): number {
@@ -300,14 +315,6 @@ describe('main: видимость пропусков', () => {
   /** Строки сводки пропусков в логе. */
   function summaries(harness: Harness): LogRecord[] {
     return harness.records().filter((record) => record.msg?.startsWith(SUMMARY_PREFIX) === true);
-  }
-
-  /** Подменяет только setInterval и clearInterval: база, файлы и логгер работают по-настоящему. */
-  function useFakeIntervals(): void {
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
-    onTestFinished(() => {
-      vi.useRealTimers();
-    });
   }
 
   it('номер менеджера в TEST_ALLOWLIST: предупреждение при старте, без самого номера', async () => {
@@ -566,7 +573,7 @@ describe('main: WA_ENABLED=true, зависимости WhatsApp', () => {
     expect(existsSync(qrPath)).toBe(false);
   });
 
-  it('onEvent и onHistoryChats пишут в базу; onOfflineQueueDone пишет в лог число чатов простоя', async () => {
+  it('onEvent и onHistoryChats пишут в базу; onOfflineQueueDone закрывает отметку чата, где уже есть свежее сообщение', async () => {
     const harness = useHarness();
     const startWhatsApp = fakeStart(fakeConnection().connection);
     await harness.run(ENABLED_ENV, { startWhatsApp });
@@ -580,11 +587,16 @@ describe('main: WA_ENABLED=true, зависимости WhatsApp', () => {
     expect(count(harness.dbPath, 'messages')).toBe(2);
     expect(count(harness.dbPath, 'backlog_chats')).toBe(1);
     expect(count(harness.dbPath, 'known_chats')).toBe(1);
+    // На чат отвечает обычный порядок: в список менеджеру он не входит, отметка закрыта без уведомления.
+    expect(count(harness.dbPath, 'manager_notifications')).toBe(0);
+    expect(
+      rows(harness.dbPath, 'SELECT notified_at_ms IS NOT NULL AS notified FROM backlog_chats'),
+    ).toEqual([{ notified: 1 }]);
     expect(harness.records()).toContainEqual(
       expect.objectContaining({
         level: INFO,
         count: 1,
-        msg: expect.stringContaining('чатов простоя') as unknown,
+        msg: expect.stringContaining('в работе') as unknown,
       }),
     );
   });
@@ -867,6 +879,10 @@ describe('main: ответы клиентам (этап 3)', () => {
 
     expect(chatRow(harness.dbPath)).toEqual({ status: 'manager', statusBy: 'phone' });
     expect(count(harness.dbPath, 'messages')).toBe(2);
+    expect(rows(harness.dbPath, 'SELECT reason, resolved_at_ms AS resolved FROM handoffs')).toEqual(
+      [{ reason: 'human_took_over', resolved: null }],
+    );
+    expect(count(harness.dbPath, 'manager_notifications')).toBe(0);
     expect(harness.records()).toContainEqual(
       expect.objectContaining({ level: INFO, result: 'human_took_over' }),
     );
@@ -892,6 +908,12 @@ describe('main: ответы клиентам (этап 3)', () => {
     expect([jid, waId]).toEqual([CLIENT_JID, 'OUT-1']);
     expect(text).toMatch(/специалисту/);
     expect(chatRow(harness.dbPath)).toEqual({ status: 'manager', statusBy: 'bot' });
+    // Номера менеджера нет: уведомление остаётся в панели со статусом no_manager, в лог строка без текста клиента.
+    await vi.waitFor(() => expect(count(harness.dbPath, 'manager_notifications')).toBe(1));
+    expect(
+      rows(harness.dbPath, 'SELECT kind, status, attempts FROM manager_notifications'),
+    ).toEqual([{ kind: 'handoff', status: 'no_manager', attempts: 1 }]);
+    expect(rows(harness.dbPath, 'SELECT reason FROM handoffs')).toEqual([{ reason: 'llm_error' }]);
     await expect(deps.getSentText('OUT-1' as WaMessageId, CLIENT_JID)).resolves.toBe(text);
     await expect(deps.getSentText('OUT-1' as WaMessageId, STRANGER_JID)).resolves.toBeNull();
     expect(harness.records()).toContainEqual(
@@ -984,6 +1006,109 @@ describe('main: ответы клиентам (этап 3)', () => {
       stop.mock.invocationCallOrder[0] ?? 0,
     );
     expect(databaseOpen(harness.dbPath)).toBe(false);
+  });
+
+  describe('службы этапа 5: повтор уведомлений и список простоя', () => {
+    const MANAGER_ENV: EnvInput = { ...ENABLED_ENV, MANAGER_WHATSAPP: MANAGER_PHONE };
+
+    function notifications(dbPath: string): unknown[] {
+      return rows(dbPath, 'SELECT kind, status, attempts FROM manager_notifications ORDER BY id');
+    }
+
+    it('после офлайн-очереди менеджеру уходит одно уведомление со списком простоя (и без ключа Claude); повтор не дублирует', async () => {
+      const harness = useHarness();
+      const { connection, sendText } = sendingConnection();
+      const startWhatsApp = fakeStart(connection);
+      await harness.run(MANAGER_ENV, { startWhatsApp });
+      const deps = depsOf(startWhatsApp);
+      await deps.onEvent(STALE_EVENT);
+
+      await deps.onOfflineQueueDone();
+      await deps.onOfflineQueueDone();
+
+      expect(sendText).toHaveBeenCalledTimes(1);
+      expect(sendText).toHaveBeenCalledWith(MANAGER_JID, expect.any(String), 'OUT-1');
+      expect(notifications(harness.dbPath)).toEqual([
+        { kind: 'backlog', status: 'sent', attempts: 1 },
+      ]);
+      expect(
+        rows(harness.dbPath, 'SELECT notified_at_ms IS NOT NULL AS notified FROM backlog_chats'),
+      ).toEqual([{ notified: 1 }]);
+    });
+
+    it('номера менеджера нет: список простоя остаётся в панели со статусом no_manager, отправки нет', async () => {
+      const harness = useHarness();
+      const { connection, sendText } = sendingConnection();
+      const startWhatsApp = fakeStart(connection);
+      await harness.run(ENABLED_ENV, { startWhatsApp });
+      const deps = depsOf(startWhatsApp);
+      await deps.onEvent(STALE_EVENT);
+
+      await deps.onOfflineQueueDone();
+
+      expect(sendText).not.toHaveBeenCalled();
+      expect(notifications(harness.dbPath)).toEqual([
+        { kind: 'backlog', status: 'no_manager', attempts: 1 },
+      ]);
+      expect(JSON.stringify(harness.records())).not.toContain(CLIENT_PHONE);
+    });
+
+    it('таймер повтора: с первого открытия подключения, раз в 5 минут; неотправленное уходит, остановка снимает таймер', async () => {
+      useFakeIntervals();
+      const harness = useHarness();
+      const { connection, sendText } = sendingConnection();
+      const startWhatsApp = fakeStart(connection);
+      const app = await harness.run(MANAGER_ENV, { startWhatsApp });
+      const deps = depsOf(startWhatsApp);
+      await deps.onEvent(STALE_EVENT);
+      // Пока подключение не открывалось, живёт только таймер сводки пропусков.
+      expect(vi.getTimerCount()).toBe(1);
+      sendText.mockRejectedValueOnce(new Error('Connection Closed'));
+
+      await deps.onOfflineQueueDone();
+
+      expect(vi.getTimerCount()).toBe(2);
+      expect(notifications(harness.dbPath)).toEqual([
+        { kind: 'backlog', status: 'failed', attempts: 1 },
+      ]);
+      await vi.advanceTimersByTimeAsync(FIVE_MINUTES_MS - 1);
+      expect(sendText).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await nextTurn();
+
+      expect(sendText).toHaveBeenCalledTimes(2);
+      expect(notifications(harness.dbPath)).toEqual([
+        { kind: 'backlog', status: 'sent', attempts: 2 },
+      ]);
+      await app.stop();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('остановка снимает таймер повтора до остановки WhatsApp и до закрытия базы', async () => {
+      useFakeIntervals();
+      const harness = useHarness();
+      let timersWhenWhatsAppStops = -1;
+      const { connection } = sendingConnection();
+      const stoppable: WhatsAppConnection = {
+        ...connection,
+        stop: () => {
+          timersWhenWhatsAppStops = vi.getTimerCount();
+          return Promise.resolve();
+        },
+      };
+      const startWhatsApp = fakeStart(stoppable);
+      const app = await harness.run(MANAGER_ENV, { startWhatsApp });
+      await depsOf(startWhatsApp).onOfflineQueueDone();
+      expect(vi.getTimerCount()).toBe(2);
+
+      await app.stop();
+
+      // К остановке WhatsApp остаётся только таймер сводки: повтор уже снят.
+      expect(timersWhenWhatsAppStops).toBe(1);
+      expect(databaseOpen(harness.dbPath)).toBe(false);
+      await depsOf(startWhatsApp).onOfflineQueueDone();
+      expect(vi.getTimerCount()).toBe(0);
+    });
   });
 
   it('ключ OpenRouter задан: расшифровка голосовых включена, ключи в лог не попадают', async () => {

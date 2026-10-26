@@ -11,19 +11,17 @@ import type {
   Logger,
   MessageSender,
   MessagesRepo,
-  OutboundIdsRepo,
   Transcriber,
   WhatsAppInbox,
 } from '../domain/ports.js';
 import type { PhoneDigits } from '../domain/types.js';
 import { createAnthropicLlm, type AnthropicLlmDeps } from '../llm/anthropic.js';
 import { createJsonlTokenLog } from '../llm/token-log.js';
-import { createOutbox } from '../messaging/outbox.js';
 import { typingDelayMs } from '../messaging/typing.js';
 import { createDisabledTranscriber, createOpenRouterTranscriber } from '../voice/transcriber.js';
-import { phoneToJid } from '../whatsapp/jid.js';
 import { createChatBatcher, type ChatBatcher } from './batcher.js';
 import { handleClientBatch, type PipelineDeps } from './handle-inbound.js';
+import type { Services } from './services.js';
 
 /** Склейка сообщений чата: тишина после последнего сообщения и предел от первого (pipeline/batcher.ts). */
 export const BATCH_DEBOUNCE_MS = 4000;
@@ -36,14 +34,13 @@ export const NO_CLAUDE_KEY_WARNING =
 /** Файлы знаний в папке knowledge/: документ владельца и правила WhatsApp. */
 const KNOWLEDGE_FILES = { owner: 'tanbala-agent.md', whatsapp: 'whatsapp.md' } as const;
 
-/** Подключение WhatsApp для конвейера: отправка (через outbox), «печатает», прочтение и голосовые. */
+/** Подключение WhatsApp для конвейера: «печатает», прочтение и голосовые (отправку ведёт общий outbox). */
 export type ResponderConnection = MessageSender & Pick<WhatsAppInbox, 'markRead' | 'downloadAudio'>;
 
 /** Что ответам нужно от базы. */
 export interface ResponderStorage {
   readonly chats: ChatsRepo;
   readonly messages: MessagesRepo;
-  readonly outboundIds: OutboundIdsRepo;
   /** Дневной предохранитель расходов API (API_DAILY_LIMIT и API_DAILY_LIMIT_PER_CHAT). */
   readonly budget: CallBudget;
 }
@@ -54,6 +51,8 @@ export interface ResponderContext {
   readonly logger: Logger;
   readonly clock: Clock;
   readonly storage: ResponderStorage;
+  /** Общие службы этапа 5 (pipeline/services.ts): отправка и передача менеджеру одни на всё приложение. */
+  readonly services: Pick<Services, 'outbox' | 'handoff'>;
   /** Шов для тестов, в рабочем режиме не передаётся: клиент LLM (по умолчанию createAnthropicLlm). */
   readonly createLlm?: ((deps: AnthropicLlmDeps) => LlmClient) | undefined;
 }
@@ -61,12 +60,12 @@ export interface ResponderContext {
 /** Ответы клиентам: очередь склейки есть до WhatsApp, конвейер получает подключение после запуска. */
 export interface Responder {
   readonly batcher: ChatBatcher;
-  /** WhatsApp подключён: outbox, «печатает», прочтение и голосовые идут через это подключение. */
+  /** WhatsApp подключён: «печатает», прочтение и голосовые идут через это подключение. */
   connect(connection: ResponderConnection): void;
 }
 
 /** Части конвейера, которым не нужно подключение WhatsApp. */
-interface ResponderServices {
+interface ResponderParts {
   readonly agent: Agent;
   readonly transcriber: Transcriber;
 }
@@ -75,9 +74,9 @@ interface ResponderServices {
  * Собирает ответы клиентам (этап 3), только если задан ключ Claude; без ключа null и предупреждение: бот только
  * принимает и сохраняет, как на этапе 2. Знания (knowledge/, при сбое чтения понятная ошибка при старте), лог
  * расхода TOKEN_LOG_PATH, LLM с дневным предохранителем, агент, расшифровка голосовых по AppConfig.voice (нет ключа
- * OpenRouter => выключена) и очередь склейки. Outbox (список закрытого режима, номер менеджера) и конвейер
- * pipeline/handle-inbound.ts собираются на подключении WhatsApp (connect); пачка до подключения не обрабатывается:
- * ошибка в лог очереди.
+ * OpenRouter => выключена) и очередь склейки. Отправка (outbox) и передача менеджеру (handoff/handoff.ts) общие
+ * для приложения и приходят в context.services; конвейер pipeline/handle-inbound.ts собирается на подключении
+ * WhatsApp (connect); пачка до подключения не обрабатывается: ошибка в лог очереди.
  */
 export async function assembleResponder(context: ResponderContext): Promise<Responder | null> {
   const { config, logger, clock } = context;
@@ -88,7 +87,7 @@ export async function assembleResponder(context: ResponderContext): Promise<Resp
   const knowledge = await loadKnowledge(knowledgePaths(config.knowledgeDir), (path) =>
     readFile(path, 'utf8'),
   );
-  const services = responderServices(context, config.anthropicKey, knowledge);
+  const parts = responderParts(context, config.anthropicKey, knowledge);
   const voice = config.voice !== null;
   logger.info(
     { voice },
@@ -109,17 +108,17 @@ export async function assembleResponder(context: ResponderContext): Promise<Resp
   return {
     batcher,
     connect: (connection) => {
-      pipeline = pipelineDeps(context, services, connection);
+      pipeline = pipelineDeps(context, parts, connection);
     },
   };
 }
 
 /** Лог расхода, LLM (Claude), агент и расшифровка: всё, что не зависит от подключения WhatsApp. */
-function responderServices(
+function responderParts(
   context: ResponderContext,
   apiKey: string,
   knowledge: Knowledge,
-): ResponderServices {
+): ResponderParts {
   const { config, logger, clock, storage } = context;
   const tokenLog = createJsonlTokenLog(config.tokenLogPath, appendLine, clock);
   const api = { budget: storage.budget, clock, tokenLog, logger };
@@ -130,34 +129,24 @@ function responderServices(
   };
 }
 
-/** Конвейер на подключении WhatsApp: outbox пишет через него, оттуда же «печатает», прочтение и голосовые. */
+/** Конвейер на подключении WhatsApp: оттуда «печатает», прочтение и голосовые; отправка и передача общие. */
 function pipelineDeps(
   context: ResponderContext,
-  services: ResponderServices,
+  parts: ResponderParts,
   connection: ResponderConnection,
 ): PipelineDeps {
-  const { config, logger, clock, storage } = context;
-  const testAllowlist = allowlistOf(config);
-  const outbox = createOutbox({
-    sender: connection,
-    chats: storage.chats,
-    messages: storage.messages,
-    outboundIds: storage.outboundIds,
-    clock,
-    managerJid: config.managerPhone === null ? null : phoneToJid(config.managerPhone),
-    testAllowlist,
-    random: Math.random,
-  });
+  const { config, logger, clock, storage, services } = context;
   return {
     chats: storage.chats,
     messages: storage.messages,
-    agent: services.agent,
-    outbox,
-    transcriber: services.transcriber,
+    agent: parts.agent,
+    outbox: services.outbox,
+    handoff: services.handoff,
+    transcriber: parts.transcriber,
     inbox: connection,
     typing: connection,
     typingDelayMs: (text) => typingDelayMs(text, Math.random),
-    testAllowlist,
+    testAllowlist: allowlistOf(config),
     clock,
     logger,
   };

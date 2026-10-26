@@ -2,8 +2,12 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi, type Mock } from 'vitest';
 import { loadConfig, type AppConfig } from '../../../src/config/env.js';
+import { createUnitOfWork } from '../../../src/db/connection.js';
+import { createBacklogRepo } from '../../../src/db/repos/backlog.js';
 import { createCallBudget } from '../../../src/db/repos/call-budget.js';
 import { createChatsRepo } from '../../../src/db/repos/chats.js';
+import { createHandoffsRepo } from '../../../src/db/repos/handoffs.js';
+import { createManagerNotificationsRepo } from '../../../src/db/repos/manager-notifications.js';
 import { createMessagesRepo } from '../../../src/db/repos/messages.js';
 import { createOutboundIdsRepo } from '../../../src/db/repos/outbound-ids.js';
 import type { Clock, LlmClient, Logger } from '../../../src/domain/ports.js';
@@ -14,6 +18,11 @@ import {
   type ResponderConnection,
   type ResponderStorage,
 } from '../../../src/pipeline/responder-setup.js';
+import {
+  assembleServices,
+  type Services,
+  type ServicesStorage,
+} from '../../../src/pipeline/services.js';
 import { ROOT as PROJECT_ROOT } from '../../helpers/source-files.js';
 import { useMigratedDb, useTempDir } from '../db/fixture.js';
 import { scriptedLlm } from './scripted-llm.js';
@@ -22,6 +31,8 @@ import { scriptedLlm } from './scripted-llm.js';
 
 const PHONE = '77000000002';
 const JID = `${PHONE}@s.whatsapp.net` as Jid;
+const MANAGER_PHONE = '77000000009';
+const MANAGER_JID = `${MANAGER_PHONE}@s.whatsapp.net` as Jid;
 const REPLY = 'Расскажите, пожалуйста, что вы храните?';
 const MODELS: unknown = JSON.parse(
   readFileSync(join(PROJECT_ROOT, 'config', 'models.json'), 'utf8'),
@@ -68,18 +79,30 @@ function configWith(env: Readonly<Record<string, string>>): AppConfig {
 /** LLM отвечает по назначению вызова в форме схем агента: черновик answer, проверка пройдена, клиент холодный. */
 const ANSWERING_LLM: LlmClient = scriptedLlm({ replies: [REPLY] }).llm;
 
-function storageOf(config: AppConfig): ResponderStorage {
+/** Всё хранилище на одной базе в памяти: для ответов и для общих служб этапа 5. */
+type Storage = ResponderStorage & ServicesStorage;
+
+function storageOf(config: AppConfig): Storage {
   const db = useMigratedDb();
   return {
     chats: createChatsRepo(db),
     messages: createMessagesRepo(db),
     outboundIds: createOutboundIdsRepo(db),
     budget: createCallBudget(db, config.limits),
+    backlog: createBacklogRepo(db),
+    handoffs: createHandoffsRepo(db),
+    notifications: createManagerNotificationsRepo(db),
+    unitOfWork: createUnitOfWork(db),
   };
 }
 
+/** Общие службы на том же хранилище; отправляют они через подключение, которое тест передаёт в connect. */
+function servicesOf(config: AppConfig, storage: Storage, logger: Logger): Services {
+  return assembleServices({ config, logger, clock: CLOCK, storage });
+}
+
 /** Входящее клиента, уже записанное в базу, как это делает pipeline/recorder.ts. */
-function recorded(storage: ResponderStorage, waId: string): InboundMessage {
+function recorded(storage: Storage, waId: string): InboundMessage {
   const message: InboundMessage = {
     waId: waId as WaMessageId,
     identity: { replyJid: JID, lidJid: null, pnJid: JID },
@@ -105,8 +128,9 @@ function connection(): {
   readonly sendText: Mock<ResponderConnection['sendText']>;
 } {
   const sendText = vi.fn<ResponderConnection['sendText']>(() => Promise.resolve());
+  let sent = 0;
   const link: ResponderConnection = {
-    newMessageId: () => 'OUT-1' as WaMessageId,
+    newMessageId: () => `OUT-${(sent += 1)}` as WaMessageId,
     sendText,
     setTyping: () => Promise.resolve(),
     markRead: () => Promise.resolve(),
@@ -119,12 +143,15 @@ describe('pipeline/responder-setup', () => {
   it('без ключа Claude: ответов нет, предупреждение в лог', async () => {
     const entries: LogEntry[] = [];
     const config = configWith({});
+    const logger = createLogger(entries);
+    const storage = storageOf(config);
 
     const responder = await assembleResponder({
       config,
-      logger: createLogger(entries),
+      logger,
       clock: CLOCK,
-      storage: storageOf(config),
+      storage,
+      services: servicesOf(config, storage, logger),
     });
 
     expect(responder).toBeNull();
@@ -134,12 +161,15 @@ describe('pipeline/responder-setup', () => {
   it('пачка до подключения WhatsApp не обрабатывается; после connect ответ уходит через подключение', async () => {
     const entries: LogEntry[] = [];
     const config = configWith({ VENMART_ANTHROPIC_KEY: 'sk-test-not-a-real-key' });
+    const logger = createLogger(entries);
     const storage = storageOf(config);
+    const services = servicesOf(config, storage, logger);
     const responder = await assembleResponder({
       config,
-      logger: createLogger(entries),
+      logger,
       clock: CLOCK,
       storage,
+      services,
       createLlm: () => ANSWERING_LLM,
     });
     if (responder === null) throw new Error('ответы не собраны');
@@ -152,6 +182,7 @@ describe('pipeline/responder-setup', () => {
       expect(entries).toContainEqual(expect.objectContaining({ level: 'error' })),
     );
     const { link, sendText } = connection();
+    services.connect(link);
     responder.connect(link);
     responder.batcher.push(chat.id, recorded(storage, 'WA-2'));
     await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(1));
@@ -163,20 +194,97 @@ describe('pipeline/responder-setup', () => {
     );
   });
 
+  it('горячий клиент: фраза передачи через подключение, передача и уведомление в базе (номера менеджера нет)', async () => {
+    const config = configWith({ VENMART_ANTHROPIC_KEY: 'sk-test-not-a-real-key' });
+    const logger = createLogger([]);
+    const storage = storageOf(config);
+    const services = servicesOf(config, storage, logger);
+    const llm = scriptedLlm({ replies: [REPLY], level: 'hot' });
+    const responder = await assembleResponder({
+      config,
+      logger,
+      clock: CLOCK,
+      storage,
+      services,
+      createLlm: () => llm.llm,
+    });
+    if (responder === null) throw new Error('ответы не собраны');
+    const { link, sendText } = connection();
+    services.connect(link);
+    responder.connect(link);
+    const message = recorded(storage, 'WA-1');
+    const chat = storage.chats.findByJid(JID);
+    if (chat === null) throw new Error('чат не записан');
+
+    responder.batcher.push(chat.id, message);
+    await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(1));
+    await responder.batcher.drain();
+
+    expect(sendText).toHaveBeenCalledWith(JID, expect.stringMatching(/специалист/), 'OUT-1');
+    expect(llm.purposes()).toEqual(['reply', 'interest']);
+    expect(storage.chats.getById(chat.id)?.control).toEqual({ status: 'manager', by: 'bot' });
+    expect(storage.chats.getById(chat.id)?.level).toBe('hot');
+    expect(storage.handoffs.findOpen(chat.id)).toMatchObject({ reason: 'hot', level: 'hot' });
+    expect(storage.notifications.latestForChat(chat.id)).toMatchObject({
+      kind: 'handoff',
+      status: 'no_manager',
+    });
+  });
+
+  it('горячий клиент и номер менеджера задан: уведомление уходит менеджеру после фразы клиенту', async () => {
+    const config = configWith({
+      VENMART_ANTHROPIC_KEY: 'sk-test-not-a-real-key',
+      MANAGER_WHATSAPP: MANAGER_PHONE,
+    });
+    const logger = createLogger([]);
+    const storage = storageOf(config);
+    const services = servicesOf(config, storage, logger);
+    const responder = await assembleResponder({
+      config,
+      logger,
+      clock: CLOCK,
+      storage,
+      services,
+      createLlm: () => scriptedLlm({ replies: [REPLY], level: 'hot' }).llm,
+    });
+    if (responder === null) throw new Error('ответы не собраны');
+    const { link, sendText } = connection();
+    services.connect(link);
+    responder.connect(link);
+    const message = recorded(storage, 'WA-1');
+    const chat = storage.chats.findByJid(JID);
+    if (chat === null) throw new Error('чат не записан');
+
+    responder.batcher.push(chat.id, message);
+    await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(2));
+    await responder.batcher.drain();
+
+    expect(sendText.mock.calls.map(([jid, , waId]) => [jid, waId])).toEqual([
+      [JID, 'OUT-1'],
+      [MANAGER_JID, 'OUT-2'],
+    ]);
+    expect(storage.notifications.latestForChat(chat.id)).toMatchObject({
+      status: 'sent',
+      attempts: 1,
+    });
+  });
+
   it('ключ OpenRouter задан: расшифровка голосовых включена', async () => {
     const entries: LogEntry[] = [];
     const config = configWith({
       VENMART_ANTHROPIC_KEY: 'sk-test-not-a-real-key',
       OPENROUTER_API_KEY: 'or-test-not-a-real-key',
-      MANAGER_WHATSAPP: '77000000009',
+      MANAGER_WHATSAPP: MANAGER_PHONE,
     });
+    const logger = createLogger(entries);
     const storage = storageOf(config);
 
     const responder = await assembleResponder({
       config,
-      logger: createLogger(entries),
+      logger,
       clock: CLOCK,
       storage,
+      services: servicesOf(config, storage, logger),
       createLlm: () => ANSWERING_LLM,
     });
     responder?.connect(connection().link);

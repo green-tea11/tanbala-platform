@@ -241,7 +241,7 @@ describe('pipeline/reply-flow: ответ проходит проверки', ()
   });
 
   it('невидимые символы убираются до проверок: ревью и клиент получают один и тот же текст', async () => {
-    const dirty = 'Учёт​ подбираем под­ задачу. Что вы храните?';
+    const dirty = 'Учёт\u200B подбираем под\u00AD задачу. Что вы храните?';
     const h = setup({ drafts: [answerDraft(dirty)] });
 
     const verdict = await flow(h);
@@ -251,7 +251,7 @@ describe('pipeline/reply-flow: ответ проходит проверки', ()
   });
 
   it('стоп-слово, спрятанное невидимым символом, ловится после нормализации', async () => {
-    const hidden = 'Это бес­платно для вас. Что вы храните?';
+    const hidden = 'Это бес\u00ADплатно для вас. Что вы храните?';
     const h = setup({ drafts: [answerDraft(hidden), answerDraft()] });
 
     const verdict = await flow(h);
@@ -377,12 +377,14 @@ describe('pipeline/reply-flow: передача без ответа клиент
     expect(h.calls).toEqual(['draft', 'assess', 'save']);
   });
 
-  it('горячий клиент: передача hot, текст ответа не уходит, оценка (уровень hot) сохранена', async () => {
+  it('горячий клиент: сразу передача hot без проверки вторым вызовом, оценка (уровень hot) сохранена', async () => {
     const h = setup({ assessment: assessed('hot') });
 
     const verdict = await flow(h);
 
     expect(verdict).toEqual(handedOff({ reason: 'hot' }));
+    expect(h.calls).toEqual(['draft', 'assess', 'save']);
+    expect(h.reviewDraft).not.toHaveBeenCalled();
     expect(h.saveAssessment).toHaveBeenCalledWith(
       CHAT_ID,
       expect.objectContaining({ level: 'hot' }),
@@ -390,7 +392,7 @@ describe('pipeline/reply-flow: передача без ответа клиент
     );
   });
 
-  it('горячий клиент и нарушение кода: сразу hot, повтора нет', async () => {
+  it('горячий клиент и нарушение кода: сразу hot, ни повтора, ни ревью', async () => {
     const h = setup({
       drafts: [answerDraft('Учёт — это просто. Что вы храните?')],
       assessment: assessed('hot'),
@@ -398,6 +400,14 @@ describe('pipeline/reply-flow: передача без ответа клиент
 
     await expect(flow(h)).resolves.toEqual(handedOff({ reason: 'hot' }));
     expect(h.draftReply).toHaveBeenCalledTimes(1);
+    expect(h.reviewDraft).not.toHaveBeenCalled();
+  });
+
+  it('клиент не горячий: ревью зовётся как обычно', async () => {
+    const h = setup({ assessment: assessed('warm') });
+
+    await expect(flow(h)).resolves.toEqual(sent());
+    expect(h.reviewDraft).toHaveBeenCalledTimes(1);
   });
 });
 
