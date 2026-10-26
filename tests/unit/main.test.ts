@@ -61,6 +61,21 @@ const TABLES = [
   'pairing_attempts',
 ];
 const LOCK_BUSY_TEXT = 'Бот уже запущен: папка данных занята другим процессом';
+const STRANGER_PHONE = '77000000005';
+const STRANGER_JID = `${STRANGER_PHONE}@s.whatsapp.net` as Jid;
+const SUMMARY_INTERVAL_MS = 10 * 60_000;
+const SUMMARY_PREFIX = 'Пропущено с запуска';
+const MANAGER_IN_ALLOWLIST_TEXT =
+  'Номер менеджера есть в TEST_ALLOWLIST: сообщения с него бот считает служебными (причина manager) ' +
+  'и не сохраняет. Для теста укажите другой номер менеджера или оставьте MANAGER_WHATSAPP пустым';
+
+/** Пропуск чата вне списка: так его отдаёт whatsapp/inbound.ts. */
+const NOT_ALLOWLISTED_EVENT: WaEvent = {
+  type: 'ignore',
+  reason: 'not_allowlisted',
+  chatJid: STRANGER_JID,
+  tsMs: Date.UTC(2026, 9, 25, 9, 0, 0),
+};
 
 const CLIENT_EVENT: WaEvent = {
   type: 'client',
@@ -214,7 +229,10 @@ describe('main: WA_ENABLED=false', () => {
     expect(lockFree(harness.lockPath)).toBe(true);
     await expect(app.stopped).resolves.toBe('requested');
     expect(harness.records()).toContainEqual(
-      expect.objectContaining({ level: INFO, msg: 'Бот остановлен', ignored: 0 }),
+      expect.objectContaining({ level: INFO, msg: 'Пропущено с запуска: ничего', ignored: {} }),
+    );
+    expect(harness.records()).toContainEqual(
+      expect.objectContaining({ level: INFO, msg: 'Бот остановлен' }),
     );
     readDb(harness.dbPath, (db) => {
       expect(db.pragma('user_version', { simple: true })).toBe(1);
@@ -264,6 +282,100 @@ describe('main: WA_ENABLED=false', () => {
         msg: expect.stringContaining('TEST_ALLOWLIST') as unknown,
       }),
     );
+  });
+});
+
+describe('main: видимость пропусков', () => {
+  /** Строки сводки пропусков в логе. */
+  function summaries(harness: Harness): LogRecord[] {
+    return harness.records().filter((record) => record.msg?.startsWith(SUMMARY_PREFIX) === true);
+  }
+
+  /** Подменяет только setInterval и clearInterval: база, файлы и логгер работают по-настоящему. */
+  function useFakeIntervals(): void {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+  }
+
+  it('номер менеджера в TEST_ALLOWLIST: предупреждение при старте, без самого номера', async () => {
+    const harness = useHarness();
+
+    await harness.run({ ...DISABLED_ENV, MANAGER_WHATSAPP: CLIENT_PHONE });
+
+    expect(harness.records()).toContainEqual(
+      expect.objectContaining({ level: WARN, msg: MANAGER_IN_ALLOWLIST_TEXT }),
+    );
+    expect(JSON.stringify(harness.records())).not.toContain(CLIENT_PHONE);
+  });
+
+  it('номера менеджера нет в списке: предупреждения нет', async () => {
+    const harness = useHarness();
+
+    await harness.run({ ...DISABLED_ENV, MANAGER_WHATSAPP: MANAGER_PHONE });
+
+    expect(harness.records().map((record) => record.msg)).not.toContain(MANAGER_IN_ALLOWLIST_TEXT);
+  });
+
+  it('сводка при разборе офлайн-очереди и при остановке: только ненулевые причины, без номеров', async () => {
+    const harness = useHarness();
+    const startWhatsApp = fakeStart(fakeConnection().connection);
+    const app = await harness.run(ENABLED_ENV, { startWhatsApp });
+    const deps = depsOf(startWhatsApp);
+    await deps.onEvent({ type: 'ignore', reason: 'manager' });
+    await deps.onEvent(NOT_ALLOWLISTED_EVENT);
+    await deps.onEvent(NOT_ALLOWLISTED_EVENT);
+
+    await deps.onOfflineQueueDone();
+    await app.stop();
+
+    const summary: unknown = expect.objectContaining({
+      level: INFO,
+      msg: 'Пропущено с запуска: manager 1, not_allowlisted 2',
+      ignored: { manager: 1, not_allowlisted: 2 },
+    });
+    expect(summaries(harness)).toEqual([summary, summary]);
+    expect(harness.records()).toContainEqual(
+      expect.objectContaining({ level: INFO, msg: 'Сообщение пропущено: причина manager' }),
+    );
+    expect(JSON.stringify(harness.records())).not.toContain(STRANGER_PHONE);
+  });
+
+  it('раз в 10 минут, только если пропуски изменились; таймер снимается при остановке', async () => {
+    useFakeIntervals();
+    const harness = useHarness();
+    const startWhatsApp = fakeStart(fakeConnection().connection);
+    const app = await harness.run(ENABLED_ENV, { startWhatsApp });
+    const deps = depsOf(startWhatsApp);
+
+    vi.advanceTimersByTime(SUMMARY_INTERVAL_MS);
+    expect(summaries(harness)).toEqual([]);
+
+    await deps.onEvent({ type: 'ignore', reason: 'manager' });
+    vi.advanceTimersByTime(SUMMARY_INTERVAL_MS);
+    vi.advanceTimersByTime(SUMMARY_INTERVAL_MS);
+    await deps.onEvent({ type: 'ignore', reason: 'service' });
+    vi.advanceTimersByTime(SUMMARY_INTERVAL_MS);
+
+    expect(summaries(harness).map((record) => record.msg)).toEqual([
+      'Пропущено с запуска: manager 1',
+      'Пропущено с запуска: manager 1, service 1',
+    ]);
+    expect(vi.getTimerCount()).toBe(1);
+    await app.stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('таймер сводки снимается и при отказе запуска', async () => {
+    useFakeIntervals();
+    const harness = useHarness();
+
+    await expect(
+      harness.run(ENABLED_ENV, { startWhatsApp: failingStart(new Error('Сбой открытия сокета')) }),
+    ).rejects.toThrow('Сбой открытия сокета');
+
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 

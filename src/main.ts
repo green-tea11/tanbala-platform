@@ -20,7 +20,11 @@ import type {
   ProcessLock,
 } from './domain/ports.js';
 import type { PhoneDigits } from './domain/types.js';
-import { createInboundRecorder, type InboundRecorder } from './pipeline/recorder.js';
+import {
+  createInboundRecorder,
+  type IgnoreStats,
+  type InboundRecorder,
+} from './pipeline/recorder.js';
 import { createSystemClock } from './shared/clock.js';
 import { createLogger, type LogDestination } from './shared/logger.js';
 import { SafeError } from './shared/safe-error.js';
@@ -76,6 +80,13 @@ const MS_PER_MINUTE = 60_000;
 const MS_PER_HOUR = 60 * MS_PER_MINUTE;
 /** Весь Казахстан с 01.03.2024 живёт по UTC+5 без летнего времени: смещение Алматы постоянное. */
 const ALMATY_OFFSET_MS = 5 * MS_PER_HOUR;
+/** Сводка пропусков в лог не чаще этого и только если с прошлой сводки что-то изменилось. */
+const IGNORE_SUMMARY_INTERVAL_MS = 10 * MS_PER_MINUTE;
+
+/** Номер менеджера в закрытом списке: classifyUpsert раньше отдаёт manager, и его сообщения не сохраняются. */
+const MANAGER_IN_ALLOWLIST_WARNING =
+  'Номер менеджера есть в TEST_ALLOWLIST: сообщения с него бот считает служебными (причина manager) ' +
+  'и не сохраняет. Для теста укажите другой номер менеджера или оставьте MANAGER_WHATSAPP пустым';
 
 /** Что владелец читает в логе, когда WhatsApp остановился сам (WhatsAppDeps.onStopped). */
 const STOP_MESSAGES: Readonly<Record<WhatsAppStopReason, string>> = {
@@ -124,6 +135,21 @@ interface Storage {
   close(): void;
 }
 
+/** Сводка пропусков с запуска (только ненулевые причины, без номеров и JID). */
+interface IgnoreSummary {
+  /** Сводка в лог сейчас: разбор офлайн-очереди, остановка. */
+  log(): void;
+  /** Снимает таймер сводки; повторный вызов ничего не делает. */
+  stop(): void;
+}
+
+/** Что закрывает остановка, кроме WhatsApp: таймер сводки, база и замок процесса. */
+interface Resources {
+  readonly storage: Storage;
+  readonly lock: ProcessLock;
+  readonly summary: IgnoreSummary;
+}
+
 /** Всё, что собрано до подключения к WhatsApp. */
 interface AppContext {
   readonly config: AppConfig;
@@ -131,6 +157,7 @@ interface AppContext {
   readonly logger: Logger;
   readonly clock: Clock;
   readonly storage: Storage;
+  readonly summary: IgnoreSummary;
 }
 
 /** Подключение к WhatsApp этого запуска: меняется только в main. */
@@ -192,6 +219,7 @@ async function startApp(options: MainOptions, logger: Logger): Promise<RunningAp
   const { config, warnings } = loadConfig(options.env, readModelsJson(root), root);
   for (const warning of warnings) logger.warn({}, warning);
   logStartup(config, logger);
+  warnManagerInAllowlist(config, logger);
   // Второй экземпляр падает здесь: до базы, сессии WhatsApp и счётчика привязок.
   const lock = acquireProcessLock(join(root, PROCESS_LOCK_FILE));
   try {
@@ -210,14 +238,15 @@ async function startLocked(
 ): Promise<RunningApp> {
   const clock = createSystemClock();
   const storage = openStorage(config, logger, clock);
+  const summary = startIgnoreSummary(storage.recorder, logger);
   const link: WhatsAppLink = { started: null };
-  const lifecycle = createLifecycle(link, storage, lock, logger);
+  const lifecycle = createLifecycle(link, { storage, lock, summary }, logger);
   try {
     if (!config.waEnabled) {
       logger.warn({}, 'WhatsApp выключен (WA_ENABLED=false)');
       return lifecycle.app;
     }
-    const context: AppContext = { config, root: options.root, logger, clock, storage };
+    const context: AppContext = { config, root: options.root, logger, clock, storage, summary };
     const deps = whatsAppDeps(context, onStoppedOf(lifecycle, logger));
     const start = options.startWhatsApp ?? startWhatsApp;
     // Ссылка на запуск есть до вызова адаптера: самоостановка во время запуска дождётся его и остановит подключение.
@@ -225,6 +254,7 @@ async function startLocked(
     await link.started;
     return lifecycle.app;
   } catch (error: unknown) {
+    summary.stop();
     storage.close();
     throw error;
   }
@@ -259,6 +289,14 @@ function logStartup(config: AppConfig, logger: Logger): void {
 
 function allowlistOf(testMode: TestMode): ReadonlySet<PhoneDigits> | null {
   return testMode.enabled ? testMode.allowlist : null;
+}
+
+/** Номер менеджера в TEST_ALLOWLIST: его сообщения уходят в пропуск manager, владелец видит почему (без номера). */
+function warnManagerInAllowlist(config: AppConfig, logger: Logger): void {
+  const { managerPhone } = config;
+  if (managerPhone !== null && allowlistOf(config.testMode)?.has(managerPhone) === true) {
+    logger.warn({}, MANAGER_IN_ALLOWLIST_WARNING);
+  }
 }
 
 // Конфигурация и база.
@@ -343,7 +381,7 @@ function whatsAppDeps(
   context: AppContext,
   onStopped: (reason: WhatsAppStopReason) => Promise<void>,
 ): WhatsAppDeps {
-  const { config, root, logger, clock, storage } = context;
+  const { config, root, logger, clock, storage, summary } = context;
   const { recorder } = storage;
   return {
     sessionDir: config.waSessionDir,
@@ -358,7 +396,12 @@ function whatsAppDeps(
     onHistoryChats: (chats) =>
       whileOpen(storage, () => settle(() => recorder.onHistoryChats(chats))),
     onOfflineQueueDone: () =>
-      whileOpen(storage, () => settle(() => logBacklog(storage.backlog, logger))),
+      whileOpen(storage, () =>
+        settle(() => {
+          logBacklog(storage.backlog, logger);
+          summary.log();
+        }),
+      ),
     onStopped,
     // Этап 2 ничего не отправляет: повторно отправлять нечего.
     getSentText: () => Promise.resolve(null),
@@ -368,6 +411,38 @@ function whatsAppDeps(
       logger,
     }),
   };
+}
+
+/**
+ * Сводка пропусков с запуска: «manager 1, not_allowlisted 12» (только ненулевые причины, без номеров и JID).
+ * Таймер раз в IGNORE_SUMMARY_INTERVAL_MS пишет её, только если она изменилась; unref: процесс он не держит.
+ */
+function startIgnoreSummary(recorder: InboundRecorder, logger: Logger): IgnoreSummary {
+  let lastText = ignoreSummaryText(recorder.ignoreStats());
+  const log = (): void => {
+    const stats = recorder.ignoreStats();
+    lastText = ignoreSummaryText(stats);
+    logger.info({ ignored: nonZeroStats(stats) }, `Пропущено с запуска: ${lastText}`);
+  };
+  const timer = setInterval(() => {
+    if (ignoreSummaryText(recorder.ignoreStats()) !== lastText) log();
+  }, IGNORE_SUMMARY_INTERVAL_MS);
+  timer.unref();
+  return {
+    log,
+    stop: () => {
+      clearInterval(timer);
+    },
+  };
+}
+
+function nonZeroStats(stats: IgnoreStats): Readonly<Record<string, number>> {
+  return Object.fromEntries(Object.entries(stats).filter(([, count]) => count > 0));
+}
+
+function ignoreSummaryText(stats: IgnoreStats): string {
+  const parts = Object.entries(nonZeroStats(stats)).map(([reason, count]) => `${reason} ${count}`);
+  return parts.length === 0 ? 'ничего' : parts.join(', ');
 }
 
 /** Офлайн-очередь разобрана (после каждого подключения, иногда дважды): пока только число чатов простоя в лог. */
@@ -395,12 +470,7 @@ function settle(work: () => void): Promise<void> {
 // Остановка.
 
 /** Остановка один раз: повторные вызовы и самоостановка WhatsApp получают тот же промис. */
-function createLifecycle(
-  link: WhatsAppLink,
-  storage: Storage,
-  lock: ProcessLock,
-  logger: Logger,
-): Lifecycle {
+function createLifecycle(link: WhatsAppLink, resources: Resources, logger: Logger): Lifecycle {
   let stopping: Promise<void> | null = null;
   // Исполнитель промиса вызывается сразу: markStopped назначена до первого использования.
   let markStopped!: (reason: AppStopReason) => void;
@@ -408,7 +478,7 @@ function createLifecycle(
     markStopped = resolve;
   });
   const stopWith = (reason: AppStopReason): Promise<void> => {
-    stopping ??= shutdown(link, storage, lock, logger).finally(() => {
+    stopping ??= shutdown(link, resources, logger).finally(() => {
       markStopped(reason);
     });
     return stopping;
@@ -417,22 +487,20 @@ function createLifecycle(
 }
 
 /**
- * WhatsApp, база, замок. stop() адаптера вызывается и после самоостановки (повторный вызов безопасен): он дожидается
- * очереди событий, поэтому последние события пишутся в ещё открытую базу.
+ * WhatsApp, таймер сводки, база, замок, затем итоговая сводка пропусков. stop() адаптера вызывается и после
+ * самоостановки (повторный вызов безопасен): он дожидается очереди событий, поэтому последние события пишутся
+ * в ещё открытую базу.
  */
-async function shutdown(
-  link: WhatsAppLink,
-  storage: Storage,
-  lock: ProcessLock,
-  logger: Logger,
-): Promise<void> {
+async function shutdown(link: WhatsAppLink, resources: Resources, logger: Logger): Promise<void> {
   try {
     const connection = await startedConnection(link);
     if (connection !== null) await connection.stop();
   } finally {
-    closeStorage(storage, lock);
+    resources.summary.stop();
+    closeStorage(resources.storage, resources.lock);
   }
-  logger.info({ ignored: storage.recorder.ignoredCount() }, 'Бот остановлен');
+  resources.summary.log();
+  logger.info({}, 'Бот остановлен');
 }
 
 /** Подключение, если его запускали и запуск удался; самоостановка во время запуска его дожидается. */

@@ -18,7 +18,7 @@ import type {
 } from '../../../src/domain/types.js';
 import { createInboundRecorder, type InboundRecorder } from '../../../src/pipeline/recorder.js';
 import type { HistoryChat } from '../../../src/whatsapp/connection.js';
-import type { WaEvent } from '../../../src/whatsapp/inbound.js';
+import type { IgnoreReason, TracedIgnoreReason, WaEvent } from '../../../src/whatsapp/inbound.js';
 import { useMigratedDb } from '../db/fixture.js';
 
 // Настоящие репозитории на SQLite в памяти. Номера и адреса вымышленные: 7700000000N и @lid без людей.
@@ -123,6 +123,15 @@ function client(overrides: Partial<InboundMessage> = {}): WaEvent {
 
 function stale(overrides: Partial<InboundMessage> = {}): WaEvent {
   return { type: 'stale', message: inbound({ tsMs: NOW - DAY_MS, ...overrides }) };
+}
+
+/** Строка лога о редком пропуске: только причина и вид события. */
+function skipped(reason: IgnoreReason): LogEntry {
+  return {
+    level: 'info',
+    context: { event: 'ignore', reason },
+    message: `Сообщение пропущено: причина ${reason}`,
+  };
 }
 
 function chatsOf(db: Database.Database): unknown[] {
@@ -362,12 +371,27 @@ describe('pipeline/recorder: своё сообщение с номера бот�
 });
 
 describe('pipeline/recorder: пропуски (ignore)', () => {
+  it('счётчики пропусков с нуля по каждой причине', () => {
+    expect(setup().recorder.ignoreStats()).toEqual({
+      manager: 0,
+      self: 0,
+      before_link: 0,
+      undecryptable: 0,
+      not_allowlisted: 0,
+      service: 0,
+      protocol: 0,
+    });
+  });
+
   // undecryptable: заглушка CIPHERTEXT, сообщение не расшифровалось; чат всё равно с перепиской (этап 8).
-  it.each(['not_allowlisted', 'before_link', 'undecryptable'] as const)(
-    '%s: только known_chats, без переписки и без логов; растёт счётчик',
-    async (reason) => {
+  it.each<[TracedIgnoreReason, boolean]>([
+    ['not_allowlisted', false],
+    ['before_link', true],
+    ['undecryptable', true],
+  ])(
+    '%s: known_chats и счётчик, без переписки; строка в лог на каждое сообщение: %s',
+    async (reason, logged) => {
       const { db, recorder, entries } = setup();
-      expect(recorder.ignoredCount()).toBe(0);
 
       await recorder.onEvent({
         type: 'ignore',
@@ -383,24 +407,38 @@ describe('pipeline/recorder: пропуски (ignore)', () => {
       ]);
       expect(chatsOf(db)).toEqual([]);
       expect(messagesOf(db)).toEqual([]);
-      expect(entries).toEqual([]);
-      expect(recorder.ignoredCount()).toBe(2);
+      expect(recorder.ignoreStats()[reason]).toBe(2);
+      expect(entries).toEqual(logged ? [skipped(reason), skipped(reason)] : []);
     },
   );
 
-  it.each(['service', 'protocol', 'self', 'manager'] as const)(
-    '%s: ничего не пишется и не считается',
-    async (reason) => {
-      const { db, recorder, entries } = setup();
+  it.each<[Exclude<IgnoreReason, TracedIgnoreReason>, boolean]>([
+    ['service', false],
+    ['protocol', false],
+    ['self', true],
+    ['manager', true],
+  ])('%s: в базу ничего, счётчик растёт; строка в лог: %s', async (reason, logged) => {
+    const { db, recorder, entries } = setup();
 
-      await recorder.onEvent({ type: 'ignore', reason });
+    await recorder.onEvent({ type: 'ignore', reason });
 
-      expect(knownOf(db)).toEqual([]);
-      expect(chatsOf(db)).toEqual([]);
-      expect(entries).toEqual([]);
-      expect(recorder.ignoredCount()).toBe(0);
-    },
-  );
+    expect(knownOf(db)).toEqual([]);
+    expect(chatsOf(db)).toEqual([]);
+    expect(recorder.ignoreStats()).toMatchObject({ [reason]: 1 });
+    expect(entries).toEqual(logged ? [skipped(reason)] : []);
+  });
+
+  it('ignoreStats отдаёт снимок: следующие события его не меняют', async () => {
+    const { recorder } = setup();
+    const before = recorder.ignoreStats();
+
+    await recorder.onEvent({ type: 'ignore', reason: 'manager' });
+    await recorder.onEvent({ type: 'ignore', reason: 'manager' });
+
+    expect(before.manager).toBe(0);
+    expect(recorder.ignoreStats().manager).toBe(2);
+    expect(Object.isFrozen(recorder.ignoreStats())).toBe(true);
+  });
 });
 
 describe('pipeline/recorder: чаты первой синхронизации (onHistoryChats)', () => {

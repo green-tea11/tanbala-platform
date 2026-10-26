@@ -20,7 +20,7 @@ import type {
   OwnMessage,
 } from '../domain/types.js';
 import type { HistoryChat } from '../whatsapp/connection.js';
-import type { WaEvent } from '../whatsapp/inbound.js';
+import type { IgnoreReason, WaEvent } from '../whatsapp/inbound.js';
 
 /** Зависимости записи входящих этапа 2. */
 export interface InboundRecorderDeps {
@@ -42,12 +42,39 @@ export interface InboundRecorder {
   onEvent(event: WaEvent): Promise<void>;
   /** Чаты первой синхронизации (messaging-history.set) в known_chats одной транзакцией. */
   onHistoryChats(chats: readonly HistoryChat[]): void;
-  /**
-   * Сколько сообщений пропущено с записью в known_chats (not_allowlisted, before_link, undecryptable):
-   * для лога счётчиком.
-   */
-  ignoredCount(): number;
+  /** Сколько сообщений пропущено с запуска по каждой причине: снимок, следующие события его не меняют. */
+  ignoreStats(): IgnoreStats;
 }
+
+/** Счётчики пропусков по причинам whatsapp/inbound.ts. */
+export type IgnoreStats = Readonly<Record<IgnoreReason, number>>;
+
+type IgnoreEvent = Extract<WaEvent, { readonly type: 'ignore' }>;
+
+/**
+ * Все причины с нуля; порядок ключей задаёт порядок в сводке main: сначала редкие, потом частые.
+ * Новая причина в IgnoreReason без ключа здесь не скомпилируется.
+ */
+const ZERO_STATS: IgnoreStats = Object.freeze({
+  manager: 0,
+  self: 0,
+  before_link: 0,
+  undecryptable: 0,
+  not_allowlisted: 0,
+  service: 0,
+  protocol: 0,
+});
+
+/**
+ * Редкие пропуски: строка в лог на каждое сообщение, чтобы было видно, почему бот его не сохранил (например, номер
+ * менеджера в TEST_ALLOWLIST даёт manager). Частые (not_allowlisted, service, protocol) только в счётчиках.
+ */
+const LOGGED_REASONS: ReadonlySet<IgnoreReason> = new Set<IgnoreReason>([
+  'manager',
+  'self',
+  'before_link',
+  'undecryptable',
+]);
 
 /** Общие поля входящего и своего сообщения, которые попадают в историю. */
 type Recordable = Pick<InboundMessage | OwnMessage, 'waId' | 'content' | 'tsMs'>;
@@ -72,21 +99,31 @@ const LID_SUFFIX = '@lid';
  * client: чат через upsertByIdentity (имя из профиля обновляется, статус не меняется), сообщение клиента и все
  * адреса чата в known_chats, одной транзакцией. stale: то же плюс отметка простоя временем сообщения; повторная
  * доставка того же waId чат не отмечает (pipeline/backlog.ts). own: сообщение с телефона (author human_phone) в чате,
- * найденном по адресу, или в новом чате с этим адресом. ignore с адресом (not_allowlisted, before_link и
- * undecryptable: сообщение не расшифровалось, но чат с перепиской): только known_chats и счётчик, без логов; прочие
- * ignore: ничего. Логи без текста, имён, номеров и адресов: только ID чата и вид сообщения. Записи синхронные
- * (better-sqlite3), stop() здесь не вызывается и не ожидается.
+ * найденном по адресу, или в новом чате с этим адресом. ignore: счётчик по причине (ignoreStats); редкие причины
+ * (manager, self, before_link, undecryptable) ещё и строкой в лог, частые только счётчиком. ignore с адресом
+ * (not_allowlisted, before_link и undecryptable: сообщение не расшифровалось, но чат с перепиской) запоминает чат
+ * в known_chats. Логи без текста, имён, номеров и адресов: только ID чата, вид сообщения или причина пропуска.
+ * Записи синхронные (better-sqlite3), stop() здесь не вызывается и не ожидается.
  */
 export function createInboundRecorder(deps: InboundRecorderDeps): InboundRecorder {
-  let ignored = 0;
+  let stats = ZERO_STATS;
+  const recordIgnore = (event: IgnoreEvent): void => {
+    stats = incremented(stats, event.reason);
+    if (LOGGED_REASONS.has(event.reason)) {
+      deps.logger.info(
+        { event: event.type, reason: event.reason },
+        `Сообщение пропущено: причина ${event.reason}`,
+      );
+    }
+    if ('chatJid' in event) deps.knownChats.touch(event.chatJid, event.tsMs, 'message');
+  };
   const record = (event: WaEvent): void => {
     if (event.type === 'client' || event.type === 'stale') {
       recordInbound(deps, event.message, event.type === 'stale');
     } else if (event.type === 'own') {
       recordOwn(deps, event.message);
-    } else if ('chatJid' in event) {
-      ignored += 1;
-      deps.knownChats.touch(event.chatJid, event.tsMs, 'message');
+    } else {
+      recordIgnore(event);
     }
   };
   return {
@@ -99,8 +136,13 @@ export function createInboundRecorder(deps: InboundRecorderDeps): InboundRecorde
     onHistoryChats: (chats) => {
       recordHistory(deps, chats);
     },
-    ignoredCount: () => ignored,
+    // Счётчики заменяются целиком и заморожены: отданный снимок не меняется.
+    ignoreStats: () => stats,
   };
+}
+
+function incremented(stats: IgnoreStats, reason: IgnoreReason): IgnoreStats {
+  return Object.freeze({ ...stats, [reason]: stats[reason] + 1 });
 }
 
 function recordInbound(deps: InboundRecorderDeps, message: InboundMessage, stale: boolean): void {
