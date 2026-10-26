@@ -278,12 +278,18 @@ describe('voice/transcriber: лимит и лог расхода', () => {
 
 describe('voice/transcriber: сбои', () => {
   it.each([
-    [429, 'rate_limited'],
-    [401, 'unavailable'],
-    [502, 'unavailable'],
+    [429, 'rate_limited', 'OpenRouter ограничил частоту запросов (429)'],
+    [400, 'unavailable', 'OpenRouter не принял запрос (400): например, формат аудио'],
+    [401, 'unavailable', 'OpenRouter не принял ключ (401): проверьте OPENROUTER_API_KEY'],
+    [
+      402,
+      'unavailable',
+      'OpenRouter: не хватает кредитов (402): проверьте баланс и лимит ключа на openrouter.ai',
+    ],
+    [502, 'unavailable', 'OpenRouter отказал в расшифровке голосового'],
   ])(
-    'HTTP %i => %s, статус в логе, вызов в логе расхода с нулями и ok false',
-    async (status, failure) => {
+    'HTTP %i => %s, в логе подсказка, статус и причина, вызов в логе расхода с нулями',
+    async (status, failure, message) => {
       const error = { error: { code: status, message: 'ошибка' } };
       const { transcribe, record, logs } = setup({
         fetchFn: () => Promise.resolve(jsonResponse(error, status)),
@@ -291,9 +297,31 @@ describe('voice/transcriber: сбои', () => {
 
       expect(await transcribe()).toEqual({ ok: false, failure });
       expect(record).toHaveBeenCalledExactlyOnceWith(usageEntry(0, 0, false));
-      expect(logs).toEqual([expect.objectContaining({ level: 'warn', context: { status } })]);
+      expect(logs).toEqual([{ level: 'warn', context: { status, reason: 'ошибка' }, message }]);
     },
   );
+
+  it('причина отказа в логе без ключа, без длинных чисел и не длиннее 200 символов', async () => {
+    const message = `Key sk-or-v1-abc_123 of 77011234567: ${'я'.repeat(300)}`;
+    const { transcribe, logs } = setup({
+      fetchFn: () => Promise.resolve(jsonResponse({ error: { message } }, 402)),
+    });
+
+    await transcribe();
+
+    const reason = String(logs[0]?.context.reason);
+    expect(reason.startsWith('Key sk-*** of ***: я')).toBe(true);
+    expect(Array.from(reason)).toHaveLength(200);
+  });
+
+  it('тело отказа не JSON: в логе только статус', async () => {
+    const { transcribe, logs } = setup({
+      fetchFn: () => Promise.resolve(new Response('<html>Bad Gateway</html>', { status: 502 })),
+    });
+
+    expect(await transcribe()).toEqual(UNAVAILABLE);
+    expect(logs).toEqual([expect.objectContaining({ level: 'warn', context: { status: 502 } })]);
+  });
 
   // Второй случай: объект с полями ошибки, но не Error; его name в лог не берётся.
   const networkFailures: ReadonlyArray<readonly [Error, string]> = [

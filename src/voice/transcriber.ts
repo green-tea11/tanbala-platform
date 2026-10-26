@@ -23,6 +23,25 @@ const INVISIBLE_EXCEPT_NEWLINE = /(?!\n)[\p{Cc}\p{Cf}]/gu;
 
 const HTTP_TOO_MANY_REQUESTS = 429;
 
+/** Подсказка владельцу по статусу отказа OpenRouter: что проверить. */
+const REFUSAL_HINTS: ReadonlyMap<number, string> = new Map([
+  [400, 'OpenRouter не принял запрос (400): например, формат аудио'],
+  [401, 'OpenRouter не принял ключ (401): проверьте OPENROUTER_API_KEY'],
+  [402, 'OpenRouter: не хватает кредитов (402): проверьте баланс и лимит ключа на openrouter.ai'],
+  [HTTP_TOO_MANY_REQUESTS, 'OpenRouter ограничил частоту запросов (429)'],
+]);
+const REFUSAL_DEFAULT = 'OpenRouter отказал в расшифровке голосового';
+
+/** Потолок причины отказа в логе, символов. */
+const MAX_REASON_CHARS = 200;
+
+/** Похожее на ключ и длинные числа (номера) в причине отказа маскируются. */
+const KEY_LIKE = /sk-[\w-]+/g;
+const LONG_NUMBER = /\d{10,}/g;
+
+/** Тело отказа OpenRouter { error: { message } }. */
+const refusalSchema = z.object({ error: z.object({ message: z.string() }) });
+
 /**
  * Тип аудио без параметров => input_audio.format OpenRouter. Голосовые WhatsApp приходят как
  * audio/ogg; codecs=opus: Opus в контейнере Ogg, ElevenLabs принимает OGG и Opus.
@@ -113,6 +132,22 @@ function cleanTranscript(raw: string): string {
   return Array.from(cleaned).slice(0, MAX_TRANSCRIPT_CHARS).join('').trimEnd();
 }
 
+/** Причина отказа из тела ответа: без похожего на ключ и длинных чисел, не длиннее MAX_REASON_CHARS. */
+async function refusalReason(response: Response): Promise<string | undefined> {
+  try {
+    const parsed = refusalSchema.safeParse(await response.json());
+    if (!parsed.success) return undefined;
+    const masked = parsed.data.error.message
+      .replace(INVISIBLE_EXCEPT_NEWLINE, '')
+      .replace(KEY_LIKE, 'sk-***')
+      .replace(LONG_NUMBER, '***');
+    return Array.from(masked).slice(0, MAX_REASON_CHARS).join('');
+  } catch {
+    // Тело не JSON: в логе останется статус.
+    return undefined;
+  }
+}
+
 function outcomeOf(body: unknown): CallOutcome {
   const parsed = responseSchema.safeParse(body);
   if (!parsed.success) return { result: INVALID_OUTPUT, usage: NO_USAGE };
@@ -154,8 +189,13 @@ async function requestTranscript(
       signal: request.signal,
     });
     if (!response.ok) {
-      deps.logger.warn({ status: response.status }, 'OpenRouter отказал в расшифровке голосового');
-      const failure = response.status === HTTP_TOO_MANY_REQUESTS ? 'rate_limited' : 'unavailable';
+      const { status } = response;
+      const reason = await refusalReason(response);
+      deps.logger.warn(
+        reason === undefined ? { status } : { status, reason },
+        REFUSAL_HINTS.get(status) ?? REFUSAL_DEFAULT,
+      );
+      const failure = status === HTTP_TOO_MANY_REQUESTS ? 'rate_limited' : 'unavailable';
       return { result: { ok: false, failure }, usage: NO_USAGE };
     }
     return outcomeOf(await response.json());
@@ -216,7 +256,8 @@ async function transcribeClip(
  * usage.seconds и usage.cost (доллары) уходят в лог приложения строкой info на каждый полученный ответ.
  * Каждый запрос пишется в TokenLog (provider 'openrouter', purpose 'transcribe'), ok как у результата;
  * сбой записи не теряет расшифровку и уходит в лог ошибкой.
- * HTTP 429 => 'rate_limited'; другой отказ HTTP, сеть и тайм-аут => 'unavailable' (статус или имя ошибки в лог);
+ * HTTP 429 => 'rate_limited'; другой отказ HTTP, сеть и тайм-аут => 'unavailable'. В лог: подсказка по статусу,
+ * статус и error.message OpenRouter (маска на ключ и длинные числа, до 200 символов) или имя ошибки сети;
  * пустая расшифровка => 'invalid_output'.
  * Повторов нет: при любом сбое вызывающий отвечает фразой про голосовое, клиент напишет текстом.
  * Голосовые WhatsApp уходят как format 'ogg'. Если живой тест (только с разрешения владельца) покажет отказ,
