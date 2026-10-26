@@ -1,0 +1,53 @@
+# Служба systemd для Tanbala WhatsApp. Шаблон без секретов: ключи и настройки бот читает сам из .env в корне проекта.
+# Установка: docs/DEPLOY.md, шаг 9 (копия в /etc/systemd/system/tanbala.service).
+# Пути рассчитаны на пользователя tanbala, папку /home/tanbala/app и node в /usr/local/bin/node.
+# Если у вас другие, замените их по всему файлу.
+# Комментарии стоят только на отдельных строках: после значения systemd считал бы их частью значения.
+
+[Unit]
+Description=Tanbala WhatsApp bot
+After=network-online.target
+Wants=network-online.target
+# Не больше 4 запусков за 10 минут, дальше systemd перестаёт перезапускать службу (start-limit-hit).
+# Продолжить после разбора причины: systemctl reset-failed tanbala, затем systemctl start tanbala.
+StartLimitIntervalSec=600
+StartLimitBurst=4
+
+[Service]
+Type=simple
+User=tanbala
+Group=tanbala
+WorkingDirectory=/home/tanbala/app
+
+# Запуск только при привязанной сессии WhatsApp: в creds.json есть ключ "me".
+# Без неё бот сам начал бы привязку по QR. На сервере этот QR никто не отсканирует, а каждый запуск
+# тратит одну из двух попыток привязки за 24 часа. Привязка делается вручную (docs/DEPLOY.md, шаг 8).
+# Путь к creds.json берётся из WHATSAPP_SESSION_DIR в .env (по умолчанию data/whatsapp-session).
+ExecStartPre=/usr/bin/grep -qs '"me":' /home/tanbala/app/data/whatsapp-session/creds.json
+ExecStart=/usr/local/bin/node /home/tanbala/app/dist/cli.js
+
+# Коды выхода бота (src/cli.ts). 0: штатная остановка по SIGTERM или SIGINT, перезапуска нет.
+# 1: любой сбой (ошибка настроек, WhatsApp остановился сам, необработанная ошибка). Причину systemd
+# по коду не отличает, поэтому перезапуск идёт с паузой и ограничен StartLimit выше.
+Restart=on-failure
+RestartSec=60
+# При остановке бот доводит до конца ответы в работе (один вызов модели занимает до 60 секунд).
+TimeoutStopSec=120
+
+# Новые файлы (база, сессия, .pairing-attempts.json) доступны только пользователю tanbala.
+UMask=0077
+
+# Песочница. Писать можно только в папку проекта: база и сессия в data/, счётчик привязок в корне проекта.
+# Если запуск падает с status=226/NAMESPACE (контейнерная виртуализация), закомментируйте эти строки.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/tanbala/app
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
