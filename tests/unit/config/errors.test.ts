@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ConfigError, formatFatalError } from '../../../src/config/errors.js';
 import { SafeError } from '../../../src/shared/safe-error.js';
-import { NotImplementedError } from '../../../src/shared/todo.js';
 
 const SECRET_TEXT = 'ключ sk-ant-secret и номер 77011234567@s.whatsapp.net';
 
@@ -74,12 +73,6 @@ describe('config/errors formatFatalError', () => {
     expect(text).not.toContain('sk-ant-secret');
     expect(text).not.toContain('77011234567');
     expect(text.endsWith('\n')).toBe(true);
-  });
-
-  it('ошибка заготовки называется по классу', () => {
-    expect(formatFatalError(new NotImplementedError('этап 2', 'main.main'))).toContain(
-      'NotImplementedError',
-    );
   });
 
   it('безопасный код ошибки Node или SQLite показывается', () => {

@@ -16,6 +16,7 @@ import { acquireProcessLock, ProcessLockBusyError } from '../../src/db/process-l
 import type { Clock, LlmClient } from '../../src/domain/ports.js';
 import type { Jid, LlmResult, WaMessageId } from '../../src/domain/types.js';
 import { main, type MainOptions, type RunningApp } from '../../src/main.js';
+import type { PanelApp, PanelStarter } from '../../src/pipeline/panel-setup.js';
 import { SafeError } from '../../src/shared/safe-error.js';
 import {
   LinkBoundaryMissingError,
@@ -104,6 +105,11 @@ const STALE_EVENT: WaEvent = {
   message: { ...CLIENT_EVENT.message, waId: 'WA-2' as WaMessageId, tsMs: Date.UTC(2026, 9, 24) },
 };
 
+/** Шов по умолчанию: панель собирается, но порт не занимает (тесты идут параллельно, сеть в них запрещена). */
+function noPanelListen(): Promise<void> {
+  return Promise.resolve();
+}
+
 /** Шов по умолчанию: тест без своего шва не дойдёт до настоящего адаптера и сокета Baileys. */
 function refuseRealWhatsApp(): Promise<WhatsAppConnection> {
   return Promise.reject(new Error('Тест без шва startWhatsApp: настоящий сокет запрещён'));
@@ -142,6 +148,7 @@ function useHarness(): Harness {
         logDestination: destination,
         ...extra,
         startWhatsApp: extra.startWhatsApp ?? refuseRealWhatsApp,
+        startPanel: extra.startPanel ?? noPanelListen,
       });
       apps.push(app);
       return app;
@@ -791,7 +798,7 @@ describe('main: отказ запуска WhatsApp', () => {
   });
 });
 
-describe('main: ответы клиентам (этап 3)', () => {
+describe('main: ответы клиентам, службы этапа 5 и веб-панель', () => {
   const KEY = 'sk-test-not-a-real-key';
   const OPENROUTER_KEY = 'or-test-not-a-real-key';
   const KEY_ENV: EnvInput = { ...ENABLED_ENV, VENMART_ANTHROPIC_KEY: KEY };
@@ -1006,6 +1013,236 @@ describe('main: ответы клиентам (этап 3)', () => {
       stop.mock.invocationCallOrder[0] ?? 0,
     );
     expect(databaseOpen(harness.dbPath)).toBe(false);
+  });
+
+  describe('веб-панель (этап 6)', () => {
+    const PORT = '3187';
+    const HOST_HEADER = `127.0.0.1:${PORT}`;
+    const ORIGIN = `http://${HOST_HEADER}`;
+    const STRONG_PASSWORD = 'correct-horse-battery-staple';
+    const WEAK_PASSWORD = 'short-pass';
+    const FORM = 'application/x-www-form-urlencoded';
+
+    /** Шов запуска панели: запоминает собранную панель и параметры, порт не занимает. */
+    function recordingPanel(onBuilt: (app: PanelApp) => void = () => undefined): {
+      readonly startPanel: Mock<PanelStarter>;
+      app(): PanelApp;
+    } {
+      let built: PanelApp | null = null;
+      const startPanel = vi.fn<PanelStarter>((app) => {
+        built = app;
+        onBuilt(app);
+        return Promise.resolve();
+      });
+      return {
+        startPanel,
+        app: () => {
+          if (built === null) throw new Error('Панель не запускалась');
+          return built;
+        },
+      };
+    }
+
+    function sessionCookie(setCookie: string | string[] | number | undefined): string {
+      const lines = Array.isArray(setCookie) ? setCookie : [String(setCookie)];
+      const line = lines.find((value) => value.startsWith('tanbala_sid='));
+      return line?.split(';')[0] ?? '';
+    }
+
+    async function signIn(app: PanelApp, password: string): Promise<string> {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/login',
+        headers: { host: HOST_HEADER, origin: ORIGIN, 'content-type': FORM },
+        payload: new URLSearchParams({ password }).toString(),
+      });
+      return sessionCookie(response.headers['set-cookie']);
+    }
+
+    function formPost(app: PanelApp, url: string, cookie: string, fields: Record<string, string>) {
+      return app.inject({
+        method: 'POST',
+        url,
+        headers: { host: HOST_HEADER, origin: ORIGIN, cookie, 'content-type': FORM },
+        payload: new URLSearchParams(fields).toString(),
+      });
+    }
+
+    it.each([
+      ['выключен', DISABLED_ENV],
+      ['включён', ENABLED_ENV],
+    ])(
+      'WhatsApp %s: панель слушает PANEL_HOST и PANEL_PORT, пароль из настроек',
+      async (_c, env) => {
+        const harness = useHarness();
+        const { startPanel } = recordingPanel();
+        const startWhatsApp = fakeStart(fakeConnection().connection);
+
+        await harness.run({ ...env, PANEL_PORT: PORT }, { startPanel, startWhatsApp });
+
+        expect(startPanel).toHaveBeenCalledTimes(1);
+        expect(startPanel).toHaveBeenCalledWith(expect.anything(), {
+          host: '127.0.0.1',
+          port: Number(PORT),
+          password: 'admin',
+        });
+        expect(harness.records()).toContainEqual(
+          expect.objectContaining({ level: INFO, msg: `Веб-панель запущена: 127.0.0.1:${PORT}` }),
+        );
+      },
+    );
+
+    it('панель начинает слушать после старта WhatsApp', async () => {
+      const harness = useHarness();
+      const { startPanel } = recordingPanel();
+      const startWhatsApp = fakeStart(fakeConnection().connection);
+
+      await harness.run(ENABLED_ENV, { startPanel, startWhatsApp });
+
+      expect(startWhatsApp.mock.invocationCallOrder[0]).toBeLessThan(
+        startPanel.mock.invocationCallOrder[0] ?? 0,
+      );
+    });
+
+    it('слабый пароль не на 127.0.0.1: остановка сразу после настроек, до замка, базы, WhatsApp и QR; пароля в логе нет', async () => {
+      const harness = useHarness();
+      const { startPanel } = recordingPanel();
+      const startWhatsApp = fakeStart(fakeConnection().connection);
+      const env = { ...ENABLED_ENV, PANEL_HOST: '0.0.0.0', ADMIN_PASSWORD: WEAK_PASSWORD };
+
+      const error = await errorOf(harness.run(env, { startPanel, startWhatsApp }));
+
+      expect(error).toBeInstanceOf(ConfigError);
+      expect((error as ConfigError).message).toContain('PANEL_HOST');
+      expect(startWhatsApp).not.toHaveBeenCalled();
+      expect(startPanel).not.toHaveBeenCalled();
+      expect(existsSync(harness.dbPath)).toBe(false);
+      expect(existsSync(harness.lockPath)).toBe(false);
+      expect(harness.records()).toContainEqual(
+        expect.objectContaining({ level: ERROR, msg: (error as SafeError).message }),
+      );
+      expect(JSON.stringify(harness.records())).not.toContain(WEAK_PASSWORD);
+    });
+
+    it('сильный пароль: на чужом адресе панель запускается, пароля в логе нет', async () => {
+      const harness = useHarness();
+      const { startPanel } = recordingPanel();
+      const env = { ...DISABLED_ENV, PANEL_HOST: '0.0.0.0', ADMIN_PASSWORD: STRONG_PASSWORD };
+
+      await harness.run(env, { startPanel });
+
+      expect(startPanel).toHaveBeenCalledWith(expect.anything(), {
+        host: '0.0.0.0',
+        port: 3100,
+        password: STRONG_PASSWORD,
+      });
+      expect(JSON.stringify(harness.records())).not.toContain(STRONG_PASSWORD);
+    });
+
+    it('панель собрана на настройках: пароль входа, порт и домены за Caddy', async () => {
+      const harness = useHarness();
+      const panel = recordingPanel();
+      const env = {
+        ...DISABLED_ENV,
+        PANEL_PORT: PORT,
+        ADMIN_PASSWORD: STRONG_PASSWORD,
+        PANEL_ALLOWED_HOSTS: 'panel.example.kz',
+      };
+      await harness.run(env, { startPanel: panel.startPanel });
+      const app = panel.app();
+      const page = (host: string) => app.inject({ url: '/login', headers: { host } });
+
+      expect((await page(HOST_HEADER)).statusCode).toBe(200);
+      expect((await page('panel.example.kz')).statusCode).toBe(200);
+      expect((await page('evil.example')).statusCode).toBe(403);
+      expect((await signIn(app, 'неверный-пароль-123')).length).toBe(0);
+      expect((await signIn(app, STRONG_PASSWORD)).startsWith('tanbala_sid=')).toBe(true);
+    });
+
+    it('ответ из панели и возврат боту идут через общие службы и подключение WhatsApp', async () => {
+      const harness = useHarness();
+      const panel = recordingPanel();
+      const { connection, sendText } = sendingConnection();
+      const startWhatsApp = fakeStart(connection);
+      await harness.run(
+        { ...ENABLED_ENV, PANEL_PORT: PORT },
+        { startPanel: panel.startPanel, startWhatsApp },
+      );
+      await depsOf(startWhatsApp).onEvent(CLIENT_EVENT);
+      const app = panel.app();
+      const cookie = await signIn(app, 'admin');
+      const csrf = /name="csrf" value="([^"]+)"/.exec(
+        (await app.inject({ url: '/chats/1', headers: { host: HOST_HEADER, cookie } })).body,
+      )?.[1];
+      if (csrf === undefined) throw new Error('В странице нет токена CSRF');
+      const text = 'Добрый день, это менеджер из панели';
+
+      const reply = await formPost(app, '/chats/1/reply', cookie, { csrf, text });
+
+      expect(reply.statusCode).toBe(303);
+      expect(sendText).toHaveBeenCalledWith(CLIENT_JID, text, 'OUT-1');
+      expect(chatRow(harness.dbPath)).toEqual({ status: 'manager', statusBy: 'panel' });
+      expect(
+        rows(harness.dbPath, 'SELECT reason FROM handoffs WHERE resolved_at_ms IS NULL'),
+      ).toEqual([{ reason: 'human_took_over' }]);
+
+      const returned = await formPost(app, '/chats/1/return', cookie, { csrf });
+
+      expect(returned.statusCode).toBe(303);
+      expect(chatRow(harness.dbPath)).toEqual({ status: 'bot', statusBy: 'panel' });
+      expect(
+        rows(harness.dbPath, 'SELECT reason FROM handoffs WHERE resolved_at_ms IS NULL'),
+      ).toEqual([]);
+      const logged = JSON.stringify(harness.records());
+      expect(logged).not.toContain(text);
+      expect(logged).not.toContain('"admin"');
+    });
+
+    it('остановка закрывает панель первой: до остановки WhatsApp и до закрытия базы', async () => {
+      const harness = useHarness();
+      const events: string[] = [];
+      const dbState = (): string =>
+        databaseOpen(harness.dbPath) ? 'база открыта' : 'база закрыта';
+      const panel = recordingPanel((app) => {
+        app.addHook('onClose', () => {
+          events.push(`панель: ${dbState()}`);
+          return Promise.resolve();
+        });
+      });
+      const { connection } = sendingConnection();
+      const startWhatsApp = fakeStart({
+        ...connection,
+        stop: () => {
+          events.push(`WhatsApp: ${dbState()}`);
+          return Promise.resolve();
+        },
+      });
+      const app = await harness.run(ENABLED_ENV, { startPanel: panel.startPanel, startWhatsApp });
+
+      await app.stop();
+
+      expect(events).toEqual(['панель: база открыта', 'WhatsApp: база открыта']);
+      expect(databaseOpen(harness.dbPath)).toBe(false);
+    });
+
+    it('панель не запустилась (порт занят): остановка целиком, WhatsApp остановлен, ошибка всплывает', async () => {
+      const harness = useHarness();
+      const failure = new Error('listen EADDRINUSE');
+      const startPanel = vi.fn<PanelStarter>(() => Promise.reject(failure));
+      const { connection, stop } = sendingConnection();
+
+      const error = await errorOf(
+        harness.run(ENABLED_ENV, { startPanel, startWhatsApp: fakeStart(connection) }),
+      );
+
+      expect(error).toBe(failure);
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(databaseOpen(harness.dbPath)).toBe(false);
+      expect(lockFree(harness.lockPath)).toBe(true);
+      expect(harness.records()).toContainEqual(
+        expect.objectContaining({ level: ERROR, msg: 'Бот не запущен' }),
+      );
+    });
   });
 
   describe('службы этапа 5: повтор уведомлений и список простоя', () => {

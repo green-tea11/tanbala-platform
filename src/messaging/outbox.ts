@@ -11,12 +11,13 @@ import type {
   ChatId,
   HandoffNotice,
   Jid,
+  ManagerNotificationKind,
   PhoneDigits,
   ReviewedText,
   SendOrigin,
   WaMessageId,
 } from '../domain/types.js';
-import { notImplemented } from '../shared/todo.js';
+import { SafeError } from '../shared/safe-error.js';
 import { isChatAllowlisted } from './allowlist.js';
 
 /**
@@ -30,7 +31,7 @@ export type SendBlocked = 'skipped_limit' | 'disabled' | 'skipped_test_mode';
  * не вытесняет уведомления о горячих клиентах и других передачах.
  * backlog: одно уведомление со списком чатов, где сообщения за время простоя старше порога.
  */
-export type ManagerNotifyKind = 'handoff' | 'limit' | 'backlog';
+export type ManagerNotifyKind = ManagerNotificationKind;
 
 /** Итог уведомления менеджеру: waId нужен для HandoffsRepo.setManagerNotified. */
 export type ManagerNotifyResult =
@@ -65,7 +66,11 @@ export interface Outbox {
   ): Promise<'sent' | 'skipped_manager' | 'skipped_no_inbound' | SendBlocked>;
   /** Уведомление менеджеру на MANAGER_WHATSAPP: единственное исходящее не в ответ. */
   notifyManager(text: string, kind: ManagerNotifyKind): Promise<ManagerNotifyResult>;
-  /** Ответ менеджера из панели от имени номера: чат сразу переходит в статус manager. */
+  /**
+   * Ответ менеджера из панели от имени номера. Статус чата не меняет: перед отправкой маршрут панели
+   * передаёт чат менеджеру через HandoffService (human_took_over, by 'panel'). Отказ приходит PanelSendError,
+   * текст которого безопасно показать на странице; сбой отправки пробрасывается как есть.
+   */
   sendFromPanel(chatId: ChatId, text: string): Promise<'sent'>;
 }
 
@@ -85,6 +90,30 @@ export interface OutboxDeps {
 /** Фраза в ответ на голосовое, пока расшифровки нет (решение владельца): ровно этот текст, без вариантов. */
 export const VOICE_NOTICE_TEXT =
   'Сейчас не могу прослушать голосовое, напишите, пожалуйста, текстом';
+
+/** Наибольшая длина ответа из панели (без пробелов по краям), в символах. */
+export const PANEL_TEXT_MAX_LENGTH = 4096;
+
+/**
+ * Отказ ответа из панели. Текст написан здесь и не содержит номеров и слов клиента, поэтому панель показывает его
+ * менеджеру как есть; прочие ошибки отправки панель скрывает за общей фразой.
+ */
+export class PanelSendError extends SafeError {
+  override readonly name = 'PanelSendError';
+}
+
+/**
+ * Что не так с текстом ответа из панели: пустой после trim или длиннее PANEL_TEXT_MAX_LENGTH. null: текст годится.
+ * Одна проверка для маршрута панели (до передачи чата менеджеру) и для sendFromPanel.
+ */
+export function panelTextProblem(text: string): string | null {
+  const length = text.trim().length;
+  if (length === 0) return 'Пустое сообщение не отправляется';
+  if (length > PANEL_TEXT_MAX_LENGTH) {
+    return `Сообщение длиннее ${PANEL_TEXT_MAX_LENGTH} символов: сократите его`;
+  }
+  return null;
+}
 
 /**
  * Предохранитель от петель (например, переписки с чужим автоответчиком): исходящих в один чат клиента
@@ -189,8 +218,12 @@ interface SendQuotas {
  * ждал бы дважды. Лимиты за скользящий час: CLIENT_SENDS_PER_CHAT_PER_HOUR на чат и CLIENT_SENDS_PER_HOUR на все чаты;
  * уведомления менеджеру по квотам MANAGER_NOTIFY_PER_HOUR раздельно по kind, нет managerJid => 'no_manager'.
  * Фразы передачи фиксированные по поводу, вариант выбирает random; фраза про голосовое одна, origin 'voice_notice'.
+ * sendFromPanel (ответ человека из панели): текст непустой после trim и не длиннее PANEL_TEXT_MAX_LENGTH, чат существует,
+ * закрытый режим как у остальных отправок; запись в outbound_ids с origin 'panel' до отправки, затем сообщение в истории
+ * (author 'human_panel', ID отправки). Статус чата не меняет, неотвеченное входящее не требует и часовые квоты бота не
+ * расходует: пишет человек, и ему не должен мешать лимит от петель бота. Ошибки: PanelSendError (отказ с понятным
+ * текстом) или сбой отправки как есть.
  * TODO(этап 3): аварийный выключатель автоответов (итог 'disabled'): нужен источник флага (настройка или панель).
- * TODO(этап 6): sendFromPanel пишет с origin 'panel' и переводит чат в статус manager (by 'panel').
  */
 export function createOutbox(deps: OutboxDeps): Outbox {
   const quotas = createSendQuotas(deps.clock);
@@ -219,7 +252,7 @@ export function createOutbox(deps: OutboxDeps): Outbox {
         silentForManager,
       ),
     notifyManager: (text, kind) => notifyManager(deps, quotas, text, kind),
-    sendFromPanel: () => notImplemented('этап 6', 'messaging/outbox.sendFromPanel'),
+    sendFromPanel: (chatId, text) => sendFromPanel(deps, chatId, text),
   };
 }
 
@@ -248,6 +281,34 @@ async function sendToClient<Extra extends string>(
     author: 'bot',
     kind: 'text',
     text: request.text,
+    tsMs: deps.clock.now(),
+  });
+  return 'sent';
+}
+
+async function sendFromPanel(deps: OutboxDeps, chatId: ChatId, text: string): Promise<'sent'> {
+  const problem = panelTextProblem(text);
+  if (problem !== null) throw new PanelSendError(problem);
+  const chat = deps.chats.getById(chatId);
+  if (chat === null) throw new PanelSendError('Чат не найден: сообщение не отправлено');
+  if (!isChatAllowlisted(deps.testAllowlist, chat.identity)) {
+    throw new PanelSendError(
+      'Закрытый режим: этот чат не из TEST_ALLOWLIST, сообщение не отправлено',
+    );
+  }
+  const body = text.trim();
+  const waId = await deliver(deps, {
+    chatId: chat.id,
+    jid: chat.identity.replyJid,
+    origin: 'panel',
+    text: body,
+  });
+  deps.messages.insertIfNew({
+    chatId: chat.id,
+    waId,
+    author: 'human_panel',
+    kind: 'text',
+    text: body,
     tsMs: deps.clock.now(),
   });
   return 'sent';

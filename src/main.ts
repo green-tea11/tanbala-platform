@@ -39,9 +39,11 @@ import {
   type IgnoreStats,
   type InboundRecorder,
 } from './pipeline/recorder.js';
-import { assembleResponder } from './pipeline/responder-setup.js';
+import { assemblePanel, type Panel, type PanelStarter } from './pipeline/panel-setup.js';
+import { assembleResponder, type Responder } from './pipeline/responder-setup.js';
 import { assembleServices, type Services } from './pipeline/services.js';
 import { handleOwnMessage, type TakeoverDeps, type TakeoverResult } from './pipeline/takeover.js';
+import { assertPanelStartAllowed } from './panel/guard.js';
 import { createSystemClock } from './shared/clock.js';
 import { createLogger, type LogDestination } from './shared/logger.js';
 import { SafeError } from './shared/safe-error.js';
@@ -69,6 +71,8 @@ export interface MainOptions {
   readonly clock?: Clock;
   /** Шов для тестов, в рабочем режиме не передаётся: клиент LLM (по умолчанию createAnthropicLlm). */
   readonly createLlm?: (deps: AnthropicLlmDeps) => LlmClient;
+  /** Шов для тестов, в рабочем режиме не передаётся: запуск панели без занятого порта (по умолчанию startPanel). */
+  readonly startPanel?: PanelStarter;
 }
 
 /** Запущенное приложение. */
@@ -180,7 +184,7 @@ interface IgnoreSummary {
   stop(): void;
 }
 
-/** Что закрывает остановка, кроме WhatsApp: очередь ответов, повтор уведомлений, таймер сводки, база и замок. */
+/** Что закрывает остановка, кроме WhatsApp: панель, очередь ответов, повтор уведомлений, таймер сводки, база и замок. */
 interface Resources {
   readonly storage: Storage;
   readonly lock: ProcessLock;
@@ -189,6 +193,8 @@ interface Resources {
   readonly batcher: ChatBatcher | null;
   /** Общие службы этапа 5: таймер повтора уведомлений менеджеру снимается до закрытия базы. */
   readonly services: Services;
+  /** Веб-панель: закрывается первой, до остановки WhatsApp и закрытия базы. */
+  readonly panel: Panel;
 }
 
 /** Всё, что собрано до подключения к WhatsApp. */
@@ -250,8 +256,11 @@ class PairingLimitExplained extends PairingLimitError {
  * pipeline/recorder.ts; onOfflineQueueDone (после каждого открытия подключения) повторяет неотправленные уведомления
  * менеджеру, запускает таймер повтора раз в 5 минут и отправляет одно уведомление со списком чатов простоя.
  * stop снимает таймер повтора до остановки WhatsApp и до закрытия базы.
+ * Этап 6, веб-панель pipeline/panel-setup.ts: запрещённый запуск (слабый пароль не на 127.0.0.1) останавливает бота
+ * сразу после loadConfig, до замка, базы, WhatsApp и QR. Панель собирается на общих службах и начинает слушать порт
+ * после старта WhatsApp (при WA_ENABLED=false сразу); не запустилась (порт занят) => остановка целиком и ошибка.
+ * stop закрывает панель первой, до остановки WhatsApp и до закрытия базы. Пароль панели в логи не попадает.
  * TODO(этап 8): переход TEST_MODE true => false: записать момент перехода в app_state как границу (сообщения чатов не из списка до неё не обрабатывать); до перехода предупредить менеджеров; как не ответить поверх менеджера в живых чатах рабочего номера: вопрос владельцу перед запуском.
- * TODO(этап 6): панель запускать после WhatsApp; stop закрывает её до базы.
  */
 export async function main(options: MainOptions): Promise<RunningApp> {
   const logger = createLogger({ level: LOG_LEVEL, destination: options.logDestination });
@@ -266,6 +275,8 @@ async function startApp(options: MainOptions, logger: Logger): Promise<RunningAp
   const { root } = options;
   const { config, warnings } = loadConfig(options.env, readModelsJson(root), root);
   for (const warning of warnings) logger.warn({}, warning);
+  // Запрещённый запуск панели (слабый пароль не на 127.0.0.1) останавливает бота до замка, базы, WhatsApp и QR.
+  assertPanelStartAllowed({ host: config.panel.host, password: config.adminPassword });
   logStartup(config, logger);
   warnManagerInAllowlist(config, logger);
   // Второй экземпляр падает здесь: до базы, сессии WhatsApp и счётчика привязок.
@@ -287,47 +298,107 @@ async function startLocked(
   const clock = options.clock ?? createSystemClock();
   const storage = openStorage(config, logger, clock);
   const summary = startIgnoreSummary(storage.recorder, logger);
-  const link: WhatsAppLink = { started: null };
   try {
-    const { createLlm } = options;
-    const services = assembleServices({ config, logger, clock, storage });
-    const responder = await assembleResponder({
-      config,
-      logger,
-      clock,
-      storage,
-      services,
-      createLlm,
-    });
-    const batcher = responder?.batcher ?? null;
-    const lifecycle = createLifecycle(link, { storage, lock, summary, batcher, services }, logger);
-    if (!config.waEnabled) {
-      logger.warn({}, 'WhatsApp выключен (WA_ENABLED=false)');
-      return lifecycle.app;
-    }
-    const takeover = takeoverDepsOf(storage, services);
-    const context: AppContext = {
-      config,
-      root: options.root,
-      logger,
-      clock,
-      storage,
-      summary,
-      batcher,
-      takeover,
-      services,
-    };
-    const deps = whatsAppDeps(context, onStoppedOf(lifecycle, logger));
-    const start = options.startWhatsApp ?? startWhatsApp;
-    // Ссылка на запуск есть до вызова адаптера: самоостановка во время запуска дождётся его и остановит подключение.
-    link.started = Promise.resolve().then(() => start(deps));
-    const connection = await link.started;
-    services.connect(connection);
-    responder?.connect(connection);
-    return lifecycle.app;
+    const link: WhatsAppLink = { started: null };
+    return await launch({ config, options, logger, clock, storage, summary, lock, link });
   } catch (error: unknown) {
     summary.stop();
     storage.close();
+    throw error;
+  }
+}
+
+/** Всё, что нужно запуску после открытия базы. */
+interface Launch {
+  readonly config: AppConfig;
+  readonly options: MainOptions;
+  readonly logger: Logger;
+  readonly clock: Clock;
+  readonly storage: Storage;
+  readonly summary: IgnoreSummary;
+  readonly lock: ProcessLock;
+  readonly link: WhatsAppLink;
+}
+
+/**
+ * Службы, ответы клиентам и панель собираются до WhatsApp; WhatsApp запускается, если он включён; панель начинает
+ * слушать порт последней, после старта WhatsApp, а при WA_ENABLED=false сразу.
+ */
+async function launch(run: Launch): Promise<RunningApp> {
+  const { config, options, logger, clock, storage } = run;
+  const services = assembleServices({ config, logger, clock, storage });
+  const panel = assemblePanel({
+    config,
+    logger,
+    clock,
+    storage,
+    services,
+    startPanel: options.startPanel,
+  });
+  const responder = await assembleResponder({
+    config,
+    logger,
+    clock,
+    storage,
+    services,
+    createLlm: options.createLlm,
+  });
+  const batcher = responder?.batcher ?? null;
+  const resources: Resources = {
+    storage,
+    lock: run.lock,
+    summary: run.summary,
+    batcher,
+    services,
+    panel,
+  };
+  const lifecycle = createLifecycle(run.link, resources, logger);
+  if (config.waEnabled) {
+    await connectWhatsApp(run, { services, responder, batcher, lifecycle });
+  } else {
+    logger.warn({}, 'WhatsApp выключен (WA_ENABLED=false)');
+  }
+  await startPanelOrStop(panel, lifecycle);
+  return lifecycle.app;
+}
+
+/** Что WhatsApp получает от остальной сборки. */
+interface WhatsAppParts {
+  readonly services: Services;
+  readonly responder: Responder | null;
+  readonly batcher: ChatBatcher | null;
+  readonly lifecycle: Lifecycle;
+}
+
+async function connectWhatsApp(run: Launch, parts: WhatsAppParts): Promise<void> {
+  const { config, options, logger, clock, storage, summary, link } = run;
+  const { services, responder, batcher, lifecycle } = parts;
+  const context: AppContext = {
+    config,
+    root: options.root,
+    logger,
+    clock,
+    storage,
+    summary,
+    batcher,
+    takeover: takeoverDepsOf(storage, services),
+    services,
+  };
+  const deps = whatsAppDeps(context, onStoppedOf(lifecycle, logger));
+  const start = options.startWhatsApp ?? startWhatsApp;
+  // Ссылка на запуск есть до вызова адаптера: самоостановка во время запуска дождётся его и остановит подключение.
+  link.started = Promise.resolve().then(() => start(deps));
+  const connection = await link.started;
+  services.connect(connection);
+  responder?.connect(connection);
+}
+
+/** Не удалось запустить панель (например, порт занят): остановка идёт целиком, как по stop(), и ошибка всплывает. */
+async function startPanelOrStop(panel: Panel, lifecycle: Lifecycle): Promise<void> {
+  try {
+    await panel.start();
+  } catch (error: unknown) {
+    await lifecycle.app.stop();
     throw error;
   }
 }
@@ -590,14 +661,15 @@ function createLifecycle(link: WhatsAppLink, resources: Resources, logger: Logge
 }
 
 /**
- * Очередь ответов, повтор уведомлений менеджеру, WhatsApp, таймер сводки, база, замок, затем итоговая сводка
- * пропусков. Очередь первой: ответы и передачи уходят, пока WhatsApp подключён. Повтор уведомлений снимается
- * до остановки WhatsApp: с закрытым сокетом попытки только тратили бы их лимит. stop() адаптера вызывается и после
- * самоостановки (повторный вызов безопасен): он дожидается очереди событий, поэтому последние события пишутся
- * в ещё открытую базу.
+ * Панель, очередь ответов, повтор уведомлений менеджеру, WhatsApp, таймер сводки, база, замок, затем итоговая сводка
+ * пропусков. Панель первой: новых действий из неё нет, а идущие доведены, пока WhatsApp подключён. Очередь ответов
+ * следом: ответы и передачи уходят, пока WhatsApp подключён. Повтор уведомлений снимается до остановки WhatsApp:
+ * с закрытым сокетом попытки только тратили бы их лимит. stop() адаптера вызывается и после самоостановки
+ * (повторный вызов безопасен): он дожидается очереди событий, поэтому последние события пишутся в ещё открытую базу.
  */
 async function shutdown(link: WhatsAppLink, resources: Resources, logger: Logger): Promise<void> {
   try {
+    await resources.panel.close();
     await resources.batcher?.drain();
     await resources.services.stop();
     const connection = await startedConnection(link);

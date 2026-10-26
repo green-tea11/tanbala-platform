@@ -73,7 +73,7 @@ describe('config/env loadConfig: значения по умолчанию', () =
       tokenLogPath: join(ROOT, 'data', 'token-usage.jsonl'),
       knowledgeDir: join(ROOT, 'knowledge'),
       pairingMirrorPath: join(ROOT, '.pairing-attempts.json'),
-      panel: { host: '127.0.0.1', port: 3100 },
+      panel: { host: '127.0.0.1', port: 3100, allowedHosts: [] },
       models: CLAUDE_MODELS,
       limits: { apiCallsPerDay: 500, apiCallsPerChatPerDay: 100 },
       backlogMaxAgeHours: 12,
@@ -90,6 +90,7 @@ describe('config/env loadConfig: значения по умолчанию', () =
       BACKLOG_MAX_AGE_HOURS: ' ',
       PANEL_HOST: '',
       PANEL_PORT: '',
+      PANEL_ALLOWED_HOSTS: ' ',
       DATABASE_PATH: '',
       ADMIN_PASSWORD: '',
     };
@@ -281,6 +282,46 @@ describe('config/env loadConfig: PANEL_HOST', () => {
 
   it('адрес с пробелом внутри отклоняется', () => {
     expectRejected({ PANEL_HOST: 'local host' }, 'PANEL_HOST');
+  });
+});
+
+describe('config/env loadConfig: PANEL_ALLOWED_HOSTS', () => {
+  it('по умолчанию список пуст: за прокси панель отвечает только на локальные имена', () => {
+    expect(load({}).config.panel.allowedHosts).toEqual([]);
+  });
+
+  it('домены через запятую, с портом или без, приводятся к нижнему регистру', () => {
+    const { config } = load({
+      PANEL_ALLOWED_HOSTS: ' Panel.Example.kz , panel2.example.kz:8443,localhost:3100',
+    });
+
+    expect(config.panel.allowedHosts).toEqual([
+      'panel.example.kz',
+      'panel2.example.kz:8443',
+      'localhost:3100',
+    ]);
+  });
+
+  it.each([
+    'https://panel.example.kz',
+    'panel.example.kz/path',
+    'panel example.kz',
+    'panel.example.kz:0',
+    'panel.example.kz:65536',
+    'panel.example.kz:80a',
+    '-panel.example.kz',
+    'panel.example.kz-',
+    'панель.рф',
+    'panel.example.kz,,other.example.kz',
+    '[::1]:3100',
+  ])('значение «%s» отклоняется без показа значения', (value) => {
+    expectRejected({ PANEL_ALLOWED_HOSTS: value }, 'PANEL_ALLOWED_HOSTS', value);
+  });
+
+  it('проблема называет позицию в списке', () => {
+    const problems = problemsOf({ PANEL_ALLOWED_HOSTS: 'panel.example.kz,не домен' });
+
+    expect(problems).toEqual([expect.stringMatching(/^PANEL_ALLOWED_HOSTS: .*2/)]);
   });
 });
 

@@ -9,11 +9,11 @@ const ENTRY_POINT = 'cli.ts';
 const modules = listTsFiles(SRC).filter((path) => path !== ENTRY_POINT);
 
 describe('импорт модулей src', () => {
-  it('находит модули заготовок, включая ключевые', () => {
+  it('находит модули, включая ключевые', () => {
     expect(modules).toEqual(
       expect.arrayContaining([
         'main.ts',
-        'shared/todo.ts',
+        'handoff/handoff.ts',
         'whatsapp/connection.ts',
         'llm/anthropic.ts',
         'panel/server.ts',

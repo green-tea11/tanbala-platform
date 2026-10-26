@@ -17,10 +17,13 @@ import {
   CLIENT_SENDS_PER_HOUR,
   createOutbox,
   MANAGER_NOTIFY_PER_HOUR,
+  PANEL_TEXT_MAX_LENGTH,
+  panelTextProblem,
+  PanelSendError,
   VOICE_NOTICE_TEXT,
   type Outbox,
 } from '../../../src/messaging/outbox.js';
-import { NotImplementedError } from '../../../src/shared/todo.js';
+import { SafeError } from '../../../src/shared/safe-error.js';
 import { insertChat, LID_A, PN_A, PN_B, useMigratedDb } from '../db/fixture.js';
 
 const T0 = 1_761_400_000_000;
@@ -508,10 +511,170 @@ describe('createOutbox: notifyManager', () => {
   });
 });
 
+function panelMessages(db: Database.Database): unknown[] {
+  return db
+    .prepare(
+      "SELECT chat_id, wa_id, kind, text, ts_ms FROM messages WHERE author = 'human_panel' ORDER BY id",
+    )
+    .all();
+}
+
+describe('panelTextProblem', () => {
+  it('пустой текст и текст из пробелов: причина отказа', () => {
+    expect(panelTextProblem('')).toMatch(/пуст/i);
+    expect(panelTextProblem(' \n\t ')).toMatch(/пуст/i);
+  });
+
+  it('длина считается без пробелов по краям: ровно предел проходит, на символ больше нет', () => {
+    const limit = 'я'.repeat(PANEL_TEXT_MAX_LENGTH);
+
+    expect(PANEL_TEXT_MAX_LENGTH).toBe(4096);
+    expect(panelTextProblem(limit)).toBeNull();
+    expect(panelTextProblem(`  ${limit}\n`)).toBeNull();
+    expect(panelTextProblem(`${limit}я`)).toMatch(/4096/);
+  });
+});
+
 describe('createOutbox: sendFromPanel', () => {
-  it('пока заготовка этапа 6', () => {
+  const TEXT = 'Добрый день, это менеджер Tanbala';
+
+  it('отправляет на адрес чата: запись panel в outbound_ids до отправки, сообщение human_panel в истории', async () => {
     const h = setup();
 
-    expect(() => h.outbox.sendFromPanel(h.chatId, 'текст')).toThrow(NotImplementedError);
+    await expect(h.outbox.sendFromPanel(h.chatId, TEXT)).resolves.toBe('sent');
+
+    expect(h.steps).toEqual([
+      { step: 'send', jid: PN_A, text: TEXT, waId: 'OUT-1', recordedAs: 'pending' },
+    ]);
+    expect(outboundRows(h.db)).toEqual([
+      {
+        wa_id: 'OUT-1',
+        chat_id: h.chatId,
+        jid: PN_A,
+        origin: 'panel',
+        text: TEXT,
+        status: 'sent',
+        created_at: T0,
+      },
+    ]);
+    expect(panelMessages(h.db)).toEqual([
+      { chat_id: h.chatId, wa_id: 'OUT-1', kind: 'text', text: TEXT, ts_ms: T0 },
+    ]);
+    expect(botMessages(h.db)).toEqual([]);
+  });
+
+  it('пробелы и переводы строк по краям убираются, внутри остаются', async () => {
+    const h = setup();
+
+    await h.outbox.sendFromPanel(h.chatId, '  \nПервая строка\nВторая строка \n');
+
+    expect(sentTexts(h.steps)).toEqual(['Первая строка\nВторая строка']);
+    expect(panelMessages(h.db)).toEqual([
+      expect.objectContaining({ text: 'Первая строка\nВторая строка' }),
+    ]);
+  });
+
+  it('пустой текст и текст длиннее предела: PanelSendError с понятным текстом, без записей и отправки', async () => {
+    const h = setup();
+    const tooLong = 'я'.repeat(PANEL_TEXT_MAX_LENGTH + 1);
+
+    const empty: unknown = await h.outbox.sendFromPanel(h.chatId, '  \n ').catch((e: unknown) => e);
+    const long: unknown = await h.outbox.sendFromPanel(h.chatId, tooLong).catch((e: unknown) => e);
+
+    expect(empty).toBeInstanceOf(PanelSendError);
+    expect(empty).toBeInstanceOf(SafeError);
+    expect((empty as Error).message).toMatch(/пуст/i);
+    expect(long).toBeInstanceOf(PanelSendError);
+    expect((long as Error).message).toMatch(/4096/);
+    expect(h.steps).toEqual([]);
+    expect(outboundRows(h.db)).toEqual([]);
+    await expect(h.outbox.sendFromPanel(h.chatId, 'я'.repeat(PANEL_TEXT_MAX_LENGTH))).resolves.toBe(
+      'sent',
+    );
+  });
+
+  it('неизвестный чат: PanelSendError без номера чата в тексте и без отправки', async () => {
+    const h = setup();
+
+    const failure: unknown = await h.outbox
+      .sendFromPanel(404 as ChatId, TEXT)
+      .catch((e: unknown) => e);
+
+    expect(failure).toBeInstanceOf(PanelSendError);
+    expect((failure as Error).message).toMatch(/чат.*не найден/i);
+    expect(h.steps).toEqual([]);
+    expect(outboundRows(h.db)).toEqual([]);
+  });
+
+  it('закрытый режим: чат не из TEST_ALLOWLIST или без номера (только @lid) не получает ответ', async () => {
+    const h = setup();
+    const stranger = h.addChat({ replyJid: PN_B, pnJid: PN_B });
+    const lidOnly = h.addChat({ replyJid: LID_A, lidJid: LID_A });
+
+    for (const chatId of [stranger, lidOnly]) {
+      const failure: unknown = await h.outbox.sendFromPanel(chatId, TEXT).catch((e: unknown) => e);
+      expect(failure).toBeInstanceOf(PanelSendError);
+      expect((failure as Error).message).toMatch(/закрыт/i);
+    }
+    expect(h.steps).toEqual([]);
+    expect(outboundRows(h.db)).toEqual([]);
+    expect(panelMessages(h.db)).toEqual([]);
+  });
+
+  it('закрытый режим выключен (null): пишет в любой чат', async () => {
+    const h = setup({ allowlist: null });
+    const other = h.addChat({ replyJid: PN_B, pnJid: PN_B });
+
+    await expect(h.outbox.sendFromPanel(other, TEXT)).resolves.toBe('sent');
+    expect(h.steps).toEqual([expect.objectContaining({ step: 'send', jid: PN_B })]);
+  });
+
+  it('отвечает на адрес, с которого пишет клиент (@lid), номер для закрытого режима берёт из pnJid', async () => {
+    const h = setup();
+    const lidChat = h.addChat({
+      replyJid: LID_A,
+      lidJid: LID_A,
+      pnJid: '77000000001:3@s.whatsapp.net' as Jid,
+    });
+
+    await expect(h.outbox.sendFromPanel(lidChat, TEXT)).resolves.toBe('sent');
+    expect(h.steps.at(-1)).toMatchObject({ step: 'send', jid: LID_A });
+  });
+
+  it('статус чата не меняет и не требует неотвеченного входящего: человек пишет в любой момент', async () => {
+    const h = setup();
+    h.messages.markAnswered(h.chatId, IN_1);
+
+    await expect(h.outbox.sendFromPanel(h.chatId, TEXT)).resolves.toBe('sent');
+
+    expect(h.chats.getById(h.chatId)?.control).toEqual({ status: 'bot', by: null });
+    h.chats.setStatus(h.chatId, { status: 'manager', by: 'panel' }, T0);
+    await expect(h.outbox.sendFromPanel(h.chatId, TEXT)).resolves.toBe('sent');
+    expect(h.chats.getById(h.chatId)?.control).toEqual({ status: 'manager', by: 'panel' });
+  });
+
+  it('не расходует часовые квоты бота: ответ человека уходит, даже когда лимит ответов бота исчерпан', async () => {
+    const h = setup({ allowlist: null });
+    for (let i = 0; i < CLIENT_SENDS_PER_CHAT_PER_HOUR; i += 1) {
+      await h.outbox.sendBotReply(h.chatId, REPLY, IN_1);
+    }
+    await expect(h.outbox.sendBotReply(h.chatId, REPLY, IN_1)).resolves.toBe('skipped_limit');
+
+    await expect(h.outbox.sendFromPanel(h.chatId, TEXT)).resolves.toBe('sent');
+    h.advance(HOUR_MS);
+    await expect(h.outbox.sendBotReply(h.chatId, REPLY, IN_1)).resolves.toBe('sent');
+  });
+
+  it('сбой отправки: запись failed, ошибка пробрасывается как есть, в историю не пишется', async () => {
+    const h = setup();
+    const failure = new Error('нет связи');
+    h.failSends(failure);
+
+    await expect(h.outbox.sendFromPanel(h.chatId, TEXT)).rejects.toBe(failure);
+
+    expect(outboundRows(h.db)).toEqual([
+      expect.objectContaining({ wa_id: 'OUT-1', origin: 'panel', status: 'failed' }),
+    ]);
+    expect(panelMessages(h.db)).toEqual([]);
   });
 });

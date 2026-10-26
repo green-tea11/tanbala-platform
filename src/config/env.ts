@@ -47,8 +47,15 @@ export interface AppConfig {
   readonly knowledgeDir: string;
   /** Копия счётчика попыток привязки по QR: .pairing-attempts.json в корне проекта, вне data/. */
   readonly pairingMirrorPath: string;
-  /** PANEL_HOST и PANEL_PORT. */
-  readonly panel: { readonly host: string; readonly port: number };
+  /**
+   * PANEL_HOST и PANEL_PORT; PANEL_ALLOWED_HOSTS: домены панели за Caddy на VPS (в нижнем регистре, с портом, если он
+   * не 443). Пусто по умолчанию. Действуют только при сильном пароле: решает panel/guard.ts.
+   */
+  readonly panel: {
+    readonly host: string;
+    readonly port: number;
+    readonly allowedHosts: readonly string[];
+  };
   readonly models: ModelsConfig;
   /** API_DAILY_LIMIT и API_DAILY_LIMIT_PER_CHAT: дневной предохранитель расходов. */
   readonly limits: ApiLimits;
@@ -95,6 +102,8 @@ const MANAGER_PHONE = /^\d{11,15}$/;
 const ALLOWLIST_PHONE = /^77\d{9}$/;
 const UNSIGNED_INTEGER = /^\d+$/;
 const NO_WHITESPACE = /^\S+$/;
+/** Домен для заголовка Host: латиница, цифры, точки и дефисы (не по краям), необязательный порт. */
+const PANEL_HOST_NAME = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::(\d{1,5}))?$/i;
 const CLAUDE_MODEL_ID = /^claude-[a-z0-9-]+$/;
 
 /** Переменные, которые SDK Anthropic читает из окружения сам, мимо AppConfig. */
@@ -111,6 +120,7 @@ const PROBLEMS = {
   backlogHours: `целое число часов от 1 до ${MAX_BACKLOG_HOURS}`,
   port: `целое число от 1 до ${MAX_PORT}`,
   host: 'адрес без пробелов',
+  panelHosts: 'домены через запятую вида panel.example.kz или panel.example.kz:8443',
   model: 'нужен ID модели Claude вида claude-...',
   transcribeModel: 'нужен ID модели OpenRouter без пробелов, например elevenlabs/scribe-v2',
   modelsShape: 'нужен объект с полями reply, review, interest, transcribe',
@@ -125,6 +135,18 @@ const WARNINGS = {
 
 function allowlistProblem(position: number): string {
   return `номер ${position} в списке не в формате 77XXXXXXXXX`;
+}
+
+function panelHostProblem(position: number): string {
+  return `${PROBLEMS.panelHosts}: позиция ${position} не домен`;
+}
+
+/** Домен с необязательным портом от 1 до 65535 (схема и путь не годятся: в Host их нет). */
+function isPanelHost(value: string): boolean {
+  const match = PANEL_HOST_NAME.exec(value);
+  if (match === null) return false;
+  const port = match[1];
+  return port === undefined || (Number(port) >= 1 && Number(port) <= MAX_PORT);
 }
 
 /** Номер закрытого режима (77XXXXXXXXX); здесь граница config, где строка становится PhoneDigits. */
@@ -188,6 +210,27 @@ function allowlist() {
     });
 }
 
+/** Домены панели через запятую; неверный называется позицией в списке, сам значение не печатается. */
+function panelHosts() {
+  return z
+    .string()
+    .optional()
+    .transform((value, ctx): readonly string[] => {
+      const items =
+        value === undefined ? [] : value.split(',').map((item) => item.trim().toLowerCase());
+      items.forEach((item, index) => {
+        if (!isPanelHost(item)) {
+          ctx.issues.push({
+            code: 'custom',
+            message: panelHostProblem(index + 1),
+            input: undefined,
+          });
+        }
+      });
+      return items.filter(isPanelHost);
+    });
+}
+
 function envSchema(root: string) {
   const positiveInteger = (): ReturnType<typeof integerInRange> =>
     integerInRange(1, Number.MAX_SAFE_INTEGER, PROBLEMS.positiveInteger);
@@ -219,6 +262,7 @@ function envSchema(root: string) {
     ),
     PANEL_HOST: z.string().regex(NO_WHITESPACE, PROBLEMS.host).default(DEFAULTS.panelHost),
     PANEL_PORT: integerInRange(1, MAX_PORT, PROBLEMS.port).default(DEFAULTS.panelPort),
+    PANEL_ALLOWED_HOSTS: panelHosts(),
   });
 }
 
@@ -297,7 +341,7 @@ function buildConfig(env: EnvValues, models: ModelsValues, root: string): AppCon
     tokenLogPath: env.TOKEN_LOG_PATH,
     knowledgeDir: resolve(root, KNOWLEDGE_DIR),
     pairingMirrorPath: resolve(root, PAIRING_MIRROR_FILE),
-    panel: { host: env.PANEL_HOST, port: env.PANEL_PORT },
+    panel: { host: env.PANEL_HOST, port: env.PANEL_PORT, allowedHosts: env.PANEL_ALLOWED_HOSTS },
     models: claudeModels,
     limits: {
       apiCallsPerDay: env.API_DAILY_LIMIT,
