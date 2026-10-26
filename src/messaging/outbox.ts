@@ -56,6 +56,17 @@ export interface Outbox {
     replyToWaId: WaMessageId,
   ): Promise<'sent' | 'skipped_no_inbound' | SendBlocked>;
   /**
+   * Сообщение клиенту при передаче, которое написала модель (hot, no_answer, asked_human) и которое прошло проверки
+   * кодом и вторым вызовом: уходит вместо фиксированной фразы sendHandoffNotice. Те же проверки отправки, что и у неё:
+   * закрытый режим, неотвеченное входящее replyToWaId, часовые лимиты исходящих; статус чата не проверяет (чат
+   * уже у менеджера). ReviewedText: непроверенный текст не примет.
+   */
+  sendHandoffText(
+    chatId: ChatId,
+    text: ReviewedText,
+    replyToWaId: WaMessageId,
+  ): Promise<'sent' | 'skipped_no_inbound' | SendBlocked>;
+  /**
    * Ответ на голосовое, пока расшифровки нет: ровно «Сейчас не могу прослушать голосовое, напишите, пожалуйста,
    * текстом» (решение владельца). Текст фиксированный, не параметр; как sendBotReply, учитывает статус manager,
    * неотвеченное входящее, лимиты и рубильник.
@@ -224,7 +235,9 @@ interface SendQuotas {
  * исходящих. «Печатает» с паузой (messaging/typing.ts) показывает конвейер до вызова: здесь паузы нет, иначе клиент
  * ждал бы дважды. Лимиты за скользящий час: CLIENT_SENDS_PER_CHAT_PER_HOUR на чат и CLIENT_SENDS_PER_HOUR на все чаты;
  * уведомления менеджеру по квотам MANAGER_NOTIFY_PER_HOUR раздельно по kind, нет managerJid => 'no_manager'.
- * Фразы передачи фиксированные по поводу, вариант выбирает random; фраза про голосовое одна, origin 'voice_notice'.
+ * Фразы передачи фиксированные по поводу, вариант выбирает random; сообщение передачи, написанное моделью
+ * (sendHandoffText), уходит с тем же origin 'handoff_notice' и теми же проверками, но своим текстом; фраза про
+ * голосовое одна, origin 'voice_notice'.
  * sendFromPanel (ответ человека из панели): текст непустой после trim и не длиннее PANEL_TEXT_MAX_LENGTH, чат существует,
  * закрытый режим как у остальных отправок; запись в outbound_ids с origin 'panel' до отправки, затем сообщение в истории
  * (author 'human_panel', ID отправки). Статус чата не меняет, неотвеченное входящее не требует и часовые квоты бота не
@@ -252,6 +265,13 @@ export function createOutbox(deps: OutboxDeps): Outbox {
         ignoreStatus,
       );
     },
+    sendHandoffText: (chatId, text, replyToWaId) =>
+      sendToClient(
+        deps,
+        quotas,
+        { chatId, replyToWaId, origin: 'handoff_notice', text },
+        ignoreStatus,
+      ),
     sendVoiceNotice: (chatId, replyToWaId) =>
       sendToClient(
         deps,

@@ -8,6 +8,7 @@ import type {
   InterestLevel,
   LlmResult,
   ReplyDraft,
+  ReplyHandoffOutcome,
   ReviewedText,
   ReviewResult,
   StoredMessage,
@@ -26,6 +27,9 @@ const NOW = Date.UTC(2026, 9, 26, 9, 0, 0);
 const CHAT_ID = 7 as ChatId;
 const ANSWER = 'Учёт подбираем под задачу. Что вы храните?';
 const SECOND_ANSWER = 'Цена зависит от задачи. Что вы хотите учитывать?';
+const HANDOFF_TEXT =
+  'Да, интеграцию с вашей 1С проводим. Передал вопрос специалисту, он вам напишет.';
+const SECOND_HANDOFF_TEXT = 'Интеграцию проводим. Передал вопрос специалисту, он вам напишет.';
 const EMPTY_PROFILE: ClientProfile = {
   business: null,
   area: null,
@@ -58,6 +62,14 @@ function answerDraft(text: string = ANSWER): LlmResult<ReplyDraft> {
 
 function outcomeDraft(draft: Exclude<ReplyDraft, { outcome: 'answer' }>): LlmResult<ReplyDraft> {
   return { ok: true, value: draft };
+}
+
+/** Исход передачи (hot, no_answer, asked_human), у которого модель написала сообщение клиенту. */
+function handoffDraft(
+  outcome: ReplyHandoffOutcome,
+  text: string = HANDOFF_TEXT,
+): LlmResult<ReplyDraft> {
+  return { ok: true, value: { outcome, text } };
 }
 
 function assessed(level: InterestLevel): { readonly ok: true; readonly value: InterestAssessment } {
@@ -163,6 +175,11 @@ function handedOff(notice: Extract<ReplyVerdict, { kind: 'handoff' }>['notice'])
   return { kind: 'handoff', notice };
 }
 
+/** Передача, при которой клиенту уходит проверенный текст модели вместо фиксированной фразы. */
+function handedOffWithText(reason: ReplyHandoffOutcome, text: string = HANDOFF_TEXT): ReplyVerdict {
+  return { kind: 'handoff', notice: { reason }, text: text as ReviewedText };
+}
+
 function logsOf(h: Harness, level: string): unknown[] {
   return h.logs.filter((entry) => entry.level === level).map((entry) => entry.context);
 }
@@ -216,6 +233,20 @@ describe('pipeline/reply-flow: черновик и оценка интереса
     },
   );
 
+  it('оценка интереса: брошена не ошибка, а строка: в лог идёт только тип значения', async () => {
+    const h = setup();
+    const thrown: unknown = 'номер 77000000001';
+    h.assessInterest.mockImplementation(() => {
+      throw thrown;
+    });
+
+    const drafted = await requestDraft(h.deps, contextOf());
+
+    expect(drafted.assessment).toEqual(UNAVAILABLE);
+    expect(logsOf(h, 'warn')).toEqual([{ chatId: CHAT_ID, errorName: 'string' }]);
+    expect(JSON.stringify(h.logs)).not.toContain('77000000001');
+  });
+
   it('черновик отклонился исключением: оно уходит наружу, оценка успевает завершиться', async () => {
     const h = setup();
     const failure = new Error('база недоступна');
@@ -236,7 +267,7 @@ describe('pipeline/reply-flow: ответ проходит проверки', ()
 
     expect(verdict).toEqual(sent());
     expect(h.calls).toEqual(['draft', 'assess', 'save', 'review']);
-    expect(h.reviewDraft).toHaveBeenCalledWith(context, ANSWER);
+    expect(h.reviewDraft).toHaveBeenCalledWith(context, ANSWER, 'answer');
     expect(h.saveAssessment).toHaveBeenCalledWith(CHAT_ID, assessed('cold').value, NOW);
   });
 
@@ -247,7 +278,7 @@ describe('pipeline/reply-flow: ответ проходит проверки', ()
     const verdict = await flow(h);
 
     expect(verdict).toEqual(sent(ANSWER));
-    expect(h.reviewDraft).toHaveBeenCalledWith(expect.anything(), ANSWER);
+    expect(h.reviewDraft).toHaveBeenCalledWith(expect.anything(), ANSWER, 'answer');
   });
 
   it('стоп-слово, спрятанное невидимым символом, ловится после нормализации', async () => {
@@ -261,6 +292,20 @@ describe('pipeline/reply-flow: ответ проходит проверки', ()
       expect.anything(),
       expect.arrayContaining([expect.stringContaining('стоп-слово')]),
     );
+  });
+
+  it('сообщения клиента без текста (картинка) в истории не мешают проверкам кодом', async () => {
+    const h = setup();
+    const context = contextOf('Вот фото');
+    const withPicture: ConversationContext = {
+      ...context,
+      history: [
+        ...context.history,
+        { id: 2, chatId: CHAT_ID, author: 'client', kind: 'other', text: null, tsMs: NOW + 1 },
+      ],
+    };
+
+    await expect(flow(h, withPicture)).resolves.toEqual(sent());
   });
 
   it('технический термин разрешён, если клиент написал его сам; иначе это нарушение', async () => {
@@ -315,7 +360,7 @@ describe('pipeline/reply-flow: повтор с замечаниями', () => {
     expect(h.draftReply.mock.calls[1]?.[1]).toEqual(['Назван срок, его нет в знаниях']);
     expect(h.assessInterest).toHaveBeenCalledTimes(1);
     expect(h.reviewDraft).toHaveBeenCalledTimes(2);
-    expect(h.reviewDraft).toHaveBeenLastCalledWith(expect.anything(), SECOND_ANSWER);
+    expect(h.reviewDraft).toHaveBeenLastCalledWith(expect.anything(), SECOND_ANSWER, 'answer');
   });
 
   it('второй провал ревью: check_failed, третьего черновика нет (всего пять звонков)', async () => {
@@ -342,7 +387,7 @@ describe('pipeline/reply-flow: повтор с замечаниями', () => {
 
   it('в повторе модель передала вопрос специалисту: передача по новому исходу', async () => {
     const h = setup({
-      drafts: [answerDraft(), outcomeDraft({ outcome: 'no_answer' })],
+      drafts: [answerDraft(), outcomeDraft({ outcome: 'no_answer', text: '' })],
       reviews: [reviewProblems('нет в знаниях')],
     });
 
@@ -359,10 +404,18 @@ describe('pipeline/reply-flow: повтор с замечаниями', () => {
   });
 });
 
-describe('pipeline/reply-flow: передача без ответа клиенту', () => {
+describe('pipeline/reply-flow: передача без текста модели (фиксированная фраза)', () => {
   it.each<[string, Exclude<ReplyDraft, { outcome: 'answer' }>, ReplyVerdict]>([
-    ['нет ответа', { outcome: 'no_answer' }, handedOff({ reason: 'no_answer' })],
-    ['просит человека', { outcome: 'asked_human' }, handedOff({ reason: 'asked_human' })],
+    [
+      'нет ответа, текста нет',
+      { outcome: 'no_answer', text: '' },
+      handedOff({ reason: 'no_answer' }),
+    ],
+    [
+      'просит человека, текста нет',
+      { outcome: 'asked_human', text: '' },
+      handedOff({ reason: 'asked_human' }),
+    ],
     [
       'жалоба',
       { outcome: 'complaint', stopRequested: true },
@@ -377,14 +430,44 @@ describe('pipeline/reply-flow: передача без ответа клиент
     expect(h.calls).toEqual(['draft', 'assess', 'save']);
   });
 
-  it('горячий клиент: сразу передача hot без проверки вторым вызовом, оценка (уровень hot) сохранена', async () => {
-    const h = setup({ assessment: assessed('hot') });
+  it.each(['hot', 'no_answer', 'asked_human'] as const)(
+    '%s: текст из одних невидимых символов это нет текста, ревью не зовётся',
+    async (outcome) => {
+      const h = setup({ drafts: [handoffDraft(outcome, '​­')] });
+
+      const verdict = await flow(h);
+
+      expect(verdict).toEqual(handedOff({ reason: outcome }));
+      expect(h.reviewDraft).not.toHaveBeenCalled();
+      expect(h.draftReply).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('горячий клиент без текста: фиксированная фраза hot, проверок нет, уровень hot записан в чат', async () => {
+    const h = setup({ drafts: [handoffDraft('hot', '')], assessment: assessed('warm') });
 
     const verdict = await flow(h);
 
     expect(verdict).toEqual(handedOff({ reason: 'hot' }));
-    expect(h.calls).toEqual(['draft', 'assess', 'save']);
-    expect(h.reviewDraft).not.toHaveBeenCalled();
+    expect(h.calls).toEqual(['draft', 'assess', 'save', 'save']);
+    expect(h.saveAssessment).toHaveBeenLastCalledWith(
+      CHAT_ID,
+      expect.objectContaining({ level: 'hot' }),
+      NOW,
+    );
+  });
+});
+
+describe('pipeline/reply-flow: передачу решает вызов ответа, а не оценка интереса', () => {
+  it('оценка интереса hot, а черновик answer: передачи нет, ответ идёт по проверкам и уходит', async () => {
+    const h = setup({ assessment: assessed('hot') });
+
+    const verdict = await flow(h);
+
+    expect(verdict).toEqual(sent());
+    expect(h.calls).toEqual(['draft', 'assess', 'save', 'review']);
+    expect(h.reviewDraft).toHaveBeenCalledWith(expect.anything(), ANSWER, 'answer');
+    expect(h.saveAssessment).toHaveBeenCalledTimes(1);
     expect(h.saveAssessment).toHaveBeenCalledWith(
       CHAT_ID,
       expect.objectContaining({ level: 'hot' }),
@@ -392,15 +475,25 @@ describe('pipeline/reply-flow: передача без ответа клиент
     );
   });
 
-  it('горячий клиент и нарушение кода: сразу hot, ни повтора, ни ревью', async () => {
+  it('оценка интереса hot и нарушение кода в ответе: повтор с замечанием, как у любого клиента', async () => {
     const h = setup({
-      drafts: [answerDraft('Учёт — это просто. Что вы храните?')],
+      drafts: [answerDraft('Учёт — это просто. Что вы храните?'), answerDraft()],
       assessment: assessed('hot'),
     });
 
-    await expect(flow(h)).resolves.toEqual(handedOff({ reason: 'hot' }));
-    expect(h.draftReply).toHaveBeenCalledTimes(1);
-    expect(h.reviewDraft).not.toHaveBeenCalled();
+    await expect(flow(h)).resolves.toEqual(sent());
+    expect(h.draftReply).toHaveBeenCalledTimes(2);
+    expect(h.reviewDraft).toHaveBeenCalledTimes(1);
+  });
+
+  it('оценка интереса hot и второй провал ревью ответа: check_failed, а не hot', async () => {
+    const h = setup({
+      drafts: [answerDraft(), answerDraft(SECOND_ANSWER)],
+      reviews: [reviewProblems('первое'), reviewProblems('второе')],
+      assessment: assessed('hot'),
+    });
+
+    await expect(flow(h)).resolves.toEqual(handedOff({ reason: 'check_failed' }));
   });
 
   it('клиент не горячий: ревью зовётся как обычно', async () => {
@@ -408,6 +501,304 @@ describe('pipeline/reply-flow: передача без ответа клиент
 
     await expect(flow(h)).resolves.toEqual(sent());
     expect(h.reviewDraft).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('pipeline/reply-flow: сообщение о передаче (hot, no_answer, asked_human с текстом)', () => {
+  it.each(['hot', 'no_answer', 'asked_human'] as const)(
+    '%s: те же проверки, ревью как сообщения о передаче, передача с причиной и этим текстом',
+    async (outcome) => {
+      const h = setup({ drafts: [handoffDraft(outcome)] });
+      const context = contextOf();
+
+      const verdict = await flow(h, context);
+
+      expect(verdict).toEqual(handedOffWithText(outcome));
+      expect(h.reviewDraft).toHaveBeenCalledTimes(1);
+      expect(h.reviewDraft).toHaveBeenCalledWith(context, HANDOFF_TEXT, 'handoff');
+      expect(h.draftReply).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('диалог про 1С: ответ из знаний и фраза о передаче проходят проверки кода и уходят одним текстом', async () => {
+    const text =
+      'Да, мы проводим интеграцию с вашей 1С, детали решаем по вашей конфигурации. Стоимость зависит от вашей задачи, я передал вопрос специалисту, он вам напишет.';
+    const h = setup({ drafts: [handoffDraft('hot', text)], assessment: assessed('warm') });
+
+    const verdict = await flow(h, contextOf('11 000 м², сколько будет стоить, у нас 1С'));
+
+    expect(verdict).toEqual(handedOffWithText('hot', text));
+    expect(h.reviewDraft).toHaveBeenCalledWith(expect.anything(), text, 'handoff');
+    expect(h.calls).toEqual(['draft', 'assess', 'save', 'review', 'save']);
+  });
+
+  it('невидимые символы убираются до проверок: ревью и клиент получают один и тот же текст', async () => {
+    const dirty =
+      'Да, интеграцию с вашей 1С проводим. Передал​ вопрос специалисту, он вам напишет.';
+    const h = setup({ drafts: [handoffDraft('hot', dirty)] });
+
+    const verdict = await flow(h);
+
+    expect(verdict).toEqual(handedOffWithText('hot'));
+    expect(h.reviewDraft).toHaveBeenCalledWith(expect.anything(), HANDOFF_TEXT, 'handoff');
+  });
+
+  it('нарушение кода в сообщении передачи: ревью не зовётся, повтор с описанием, второй текст уходит', async () => {
+    const dashed = 'Интеграцию — проводим. Передал вопрос специалисту, он вам напишет.';
+    const h = setup({
+      drafts: [handoffDraft('hot', dashed), handoffDraft('hot', SECOND_HANDOFF_TEXT)],
+    });
+
+    const verdict = await flow(h);
+
+    expect(verdict).toEqual(handedOffWithText('hot', SECOND_HANDOFF_TEXT));
+    expect(h.calls).toEqual(['draft', 'assess', 'save', 'draft:retry', 'review', 'save']);
+    expect(h.draftReply.mock.calls[1]?.[1]?.[0]).toContain('тире');
+  });
+
+  it('обещание времени в сообщении передачи ловит код: «напишет сегодня» нельзя, повтор', async () => {
+    const promise = 'Передал вопрос специалисту, он вам напишет сегодня.';
+    const h = setup({
+      drafts: [handoffDraft('asked_human', promise), handoffDraft('asked_human')],
+    });
+
+    const verdict = await flow(h);
+
+    expect(verdict).toEqual(handedOffWithText('asked_human'));
+    expect(h.draftReply.mock.calls[1]?.[1]?.[0]).toContain('стоп-слово');
+  });
+
+  it('ревью не пропустило: повтор с замечаниями проверки, второй текст уходит', async () => {
+    const h = setup({
+      drafts: [handoffDraft('no_answer'), handoffDraft('no_answer', SECOND_HANDOFF_TEXT)],
+      reviews: [reviewProblems('Назван срок, его нет в знаниях'), REVIEW_OK],
+    });
+
+    const verdict = await flow(h);
+
+    expect(verdict).toEqual(handedOffWithText('no_answer', SECOND_HANDOFF_TEXT));
+    expect(h.draftReply.mock.calls[1]?.[1]).toEqual(['Назван срок, его нет в знаниях']);
+    expect(h.reviewDraft).toHaveBeenLastCalledWith(
+      expect.anything(),
+      SECOND_HANDOFF_TEXT,
+      'handoff',
+    );
+    expect(h.assessInterest).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['hot', 'no_answer', 'asked_human'] as const)(
+    '%s: второй провал ревью даёт ту же причину и фиксированную фразу, а не check_failed',
+    async (outcome) => {
+      const h = setup({
+        drafts: [handoffDraft(outcome), handoffDraft(outcome, SECOND_HANDOFF_TEXT)],
+        reviews: [reviewProblems('первое'), reviewProblems('второе')],
+      });
+
+      const verdict = await flow(h);
+
+      expect(verdict).toEqual(handedOff({ reason: outcome }));
+      expect(verdict).not.toHaveProperty('text');
+      expect(h.reviewDraft).toHaveBeenCalledTimes(2);
+      expect(h.draftReply).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('повтор снова с нарушением кода: та же причина без текста, второго ревью нет', async () => {
+    const dashed = handoffDraft('hot', 'Интеграцию — проводим. Передал вопрос специалисту.');
+    const h = setup({ drafts: [dashed, dashed] });
+
+    const verdict = await flow(h);
+
+    expect(verdict).toEqual(handedOff({ reason: 'hot' }));
+    expect(h.reviewDraft).not.toHaveBeenCalled();
+  });
+
+  it('повтор без текста: фиксированная фраза с той же причиной', async () => {
+    const h = setup({
+      drafts: [handoffDraft('asked_human'), handoffDraft('asked_human', '')],
+      reviews: [reviewProblems('нет в знаниях')],
+    });
+
+    await expect(flow(h)).resolves.toEqual(handedOff({ reason: 'asked_human' }));
+    expect(h.reviewDraft).toHaveBeenCalledTimes(1);
+  });
+
+  it('после hot модель в повторе пишет answer: ответ проверяется как обычный и уходит', async () => {
+    const h = setup({
+      drafts: [handoffDraft('hot'), answerDraft(SECOND_ANSWER)],
+      reviews: [reviewProblems('Обещан срок'), REVIEW_OK],
+    });
+
+    const verdict = await flow(h);
+
+    expect(verdict).toEqual(sent(SECOND_ANSWER));
+    expect(h.reviewDraft).toHaveBeenNthCalledWith(1, expect.anything(), HANDOFF_TEXT, 'handoff');
+    expect(h.reviewDraft).toHaveBeenNthCalledWith(2, expect.anything(), SECOND_ANSWER, 'answer');
+  });
+
+  it('после answer модель в повторе пишет hot с текстом: он проверяется как сообщение о передаче', async () => {
+    const h = setup({
+      drafts: [answerDraft(), handoffDraft('hot')],
+      reviews: [reviewProblems('Назван срок'), REVIEW_OK],
+    });
+
+    const verdict = await flow(h);
+
+    expect(verdict).toEqual(handedOffWithText('hot'));
+    expect(h.reviewDraft).toHaveBeenLastCalledWith(expect.anything(), HANDOFF_TEXT, 'handoff');
+  });
+
+  it.each([
+    'refusal',
+    'truncated',
+    'invalid_output',
+    'rate_limited',
+    'unavailable',
+    'disabled',
+  ] as const)(
+    'сбой LLM при проверке (%s): та же причина и фиксированная фраза, предупреждение без текста',
+    async (failure) => {
+      const h = setup({
+        drafts: [handoffDraft('hot')],
+        reviews: [{ ok: false, failure }],
+      });
+
+      const verdict = await flow(h);
+
+      expect(verdict).toEqual(handedOff({ reason: 'hot' }));
+      expect(logsOf(h, 'warn')).toContainEqual({ chatId: CHAT_ID, failure });
+      expect(JSON.stringify(h.logs)).not.toContain('интеграцию');
+    },
+  );
+
+  it('сбой повторного черновика после провала ревью: причина сохраняется, фраза фиксированная', async () => {
+    const h = setup({
+      drafts: [handoffDraft('asked_human'), UNAVAILABLE],
+      reviews: [reviewProblems('нет')],
+    });
+
+    await expect(flow(h)).resolves.toEqual(handedOff({ reason: 'asked_human' }));
+    expect(logsOf(h, 'warn')).toContainEqual({ chatId: CHAT_ID, failure: 'unavailable' });
+  });
+
+  it('лимит на проверке сообщения передачи: limit со scope, причина hot не подменяет лимит', async () => {
+    const h = setup({
+      drafts: [handoffDraft('hot')],
+      reviews: [{ ok: false, failure: 'budget_exceeded', scope: 'chat' }],
+    });
+
+    await expect(flow(h)).resolves.toEqual({ kind: 'limit', scope: 'chat' });
+    expect(h.saveAssessment).toHaveBeenCalledTimes(1);
+  });
+
+  it('лимит на повторном черновике после провала ревью: limit со scope', async () => {
+    const h = setup({
+      drafts: [handoffDraft('hot'), CHAT_LIMIT],
+      reviews: [reviewProblems('нет')],
+    });
+
+    await expect(flow(h)).resolves.toEqual({ kind: 'limit', scope: 'chat' });
+  });
+
+  it('отказ от текста передачи пишется в лог причиной и ID чата, без текста', async () => {
+    const h = setup({
+      drafts: [handoffDraft('hot'), handoffDraft('hot')],
+      reviews: [reviewProblems('первое'), reviewProblems('второе')],
+    });
+
+    await flow(h);
+
+    expect(logsOf(h, 'info')).toContainEqual({ chatId: CHAT_ID, reason: 'hot' });
+    expect(JSON.stringify(h.logs)).not.toContain('Передал вопрос специалисту');
+  });
+});
+
+describe('pipeline/reply-flow: уровень hot при передаче hot', () => {
+  it('оценка интереса ниже hot: после передачи hot в чате записан уровень hot с той же выжимкой', async () => {
+    const h = setup({ drafts: [handoffDraft('hot')], assessment: assessed('cold') });
+
+    await flow(h);
+
+    expect(h.saveAssessment).toHaveBeenCalledTimes(2);
+    expect(h.saveAssessment).toHaveBeenNthCalledWith(1, CHAT_ID, assessed('cold').value, NOW);
+    expect(h.saveAssessment).toHaveBeenNthCalledWith(
+      2,
+      CHAT_ID,
+      {
+        level: 'hot',
+        profile: assessed('cold').value.profile,
+        reason: expect.stringMatching(/\S/) as unknown,
+      },
+      NOW,
+    );
+  });
+
+  it('оценка интереса уже hot: вторая запись не нужна', async () => {
+    const h = setup({ drafts: [handoffDraft('hot')], assessment: assessed('hot') });
+
+    await flow(h);
+
+    expect(h.saveAssessment).toHaveBeenCalledTimes(1);
+  });
+
+  it('оценка интереса не получена: уровень hot записывается с текущей выжимкой чата', async () => {
+    const profile: ClientProfile = { ...EMPTY_PROFILE, business: 'склад', has1C: true };
+    const h = setup({ drafts: [handoffDraft('hot')], assessment: UNAVAILABLE });
+
+    await flow(h, { ...contextOf(), profile });
+
+    expect(h.saveAssessment).toHaveBeenCalledTimes(1);
+    expect(h.saveAssessment).toHaveBeenCalledWith(
+      CHAT_ID,
+      { level: 'hot', profile, reason: expect.stringMatching(/\S/) as unknown },
+      NOW,
+    );
+  });
+
+  it('второй провал ревью текста hot: причина всё равно hot, уровень hot записан', async () => {
+    const h = setup({
+      drafts: [handoffDraft('hot'), handoffDraft('hot', SECOND_HANDOFF_TEXT)],
+      reviews: [reviewProblems('первое'), reviewProblems('второе')],
+      assessment: assessed('warm'),
+    });
+
+    await expect(flow(h)).resolves.toEqual(handedOff({ reason: 'hot' }));
+    expect(h.saveAssessment).toHaveBeenLastCalledWith(
+      CHAT_ID,
+      expect.objectContaining({ level: 'hot' }),
+      NOW,
+    );
+  });
+
+  it.each(['no_answer', 'asked_human'] as const)(
+    '%s: уровень не трогается, пишется только оценка интереса',
+    async (outcome) => {
+      const h = setup({ drafts: [handoffDraft(outcome)], assessment: assessed('warm') });
+
+      await flow(h);
+
+      expect(h.saveAssessment).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('лимит на проверке: передачи hot нет и уровень не повышается', async () => {
+    const h = setup({
+      drafts: [handoffDraft('hot')],
+      reviews: [{ ok: false, failure: 'budget_exceeded', scope: 'global' }],
+      assessment: assessed('warm'),
+    });
+
+    await flow(h);
+
+    expect(h.saveAssessment).toHaveBeenCalledTimes(1);
+  });
+
+  it('ответ answer: уровень не повышается', async () => {
+    const h = setup({ assessment: assessed('warm') });
+
+    await flow(h);
+
+    expect(h.saveAssessment).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -476,7 +867,7 @@ describe('pipeline/reply-flow: сбои LLM и лимиты (fail-closed)', () =
     expect(logsOf(h, 'warn')).toContainEqual({ chatId: CHAT_ID, failure: 'invalid_output' });
   });
 
-  it('сбой оценки не прячет горячего клиента: без оценки передачи hot нет, ответ идёт по проверкам', async () => {
+  it('сбой оценки интереса не мешает ответу: передачу решает вызов ответа, а не оценка', async () => {
     const h = setup({ assessment: UNAVAILABLE });
 
     await expect(flow(h)).resolves.toEqual(sent());

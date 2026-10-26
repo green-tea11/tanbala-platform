@@ -16,7 +16,15 @@ import { interestCallData, interestSchema, normalizeInterest } from './interest.
 import type { Knowledge } from './knowledge.js';
 import { profileText } from './profile.js';
 import { buildSystem, buildTurns } from './prompts.js';
-import { EMPTY_DRAFT_REVIEW, normalizeReview, reviewCallData, reviewSchema } from './review.js';
+import {
+  EMPTY_DRAFT_REVIEW,
+  normalizeReview,
+  reviewCallData,
+  reviewSchema,
+  type DraftKind,
+} from './review.js';
+
+export type { DraftKind } from './review.js';
 
 /** Что агент знает о разговоре. */
 export interface ConversationContext {
@@ -34,9 +42,15 @@ export interface ConversationContext {
 /**
  * Три отдельных вызова LLM из плана: ответ, проверка черновика, оценка интереса.
  * Сбой любого вызова приходит как LlmResult с ok: false и ведёт к передаче специалисту.
+ * Решение о передаче чата принимает вызов ответа (исходы hot, no_answer, asked_human, complaint); оценка
+ * интереса только хранит уровень и выжимку.
  */
 export interface Agent {
-  /** Черновик ответа строго по файлам знаний. feedback: замечания проверки для повторной попытки. */
+  /**
+   * Черновик ответа строго по файлам знаний. feedback: замечания проверки для повторной попытки. Исход answer
+   * оставляет чат у бота; hot, no_answer, asked_human и complaint передают его специалисту, и у первых трёх text
+   * (ответ на то, что есть в знаниях, и фраза о передаче) может быть непустым.
+   */
   draftReply(
     context: ConversationContext,
     feedback?: readonly string[],
@@ -44,8 +58,15 @@ export interface Agent {
   /**
    * Проверка текста черновика: нет ли фактов не из знаний, обещаний цен, скидок, сроков или объёмов работ.
    * Результат нормализован: ok true только без замечаний, ok false всегда с замечанием. Пустой черновик не проходит.
+   * kind: 'answer' (по умолчанию) для обычного ответа; 'handoff' для сообщения о передаче чата специалисту
+   * (hot, no_answer, asked_human): проверяющему сказано, что фраза «передал вопрос специалисту, он вам напишет»
+   * допустима, а обещания времени и цены по-прежнему нет.
    */
-  reviewDraft(context: ConversationContext, draftText: string): Promise<LlmResult<ReviewResult>>;
+  reviewDraft(
+    context: ConversationContext,
+    draftText: string,
+    kind?: DraftKind,
+  ): Promise<LlmResult<ReviewResult>>;
   /** Уровень интереса и обновлённая выжимка для менеджера: известное раньше сохраняется, если клиент не поправил. */
   assessInterest(context: ConversationContext): Promise<LlmResult<InterestAssessment>>;
 }
@@ -61,8 +82,8 @@ export interface AgentDeps {
 export const HISTORY_MESSAGES = 30;
 
 /**
- * Ответ, проверка и оценка короткие (одна или две фразы, несколько полей), но размышления Haiku 5.5 входят
- * в max_tokens: запас, чтобы не получить truncated.
+ * Ответ, проверка и оценка короткие (две или три фразы, несколько полей), но размышления Haiku 5.5 и Sonnet 5.5
+ * входят в max_tokens: запас, чтобы не получить truncated.
  */
 const MAX_TOKENS = 4096;
 
@@ -74,11 +95,13 @@ const INVALID_OUTPUT = { ok: false, failure: 'invalid_output' } as const;
  */
 const replyDraftSchema = z.object({
   outcome: z
-    .enum(['answer', 'no_answer', 'asked_human', 'complaint'])
-    .describe('Исход: answer, no_answer, asked_human или complaint.'),
+    .enum(['answer', 'hot', 'no_answer', 'asked_human', 'complaint'])
+    .describe('Исход: answer, hot, no_answer, asked_human или complaint.'),
   text: z
     .string()
-    .describe('Текст сообщения клиенту при answer; при других исходах пустая строка.'),
+    .describe(
+      'Текст сообщения клиенту при answer, hot, no_answer и asked_human; при complaint пустая строка.',
+    ),
   stopRequested: z
     .boolean()
     .describe('true только при complaint, если клиент просит больше не писать; иначе false.'),
@@ -87,8 +110,9 @@ const replyDraftSchema = z.object({
 type RawReplyDraft = z.infer<typeof replyDraftSchema>;
 
 /**
- * Противоречивый ответ модели нормализуется здесь один раз: text берётся только у answer, stopRequested только
- * у complaint. answer без текста => invalid_output, не угадывать (fail-closed).
+ * Противоречивый ответ модели нормализуется здесь один раз: text берётся у answer, hot, no_answer и asked_human,
+ * stopRequested только у complaint. answer без текста => invalid_output, не угадывать (fail-closed). У hot, no_answer
+ * и asked_human пустой text допустим: чат всё равно уходит менеджеру, клиенту пишется фиксированная фраза.
  */
 function normalizeReplyDraft(raw: RawReplyDraft): LlmResult<ReplyDraft> {
   switch (raw.outcome) {
@@ -98,9 +122,10 @@ function normalizeReplyDraft(raw: RawReplyDraft): LlmResult<ReplyDraft> {
     }
     case 'complaint':
       return { ok: true, value: { outcome: 'complaint', stopRequested: raw.stopRequested } };
+    case 'hot':
     case 'no_answer':
     case 'asked_human':
-      return { ok: true, value: { outcome: raw.outcome } };
+      return { ok: true, value: { outcome: raw.outcome, text: raw.text.trim() } };
   }
 }
 
@@ -147,7 +172,7 @@ function createAsk(deps: AgentDeps): Ask {
 }
 
 /**
- * Создаёт агента поверх LlmClient. Модели из config/models.json: по умолчанию Haiku везде.
+ * Создаёт агента поверх LlmClient. Модели из config/models.json: ответ на Sonnet, проверка и оценка интереса на Haiku.
  * Все вызовы: system = buildSystem(knowledge, purpose) (знания с кэшем, затем инструкция вызова без кэша; блок
  * знаний у трёх вызовов один и тот же, поэтому кэш общий); turns = buildTurns(history, HISTORY_MESSAGES, данные
  * вызова): данные в последней реплике user в блоке «данные». Сбой LLM возвращается как есть, значением.
@@ -172,11 +197,12 @@ export function createAgent(deps: AgentDeps): Agent {
     async reviewDraft(
       context: ConversationContext,
       draftText: string,
+      kind: DraftKind = 'answer',
     ): Promise<LlmResult<ReviewResult>> {
       if (draftText.trim() === '') {
         return { ok: true, value: EMPTY_DRAFT_REVIEW };
       }
-      const result = await ask('review', reviewSchema, context, reviewCallData(draftText));
+      const result = await ask('review', reviewSchema, context, reviewCallData(draftText, kind));
       return result.ok ? { ok: true, value: normalizeReview(result.value) } : result;
     },
     async assessInterest(context: ConversationContext): Promise<LlmResult<InterestAssessment>> {

@@ -283,6 +283,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
   const outbox: Harness['outbox'] = {
     sendBotReply: unused('outbox.sendBotReply'),
     sendHandoffNotice: unused('outbox.sendHandoffNotice'),
+    sendHandoffText: unused('outbox.sendHandoffText'),
     sendVoiceNotice: unused('outbox.sendVoiceNotice'),
     notifyManager: unused('outbox.notifyManager'),
     canSendFromPanel: vi.fn(() => true),

@@ -178,6 +178,8 @@ describe('pipeline/services: подключение появляется поз�
       () => outbox.sendVoiceNotice(h.chat.id, inbound('IN-3')),
       () => outbox.notifyManager('Текст уведомления', 'handoff'),
       () => outbox.sendFromPanel(h.chat.id, 'Ответ из панели'),
+      () =>
+        outbox.sendHandoffText(h.chat.id, 'Сообщение о передаче' as ReviewedText, inbound('IN-4')),
     ];
 
     for (const send of sends) await expect(send()).rejects.toThrow('WhatsApp не подключён');
@@ -188,11 +190,13 @@ describe('pipeline/services: подключение появляется поз�
     await expect(sends[1]?.()).resolves.toBe('sent');
     await expect(sends[2]?.()).resolves.toBe('sent');
     await expect(sends[3]?.()).resolves.toMatchObject({ status: 'sent' });
+    await expect(sends[5]?.()).resolves.toBe('sent');
     expect(h.sendText.mock.calls.map(([jid]) => jid)).toEqual([
       CLIENT_JID,
       CLIENT_JID,
       CLIENT_JID,
       MANAGER_JID,
+      CLIENT_JID,
     ]);
   });
 

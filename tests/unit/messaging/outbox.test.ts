@@ -416,6 +416,110 @@ describe('createOutbox: sendHandoffNotice', () => {
   });
 });
 
+describe('createOutbox: sendHandoffText', () => {
+  const HANDOFF_TEXT =
+    'Да, мы проводим интеграцию с вашей 1С. Передал вопрос специалисту, он вам напишет.' as ReviewedText;
+
+  it('отправляет ровно этот текст вместо фиксированной фразы: ID записан до отправки, источник handoff_notice, текст в истории', async () => {
+    const h = setup();
+
+    await expect(h.outbox.sendHandoffText(h.chatId, HANDOFF_TEXT, IN_1)).resolves.toBe('sent');
+
+    expect(h.steps).toEqual([
+      { step: 'send', jid: PN_A, text: HANDOFF_TEXT, waId: 'OUT-1', recordedAs: 'pending' },
+    ]);
+    expect(outboundRows(h.db)).toEqual([
+      expect.objectContaining({
+        origin: 'handoff_notice',
+        text: HANDOFF_TEXT,
+        status: 'sent',
+        chat_id: h.chatId,
+      }),
+    ]);
+    expect(botMessages(h.db)).toEqual([
+      expect.objectContaining({ wa_id: 'OUT-1', text: HANDOFF_TEXT }),
+    ]);
+  });
+
+  it('статус не проверяет: чат уже у менеджера', async () => {
+    const h = setup();
+    h.chats.setStatus(h.chatId, { status: 'manager', by: 'bot' }, T0);
+
+    await expect(h.outbox.sendHandoffText(h.chatId, HANDOFF_TEXT, IN_1)).resolves.toBe('sent');
+    expect(sentTexts(h.steps)).toEqual([HANDOFF_TEXT]);
+  });
+
+  it('те же проверки, что у фиксированной фразы: нет неотвеченного входящего или чат не из TEST_ALLOWLIST', async () => {
+    const h = setup();
+    const stranger = h.addChat({ replyJid: PN_B, pnJid: PN_B });
+    const lidOnly = h.addChat({ replyJid: LID_A, lidJid: LID_A });
+
+    await expect(
+      h.outbox.sendHandoffText(h.chatId, HANDOFF_TEXT, 'NONE' as WaMessageId),
+    ).resolves.toBe('skipped_no_inbound');
+    await expect(h.outbox.sendHandoffText(stranger, HANDOFF_TEXT, IN_1)).resolves.toBe(
+      'skipped_test_mode',
+    );
+    await expect(h.outbox.sendHandoffText(lidOnly, HANDOFF_TEXT, IN_1)).resolves.toBe(
+      'skipped_test_mode',
+    );
+    h.messages.markAnswered(h.chatId, IN_1);
+    await expect(h.outbox.sendHandoffText(h.chatId, HANDOFF_TEXT, IN_1)).resolves.toBe(
+      'skipped_no_inbound',
+    );
+    expect(h.steps).toEqual([]);
+    expect(outboundRows(h.db)).toEqual([]);
+  });
+
+  it('закрытый режим выключен (null): пишет в любой чат', async () => {
+    const h = setup({ allowlist: null });
+    const other = h.addChat({ replyJid: PN_B, pnJid: PN_B });
+
+    await expect(h.outbox.sendHandoffText(other, HANDOFF_TEXT, IN_1)).resolves.toBe('sent');
+  });
+
+  it('часовой лимит на чат общий с остальными исходящими клиенту: сверх лимита skipped_limit', async () => {
+    const h = setup({ allowlist: null });
+    for (let i = 0; i < CLIENT_SENDS_PER_CHAT_PER_HOUR - 1; i += 1) {
+      await h.outbox.sendBotReply(h.chatId, REPLY, IN_1);
+    }
+
+    await expect(h.outbox.sendHandoffText(h.chatId, HANDOFF_TEXT, IN_1)).resolves.toBe('sent');
+    await expect(h.outbox.sendHandoffText(h.chatId, HANDOFF_TEXT, IN_1)).resolves.toBe(
+      'skipped_limit',
+    );
+    await expect(h.outbox.sendHandoffNotice(h.chatId, { reason: 'hot' }, IN_1)).resolves.toBe(
+      'skipped_limit',
+    );
+    h.advance(HOUR_MS);
+    await expect(h.outbox.sendHandoffText(h.chatId, HANDOFF_TEXT, IN_1)).resolves.toBe('sent');
+  });
+
+  it('сбой отправки: запись failed, ошибка пробрасывается, в историю не пишется', async () => {
+    const h = setup();
+    const failure = new Error('нет связи');
+    h.failSends(failure);
+
+    await expect(h.outbox.sendHandoffText(h.chatId, HANDOFF_TEXT, IN_1)).rejects.toBe(failure);
+    expect(outboundRows(h.db)).toEqual([
+      expect.objectContaining({ wa_id: 'OUT-1', origin: 'handoff_notice', status: 'failed' }),
+    ]);
+    expect(botMessages(h.db)).toEqual([]);
+  });
+
+  it('пустой текст и неизвестный чат: явная ошибка без отправки', async () => {
+    const h = setup();
+
+    await expect(h.outbox.sendHandoffText(h.chatId, ' \n' as ReviewedText, IN_1)).rejects.toThrow(
+      /пуст/i,
+    );
+    await expect(h.outbox.sendHandoffText(404 as ChatId, HANDOFF_TEXT, IN_1)).rejects.toThrow(
+      /404/,
+    );
+    expect(h.steps).toEqual([]);
+  });
+});
+
 describe('createOutbox: sendVoiceNotice', () => {
   it('отправляет ровно фразу владельца, источник voice_notice, фраза в истории', async () => {
     const h = setup({ random: () => 0.9 });

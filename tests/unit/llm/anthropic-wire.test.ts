@@ -133,6 +133,30 @@ describe('createAnthropicLlm с настоящим SDK', () => {
     });
   });
 
+  it.each(['claude-haiku-5-5', 'claude-sonnet-5-5'])(
+    'модель %s: тело запроса без temperature, top_p, top_k, thinking и prefill, effort low, модель из запроса',
+    async (model) => {
+      const { sent, llm } = setup(() => jsonResponse(200, API_MESSAGE));
+
+      await llm.structured({ ...REQUEST, model });
+
+      const body = sent[0]?.body ?? {};
+      expect(body['model']).toBe(model);
+      expect(Object.keys(body).sort()).toEqual([
+        'max_tokens',
+        'messages',
+        'model',
+        'output_config',
+        'system',
+      ]);
+      for (const field of ['temperature', 'top_p', 'top_k', 'thinking']) {
+        expect(body).not.toHaveProperty(field);
+      }
+      expect(body['messages']).toEqual([{ role: 'user', content: 'Здравствуйте' }]);
+      expect(body['output_config']).toMatchObject({ effort: 'low' });
+    },
+  );
+
   it.each([
     [429, 'rate_limit_error', 'rate_limited'],
     [529, 'overloaded_error', 'unavailable'],

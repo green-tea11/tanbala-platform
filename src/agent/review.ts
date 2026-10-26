@@ -53,9 +53,22 @@ export function normalizeReview(raw: RawReview): ReviewResult {
 export const EMPTY_DRAFT_REVIEW: ReviewResult = { ok: false, problems: ['Черновик пуст.'] };
 
 /**
- * Данные вызова проверки: текст черновика, который нужно проверить. Черновик последним, поэтому его конец
+ * Что проверяется. answer: обычный ответ, чат остаётся у бота. handoff: сообщение о передаче чата специалисту
+ * (исходы hot, no_answer, asked_human): после него чат уходит специалисту, поэтому в нём допустима фраза
+ * «передал вопрос специалисту, он вам напишет». Время ответа, цена и обещания там нельзя так же, как в ответе.
+ */
+export type DraftKind = 'answer' | 'handoff';
+
+const ANSWER_TITLE = 'Черновик ответа клиенту, его нужно проверить:';
+const HANDOFF_TITLE =
+  'Черновик сообщения о передаче чата специалисту (после него чат уходит специалисту), его нужно проверить:';
+
+/**
+ * Данные вызова проверки: текст черновика, который нужно проверить, и подпись, обычный ли это ответ или сообщение
+ * о передаче (пункт 6 инструкции проверки опирается на эту подпись). Черновик последним, поэтому его конец
  * однозначен: дальше только закрытие блока. Угловые скобки в нём заменяет buildTurns.
  */
-export function reviewCallData(draftText: string): string {
-  return `Черновик ответа клиенту, его нужно проверить:\n${draftText.trim()}`;
+export function reviewCallData(draftText: string, kind: DraftKind = 'answer'): string {
+  const title = kind === 'handoff' ? HANDOFF_TITLE : ANSWER_TITLE;
+  return `${title}\n${draftText.trim()}`;
 }

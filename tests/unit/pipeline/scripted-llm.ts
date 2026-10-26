@@ -4,10 +4,22 @@ import type { InterestLevel, LlmPurpose } from '../../../src/domain/types.js';
 // Поддельный клиент LLM для тестов сборки: отвечает по назначению вызова в форме схем агента. Значение проходит
 // через ту же схему, что и настоящий ответ модели. Сети нет.
 
+/**
+ * Ответ модели на вызов ответа. Строка: черновик с исходом answer и этим текстом. Объект: любой исход схемы
+ * (hot, no_answer, asked_human, complaint) со своим текстом и stopRequested.
+ */
+export type ReplyScript =
+  | string
+  | {
+      readonly outcome: 'answer' | 'hot' | 'no_answer' | 'asked_human' | 'complaint';
+      readonly text?: string;
+      readonly stopRequested?: boolean;
+    };
+
 /** Что отвечает поддельная модель. */
 export interface LlmScript {
-  /** Текст черновика с исходом answer: на каждый вызов ответа следующий, последний повторяется. */
-  readonly replies: readonly [string, ...string[]];
+  /** Ответы на вызов ответа: на каждый вызов следующий, последний повторяется. */
+  readonly replies: readonly [ReplyScript, ...ReplyScript[]];
   /** Уровень интереса в оценке; по умолчанию холодный. */
   readonly level?: InterestLevel;
   /** Замечания проверки черновика; по умолчанию их нет и проверка пройдена. */
@@ -42,15 +54,27 @@ function rawInterest(level: InterestLevel): unknown {
   };
 }
 
+function rawReply(script: ReplyScript): unknown {
+  if (typeof script === 'string') {
+    return { outcome: 'answer', text: script, stopRequested: false };
+  }
+  return {
+    outcome: script.outcome,
+    text: script.text ?? '',
+    stopRequested: script.stopRequested ?? false,
+  };
+}
+
 export function scriptedLlm(script: LlmScript): ScriptedLlm {
   const requests: RecordedRequest[] = [];
   let replyCalls = 0;
   const rawAnswer = (purpose: LlmPurpose): unknown => {
     switch (purpose) {
       case 'reply': {
-        const text = script.replies[Math.min(replyCalls, script.replies.length - 1)];
+        const reply = script.replies[Math.min(replyCalls, script.replies.length - 1)];
         replyCalls += 1;
-        return { outcome: 'answer', text, stopRequested: false };
+        if (reply === undefined) throw new Error('В сценарии нет ответа модели');
+        return rawReply(reply);
       }
       case 'review': {
         const problems = script.problems ?? [];

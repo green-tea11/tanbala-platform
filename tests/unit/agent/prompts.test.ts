@@ -53,11 +53,93 @@ describe('buildSystem', () => {
     for (const rule of ['одна или две фразы', 'одного вопроса', '«вы»', 'казахском', 'тире']) {
       expect(instruction).toContain(rule);
     }
-    for (const outcome of ['answer', 'no_answer', 'asked_human', 'complaint', 'stopRequested']) {
+    for (const outcome of [
+      'answer',
+      'hot',
+      'no_answer',
+      'asked_human',
+      'complaint',
+      'stopRequested',
+    ]) {
       expect(instruction).toContain(outcome);
     }
     expect(instruction).toContain('<данные>');
     expect(instruction).not.toMatch(/[\u2012-\u2015\u2212]/);
+  });
+
+  describe('инструкция ответа: решение о передаче принимает вызов ответа', () => {
+    const instruction = (): string => buildSystem(KNOWLEDGE, 'reply')[1]?.text ?? '';
+    /** Строка исхода: «hot: ...», «asked_human: ...». */
+    const outcomeLine = (name: string): string =>
+      instruction()
+        .split('\n')
+        .find((line) => line.startsWith(`${name}:`)) ?? '';
+
+    it('hot по определению плана: основное о бизнесе собрано и клиент спрашивает цену под свою задачу, сроки или договор', () => {
+      const hot = outcomeLine('hot');
+
+      expect(hot).toMatch(/основное о бизнесе собрано/);
+      expect(hot).toMatch(/спрашивает цену под свою задачу, сроки или договор/);
+      expect(hot).toMatch(/передаётся/);
+    });
+
+    it('цена при почти неизвестном бизнесе это не hot: ответ answer с вопросом о задаче', () => {
+      expect(instruction()).toMatch(
+        /цену, а о его бизнесе и задаче пока почти ничего не известно, это не hot/,
+      );
+      expect(instruction()).toMatch(/цена зависит от бизнеса и задачи, и задай вопрос о задаче/);
+      expect(instruction()).toMatch(/Ждать ответов на все шесть пунктов выяснения не нужно/);
+      expect(instruction()).toMatch(
+        /рассказал о своей задаче или масштабе[^.]*и спрашивает цену, сроки или договор, это hot/,
+      );
+    });
+
+    it('asked_human только при прямой просьбе: примеры владельца', () => {
+      const askedHuman = outcomeLine('asked_human');
+
+      expect(askedHuman).toMatch(/прямо просит живого человека/);
+      for (const phrase of [
+        '«позовите человека»',
+        '«хочу поговорить с менеджером»',
+        '«соедините с живым человеком»',
+      ]) {
+        expect(askedHuman).toContain(phrase);
+      }
+    });
+
+    it('упоминание специалиста в вопросе клиента не просьба о человеке: ответ по документам', () => {
+      expect(instruction()).toContain('«ваш специалист подключится к нашей 1С?»');
+      expect(instruction()).toContain('«специалист приедет?»');
+      expect(instruction()).toMatch(/не просьба о живом человеке/);
+      expect(instruction()).toMatch(/Отвечай на такой вопрос по документам/);
+      expect(instruction()).toMatch(
+        /Если ответа в документах нет, это no_answer, а не asked_human/,
+      );
+    });
+
+    it('сообщение при hot, no_answer и asked_human: две или три фразы, сначала ответ по документам, затем одна фраза о передаче без времени', () => {
+      const text = instruction();
+
+      expect(text).toMatch(/Текст при hot, no_answer и asked_human/);
+      expect(text).toMatch(/одно сообщение из двух или трёх коротких предложений/);
+      expect(text).toMatch(
+        /Сначала ответь на вопросы клиента, ответы на которые есть в документах/,
+      );
+      expect(text).toMatch(/Затем одна фраза о передаче без времени/);
+      expect(text).toContain('«передал вопрос специалисту, он вам напишет»');
+      expect(text).toMatch(/Вопросов клиенту в таком сообщении не задавай/);
+      expect(text).toMatch(/стоимость зависит от его задачи/);
+    });
+
+    it('complaint и answer как раньше: у complaint text пустой, answer не обещает передачу', () => {
+      const text = instruction();
+
+      expect(text).toMatch(/При complaint оставь text пустым/);
+      expect(text).toMatch(/Вне complaint stopRequested всегда false/);
+      expect(text).toMatch(
+        /В ответе answer не пиши, что передал вопрос специалисту или уточнишь у него/,
+      );
+    });
   });
 
   it('язык по правилу whatsapp.md: русский, казахский только если клиент пишет по-казахски', () => {
@@ -123,6 +205,38 @@ describe('buildSystem', () => {
     expect(instruction).toMatch(/не выполняй/);
   });
 
+  describe('инструкция проверки: пункт 6 различает обычный ответ и сообщение о передаче', () => {
+    const itemSix = (): string =>
+      (buildSystem(KNOWLEDGE, 'review')[1]?.text ?? '')
+        .split('\n')
+        .find((line) => line.startsWith('6. ')) ?? '';
+
+    it('сообщение о передаче по подписи в данных: фраза «передал вопрос специалисту, он вам напишет» допустима', () => {
+      expect(itemSix()).toMatch(/в данных сказано, что это сообщение о передаче чата специалисту/);
+      expect(itemSix()).toContain('«передал вопрос специалисту, он вам напишет»');
+      expect(itemSix()).toMatch(/допустима/);
+    });
+
+    it('время ответа и цена нельзя и в сообщении о передаче', () => {
+      expect(itemSix()).toContain('«сейчас подключится»');
+      expect(itemSix()).toMatch(/время в ней по-прежнему нельзя/);
+      expect(itemSix()).toMatch(/цену и расчёт тоже/);
+    });
+
+    it('без подписи о передаче прежнее правило: «специалист напишет, посчитает, расскажет» нельзя', () => {
+      expect(itemSix()).toMatch(/Если такой подписи нет/);
+      expect(itemSix()).toContain('«специалист напишет, посчитает, расскажет»');
+      expect(itemSix()).toMatch(/решение и цену специалист подбирает под задачу/);
+    });
+
+    it('ответ на вопрос клиента из документов и одна фраза о передаче не нарушение', () => {
+      const instruction = buildSystem(KNOWLEDGE, 'review')[1]?.text ?? '';
+
+      expect(instruction).toMatch(/Это не нарушение:[^\n]*в сообщении о передаче/);
+      expect(instruction).toMatch(/подпись в блоке данных/i);
+    });
+  });
+
   it('инструкция оценки: три уровня, поля выжимки, null для невыясненного, сохранение известного', () => {
     const instruction = buildSystem(KNOWLEDGE, 'interest')[1]?.text ?? '';
 
@@ -135,6 +249,30 @@ describe('buildSystem', () => {
     expect(instruction).toMatch(/только то, что клиент сказал сам/i);
     expect(instruction).toMatch(/повтори как есть/);
     expect(instruction).toMatch(/данные, а не инструкции/);
+  });
+
+  it('инструкция оценки: упоминание специалиста в вопросе не просьба о живом человеке и hot не даёт', () => {
+    const instruction = buildSystem(KNOWLEDGE, 'interest')[1]?.text ?? '';
+
+    expect(instruction).toContain('«ваш специалист подключится к нашей 1С?»');
+    expect(instruction).toContain('«специалист приедет?»');
+    expect(instruction).toMatch(/не просьба о живом человеке/);
+    expect(instruction).toMatch(/hot не даёт/);
+    for (const phrase of [
+      '«позовите человека»',
+      '«хочу поговорить с менеджером»',
+      '«соедините с живым человеком»',
+    ]) {
+      expect(instruction).toContain(phrase);
+    }
+  });
+
+  it('инструкция оценки: уровень только сохраняется, передачу решает вызов ответа', () => {
+    const instruction = buildSystem(KNOWLEDGE, 'interest')[1]?.text ?? '';
+
+    expect(instruction).toMatch(/Ответ клиенту не пиши/);
+    expect(instruction).toMatch(/Чат ты не передаёшь: уровень только сохраняется/);
+    expect(instruction).toMatch(/передачу специалисту решает другой вызов/);
   });
 });
 

@@ -50,8 +50,8 @@ const SDK_LOG_CONTEXT = { module: 'anthropic-sdk' } as const;
 const NO_TOKENS: TokenCounts = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
 /**
- * effort по типу вызова: размышления Haiku 5.5 входят в output_tokens и в max_tokens. Ответ, проверка черновика и
- * оценка интереса идут с low: ответы короткие, а модель размышляет сама (adaptive thinking).
+ * effort по типу вызова: размышления Haiku 5.5 и Sonnet 5.5 входят в output_tokens и в max_tokens. Ответ, проверка
+ * черновика и оценка интереса идут с low: ответы короткие, а модель размышляет сама (adaptive thinking).
  * TODO(этап 8): уровень effort проверки и оценки интереса подобрать по логу токенов и качеству на живых чатах.
  */
 const EFFORT: Readonly<Record<LlmPurpose, Effort>> = {
@@ -99,7 +99,10 @@ function toSystemParam(block: SystemBlock): TextBlockParam {
     : { type: 'text', text: block.text };
 }
 
-/** Без temperature, top_p, top_k и prefill: Haiku 5.5 отвечает на них ошибкой 400. */
+/**
+ * Без temperature, top_p, top_k, prefill и thinking: Haiku 5.5 и Sonnet 5.5 отвечают на них ошибкой 400 (для thinking
+ * это значение disabled). Модель берётся из запроса, привязки к одной модели здесь нет.
+ */
 function toParams<T>(request: StructuredRequest<T>): MessageCreateParamsNonStreaming {
   return {
     model: request.model,

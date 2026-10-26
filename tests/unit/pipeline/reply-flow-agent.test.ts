@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { createAgent, type ConversationContext } from '../../../src/agent/agent.js';
 import type { Knowledge } from '../../../src/agent/knowledge.js';
@@ -16,13 +17,19 @@ import { scriptedLlm, type LlmScript } from './scripted-llm.js';
 
 const CHAT_ID = 7 as ChatId;
 const NOW = Date.UTC(2026, 9, 26, 9, 0, 0);
+const HOT_TEXT =
+  'Да, мы проводим интеграцию с вашей 1С, детали решаем по вашей конфигурации. Стоимость зависит от вашей задачи, я передал вопрос специалисту, он вам напишет.';
 const FIRST = 'Учёт подбираем под задачу. Что вы храните?';
 const SECOND = 'Решение подбирает специалист. Что вы хотите учитывать?';
 const KNOWLEDGE: Knowledge = { owner: 'Документ', whatsapp: 'Правила', version: 'v1' };
+// Модели из config/models.json: ответ на Sonnet, проверка и оценка интереса на Haiku.
+const MODELS_FILE = JSON.parse(
+  readFileSync(new URL('../../../config/models.json', import.meta.url), 'utf8'),
+) as Record<string, string>;
 const MODELS: ModelsConfig = {
-  reply: 'claude-haiku-5-5',
-  review: 'claude-haiku-5-5',
-  interest: 'claude-haiku-5-5',
+  reply: MODELS_FILE['reply'] ?? '',
+  review: MODELS_FILE['review'] ?? '',
+  interest: MODELS_FILE['interest'] ?? '',
 };
 const EMPTY_PROFILE: ClientProfile = {
   business: null,
@@ -94,16 +101,65 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
     expect(model.requests[4]?.turns.at(-1)?.text).toContain(SECOND);
   });
 
-  it('горячий клиент: передача hot без вызова проверки, текст ответа не уходит', async () => {
+  it('оценка интереса hot, а ответ answer: передачи нет, ответ проходит проверку и уходит', async () => {
     const { verdict, model, saveAssessment } = await run({ replies: [FIRST], level: 'hot' });
 
-    expect(verdict).toEqual({ kind: 'handoff', notice: { reason: 'hot' } });
-    expect(model.purposes()).toEqual(['reply', 'interest']);
-    expect(saveAssessment).toHaveBeenCalledWith(
+    expect(verdict).toEqual({ kind: 'send', text: FIRST as ReviewedText });
+    expect(model.purposes()).toEqual(['reply', 'interest', 'review']);
+    expect(saveAssessment).toHaveBeenCalledTimes(1);
+  });
+
+  it('горячий клиент по решению вызова ответа: ответ из знаний и фраза о передаче одним текстом, проверка знает, что это сообщение о передаче', async () => {
+    const { verdict, model, saveAssessment } = await run({
+      replies: [{ outcome: 'hot', text: HOT_TEXT }],
+      level: 'warm',
+    });
+
+    expect(verdict).toEqual({
+      kind: 'handoff',
+      notice: { reason: 'hot' },
+      text: HOT_TEXT as ReviewedText,
+    });
+    expect(model.purposes()).toEqual(['reply', 'interest', 'review']);
+    const review = model.requests[2]?.turns.at(-1)?.text ?? '';
+    expect(review).toContain(HOT_TEXT);
+    expect(review).toMatch(/сообщения о передаче чата специалисту/);
+    expect(saveAssessment).toHaveBeenNthCalledWith(
+      2,
       CHAT_ID,
       expect.objectContaining({ level: 'hot' }),
       NOW,
     );
+  });
+
+  it('модели вызовов из config/models.json: ответ на Sonnet, проверка и оценка интереса на Haiku', async () => {
+    const { model } = await run({ replies: [{ outcome: 'hot', text: HOT_TEXT }] });
+
+    expect(model.requests.map(({ purpose, model: id }) => [purpose, id])).toEqual([
+      ['reply', 'claude-sonnet-5-5'],
+      ['interest', 'claude-haiku-5-5'],
+      ['review', 'claude-haiku-5-5'],
+    ]);
+  });
+
+  it('исход hot без текста: фиксированная фраза, проверки вторым вызовом нет', async () => {
+    const { verdict, model } = await run({ replies: [{ outcome: 'hot' }] });
+
+    expect(verdict).toEqual({ kind: 'handoff', notice: { reason: 'hot' } });
+    expect(model.purposes()).toEqual(['reply', 'interest']);
+  });
+
+  it('проверка не пропустила сообщение передачи дважды: та же причина и фиксированная фраза', async () => {
+    const { verdict, model } = await run({
+      replies: [
+        { outcome: 'asked_human', text: HOT_TEXT },
+        { outcome: 'asked_human', text: HOT_TEXT },
+      ],
+      problems: ['Назван срок'],
+    });
+
+    expect(verdict).toEqual({ kind: 'handoff', notice: { reason: 'asked_human' } });
+    expect(model.purposes()).toEqual(['reply', 'interest', 'review', 'reply', 'review']);
   });
 
   it('нарушение кода: ревью не зовётся, замечание кода уходит модели во втором запросе', async () => {

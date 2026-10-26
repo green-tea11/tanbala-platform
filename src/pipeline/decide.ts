@@ -1,53 +1,58 @@
 import type { CheckFinding } from '../checks/code-checks.js';
 import type {
-  HandoffReason,
-  InterestAssessment,
   ReplyDraft,
+  ReplyHandoffOutcome,
   ReviewedText,
   ReviewResult,
 } from '../domain/types.js';
 
 /**
- * Чем закончились проверки черновика с исходом answer: без ревью черновик не уходит никогда.
+ * Чем закончились проверки текста черновика: без ревью текст модели не уходит никогда.
  * Нарушения проверок кодом (checks/code-checks.ts) уходят модели замечаниями при повторе.
- * skipped: проверки не запускались, потому что клиент горячий и черновик ему не уходит, а вызов ревью стоил бы денег.
- * Для клиента, который не горячий, пропуск проверок отправкой не кончается никогда.
  */
 export type DraftGate =
   | {
       readonly kind: 'code_failed';
       readonly findings: readonly [CheckFinding, ...CheckFinding[]];
     }
-  | { readonly kind: 'reviewed'; readonly review: ReviewResult }
-  | { readonly kind: 'skipped' };
+  | { readonly kind: 'reviewed'; readonly review: ReviewResult };
+
+/**
+ * Черновик с текстом клиенту: ответ answer или исход передачи (hot, no_answer, asked_human), у которого модель
+ * написала сообщение. И то и другое проверяется одинаково: кодом и вторым вызовом.
+ */
+export type TextDraft = Extract<ReplyDraft, { readonly text: string }>;
 
 /** Всё, что известно о черновике к моменту решения. kind на верхнем уровне сужает тип без проверки полей. */
 export type DecisionInput =
   | {
-      readonly kind: 'answer';
-      readonly draft: Extract<ReplyDraft, { outcome: 'answer' }>;
+      /** Текст прошёл проверки кодом и второй вызов (или не прошёл): решение зависит от итога и попытки. */
+      readonly kind: 'text';
+      readonly draft: TextDraft;
       readonly gate: DraftGate;
       readonly attempt: 1 | 2;
-      /** Оценка интереса; null, если её ещё нет. */
-      readonly assessment: InterestAssessment | null;
     }
   | {
+      /**
+       * Исход, у которого нечего проверять: complaint (фраза фиксированная) или исход передачи с пустым text.
+       * text исхода передачи здесь не учитывается: клиенту уйдёт фиксированная фраза по причине.
+       */
       readonly kind: 'handoff_outcome';
-      readonly draft: Exclude<ReplyDraft, { outcome: 'answer' }>;
-      readonly assessment: InterestAssessment | null;
+      readonly draft: Exclude<ReplyDraft, { readonly outcome: 'answer' }>;
     };
-
-/** Причины передачи, которые возвращает decideAction (llm_error решает конвейер, human_took_over перехват). */
-export type DecisionHandoffReason = Extract<
-  HandoffReason,
-  'hot' | 'no_answer' | 'asked_human' | 'check_failed'
->;
 
 /** Что делать с черновиком: отправить, переписать с замечаниями или передать менеджеру. */
 export type Decision =
   | { readonly kind: 'send'; readonly text: ReviewedText }
   | { readonly kind: 'retry'; readonly feedback: readonly string[] }
-  | { readonly kind: 'handoff'; readonly reason: DecisionHandoffReason }
+  /** Ответ не прошёл проверки дважды: фиксированная фраза check_failed. */
+  | { readonly kind: 'handoff'; readonly reason: 'check_failed' }
+  /** Передача по решению вызова ответа; text есть, если сообщение модели прошло проверки. */
+  | {
+      readonly kind: 'handoff';
+      readonly reason: ReplyHandoffOutcome;
+      readonly text?: ReviewedText;
+    }
   | { readonly kind: 'handoff'; readonly reason: 'complaint'; readonly stopRequested: boolean };
 
 /** Замечание повтору, когда проверка не пройдена, а причин не назвала: иначе повтор был бы слепым. */
@@ -56,35 +61,43 @@ const GENERIC_FEEDBACK =
 
 /**
  * Развилка шагов с 3 по 5 плана. Чистая функция: все ветки покрываются юнит-тестами без LLM.
- * handoff_outcome: no_answer, asked_human и complaint (со stopRequested) передаются по своей причине, и горячий
- * клиент её не подменяет: уровень интереса уходит менеджеру отдельным полем уведомления.
- * answer: горячий клиент (assessment.level 'hot') => 'hot' при любом исходе проверок: черновик не уходит, клиенту
- * одна фраза передачи, а не два сообщения. Иначе проверки кодом или второй вызов не пройдены: попытка 1 => retry
- * с замечаниями (нарушения кода или замечания проверки), попытка 2 => 'check_failed'.
- * send только при gate reviewed и review.ok; здесь и только здесь текст приводится к ReviewedText. Без ревью
- * черновик не отправляется никогда: gate skipped у клиента, который не горячий, это check_failed без повтора.
+ * Решение о передаче принимает вызов ответа (исход черновика), а не оценка интереса: уровень интереса здесь не
+ * участвует. handoff_outcome: complaint (со stopRequested) и исходы передачи без текста передаются по своей причине
+ * с фиксированной фразой. text: проверки кодом или второй вызов не пройдены: попытка 1 => retry с замечаниями
+ * (нарушения кода или замечания проверки), попытка 2 => для ответа handoff check_failed, для исхода передачи та же
+ * причина без текста (клиенту уйдёт фиксированная фраза, причина не меняется). Проверки пройдены => answer даёт
+ * send, исход передачи даёт handoff с этим текстом вместо фиксированной фразы. Здесь и только здесь текст
+ * приводится к ReviewedText. Без ревью текст не отправляется никогда.
  */
 export function decideAction(input: DecisionInput): Decision {
   if (input.kind === 'handoff_outcome') return handoffFor(input.draft);
-  if (input.assessment?.level === 'hot') return { kind: 'handoff', reason: 'hot' };
-  if (input.gate.kind === 'skipped') return { kind: 'handoff', reason: 'check_failed' };
-  const feedback = feedbackOf(input.gate);
-  if (feedback === null) return { kind: 'send', text: input.draft.text as ReviewedText };
-  return input.attempt === 1
-    ? { kind: 'retry', feedback }
-    : { kind: 'handoff', reason: 'check_failed' };
+  const { draft, gate, attempt } = input;
+  const feedback = feedbackOf(gate);
+  if (feedback === null) return passed(draft);
+  return attempt === 1 ? { kind: 'retry', feedback } : exhausted(draft);
 }
 
-function handoffFor(draft: Exclude<ReplyDraft, { outcome: 'answer' }>): Decision {
+function handoffFor(draft: Exclude<ReplyDraft, { readonly outcome: 'answer' }>): Decision {
   return draft.outcome === 'complaint'
     ? { kind: 'handoff', reason: 'complaint', stopRequested: draft.stopRequested }
     : { kind: 'handoff', reason: draft.outcome };
 }
 
+/** Проверки пройдены: ответ уходит клиенту, сообщение передачи уходит вместо фиксированной фразы. */
+function passed(draft: TextDraft): Decision {
+  const text = draft.text as ReviewedText;
+  return draft.outcome === 'answer'
+    ? { kind: 'send', text }
+    : { kind: 'handoff', reason: draft.outcome, text };
+}
+
+/** Вторая попытка не помогла: ответ даёт check_failed, исход передачи сохраняет причину и теряет только текст. */
+function exhausted(draft: TextDraft): Decision {
+  return { kind: 'handoff', reason: draft.outcome === 'answer' ? 'check_failed' : draft.outcome };
+}
+
 /** Замечания для повтора; null, если оба вида проверок пройдены. Всегда новый массив. */
-function feedbackOf(
-  gate: Exclude<DraftGate, { readonly kind: 'skipped' }>,
-): readonly string[] | null {
+function feedbackOf(gate: DraftGate): readonly string[] | null {
   if (gate.kind === 'code_failed') return gate.findings.map((finding) => finding.detail);
   if (gate.review.ok) return null;
   return gate.review.problems.length === 0 ? [GENERIC_FEEDBACK] : [...gate.review.problems];

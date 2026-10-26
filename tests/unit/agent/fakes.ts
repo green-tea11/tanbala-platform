@@ -13,7 +13,7 @@ export const KNOWLEDGE: Knowledge = {
 
 /** Разные модели у вызовов: видно, что каждый вызов берёт свою модель из конфига. */
 export const MODELS = {
-  reply: 'claude-haiku-5-5',
+  reply: 'claude-sonnet-5-5',
   review: 'claude-review-model',
   interest: 'claude-interest-model',
 } as const;

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, type Mock } from 'vitest';
-import type { ConversationContext } from '../../../src/agent/agent.js';
+import type { ConversationContext, DraftKind } from '../../../src/agent/agent.js';
 import type { Clock, Logger, Transcriber } from '../../../src/domain/ports.js';
 import type {
   AudioClip,
@@ -15,6 +15,7 @@ import type {
   MessageContent,
   PhoneDigits,
   ReplyDraft,
+  ReviewedText,
   ReviewResult,
   StoredMessage,
   WaMessageId,
@@ -38,6 +39,10 @@ const PHONE = '77000000002' as PhoneDigits;
 const JID = `${PHONE}@s.whatsapp.net` as Jid;
 const ALLOWLIST: ReadonlySet<PhoneDigits> = new Set([PHONE]);
 const ANSWER = 'Учёт подбираем под задачу. Что вы храните?';
+const HOT_TEXT =
+  'Да, мы проводим интеграцию с вашей 1С, детали решаем по вашей конфигурации. Стоимость зависит от вашей задачи, я передал вопрос специалисту, он вам напишет.';
+const SECOND_HOT_TEXT =
+  'Интеграцию с вашей 1С проводим. Передал вопрос специалисту, он вам напишет.';
 const MIME = 'audio/ogg; codecs=opus';
 const TYPING_MS = 1200;
 const EMPTY_PROFILE: ClientProfile = {
@@ -92,6 +97,13 @@ function answer(value: string = ANSWER): LlmResult<ReplyDraft> {
   return { ok: true, value: { outcome: 'answer', text: value } };
 }
 
+function handoffAnswer(
+  outcome: 'hot' | 'no_answer' | 'asked_human',
+  value: string,
+): LlmResult<ReplyDraft> {
+  return { ok: true, value: { outcome, text: value } };
+}
+
 function assessed(level: InterestLevel): LlmResult<InterestAssessment> {
   return { ok: true, value: { level, profile: EMPTY_PROFILE, reason: 'по разговору' } };
 }
@@ -133,6 +145,8 @@ interface Harness {
   /** Замечания, с которыми вызывали draftReply (undefined: первый черновик), и тексты, отданные на проверку. */
   readonly feedbacks: (readonly string[] | undefined)[];
   readonly reviewed: string[];
+  /** Подпись ревью: обычный ответ или сообщение о передаче. */
+  readonly reviewKinds: (DraftKind | undefined)[];
   readonly outbox: Mocked<'outbox'>;
   readonly inbox: Mocked<'inbox'>;
   readonly handOff: Mock<HandoffService['handOff']>;
@@ -165,6 +179,7 @@ function setup(options: Options = {}): Harness {
   const contexts: ConversationContext[] = [];
   const feedbacks: Harness['feedbacks'] = [];
   const reviewed: string[] = [];
+  const reviewKinds: (DraftKind | undefined)[] = [];
   const drafts = [...(options.drafts ?? [answer()])];
   const reviews = [...(options.reviews ?? [REVIEW_OK])];
   let status = options.status === undefined ? 'bot' : options.status;
@@ -241,9 +256,10 @@ function setup(options: Options = {}): Harness {
         const next = drafts.length > 1 ? drafts.shift() : drafts[0];
         return Promise.resolve(next ?? answer());
       },
-      reviewDraft: (_context, text) => {
+      reviewDraft: (_context, text, kind) => {
         calls.push('review');
         reviewed.push(text);
+        reviewKinds.push(kind);
         const next = reviews.length > 1 ? reviews.shift() : reviews[0];
         return Promise.resolve(next ?? REVIEW_OK);
       },
@@ -262,7 +278,19 @@ function setup(options: Options = {}): Harness {
     clock,
     logger: createLogger(logs),
   };
-  return { deps, calls, logs, contexts, feedbacks, reviewed, outbox, inbox, handOff, setTyping };
+  return {
+    deps,
+    calls,
+    logs,
+    contexts,
+    feedbacks,
+    reviewed,
+    reviewKinds,
+    outbox,
+    inbox,
+    handOff,
+    setTyping,
+  };
 }
 
 function batchOf(
@@ -494,14 +522,19 @@ describe('pipeline/handle-inbound: сбой отправки исключени�
 describe('pipeline/handle-inbound: передача менеджеру (через сервис передачи)', () => {
   it.each<[string, ReplyDraft, HandOffRequest]>([
     [
-      'нет ответа в знаниях',
-      { outcome: 'no_answer' },
+      'нет ответа в знаниях, текста нет',
+      { outcome: 'no_answer', text: '' },
       { reason: 'no_answer', replyToWaId: 'A2' as WaMessageId },
     ],
     [
-      'просит человека',
-      { outcome: 'asked_human' },
+      'просит человека, текста нет',
+      { outcome: 'asked_human', text: '' },
       { reason: 'asked_human', replyToWaId: 'A2' as WaMessageId },
+    ],
+    [
+      'горячий клиент, текста нет',
+      { outcome: 'hot', text: '' },
+      { reason: 'hot', replyToWaId: 'A2' as WaMessageId },
     ],
     [
       'жалоба с просьбой не писать',
@@ -522,6 +555,8 @@ describe('pipeline/handle-inbound: передача менеджеру (чере
         'draft',
         'assess',
         'save:cold',
+        // Передача hot: уровень hot дописывается в чат до передачи.
+        ...(draft.outcome === 'hot' ? ['save:hot'] : []),
         `handoff:${draft.outcome}`,
         'answered:A2',
       ]);
@@ -564,7 +599,7 @@ describe('pipeline/handle-inbound: передача менеджеру (чере
   );
 
   it.each<[string, LlmResult<ReplyDraft>]>([
-    ['нет ответа', { ok: true, value: { outcome: 'no_answer' } }],
+    ['нет ответа', { ok: true, value: { outcome: 'no_answer', text: '' } }],
     ['лимит', { ok: false, failure: 'budget_exceeded', scope: 'global' }],
   ])(
     'чат ушёл менеджеру, пока шёл вызов LLM (%s): статус не перезаписан, фразы нет',
@@ -580,7 +615,7 @@ describe('pipeline/handle-inbound: передача менеджеру (чере
   );
 
   it.each<[string, LlmResult<ReplyDraft>, string]>([
-    ['с фразой клиенту', { ok: true, value: { outcome: 'asked_human' } }, 'asked_human'],
+    ['с фразой клиенту', { ok: true, value: { outcome: 'asked_human', text: '' } }, 'asked_human'],
     ['лимит без фразы', { ok: false, failure: 'budget_exceeded', scope: 'global' }, 'limit'],
   ])(
     'передача не записана (%s): ошибка в лог без текста, итог handoff_failed, «отвечено» не ставится',
@@ -600,8 +635,26 @@ describe('pipeline/handle-inbound: проверки, оценка интерес
   const DASHED = 'Учёт — это просто. Что вы храните?';
   const SECOND = 'Цена зависит от задачи. Что вы хотите учитывать?';
 
-  it('горячий клиент: оценка сохранена, проверки пропущены, одна передача hot, текст ответа не уходит', async () => {
+  it('оценка интереса hot сама чат не передаёт: черновик answer проходит проверки и уходит как обычный ответ', async () => {
     const h = setup({ assessment: assessed('hot') });
+
+    const outcome = await run(h, batchOf([text('A1')]));
+
+    expect(outcome).toEqual({ kind: 'replied' });
+    expect(h.calls).toEqual([
+      'read:A1',
+      'draft',
+      'assess',
+      'save:hot',
+      'review',
+      ...SEND_STEPS('A1'),
+    ]);
+    expect(h.handOff).not.toHaveBeenCalled();
+    expect(h.reviewKinds).toEqual(['answer']);
+  });
+
+  it('горячий клиент по решению вызова ответа: сообщение прошло проверки, handOff hot с этим текстом, больше клиенту ничего', async () => {
+    const h = setup({ drafts: [handoffAnswer('hot', HOT_TEXT)] });
 
     const outcome = await run(h, batchOf([text('A1')]));
 
@@ -610,23 +663,134 @@ describe('pipeline/handle-inbound: проверки, оценка интерес
       'read:A1',
       'draft',
       'assess',
+      'save:cold',
+      'review',
       'save:hot',
       'handoff:hot',
       'answered:A1',
     ]);
     expect(h.handOff).toHaveBeenCalledTimes(1);
-    expect(h.handOff).toHaveBeenCalledWith(CHAT_ID, { reason: 'hot', replyToWaId: 'A1' });
-    expect(h.reviewed).toEqual([]);
+    expect(h.handOff).toHaveBeenCalledWith(CHAT_ID, {
+      reason: 'hot',
+      replyToWaId: 'A1',
+      text: HOT_TEXT as ReviewedText,
+    });
+    expect(h.reviewed).toEqual([HOT_TEXT]);
+    expect(h.reviewKinds).toEqual(['handoff']);
     expect(h.outbox.sendBotReply).not.toHaveBeenCalled();
+    expect(h.setTyping).not.toHaveBeenCalled();
   });
 
-  it('горячий клиент с голосовым в пачке: фразы про голосовое нет, только фраза передачи', async () => {
-    const h = setup({ assessment: assessed('hot') });
+  it.each(['no_answer', 'asked_human'] as const)(
+    '%s с текстом: проверки как у сообщения о передаче, handOff с причиной и этим текстом',
+    async (reason) => {
+      const h = setup({ drafts: [handoffAnswer(reason, HOT_TEXT)] });
+
+      const outcome = await run(h, batchOf([text('A1'), text('A2')]));
+
+      expect(outcome).toEqual({ kind: 'handed_off', reason });
+      expect(h.handOff).toHaveBeenCalledWith(CHAT_ID, {
+        reason,
+        replyToWaId: 'A2',
+        text: HOT_TEXT as ReviewedText,
+      });
+      expect(h.reviewKinds).toEqual(['handoff']);
+    },
+  );
+
+  it('текст передачи не прошёл ревью дважды: handOff с той же причиной и без текста, клиенту фиксированная фраза', async () => {
+    const failed: LlmResult<ReviewResult> = { ok: true, value: { ok: false, problems: ['срок'] } };
+    const h = setup({
+      drafts: [handoffAnswer('hot', HOT_TEXT), handoffAnswer('hot', SECOND_HOT_TEXT)],
+      reviews: [failed],
+    });
+
+    const outcome = await run(h, batchOf([text('A1')]));
+
+    expect(outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
+    expect(h.handOff).toHaveBeenCalledWith(CHAT_ID, { reason: 'hot', replyToWaId: 'A1' });
+    expect(h.feedbacks[1]).toEqual(['срок']);
+    expect(h.reviewKinds).toEqual(['handoff', 'handoff']);
+  });
+
+  it('сбой ревью текста передачи: handOff с той же причиной и без текста', async () => {
+    const h = setup({
+      drafts: [handoffAnswer('asked_human', HOT_TEXT)],
+      reviews: [{ ok: false, failure: 'unavailable' }],
+    });
+
+    const outcome = await run(h, batchOf([text('A1')]));
+
+    expect(outcome).toEqual({ kind: 'handed_off', reason: 'asked_human' });
+    expect(h.handOff).toHaveBeenCalledWith(CHAT_ID, { reason: 'asked_human', replyToWaId: 'A1' });
+  });
+
+  it('лимит API на ревью текста передачи: handOff limit без фразы клиенту', async () => {
+    const h = setup({
+      drafts: [handoffAnswer('hot', HOT_TEXT)],
+      reviews: [{ ok: false, failure: 'budget_exceeded', scope: 'chat' }],
+    });
+
+    const outcome = await run(h, batchOf([text('A1')]));
+
+    expect(outcome).toEqual({ kind: 'handed_off', reason: 'limit' });
+    expect(h.handOff).toHaveBeenCalledWith(CHAT_ID, { reason: 'limit', scope: 'chat' });
+  });
+
+  it('новые сообщения, пока шла проверка текста передачи: пачка обрабатывается заново один раз, передача уходит с новым текстом', async () => {
+    const h = setup({
+      drafts: [handoffAnswer('hot', HOT_TEXT), handoffAnswer('hot', SECOND_HOT_TEXT)],
+    });
+
+    const outcome = await run(h, batchOf([text('A1')], [[], [text('A2')]]));
+
+    expect(outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
+    expect(h.handOff).toHaveBeenCalledTimes(1);
+    expect(h.handOff).toHaveBeenCalledWith(CHAT_ID, {
+      reason: 'hot',
+      replyToWaId: 'A2',
+      text: SECOND_HOT_TEXT as ReviewedText,
+    });
+    expect(h.calls.filter((call) => call.startsWith('draft'))).toEqual(['draft', 'draft']);
+  });
+
+  it('человек подключился, пока шла проверка текста передачи: бот молчит, handOff не зовётся', async () => {
+    const h = setup({ drafts: [handoffAnswer('hot', HOT_TEXT)], joinOn: 'draft' });
+
+    const outcome = await run(h, batchOf([text('A1')]));
+
+    expect(outcome).toEqual({ kind: 'silent', reason: 'manager_mode' });
+    expect(h.handOff).not.toHaveBeenCalled();
+  });
+
+  it('горячий клиент с голосовым в пачке: фразы про голосовое нет, только сообщение передачи', async () => {
+    const h = setup({ drafts: [handoffAnswer('hot', HOT_TEXT)] });
 
     const outcome = await run(h, batchOf([text('T1'), voice('V1')]));
 
     expect(outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
     expect(h.outbox.sendVoiceNotice).not.toHaveBeenCalled();
+    expect(h.handOff).toHaveBeenCalledWith(CHAT_ID, {
+      reason: 'hot',
+      replyToWaId: 'V1',
+      text: HOT_TEXT as ReviewedText,
+    });
+  });
+
+  it('передача с текстом не записалась: ошибка в лог без текста, итог handoff_failed, «отвечено» не ставится', async () => {
+    const h = setup({
+      drafts: [handoffAnswer('hot', HOT_TEXT)],
+      handOffFails: new TypeError('база недоступна'),
+    });
+
+    const outcome = await run(h, batchOf([text('A1')]));
+
+    expect(outcome).toEqual({ kind: 'handoff_failed', reason: 'hot' });
+    expect(levels(h, 'error')).toEqual([
+      { chatId: CHAT_ID, reason: 'hot', errorName: 'TypeError' },
+    ]);
+    expect(JSON.stringify(h.logs)).not.toContain('интеграцию');
+    expect(h.calls).not.toContain('answered:A1');
   });
 
   it('нарушение проверок кодом: повтор с замечаниями, клиенту уходит только второй черновик', async () => {
@@ -754,7 +918,7 @@ describe('pipeline/handle-inbound: голосовые', () => {
   });
 
   it.each<[string, LlmResult<ReplyDraft>]>([
-    ['нет ответа', { ok: true, value: { outcome: 'no_answer' } }],
+    ['нет ответа', { ok: true, value: { outcome: 'no_answer', text: '' } }],
     [
       'жалоба, просит не писать',
       { ok: true, value: { outcome: 'complaint', stopRequested: true } },

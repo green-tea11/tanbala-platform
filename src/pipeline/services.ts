@@ -164,6 +164,8 @@ function createLateOutbox(): LateOutbox {
       later((real) => real.sendBotReply(chatId, text, replyToWaId)),
     sendHandoffNotice: (chatId, notice, replyToWaId) =>
       later((real) => real.sendHandoffNotice(chatId, notice, replyToWaId)),
+    sendHandoffText: (chatId, text, replyToWaId) =>
+      later((real) => real.sendHandoffText(chatId, text, replyToWaId)),
     sendVoiceNotice: (chatId, replyToWaId) =>
       later((real) => real.sendVoiceNotice(chatId, replyToWaId)),
     notifyManager: (text, kind) => later((real) => real.notifyManager(text, kind)),

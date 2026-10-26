@@ -239,6 +239,19 @@ describe('createAnthropicLlm: запрос', () => {
     },
   );
 
+  it.each(['claude-haiku-5-5', 'claude-sonnet-5-5'])(
+    'модель %s: уходит в API и в лог расхода как в запросе, адаптер не привязан к одной модели',
+    async (model) => {
+      const { create, records, deps } = setup();
+
+      await createAnthropicLlm(deps).structured({ ...REQUEST, model });
+
+      expect(sentParams(create).model).toBe(model);
+      expect(records[0]).toMatchObject({ model });
+      expect(Object.keys(sentParams(create))).not.toContain('thinking');
+    },
+  );
+
   it('сначала засчитывает вызов в дневной лимит, затем вызывает API, пишет расход и только потом проверяет схему', async () => {
     const { calls, deps } = setup();
     const schema = z.object({ answer: z.string() });

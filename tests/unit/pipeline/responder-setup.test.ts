@@ -34,6 +34,9 @@ const JID = `${PHONE}@s.whatsapp.net` as Jid;
 const MANAGER_PHONE = '77000000009';
 const MANAGER_JID = `${MANAGER_PHONE}@s.whatsapp.net` as Jid;
 const REPLY = 'Расскажите, пожалуйста, что вы храните?';
+/** Сообщение передачи от модели: ответ из знаний и одна фраза о передаче, без времени. */
+const HOT_REPLY =
+  'Да, мы проводим интеграцию с вашей 1С. Стоимость зависит от вашей задачи, я передал вопрос специалисту, он вам напишет.';
 const MODELS: unknown = JSON.parse(
   readFileSync(join(PROJECT_ROOT, 'config', 'models.json'), 'utf8'),
 );
@@ -194,12 +197,12 @@ describe('pipeline/responder-setup', () => {
     );
   });
 
-  it('горячий клиент: фраза передачи через подключение, передача и уведомление в базе (номера менеджера нет)', async () => {
+  it('горячий клиент по решению вызова ответа: сообщение модели через подключение, передача и уведомление в базе (номера менеджера нет)', async () => {
     const config = configWith({ VENMART_ANTHROPIC_KEY: 'sk-test-not-a-real-key' });
     const logger = createLogger([]);
     const storage = storageOf(config);
     const services = servicesOf(config, storage, logger);
-    const llm = scriptedLlm({ replies: [REPLY], level: 'hot' });
+    const llm = scriptedLlm({ replies: [{ outcome: 'hot', text: HOT_REPLY }] });
     const responder = await assembleResponder({
       config,
       logger,
@@ -220,8 +223,9 @@ describe('pipeline/responder-setup', () => {
     await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(1));
     await responder.batcher.drain();
 
-    expect(sendText).toHaveBeenCalledWith(JID, expect.stringMatching(/специалист/), 'OUT-1');
-    expect(llm.purposes()).toEqual(['reply', 'interest']);
+    expect(sendText).toHaveBeenCalledTimes(1);
+    expect(sendText).toHaveBeenCalledWith(JID, HOT_REPLY, 'OUT-1');
+    expect(llm.purposes()).toEqual(['reply', 'interest', 'review']);
     expect(storage.chats.getById(chat.id)?.control).toEqual({ status: 'manager', by: 'bot' });
     expect(storage.chats.getById(chat.id)?.level).toBe('hot');
     expect(storage.handoffs.findOpen(chat.id)).toMatchObject({ reason: 'hot', level: 'hot' });
@@ -231,7 +235,7 @@ describe('pipeline/responder-setup', () => {
     });
   });
 
-  it('горячий клиент и номер менеджера задан: уведомление уходит менеджеру до фразы клиенту', async () => {
+  it('горячий клиент и номер менеджера задан: уведомление уходит менеджеру до сообщения клиенту', async () => {
     const config = configWith({
       VENMART_ANTHROPIC_KEY: 'sk-test-not-a-real-key',
       MANAGER_WHATSAPP: MANAGER_PHONE,
@@ -245,7 +249,7 @@ describe('pipeline/responder-setup', () => {
       clock: CLOCK,
       storage,
       services,
-      createLlm: () => scriptedLlm({ replies: [REPLY], level: 'hot' }).llm,
+      createLlm: () => scriptedLlm({ replies: [{ outcome: 'hot', text: HOT_REPLY }] }).llm,
     });
     if (responder === null) throw new Error('ответы не собраны');
     const { link, sendText } = connection();
@@ -259,10 +263,12 @@ describe('pipeline/responder-setup', () => {
     await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(2));
     await responder.batcher.drain();
 
-    expect(sendText.mock.calls.map(([jid, , waId]) => [jid, waId])).toEqual([
-      [MANAGER_JID, 'OUT-1'],
-      [JID, 'OUT-2'],
-    ]);
+    expect(sendText.mock.calls.map(([jid, text, waId]) => [jid, text === HOT_REPLY, waId])).toEqual(
+      [
+        [MANAGER_JID, false, 'OUT-1'],
+        [JID, true, 'OUT-2'],
+      ],
+    );
     expect(storage.notifications.latestForChat(chat.id)).toMatchObject({
       status: 'sent',
       attempts: 1,

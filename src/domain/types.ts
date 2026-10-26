@@ -37,8 +37,9 @@ export type ChatControl =
   | { readonly status: 'manager'; readonly by: 'bot' | 'phone' | 'panel' };
 
 /**
- * Текст ответа, прошедший проверки кодом и второй вызов LLM. Приводится к бренду только в pipeline/decide.ts
- * (вариант send), поэтому Outbox.sendBotReply не примет непроверенный текст.
+ * Текст модели, прошедший проверки кодом и второй вызов LLM. Приводится к бренду только в pipeline/decide.ts
+ * (вариант send и вариант handoff с text), поэтому Outbox.sendBotReply и Outbox.sendHandoffText не примут
+ * непроверенный текст.
  */
 export type ReviewedText = string & { readonly __brand: 'ReviewedText' };
 
@@ -73,6 +74,8 @@ export type HandoffReason =
  * Повод фразы клиенту при передаче. Фраза фиксированная и выбирается по поводу, без LLM;
  * stopRequested: клиент просит больше не писать, тогда только извинение.
  * Перехват человеком и лимит идут без фразы клиенту, поэтому их здесь нет.
+ * Проверенное сообщение модели при hot, no_answer и asked_human идёт отдельным путём (HandOffRequest.text) и
+ * заменяет фразу; повод остаётся тем же.
  */
 export type HandoffNotice =
   | { readonly reason: Exclude<HandoffReason, 'human_took_over' | 'complaint' | 'limit'> }
@@ -225,12 +228,22 @@ export interface Chat {
 }
 
 /**
- * Черновик ответа клиенту (первый вызов LLM). Текст модели уходит клиенту только в исходе answer,
- * и только после проверок кодом и второго вызова. Остальные исходы ведут к передаче с фиксированной фразой.
+ * Исходы ответа, после которых чат уходит менеджеру, а сообщение клиенту пишет сама модель: hot (основное о бизнесе
+ * собрано, клиент спрашивает цену, сроки или договор), no_answer (ответа нет в знаниях), asked_human (клиент прямо
+ * просит живого человека). Решение о передаче принимает вызов ответа, а не оценка интереса.
+ */
+export type ReplyHandoffOutcome = Extract<HandoffReason, 'hot' | 'no_answer' | 'asked_human'>;
+
+/**
+ * Черновик ответа клиенту (первый вызов LLM). Текст модели уходит клиенту только после проверок кодом и второго
+ * вызова: при answer как ответ, при hot, no_answer и asked_human как сообщение о передаче (ответ на то, что есть
+ * в знаниях, и одна фраза о передаче специалисту). У исходов передачи text может быть пустым: тогда нечего
+ * проверять и клиенту уходит фиксированная фраза по причине. complaint без текста: фраза фиксированная, при
+ * stopRequested только извинение.
  */
 export type ReplyDraft =
   | { readonly outcome: 'answer'; readonly text: string }
-  | { readonly outcome: Extract<HandoffReason, 'no_answer' | 'asked_human'> }
+  | { readonly outcome: ReplyHandoffOutcome; readonly text: string }
   | { readonly outcome: Extract<HandoffReason, 'complaint'>; readonly stopRequested: boolean };
 
 /** Итог проверки черновика вторым вызовом LLM: нет ли фактов не из знаний, цен, скидок, сроков, объёмов. */

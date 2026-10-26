@@ -1,4 +1,4 @@
-import type { Agent, ConversationContext } from '../agent/agent.js';
+import type { Agent, ConversationContext, DraftKind } from '../agent/agent.js';
 import { normalizeDraft, runCodeChecks } from '../checks/code-checks.js';
 import type { ChatsRepo, Clock, Logger } from '../domain/ports.js';
 import type {
@@ -10,10 +10,11 @@ import type {
   NormalizedText,
   PhoneDigits,
   ReplyDraft,
+  ReplyHandoffOutcome,
   ReviewedText,
   StoredMessage,
 } from '../domain/types.js';
-import { decideAction, type Decision, type DraftGate } from './decide.js';
+import { decideAction, type Decision, type DraftGate, type TextDraft } from './decide.js';
 
 /** Что нужно ходу ответа от остальной системы: агент, запись оценки интереса, часы и лог. */
 export interface ReplyFlowDeps {
@@ -30,12 +31,25 @@ export interface Drafted {
 }
 
 /**
- * Что делать с чатом по итогам хода: отправить проверенный текст, передать менеджеру с фиксированной фразой
- * (в том числе при сбое LLM) или замолчать из-за исчерпанного дневного лимита API.
+ * Передача менеджеру. Без text клиенту уходит фиксированная фраза по причине (в том числе при сбое LLM и после
+ * отказа от текста модели). С text клиенту уходит сообщение модели, прошедшее проверки кодом и второй вызов:
+ * только при hot, no_answer, asked_human.
+ */
+export type HandoffVerdict =
+  | { readonly kind: 'handoff'; readonly notice: HandoffNotice }
+  | {
+      readonly kind: 'handoff';
+      readonly notice: { readonly reason: ReplyHandoffOutcome };
+      readonly text: ReviewedText;
+    };
+
+/**
+ * Что делать с чатом по итогам хода: отправить проверенный текст, передать менеджеру (с проверенным сообщением
+ * модели или с фиксированной фразой) или замолчать из-за исчерпанного дневного лимита API.
  */
 export type ReplyVerdict =
   | { readonly kind: 'send'; readonly text: ReviewedText }
-  | { readonly kind: 'handoff'; readonly notice: HandoffNotice }
+  | HandoffVerdict
   | { readonly kind: 'limit'; readonly scope: BudgetScope };
 
 /**
@@ -47,30 +61,44 @@ const NO_OWN_PHONE = '' as PhoneDigits;
 
 const UNAVAILABLE: LlmResult<never> = { ok: false, failure: 'unavailable' };
 
-/** Второй провал проверок: текст без ревью не уходит никогда. */
+/** Второй провал проверок ответа: текст без ревью не уходит никогда. */
 const CHECK_FAILED: ReplyVerdict = { kind: 'handoff', notice: { reason: 'check_failed' } };
+
+/** Сбой LLM там, где причины передачи ещё нет: fail-closed, клиенту уходит нейтральная фраза. */
+const LLM_ERROR: ReplyVerdict = { kind: 'handoff', notice: { reason: 'llm_error' } };
+
+/** Причина записи уровня hot, когда его назначила не оценка интереса, а вызов ответа. */
+const HOT_BY_REPLY =
+  'Вызов ответа определил клиента как горячего: он спрашивает цену, сроки или договор.';
 
 type LlmFailed = Extract<LlmResult<unknown>, { readonly ok: false }>;
 type Attempt = 1 | 2;
 
-/** Всё, что нужно одной попытке: зависимости, разговор и оценка интереса (null, если её нет). */
+/** Всё, что нужно одной попытке: зависимости и разговор. */
 interface Flow {
   readonly deps: ReplyFlowDeps;
   readonly context: ConversationContext;
-  readonly assessment: InterestAssessment | null;
 }
 
-/** Итог одной попытки: решение принято или нужен повтор черновика с замечаниями. */
+/**
+ * Итог одной попытки: решение принято или нужен повтор черновика с замечаниями. keep: решение, которое остаётся,
+ * если повтор не удастся из-за сбоя LLM. У исхода передачи это та же передача с фиксированной фразой (причину
+ * решила модель, сбой её не отменяет), у ответа null: тогда сбой даёт llm_error.
+ */
 type Judgement =
   | { readonly kind: 'verdict'; readonly verdict: ReplyVerdict }
-  | { readonly kind: 'retry'; readonly feedback: readonly string[] };
+  | {
+      readonly kind: 'retry';
+      readonly feedback: readonly string[];
+      readonly keep: ReplyVerdict | null;
+    };
 
 /**
- * Итог проверок черновика: пройдены кодом или вторым вызовом, пропущены у горячего клиента либо второй вызов
- * не дал результата.
+ * Итог проверок текста черновика: пройдены кодом или вторым вызовом, либо второй вызов не дал результата.
+ * Дальше идёт только нормализованный текст: тот же, что проверен, уходит клиенту.
  */
 type Checked =
-  | { readonly kind: 'checked'; readonly text: string; readonly gate: DraftGate }
+  | { readonly kind: 'checked'; readonly text: NormalizedText; readonly gate: DraftGate }
   | { readonly kind: 'failed'; readonly verdict: ReplyVerdict };
 
 /**
@@ -96,15 +124,20 @@ export async function requestDraft(
 
 /**
  * Шаги 4 и 5 плана и развилка. Оценка интереса сохраняется первой, до любой передачи: уровень и выжимка нужны
- * менеджеру в уведомлении (chats.saveAssessment, уровень и выжимка одной транзакцией). Исчерпан дневной лимит API
+ * менеджеру в уведомлении (chats.saveAssessment, уровень и выжимка одной транзакцией). Передачу решает вызов
+ * ответа (исход черновика), а не оценка интереса: она только хранит уровень и выжимку. Исчерпан дневной лимит API
  * на черновике или на оценке => limit. Дальше черновик проходит попытку: сбой LLM => llm_error (fail-closed);
- * исходы no_answer, asked_human, complaint => передача по своей причине; answer => normalizeDraft, проверки кодом
- * (checks/code-checks.runCodeChecks), второй вызов agent.reviewDraft (только если проверки кодом пройдены), затем
- * pipeline/decide.decideAction: проверяется и уходит один и тот же нормализованный текст. Не прошёл: один повтор
- * agent.draftReply с замечаниями (оценка заново не запрашивается), второй провал => check_failed. Горячий клиент
- * (оценка hot): проверки кодом и ревью пропускаются, сразу hot. Вызовов API на ответ три (черновик, оценка,
- * проверка), с повтором пять, горячему клиенту два. В лог только ID чата, номер попытки, виды нарушений (CheckCode)
- * и числа: фрагменты текста клиента и модели в нём недопустимы.
+ * complaint => передача с фиксированной фразой; answer, hot, no_answer и asked_human с текстом => normalizeDraft,
+ * проверки кодом (checks/code-checks.runCodeChecks), второй вызов agent.reviewDraft (только если проверки кодом
+ * пройдены; у hot, no_answer и asked_human с подписью «сообщение о передаче»), затем pipeline/decide.decideAction:
+ * проверяется и уходит один и тот же нормализованный текст. Не прошёл: один повтор agent.draftReply с замечаниями
+ * (оценка заново не запрашивается). Второй провал: для answer check_failed, для исхода передачи та же причина и
+ * фиксированная фраза (причина не меняется). Сбой LLM при проверке или повторе исхода передачи тоже оставляет причину
+ * и фиксированную фразу; исчерпанный лимит API даёт limit. Исход передачи с пустым text (или из одних невидимых
+ * символов) проверок не проходит: фиксированная фраза по причине. При передаче hot уровень hot записывается в чат
+ * (оценка интереса могла дать ниже или не получиться), поэтому и в передаче, и в чате он hot. Вызовов API на ответ
+ * три (черновик, оценка, проверка), с повтором пять. В лог только ID чата, номер попытки, виды нарушений
+ * (CheckCode), причина передачи и числа: фрагменты текста клиента и модели в нём недопустимы.
  */
 export async function decideReply(
   deps: ReplyFlowDeps,
@@ -114,13 +147,11 @@ export async function decideReply(
   const assessment = keepAssessment(deps, context.chatId, drafted.assessment);
   const scope = budgetScopeOf([drafted.draft, drafted.assessment]);
   if (scope !== null) return { kind: 'limit', scope };
-  const flow: Flow = { deps, context, assessment };
-  const first = await judge(flow, drafted.draft, 1);
-  if (first.kind === 'verdict') return first.verdict;
-  const retried = await call(() => deps.agent.draftReply(context, first.feedback));
-  const second = await judge(flow, retried, 2);
-  // По правилу decideAction на попытке 2 повтора нет; если он всё же придёт, текст без проверки не уходит.
-  return second.kind === 'verdict' ? second.verdict : CHECK_FAILED;
+  const flow: Flow = { deps, context };
+  const first = await judgeResult(flow, drafted.draft, 1, null);
+  const verdict = first.kind === 'verdict' ? first.verdict : await retryOnce(flow, first);
+  if (isHotHandoff(verdict)) markHot(deps, context, assessment);
+  return verdict;
 }
 
 /** Вызов, упавший исключением сразу (заготовка, сбой до первого await), становится отказом промиса. */
@@ -147,7 +178,7 @@ function errorNameOf(error: unknown): string {
   return error instanceof Error ? error.name : typeof error;
 }
 
-/** Записывает оценку (уровень и выжимка) и отдаёт её решению; сбой оценки: предупреждение и null. */
+/** Записывает оценку (уровень и выжимка); сбой оценки: предупреждение и null. */
 function keepAssessment(
   deps: ReplyFlowDeps,
   chatId: ChatId,
@@ -174,61 +205,115 @@ function budgetScopeOf(results: readonly LlmResult<unknown>[]): BudgetScope | nu
   return null;
 }
 
-/** Одна попытка: разбор ответа модели, проверки черновика и решение. */
-async function judge(
-  flow: Flow,
-  draft: LlmResult<ReplyDraft>,
-  attempt: Attempt,
-): Promise<Judgement> {
-  if (!draft.ok) return verdictOf(failureVerdict(flow, 'Черновик ответа не получен', draft));
-  const reply = draft.value;
-  if (reply.outcome !== 'answer') {
-    const input = { kind: 'handoff_outcome', draft: reply, assessment: flow.assessment } as const;
-    return judgementOf(decideAction(input));
-  }
-  const checked = isHot(flow.assessment)
-    ? skippedCheck(reply.text)
-    : await checkDraft(flow, reply.text, attempt);
-  if (checked.kind === 'failed') return verdictOf(checked.verdict);
-  return judgementOf(
-    decideAction({
-      kind: 'answer',
-      draft: { outcome: 'answer', text: checked.text },
-      gate: checked.gate,
-      attempt,
-      assessment: flow.assessment,
-    }),
+function isHotHandoff(verdict: ReplyVerdict): boolean {
+  return verdict.kind === 'handoff' && verdict.notice.reason === 'hot';
+}
+
+/**
+ * Передача hot: уровень hot должен стоять и в передаче, и в чате. Оценка интереса (Haiku) могла дать ниже или не
+ * получиться, поэтому уровень дописывается тут, с выжимкой оценки или, если её нет, с текущей выжимкой чата.
+ * Передача читает уровень из чата, так что запись нужна до неё.
+ */
+function markHot(
+  deps: ReplyFlowDeps,
+  context: ConversationContext,
+  assessment: InterestAssessment | null,
+): void {
+  if (assessment?.level === 'hot') return;
+  deps.chats.saveAssessment(
+    context.chatId,
+    { level: 'hot', profile: assessment?.profile ?? context.profile, reason: HOT_BY_REPLY },
+    deps.clock.now(),
   );
 }
 
 /**
- * Горячему клиенту черновик не уходит (pipeline/decide.decideAction вернёт hot), поэтому проверки кодом и вызов
- * ревью не нужны: экономится вызов API. Правило то же, что в decideAction; если они разойдутся, пропущенные
- * проверки не дадут отправки (check_failed).
+ * Один повтор черновика с замечаниями (оценка заново не запрашивается). Сбой повтора оставляет прежнее решение
+ * исхода передачи (retry.keep) или даёт llm_error. Второй повтор невозможен по правилу decideAction; если он всё же
+ * придёт, текст без проверки не уходит.
  */
-function isHot(assessment: InterestAssessment | null): boolean {
-  return assessment?.level === 'hot';
+async function retryOnce(
+  flow: Flow,
+  retry: Extract<Judgement, { readonly kind: 'retry' }>,
+): Promise<ReplyVerdict> {
+  const retried = await call(() => flow.deps.agent.draftReply(flow.context, retry.feedback));
+  const second = await judgeResult(flow, retried, 2, retry.keep);
+  return second.kind === 'verdict' ? second.verdict : (second.keep ?? CHECK_FAILED);
 }
 
-function skippedCheck(text: string): Checked {
-  return { kind: 'checked', text, gate: { kind: 'skipped' } };
+/** Ответ вызова черновика: сбой LLM даёт решение сразу (keep или llm_error), иначе разбор черновика. */
+async function judgeResult(
+  flow: Flow,
+  result: LlmResult<ReplyDraft>,
+  attempt: Attempt,
+  keep: ReplyVerdict | null,
+): Promise<Judgement> {
+  if (!result.ok) {
+    return verdictOf(failureVerdict(flow, 'Черновик ответа не получен', result, keep));
+  }
+  return judge(flow, result.value, attempt);
 }
 
 /**
- * Нормализация, проверки кодом и, если они пройдены, ревью вторым вызовом. Дальше идёт только нормализованный текст:
- * тот же, что проверен, уходит клиенту.
+ * Одна попытка: complaint и исход передачи без текста решаются сразу; текст (answer или сообщение передачи)
+ * нормализуется, проверяется кодом и вторым вызовом, затем решение decideAction.
  */
-async function checkDraft(flow: Flow, text: string, attempt: Attempt): Promise<Checked> {
+async function judge(flow: Flow, draft: ReplyDraft, attempt: Attempt): Promise<Judgement> {
+  if (draft.outcome === 'complaint') {
+    return judgementOf(decideAction({ kind: 'handoff_outcome', draft }), null);
+  }
+  const text = normalizeDraft(draft.text);
+  const keep = keepOf(draft.outcome);
+  if (draft.outcome !== 'answer' && text.trim() === '') {
+    const empty = { outcome: draft.outcome, text: '' } as const;
+    return judgementOf(decideAction({ kind: 'handoff_outcome', draft: empty }), keep);
+  }
+  const checked = await checkDraft(flow, draft.outcome, text, attempt, keep);
+  if (checked.kind === 'failed') return verdictOf(checked.verdict);
+  const decision = decideAction({
+    kind: 'text',
+    draft: { ...draft, text: checked.text },
+    gate: checked.gate,
+    attempt,
+  });
+  logDroppedText(flow, draft, decision);
+  return judgementOf(decision, keep);
+}
+
+/** Решение исхода передачи, если вызов проверки не получился: та же передача с фиксированной фразой. */
+function keepOf(outcome: TextDraft['outcome']): ReplyVerdict | null {
+  return outcome === 'answer' ? null : { kind: 'handoff', notice: { reason: outcome } };
+}
+
+/** Текст модели при исходе передачи не прошёл проверки: пишется причина, клиенту уйдёт фиксированная фраза. */
+function logDroppedText(flow: Flow, draft: TextDraft, decision: Decision): void {
+  if (draft.outcome === 'answer' || decision.kind !== 'handoff' || 'text' in decision) return;
+  const { chatId } = flow.context;
+  flow.deps.logger.info(
+    { chatId, reason: draft.outcome },
+    `Сообщение передачи не прошло проверки, клиенту уйдёт фиксированная фраза: чат #${chatId}`,
+  );
+}
+
+/**
+ * Нормализованный текст проходит проверки кодом и, если они пройдены, ревью вторым вызовом. Для исхода передачи
+ * ревью получает подпись «сообщение о передаче», для ответа обычную. Сбой ревью оставляет keep (или llm_error).
+ */
+async function checkDraft(
+  flow: Flow,
+  outcome: TextDraft['outcome'],
+  text: NormalizedText,
+  attempt: Attempt,
+  keep: ReplyVerdict | null,
+): Promise<Checked> {
   const { deps, context } = flow;
-  const normalized = normalizeDraft(text);
-  const codeGate = codeGateOf(flow, normalized, attempt);
-  if (codeGate !== null) return { kind: 'checked', text: normalized, gate: codeGate };
-  const review = await call(() => deps.agent.reviewDraft(context, normalized));
+  const codeGate = codeGateOf(flow, text, attempt);
+  if (codeGate !== null) return { kind: 'checked', text, gate: codeGate };
+  const kind: DraftKind = outcome === 'answer' ? 'answer' : 'handoff';
+  const review = await call(() => deps.agent.reviewDraft(context, text, kind));
   if (!review.ok) {
-    return {
-      kind: 'failed',
-      verdict: failureVerdict(flow, 'Проверка черновика не получена', review),
-    };
+    const verdict = failureVerdict(flow, 'Проверка черновика не получена', review, keep);
+    return { kind: 'failed', verdict };
   }
   if (!review.value.ok) {
     deps.logger.info(
@@ -236,7 +321,7 @@ async function checkDraft(flow: Flow, text: string, attempt: Attempt): Promise<C
       `Проверка не пропустила черновик: чат #${context.chatId}`,
     );
   }
-  return { kind: 'checked', text: normalized, gate: { kind: 'reviewed', review: review.value } };
+  return { kind: 'checked', text, gate: { kind: 'reviewed', review: review.value } };
 }
 
 /** Нарушения проверок кодом или null, если их нет. В лог идут только виды нарушений. */
@@ -267,34 +352,49 @@ function clientTextOf(history: readonly StoredMessage[]): string {
     .join('\n');
 }
 
-/** Сбой вызова LLM: исчерпанный лимит => limit, любой другой => передача llm_error с фразой (fail-closed). */
-function failureVerdict(flow: Flow, what: string, failed: LlmFailed): ReplyVerdict {
+/**
+ * Сбой вызова LLM: исчерпанный лимит => limit; иначе keep (исход передачи сохраняет причину и фиксированную фразу)
+ * или llm_error с фразой (fail-closed).
+ */
+function failureVerdict(
+  flow: Flow,
+  what: string,
+  failed: LlmFailed,
+  keep: ReplyVerdict | null,
+): ReplyVerdict {
   if (failed.failure === 'budget_exceeded') return { kind: 'limit', scope: failed.scope };
   const { chatId } = flow.context;
   flow.deps.logger.warn(
     { chatId, failure: failed.failure },
     `${what}, чат передаётся менеджеру: чат #${chatId}`,
   );
-  return { kind: 'handoff', notice: { reason: 'llm_error' } };
+  return keep ?? LLM_ERROR;
 }
 
 function verdictOf(verdict: ReplyVerdict): Judgement {
   return { kind: 'verdict', verdict };
 }
 
-function judgementOf(decision: Decision): Judgement {
+function judgementOf(decision: Decision, keep: ReplyVerdict | null): Judgement {
   switch (decision.kind) {
     case 'send':
       return verdictOf({ kind: 'send', text: decision.text });
     case 'retry':
-      return { kind: 'retry', feedback: decision.feedback };
+      return { kind: 'retry', feedback: decision.feedback, keep };
     case 'handoff':
-      return verdictOf({ kind: 'handoff', notice: noticeOf(decision) });
+      return verdictOf(handoffOf(decision));
   }
 }
 
-function noticeOf(decision: Extract<Decision, { readonly kind: 'handoff' }>): HandoffNotice {
-  return decision.reason === 'complaint'
-    ? { reason: 'complaint', stopRequested: decision.stopRequested }
-    : { reason: decision.reason };
+function handoffOf(decision: Extract<Decision, { readonly kind: 'handoff' }>): HandoffVerdict {
+  if (decision.reason === 'complaint') {
+    return {
+      kind: 'handoff',
+      notice: { reason: 'complaint', stopRequested: decision.stopRequested },
+    };
+  }
+  if ('text' in decision && decision.text !== undefined) {
+    return { kind: 'handoff', notice: { reason: decision.reason }, text: decision.text };
+  }
+  return { kind: 'handoff', notice: { reason: decision.reason } };
 }

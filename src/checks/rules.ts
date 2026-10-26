@@ -170,7 +170,7 @@ export const CAPS_PATTERN = /(?<![\p{L}\p{N}_])\p{Lu}{4,}(?![\p{L}\p{N}_])/gu;
 
 export const AI_MENTION_PATTERNS: readonly RegExp[] = [
   new RegExp(
-    String.raw`(?<!${W})(?:нейросет\p{L}*|чат-?бот\p{L}*|бот\p{L}{0,3}|bot|chatgpt|gpt|llm|claude|anthropic|haiku` +
+    String.raw`(?<!${W})(?:нейросет\p{L}*|чат-?бот\p{L}*|бот\p{L}{0,3}|bot|chatgpt|gpt|llm|claude|anthropic|haiku|sonnet` +
       String.raw`|языков\p{L}*\s{1,5}модел\p{L}*` +
       String.raw`|искусственн\p{L}{1,30}\s{1,5}интеллект\p{L}*` +
       String.raw`|программ\p{L}{0,30}\s{1,5}(?:написал|подготовил|сгенерировал|составил)\p{L}*` +

@@ -553,6 +553,7 @@ describe('checkStyle', () => {
     ['Отвечает языковая модель.', 'ai_mention'],
     ['Работает на Anthropic.', 'ai_mention'],
     ['Модель haiku отвечает.', 'ai_mention'],
+    ['Модель sonnet отвечает.', 'ai_mention'],
     ['I am a bot.', 'ai_mention'],
   ])('ловит смайлики, крик и упоминания программы: %s', (text, code) => {
     expect(codes(checkStyle(withNeutral(text)))).toEqual(new Set([code]));

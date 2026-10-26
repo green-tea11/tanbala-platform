@@ -1,7 +1,9 @@
+import { readFileSync } from 'node:fs';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { describe, expect, it } from 'vitest';
 import { createAgent, type ConversationContext } from '../../../src/agent/agent.js';
 import { buildSystem } from '../../../src/agent/prompts.js';
+import type { ModelsConfig } from '../../../src/config/env.js';
 import type { ClientProfile, LlmResult, ReplyDraft } from '../../../src/domain/types.js';
 import {
   CHAT_ID,
@@ -117,9 +119,25 @@ describe('createAgent: draftReply, запрос', () => {
     });
     expect(request.schema.safeParse(ANSWER).success).toBe(true);
     expect(
-      request.schema.safeParse({ outcome: 'hot', text: '', stopRequested: false }).success,
+      request.schema.safeParse({ outcome: 'maybe', text: '', stopRequested: false }).success,
     ).toBe(false);
     expect(request.schema.safeParse({ outcome: 'answer', text: 'Да' }).success).toBe(false);
+  });
+
+  it('исходы схемы: answer, hot, no_answer, asked_human, complaint; text есть у каждого', async () => {
+    const { request } = await draft({ ok: true, value: ANSWER });
+
+    const schema = zodOutputFormat(request.schema).schema as {
+      properties: { outcome: { description: string }; text: { description: string } };
+    };
+    const outcomes = ['answer', 'hot', 'no_answer', 'asked_human', 'complaint'];
+    for (const outcome of outcomes) {
+      expect(schema.properties.outcome.description).toContain(outcome);
+      expect(
+        request.schema.safeParse({ outcome, text: 'Текст', stopRequested: false }).success,
+      ).toBe(true);
+    }
+    expect(schema.properties.text.description).toMatch(/hot, no_answer и asked_human/);
   });
 });
 
@@ -130,8 +148,34 @@ describe('createAgent: draftReply, нормализация ответа мод�
       { outcome: 'answer', text: '  Добрый день.  ', stopRequested: false },
       { outcome: 'answer', text: 'Добрый день.' },
     ],
-    [{ outcome: 'no_answer', text: 'лишний текст', stopRequested: true }, { outcome: 'no_answer' }],
-    [{ outcome: 'asked_human', text: '', stopRequested: false }, { outcome: 'asked_human' }],
+    [
+      {
+        outcome: 'hot',
+        text: ' Да, интеграцию проводим. Передал вопрос специалисту.\n',
+        stopRequested: false,
+      },
+      { outcome: 'hot', text: 'Да, интеграцию проводим. Передал вопрос специалисту.' },
+    ],
+    [
+      { outcome: 'no_answer', text: 'Уточню у специалиста.', stopRequested: true },
+      { outcome: 'no_answer', text: 'Уточню у специалиста.' },
+    ],
+    [
+      { outcome: 'asked_human', text: 'Передал вопрос специалисту.', stopRequested: false },
+      { outcome: 'asked_human', text: 'Передал вопрос специалисту.' },
+    ],
+    [
+      { outcome: 'hot', text: '', stopRequested: false },
+      { outcome: 'hot', text: '' },
+    ],
+    [
+      { outcome: 'asked_human', text: '  \n', stopRequested: false },
+      { outcome: 'asked_human', text: '' },
+    ],
+    [
+      { outcome: 'no_answer', text: '', stopRequested: true },
+      { outcome: 'no_answer', text: '' },
+    ],
     [
       { outcome: 'complaint', text: '', stopRequested: true },
       { outcome: 'complaint', stopRequested: true },
@@ -198,5 +242,31 @@ describe('createAgent: три вызова', () => {
     expect(requests.every(({ system }) => system.length === 2)).toBe(true);
     expect(requests.every(({ system }) => system[1]?.cache === false)).toBe(true);
     expect(new Set(requests.map(({ system }) => system[1]?.text)).size).toBe(3);
+  });
+});
+
+describe('createAgent: модели из config/models.json', () => {
+  const file = JSON.parse(
+    readFileSync(new URL('../../../config/models.json', import.meta.url), 'utf8'),
+  ) as Record<string, string>;
+  const models: ModelsConfig = {
+    reply: file['reply'] ?? '',
+    review: file['review'] ?? '',
+    interest: file['interest'] ?? '',
+  };
+
+  it('каждый вызов берёт свою модель из конфига: ответ на Sonnet, проверка и оценка на Haiku', async () => {
+    const { requests, llm } = fakeLlm({ ok: false, failure: 'disabled' });
+    const agent = createAgent({ llm, knowledge: KNOWLEDGE, models });
+
+    await agent.draftReply(context());
+    await agent.reviewDraft(context(), 'Какой у вас бизнес?');
+    await agent.assessInterest(context());
+
+    expect(requests.map(({ purpose, model }) => [purpose, model])).toEqual([
+      ['reply', 'claude-sonnet-5-5'],
+      ['review', 'claude-haiku-5-5'],
+      ['interest', 'claude-haiku-5-5'],
+    ]);
   });
 });

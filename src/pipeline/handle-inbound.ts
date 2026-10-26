@@ -12,7 +12,6 @@ import type {
   BudgetScope,
   Chat,
   ChatId,
-  HandoffNotice,
   HandoffReason,
   InboundMessage,
   PhoneDigits,
@@ -23,7 +22,7 @@ import type { HandOffRequest, HandoffService } from '../handoff/handoff.js';
 import { isChatAllowlisted } from '../messaging/allowlist.js';
 import type { Outbox, SendBlocked } from '../messaging/outbox.js';
 import type { ClientBatch } from './batcher.js';
-import { decideReply, requestDraft, type ReplyVerdict } from './reply-flow.js';
+import { decideReply, requestDraft, type HandoffVerdict, type ReplyVerdict } from './reply-flow.js';
 import { errorName, SEND_FAILED, sendWithRetry, typingPause } from './sending.js';
 import { transcribeVoices } from './voices.js';
 
@@ -116,18 +115,22 @@ interface Noticed {
  * 3. Статус перечитывается (расшифровка идёт до минуты), отметка о прочтении (сбой не мешает ответу), снова статус,
  *    затем черновик и оценка интереса параллельно (pipeline/reply-flow.requestDraft, история HISTORY_MESSAGES).
  *    Пришли новые сообщения (ClientBatch.takeNewer), пока шли вызовы => пачка обрабатывается заново вместе с ними.
- * 4. Решение (pipeline/reply-flow.decideReply): оценка интереса сохраняется, текст ответа проходит нормализацию,
- *    проверки кодом и второй вызов LLM, развилка pipeline/decide.decideAction, при провале один повтор с замечаниями.
- *    Вердикт send => «печатает» с паузой typingDelayMs (сбой статуса не мешает ответу), затем outbox.sendBotReply
- *    на последнее сообщение пачки того самого проверенного текста. Пришли новые сообщения, пока шла пауза =>
- *    ответ перегенерируется один раз с ними, уходит один ответ.
+ * 4. Решение (pipeline/reply-flow.decideReply): оценка интереса сохраняется (она только хранит уровень и выжимку),
+ *    текст ответа проходит нормализацию, проверки кодом и второй вызов LLM, развилка pipeline/decide.decideAction,
+ *    при провале один повтор с замечаниями. Передачу решает вызов ответа (исходы hot, no_answer, asked_human,
+ *    complaint). Вердикт send => «печатает» с паузой typingDelayMs (сбой статуса не мешает ответу), затем
+ *    outbox.sendBotReply на последнее сообщение пачки того самого проверенного текста. Пришли новые сообщения,
+ *    пока шла пауза => ответ перегенерируется один раз с ними, уходит один ответ.
  * 5. Все передачи через сервис deps.handoff (handoff/handoff.ts): вердикт handoff (hot, no_answer, asked_human,
  *    complaint, check_failed, llm_error) => handOff с причиной и ответом на последнее сообщение пачки; вердикт limit
  *    (исчерпан дневной лимит API) => handOff limit со scope, без фразы клиенту. Статус manager, запись передачи,
- *    фразу клиенту (с повтором отправки) и уведомление менеджеру делает сервис; горячему клиенту уходит одна фраза
- *    передачи, а не два сообщения. Перед передачей статус чата перечитывается: человек мог подключиться, пока LLM
- *    писал ответ. handOff бросает, только если передачу не записать (чата нет, сбой базы): ошибка в лог без текста,
- *    итог handoff_failed, «отвечено» не ставится.
+ *    сообщение клиенту (с повтором отправки) и уведомление менеджеру делает сервис. Клиенту уходит одно сообщение:
+ *    при hot, no_answer, asked_human это проверенный текст модели (ответ на то, что есть в знаниях, и фраза о
+ *    передаче; в запросе передачи поле text), иначе фиксированная фраза по причине. Пришли новые сообщения, пока
+ *    шла проверка текста модели => пачка обрабатывается заново один раз, как перед отправкой ответа. Перед передачей
+ *    статус чата перечитывается: человек мог подключиться, пока LLM писал ответ. handOff бросает, только если
+ *    передачу не записать (чата нет, сбой базы): ошибка в лог без текста, итог handoff_failed, «отвечено» не
+ *    ставится.
  * 6. markAnswered один раз в конце пачки и только если что-то ушло (ответ, фраза про голосовое или записанная
  *    передача с фразой): иначе второй ответ пачки получил бы 'skipped_no_inbound'.
  * Сбой отправки ответа или фразы про голосовое исключением повторяется один раз (pipeline/sending.sendWithRetry),
@@ -281,7 +284,7 @@ function act(
     case 'send':
       return sendAnswer(deps, batch, chat, turn, verdict.text);
     case 'handoff':
-      return handOff(deps, chat.id, turn, verdict.notice);
+      return handOff(deps, batch, chat.id, turn, verdict);
     case 'limit':
       return goSilent(deps, chat.id, verdict.scope);
   }
@@ -332,19 +335,35 @@ async function sendAnswer(
 
 // Передача менеджеру: всё делает сервис handoff/handoff.ts.
 
-/** Передача с фразой клиенту на последнее сообщение пачки; после неё пачка отмечается отвеченной. */
+/**
+ * Передача с одним сообщением клиенту на последнее сообщение пачки (проверенный текст модели или фиксированная
+ * фраза); после неё пачка отмечается отвеченной. Текст модели отвечает на вопросы пачки, поэтому пришли новые
+ * сообщения => пачка обрабатывается заново один раз (как перед отправкой ответа).
+ */
 async function handOff(
   deps: PipelineDeps,
+  batch: ClientBatch,
   chatId: ChatId,
   turn: Turn,
-  notice: HandoffNotice,
+  verdict: HandoffVerdict,
 ): Promise<PipelineOutcome> {
   if (isManagerNow(deps, chatId)) return SILENT_MANAGER;
-  const request: HandOffRequest = { ...notice, replyToWaId: lastId(turn) };
-  if (!(await requestHandOff(deps, chatId, request))) {
-    return { kind: 'handoff_failed', reason: notice.reason };
+  if ('text' in verdict) {
+    const regenerated = regenerate(deps, batch, turn);
+    if (regenerated !== null) return regenerated;
   }
-  return finish(deps, chatId, turn, { kind: 'handed_off', reason: notice.reason });
+  const request = handOffRequestOf(verdict, lastId(turn));
+  if (!(await requestHandOff(deps, chatId, request))) {
+    return { kind: 'handoff_failed', reason: request.reason };
+  }
+  return finish(deps, chatId, turn, { kind: 'handed_off', reason: request.reason });
+}
+
+/** Запрос сервису передачи: с text, если клиенту уходит сообщение модели, иначе с фиксированной фразой по поводу. */
+function handOffRequestOf(verdict: HandoffVerdict, replyToWaId: WaMessageId): HandOffRequest {
+  return 'text' in verdict
+    ? { reason: verdict.notice.reason, replyToWaId, text: verdict.text }
+    : { ...verdict.notice, replyToWaId };
 }
 
 /** Дневной лимит API исчерпан: бот замолкает в чате без фразы клиенту (решение владельца), менеджеру уходит уведомление. */

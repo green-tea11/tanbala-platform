@@ -7,6 +7,8 @@ import type {
   ClientProfile,
   HandoffNotice,
   PhoneDigits,
+  ReplyHandoffOutcome,
+  ReviewedText,
   WaMessageId,
 } from '../domain/types.js';
 import type { Outbox } from '../messaging/outbox.js';
@@ -16,12 +18,19 @@ import type { ManagerNotifier } from './notifier.js';
 
 /**
  * Запрос передачи. Перехват человеком и исчерпанный дневной лимит идут без фразы клиенту;
- * остальные поводы всегда с фразой на входящее replyToWaId.
+ * остальные поводы всегда с сообщением клиенту на входящее replyToWaId. Это фиксированная фраза по поводу, а при
+ * hot, no_answer и asked_human необязательный text: проверенное сообщение модели (ответ на то, что есть в знаниях, и
+ * фраза о передаче) уходит вместо фиксированной фразы. Повод и порядок действий от text не зависят.
  */
 export type HandOffRequest =
   | { readonly reason: 'human_took_over'; readonly by: 'phone' | 'panel' }
   | { readonly reason: 'limit'; readonly scope: BudgetScope }
-  | (HandoffNotice & { readonly replyToWaId: WaMessageId });
+  | (HandoffNotice & { readonly replyToWaId: WaMessageId })
+  | {
+      readonly reason: ReplyHandoffOutcome;
+      readonly replyToWaId: WaMessageId;
+      readonly text: ReviewedText;
+    };
 
 /** Передача чата менеджеру и возврат боту (раздел плана «Передача менеджеру»). */
 export interface HandoffService {
@@ -46,8 +55,8 @@ export interface HandoffDeps {
   handoffs: HandoffsRepo;
   /** Транзакция для handoffs.open с chats.setStatus и для handoffs.resolve с chats.setStatus. */
   unitOfWork: UnitOfWork;
-  /** Только фраза клиенту: уведомление менеджеру идёт через notifier. */
-  outbox: Pick<Outbox, 'sendHandoffNotice'>;
+  /** Только сообщение клиенту (фраза или текст модели): уведомление менеджеру идёт через notifier. */
+  outbox: Pick<Outbox, 'sendHandoffNotice' | 'sendHandoffText'>;
   /** Запись уведомления в базу, отправка менеджеру и повтор при сбое (handoff/notifier.ts). */
   notifier: Pick<ManagerNotifier, 'notify'>;
   clock: Clock;
@@ -63,7 +72,7 @@ export const PHRASE_RETRY_DELAY_MS = 5_000;
 /** Итог отправки фразы клиенту без исключения: sent или причина, по которой фраза не ушла. */
 type PhraseResult = Awaited<ReturnType<Outbox['sendHandoffNotice']>>;
 
-/** Запрос, после которого клиенту пишут фразу: всё, кроме перехвата человеком и лимита. */
+/** Запрос, после которого клиенту пишут фразу или текст модели: всё, кроме перехвата человеком и лимита. */
 type PhraseRequest = Extract<HandOffRequest, { readonly replyToWaId: WaMessageId }>;
 
 /** Запрос, после которого уведомляют менеджера: всё, кроме перехвата человеком. */
@@ -79,7 +88,8 @@ type ManagerChange = Extract<Parameters<ChatsRepo['setStatus']>[1], { readonly s
  * статуса manager уходит менеджеру, а чат, который передал бот, переходит к человеку, подключившемуся с телефона или
  * из панели; чат, который уже ведёт человек, статус не меняет (время перехвата остаётся первым). Затем уведомление
  * менеджеру через notifier (кроме human_took_over): kind 'handoff', для лимита 'limit' со своей квотой, и только
- * потом фраза клиенту через outbox.sendHandoffNotice (кроме human_took_over и limit; при исключении один повтор
+ * потом фраза клиенту через outbox.sendHandoffNotice, а если в запросе есть text (сообщение модели, прошедшее проверки)
+ * то этот текст через outbox.sendHandoffText вместо фразы (кроме human_took_over и limit; при исключении один повтор
  * через 5 с). Порядок такой, чтобы запись в manager_notifications не зависела от фразы: пока фраза ждёт повтор,
  * процесс может упасть. Пустой MANAGER_WHATSAPP и сбои отправки обрабатывает notifier: уведомление остаётся в
  * панели, отправка повторяется. Логи без имён, номеров и текста.
@@ -156,7 +166,9 @@ async function sayToClient(
   request: PhraseRequest,
 ): Promise<void> {
   const send = (): Promise<PhraseResult> =>
-    deps.outbox.sendHandoffNotice(chatId, noticeOf(request), request.replyToWaId);
+    'text' in request
+      ? deps.outbox.sendHandoffText(chatId, request.text, request.replyToWaId)
+      : deps.outbox.sendHandoffNotice(chatId, noticeOf(request), request.replyToWaId);
   try {
     logRefusal(deps.logger, chatId, await send());
     return;
