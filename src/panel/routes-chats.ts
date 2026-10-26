@@ -37,6 +37,9 @@ function chatNotFound(reply: FastifyReply): FastifyReply {
 /** Что менеджер видит, если сбой не из тех, чей текст можно показать: подробности только в логе. */
 const SEND_FAILED = 'Не удалось отправить сообщение. Подробности записаны в лог бота.';
 const RETURN_FAILED = 'Не удалось вернуть чат боту. Подробности записаны в лог бота.';
+/** Чат закрыт для ответа из панели: закрытый режим или WhatsApp не подключён (outbox.canSendFromPanel вернул false). */
+const CHAT_CLOSED_FOR_REPLY =
+  'Ответ не отправлен, статус чата не менялся: чат не из TEST_ALLOWLIST (закрытый режим) или WhatsApp не подключён.';
 const BAD_STATUS = 422;
 const BAD_GATEWAY = 502;
 
@@ -68,9 +71,29 @@ function failurePage(
 }
 
 /**
+ * Что мешает ответу ещё до передачи чата менеджеру: пустой или слишком длинный текст, а также чат, в который из
+ * панели писать нельзя (закрытый режим, WhatsApp не подключён). После передачи бот в чате уже молчит, поэтому
+ * заведомо несостоявшаяся отправка не должна её запускать. null: можно передавать и отправлять.
+ */
+function refusalBeforeHandoff(context: PanelContext, chat: Chat, text: string): string | null {
+  const textProblem = panelTextProblem(text);
+  if (textProblem !== null) return textProblem;
+  if (context.deps.outbox.canSendFromPanel(chat.id)) return null;
+  context.audit.warn(
+    { action: 'reply_blocked', chatId: chat.id },
+    'Панель: ответ не отправлен, чат закрыт для отправки из панели',
+  );
+  return CHAT_CLOSED_FOR_REPLY;
+}
+
+/**
  * Ответ от имени номера. Порядок из плана: сначала чат уходит менеджеру (бот в нём замолкает), потом сообщение
- * уходит клиенту. Проверка текста идёт до передачи: пустой или слишком длинный ответ не должен отключать бота.
- * Отказ с понятным текстом (SafeError) показывается как есть, прочие сбои скрыты за общей фразой.
+ * уходит клиенту. Проверки идут до передачи (refusalBeforeHandoff): пустой или слишком длинный ответ и чат, в который
+ * отправка заведомо не пройдёт, не должны отключать бота. Затем ответ занимается в recentReplies: двойная отправка
+ * формы (тот же текст в тот же чат в течение 10 секунд) получает пометку duplicate, без передачи и без отправки.
+ * Занятие синхронное и стоит до первого await, поэтому из двух одновременных одинаковых запросов проходит один.
+ * Сбой передачи или отправки снимает отметку: ответ не ушёл, и менеджер может повторить сразу. Отказ с понятным
+ * текстом (SafeError) показывается как есть, прочие сбои скрыты за общей фразой.
  */
 async function handleReply(
   context: PanelContext,
@@ -80,7 +103,7 @@ async function handleReply(
   reply: FastifyReply,
 ): Promise<FastifyReply> {
   const text = normalizeNewlines(formField(request.body, 'text') ?? '');
-  const problem = panelTextProblem(text);
+  const problem = refusalBeforeHandoff(context, chat, text);
   if (problem !== null) {
     return sendHtml(
       reply,
@@ -88,10 +111,18 @@ async function handleReply(
       failurePage(context, chat, session, { error: problem, draft: text }),
     );
   }
+  if (!context.recentReplies.claim(chat.id, text)) {
+    context.audit.info(
+      { action: 'reply_duplicate', chatId: chat.id },
+      'Панель: повтор того же ответа отклонён',
+    );
+    return redirectTo(reply, `/chats/${chat.id}?notice=duplicate`);
+  }
   try {
     await context.deps.handoff.handOff(chat.id, { reason: 'human_took_over', by: 'panel' });
     await context.deps.outbox.sendFromPanel(chat.id, text);
   } catch (error: unknown) {
+    context.recentReplies.release(chat.id, text);
     return replyFailed(context, chat, session, { error, draft: text }, reply);
   }
   context.audit.info({ action: 'reply', chatId: chat.id }, 'Панель: ответ клиенту отправлен');

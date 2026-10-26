@@ -2,14 +2,17 @@ import type { FastifyReply, FastifyRequest, RouteGenericInterface } from 'fastif
 import type { Logger } from '../domain/ports.js';
 import { createLoginLimiter, type LoginLimiter } from './login-limiter.js';
 import { readCookie, SESSION_COOKIE } from './http.js';
+import { createRecentReplies, type RecentReplies } from './recent-replies.js';
 import type { PanelDeps } from './server.js';
 import { createSessionStore, type Session, type SessionStore } from './sessions.js';
 
-/** Общее состояние панели: зависимости, сессии, счётчик попыток входа и журнал действий. */
+/** Общее состояние панели: зависимости, сессии, счётчик попыток входа, недавние ответы и журнал действий. */
 export interface PanelContext {
   readonly deps: PanelDeps;
   readonly sessions: SessionStore;
   readonly limiter: LoginLimiter;
+  /** Недавние ответы клиентам: повтор того же текста в тот же чат за 10 секунд (двойная отправка формы) отклоняется. */
+  readonly recentReplies: RecentReplies;
   /** Аудит действий (вход, ответ, возврат боту): строка в лог без текста сообщений, имён и номеров. */
   readonly audit: Logger;
 }
@@ -24,6 +27,7 @@ export function createPanelContext(deps: PanelDeps): PanelContext {
     deps,
     sessions: createSessionStore(),
     limiter: createLoginLimiter(),
+    recentReplies: createRecentReplies(deps.clock),
     audit: deps.logger.child({ module: 'panel' }),
   };
 }

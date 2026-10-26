@@ -67,9 +67,16 @@ export interface Outbox {
   /** Уведомление менеджеру на MANAGER_WHATSAPP: единственное исходящее не в ответ. */
   notifyManager(text: string, kind: ManagerNotifyKind): Promise<ManagerNotifyResult>;
   /**
+   * Можно ли ответить в этот чат из панели: чат существует и проходит закрытый режим (TEST_ALLOWLIST), то же правило
+   * messaging/allowlist.ts, что и в sendFromPanel. Только проверка: ничего не пишет и не отправляет. Панель зовёт её
+   * до передачи чата менеджеру, чтобы заведомый отказ отправки не оставил чат у менеджера без сообщения.
+   */
+  canSendFromPanel(chatId: ChatId): boolean;
+  /**
    * Ответ менеджера из панели от имени номера. Статус чата не меняет: перед отправкой маршрут панели
-   * передаёт чат менеджеру через HandoffService (human_took_over, by 'panel'). Отказ приходит PanelSendError,
-   * текст которого безопасно показать на странице; сбой отправки пробрасывается как есть.
+   * передаёт чат менеджеру через HandoffService (human_took_over, by 'panel'), а до этого проверяет текст
+   * (panelTextProblem) и чат (canSendFromPanel). Отказ приходит PanelSendError, текст которого безопасно
+   * показать на странице; сбой отправки пробрасывается как есть.
    */
   sendFromPanel(chatId: ChatId, text: string): Promise<'sent'>;
 }
@@ -222,7 +229,8 @@ interface SendQuotas {
  * закрытый режим как у остальных отправок; запись в outbound_ids с origin 'panel' до отправки, затем сообщение в истории
  * (author 'human_panel', ID отправки). Статус чата не меняет, неотвеченное входящее не требует и часовые квоты бота не
  * расходует: пишет человек, и ему не должен мешать лимит от петель бота. Ошибки: PanelSendError (отказ с понятным
- * текстом) или сбой отправки как есть.
+ * текстом) или сбой отправки как есть. canSendFromPanel (чат существует и проходит закрытый режим, как в sendFromPanel)
+ * ничего не пишет и не отправляет: её зовёт панель до передачи чата менеджеру.
  * TODO(этап 3): аварийный выключатель автоответов (итог 'disabled'): нужен источник флага (настройка или панель).
  */
 export function createOutbox(deps: OutboxDeps): Outbox {
@@ -252,6 +260,7 @@ export function createOutbox(deps: OutboxDeps): Outbox {
         silentForManager,
       ),
     notifyManager: (text, kind) => notifyManager(deps, quotas, text, kind),
+    canSendFromPanel: (chatId) => canSendFromPanel(deps, chatId),
     sendFromPanel: (chatId, text) => sendFromPanel(deps, chatId, text),
   };
 }
@@ -284,6 +293,11 @@ async function sendToClient<Extra extends string>(
     tsMs: deps.clock.now(),
   });
   return 'sent';
+}
+
+function canSendFromPanel(deps: OutboxDeps, chatId: ChatId): boolean {
+  const chat = deps.chats.getById(chatId);
+  return chat !== null && isChatAllowlisted(deps.testAllowlist, chat.identity);
 }
 
 async function sendFromPanel(deps: OutboxDeps, chatId: ChatId, text: string): Promise<'sent'> {

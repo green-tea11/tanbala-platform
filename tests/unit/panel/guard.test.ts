@@ -4,7 +4,9 @@ import {
   assertPanelStartAllowed,
   constantTimeEqual,
   hostHeaderAllowed,
+  isLocalHostHeader,
   isLoopback,
+  isLoopbackPeer,
   isWeakPassword,
   passwordMatches,
 } from '../../../src/panel/guard.js';
@@ -31,6 +33,76 @@ describe('isLoopback', () => {
     '',
   ])('«%s» считается чужим адресом', (host) => {
     expect(isLoopback(host)).toBe(false);
+  });
+});
+
+describe('isLoopbackPeer', () => {
+  it.each(['127.0.0.1', '::1', '::ffff:127.0.0.1'])(
+    'адрес сокета «%s»: соединение с этого же компьютера',
+    (address) => {
+      expect(isLoopbackPeer(address)).toBe(true);
+    },
+  );
+
+  it('регистр записи IPv6 не важен', () => {
+    expect(isLoopbackPeer('::FFFF:127.0.0.1')).toBe(true);
+  });
+
+  it.each([
+    undefined,
+    '',
+    ' ',
+    '127.0.0.2',
+    '127.0.0.1 ',
+    ' 127.0.0.1',
+    '127.0.0.1.evil.com',
+    '0.0.0.0',
+    '::',
+    '[::1]',
+    'localhost',
+    '10.0.0.5',
+    '192.168.0.10',
+    '203.0.113.5',
+    '2001:db8::1',
+    '::ffff:10.0.0.5',
+    '::ffff:127.0.0.2',
+    '::2',
+  ])('адрес сокета «%s» чужой', (address) => {
+    expect(isLoopbackPeer(address)).toBe(false);
+  });
+});
+
+describe('isLocalHostHeader', () => {
+  const check = (hostHeader: string | undefined, port: number = PORT): boolean =>
+    isLocalHostHeader(hostHeader, port);
+
+  it.each([`127.0.0.1:${PORT}`, `localhost:${PORT}`, `LOCALHOST:${PORT}`])(
+    'заголовок Host «%s» указывает на этот же компьютер',
+    (host) => {
+      expect(check(host)).toBe(true);
+    },
+  );
+
+  it.each([
+    undefined,
+    '',
+    '127.0.0.1',
+    'localhost',
+    '127.0.0.1:3101',
+    `127.0.0.1:${PORT}.evil.com`,
+    'panel.example.kz',
+    `panel.example.kz:${PORT}`,
+    `[::1]:${PORT}`,
+    `0.0.0.0:${PORT}`,
+  ])('заголовок Host «%s» не локальный', (host) => {
+    expect(check(host)).toBe(false);
+  });
+
+  it('порт 80: заголовок без порта тоже локальный', () => {
+    expect(check('127.0.0.1', 80)).toBe(true);
+    expect(check('localhost', 80)).toBe(true);
+    expect(check('localhost:80', 80)).toBe(true);
+    expect(check('localhost:8080', 80)).toBe(false);
   });
 });
 

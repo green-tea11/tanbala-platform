@@ -394,6 +394,7 @@ describe('панель: страница чата', () => {
     ['sent', 'Сообщение отправлено клиенту'],
     ['returned', 'Чат возвращён боту'],
     ['already_bot', 'Чат уже ведёт бот'],
+    ['duplicate', 'Это сообщение уже отправлено'],
   ])('пометка после действия notice=%s', async (notice, text) => {
     const page = await getPage(seeded(), `/chats/1?notice=${notice}`);
 

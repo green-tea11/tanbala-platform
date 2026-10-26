@@ -213,8 +213,8 @@ describe('панель на настоящих репозиториях', () => 
     expect(page.body).not.toContain('action="/chats/' + String(chat.id) + '/return"');
   });
 
-  it('закрытый режим действует и в панели: чат не из TEST_ALLOWLIST ответа не получает, об этом написано на странице', async () => {
-    const { app, sent, messages, chats } = build({ allowlist: new Set([PHONE_A]) });
+  it('закрытый режим действует и в панели: чат не из TEST_ALLOWLIST ответа не получает и менеджеру не передаётся, об этом написано на странице', async () => {
+    const { app, sent, messages, chats, handoffs } = build({ allowlist: new Set([PHONE_A]) });
     const stranger = chats.upsertByIdentity(
       { replyJid: PN_B, lidJid: null, pnJid: PN_B },
       null,
@@ -230,9 +230,13 @@ describe('панель на настоящих репозиториях', () => 
     );
 
     expect(response.statusCode).toBe(422);
-    expect(response.body).toContain('Закрытый режим');
+    expect(response.body).toContain('закрытый режим');
+    expect(response.body).toContain('статус чата не менялся');
     expect(sent).toEqual([]);
     expect(messages.history(stranger.id, { limit: 10 })).toEqual([]);
+    // Настоящая база: чат остался у бота, передача не открыта.
+    expect(chats.getById(stranger.id)?.control).toEqual({ status: 'bot', by: null });
+    expect(handoffs.findOpen(stranger.id)).toBeNull();
   });
 
   it('уведомления менеджеру читаются из базы со статусами по-русски', async () => {

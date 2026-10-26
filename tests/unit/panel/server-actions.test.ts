@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { PanelSendError, PANEL_TEXT_MAX_LENGTH } from '../../../src/messaging/outbox.js';
 import { chatIdOf, createHarness, makeChat, type Auth, type Harness } from './harness.js';
 
@@ -126,7 +126,61 @@ describe('панель: ответ клиенту', () => {
     expect(h.actions()).toEqual([]);
   });
 
-  it('отказ отправки с понятным текстом (закрытый режим): виден на странице, введённое сохранено', async () => {
+  it('чат закрыт для отправки (закрытый режим): 422 с понятным текстом, введённое сохранено, чат не передаётся, ничего не уходит', async () => {
+    const s = await open();
+    s.h.outbox.canSendFromPanel.mockReturnValue(false);
+
+    const response = await reply(s, 2, 'Мой ответ <клиенту>');
+
+    expect(response.statusCode).toBe(422);
+    expect(response.body).toContain('role="alert"');
+    expect(response.body).toContain('закрытый режим');
+    expect(response.body).toContain('статус чата не менялся');
+    expect(response.body).toContain('Мой ответ &lt;клиенту&gt;');
+    expect(s.h.outbox.canSendFromPanel).toHaveBeenCalledWith(chatIdOf(2));
+    expect(s.h.actions()).toEqual([]);
+    expect(s.h.chats.setStatus).not.toHaveBeenCalled();
+  });
+
+  it('допустимость чата проверяется до передачи менеджеру: порядок вызовов', async () => {
+    const s = await open();
+
+    await reply(s, 2, 'Добрый день');
+
+    const firstOrder = (mock: { mock: { invocationCallOrder: number[] } }): number =>
+      mock.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY;
+    expect(s.h.outbox.canSendFromPanel).toHaveBeenCalledTimes(1);
+    expect(s.h.handoff.handOff).toHaveBeenCalledTimes(1);
+    expect(firstOrder(s.h.outbox.canSendFromPanel)).toBeLessThan(firstOrder(s.h.handoff.handOff));
+  });
+
+  it('отказ из-за закрытого чата в аудите: строка без текста сообщения, имени и номера', async () => {
+    const s = await open();
+    s.h.outbox.canSendFromPanel.mockReturnValue(false);
+
+    await reply(s, 2, 'Секретный текст ответа клиенту');
+
+    expect(s.h.logs()).toContainEqual(
+      expect.objectContaining({ action: 'reply_blocked', chatId: 2, level: 40 }),
+    );
+    const log = s.h.rawLog();
+    expect(log).not.toContain('Секретный текст');
+    expect(log).not.toContain('Бауыржан');
+    expect(log).not.toMatch(/77\d{9}/);
+  });
+
+  it('текст проверяется раньше чата: пустое сообщение в закрытом чате получает отказ по тексту', async () => {
+    const s = await open();
+    s.h.outbox.canSendFromPanel.mockReturnValue(false);
+
+    const response = await reply(s, 2, '   ');
+
+    expect(response.statusCode).toBe(422);
+    expect(response.body).toContain('Пустое сообщение не отправляется');
+    expect(s.h.actions()).toEqual([]);
+  });
+
+  it('отказ самой отправки с понятным текстом (вторая линия защиты после проверки чата): виден на странице, введённое сохранено', async () => {
     const s = await open();
     s.h.outbox.sendFromPanel.mockRejectedValueOnce(
       new PanelSendError('Закрытый режим: этот чат не из TEST_ALLOWLIST, сообщение не отправлено'),
@@ -190,6 +244,146 @@ describe('панель: ответ клиенту', () => {
 
     expect(response.statusCode).toBe(404);
     expect(h.actions()).toEqual([]);
+  });
+});
+
+describe('панель: ответ клиенту, повтор той же формы', () => {
+  const DUPLICATE_LOCATION = '/chats/2?notice=duplicate';
+  const TEXT = 'Добрый день, это менеджер';
+
+  it('двойная отправка формы: повтор не передаёт чат, не отправляет, ведёт на страницу с пометкой', async () => {
+    const s = await open();
+
+    const first = await reply(s, 2, TEXT);
+    const second = await reply(s, 2, TEXT);
+
+    expect(first.headers['location']).toBe('/chats/2?notice=sent');
+    expect(second.statusCode).toBe(303);
+    expect(second.headers['location']).toBe(DUPLICATE_LOCATION);
+    expect(s.h.actions()).toEqual(['handOff', 'sendFromPanel']);
+    expect(s.h.outbox.sendFromPanel).toHaveBeenCalledTimes(1);
+  });
+
+  it('страница по ссылке повтора говорит «Это сообщение уже отправлено»', async () => {
+    const s = await open();
+    await reply(s, 2, TEXT);
+    const second = await reply(s, 2, TEXT);
+
+    const page = await s.h.request({
+      url: String(second.headers['location']),
+      cookie: s.auth.cookie,
+    });
+
+    expect(page.statusCode).toBe(200);
+    expect(page.body).toContain('Это сообщение уже отправлено');
+  });
+
+  it('повтор приходит, пока первый ответ ещё в работе (двойной щелчок): отклоняется, первый доходит до конца', async () => {
+    const s = await open();
+    let finishHandOff: () => void = () => undefined;
+    s.h.handoff.handOff.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishHandOff = resolve;
+        }),
+    );
+
+    const first = reply(s, 2, TEXT);
+    await vi.waitFor(() => expect(s.h.handoff.handOff).toHaveBeenCalledTimes(1));
+    const second = await reply(s, 2, TEXT);
+    finishHandOff();
+    const firstDone = await first;
+
+    expect(second.headers['location']).toBe(DUPLICATE_LOCATION);
+    expect(firstDone.headers['location']).toBe('/chats/2?notice=sent');
+    expect(s.h.actions()).toEqual(['handOff', 'sendFromPanel']);
+  });
+
+  it('через 10 секунд тот же текст уходит снова, раньше нет', async () => {
+    const s = await open();
+    await reply(s, 2, TEXT);
+
+    s.h.advance(9_999);
+    const early = await reply(s, 2, TEXT);
+    s.h.advance(1);
+    const later = await reply(s, 2, TEXT);
+
+    expect(early.headers['location']).toBe(DUPLICATE_LOCATION);
+    expect(later.headers['location']).toBe('/chats/2?notice=sent');
+    expect(s.h.outbox.sendFromPanel).toHaveBeenCalledTimes(2);
+  });
+
+  it('другой текст в тот же чат и тот же текст в другой чат уходят сразу', async () => {
+    const s = await open();
+    await reply(s, 2, TEXT);
+
+    const otherText = await reply(s, 2, `${TEXT}. Что у вас за бизнес?`);
+    const otherChat = await reply(s, 1, TEXT);
+
+    expect(otherText.headers['location']).toBe('/chats/2?notice=sent');
+    expect(otherChat.headers['location']).toBe('/chats/1?notice=sent');
+    expect(s.h.outbox.sendFromPanel).toHaveBeenCalledTimes(3);
+  });
+
+  it('повтор с другими пробелами по краям тоже повтор: клиенту ушёл бы тот же обрезанный текст', async () => {
+    const s = await open();
+    await reply(s, 2, TEXT);
+
+    const second = await reply(s, 2, `  ${TEXT}\r\n`);
+
+    expect(second.headers['location']).toBe(DUPLICATE_LOCATION);
+    expect(s.h.outbox.sendFromPanel).toHaveBeenCalledTimes(1);
+  });
+
+  it('сбой отправки снимает отметку: тот же текст можно отправить сразу', async () => {
+    const s = await open();
+    s.h.outbox.sendFromPanel.mockRejectedValueOnce(new Error('нет связи'));
+    const failed = await reply(s, 2, TEXT);
+
+    const retry = await reply(s, 2, TEXT);
+
+    expect(failed.statusCode).toBe(502);
+    expect(retry.statusCode).toBe(303);
+    expect(retry.headers['location']).toBe('/chats/2?notice=sent');
+  });
+
+  it('сбой передачи чата тоже снимает отметку', async () => {
+    const s = await open();
+    s.h.handoff.handOff.mockRejectedValueOnce(new Error('база недоступна'));
+    const failed = await reply(s, 2, TEXT);
+
+    const retry = await reply(s, 2, TEXT);
+
+    expect(failed.statusCode).toBe(502);
+    expect(retry.headers['location']).toBe('/chats/2?notice=sent');
+  });
+
+  it('отказ по тексту или по закрытому чату отметку не ставит: после исправления ответ уходит сразу', async () => {
+    const s = await open();
+    s.h.outbox.canSendFromPanel.mockReturnValueOnce(false);
+    const blocked = await reply(s, 2, TEXT);
+
+    const sent = await reply(s, 2, TEXT);
+
+    expect(blocked.statusCode).toBe(422);
+    expect(sent.headers['location']).toBe('/chats/2?notice=sent');
+    expect(s.h.outbox.sendFromPanel).toHaveBeenCalledTimes(1);
+  });
+
+  it('аудит повтора: строка без текста сообщения, имени и номера', async () => {
+    const s = await open();
+    const secret = 'Секретный текст ответа клиенту';
+    await reply(s, 2, secret);
+
+    await reply(s, 2, secret);
+
+    expect(s.h.logs()).toContainEqual(
+      expect.objectContaining({ action: 'reply_duplicate', chatId: 2 }),
+    );
+    const log = s.h.rawLog();
+    expect(log).not.toContain('Секретный текст');
+    expect(log).not.toContain('Бауыржан');
+    expect(log).not.toMatch(/77\d{9}/);
   });
 });
 

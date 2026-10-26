@@ -678,3 +678,71 @@ describe('createOutbox: sendFromPanel', () => {
     expect(panelMessages(h.db)).toEqual([]);
   });
 });
+
+describe('createOutbox: canSendFromPanel', () => {
+  it('чат из TEST_ALLOWLIST: можно', () => {
+    const h = setup();
+
+    expect(h.outbox.canSendFromPanel(h.chatId)).toBe(true);
+  });
+
+  it('неизвестный чат: нельзя', () => {
+    const h = setup();
+
+    expect(h.outbox.canSendFromPanel(404 as ChatId)).toBe(false);
+  });
+
+  it('закрытый режим: чат не из TEST_ALLOWLIST или без номера (только @lid): нельзя', () => {
+    const h = setup();
+    const stranger = h.addChat({ replyJid: PN_B, pnJid: PN_B });
+    const lidOnly = h.addChat({ replyJid: LID_A, lidJid: LID_A });
+
+    expect(h.outbox.canSendFromPanel(stranger)).toBe(false);
+    expect(h.outbox.canSendFromPanel(lidOnly)).toBe(false);
+  });
+
+  it('чат с @lid и номером из TEST_ALLOWLIST в pnJid: можно, как и в sendFromPanel', () => {
+    const h = setup();
+    const lidChat = h.addChat({
+      replyJid: LID_A,
+      lidJid: LID_A,
+      pnJid: '77000000001:3@s.whatsapp.net' as Jid,
+    });
+
+    expect(h.outbox.canSendFromPanel(lidChat)).toBe(true);
+  });
+
+  it('закрытый режим выключен (null): можно в любой существующий чат, но не в несуществующий', () => {
+    const h = setup({ allowlist: null });
+    const other = h.addChat({ replyJid: PN_B, pnJid: PN_B });
+
+    expect(h.outbox.canSendFromPanel(other)).toBe(true);
+    expect(h.outbox.canSendFromPanel(404 as ChatId)).toBe(false);
+  });
+
+  it('только проверка: ничего не отправляет, не пишет в outbound_ids и в историю', () => {
+    const h = setup();
+    const stranger = h.addChat({ replyJid: PN_B, pnJid: PN_B });
+
+    h.outbox.canSendFromPanel(h.chatId);
+    h.outbox.canSendFromPanel(stranger);
+    h.outbox.canSendFromPanel(404 as ChatId);
+
+    expect(h.steps).toEqual([]);
+    expect(outboundRows(h.db)).toEqual([]);
+    expect(panelMessages(h.db)).toEqual([]);
+  });
+
+  it('согласована с sendFromPanel: что проверка пропускает, то и отправляется; что нет, то отклоняется', async () => {
+    const h = setup();
+    const stranger = h.addChat({ replyJid: PN_B, pnJid: PN_B });
+    const lidOnly = h.addChat({ replyJid: LID_A, lidJid: LID_A });
+
+    for (const chatId of [h.chatId, stranger, lidOnly, 404 as ChatId]) {
+      const outcome: unknown = await h.outbox
+        .sendFromPanel(chatId, 'Проверка')
+        .catch((e: unknown) => e);
+      expect(h.outbox.canSendFromPanel(chatId), `чат ${String(chatId)}`).toBe(outcome === 'sent');
+    }
+  });
+});

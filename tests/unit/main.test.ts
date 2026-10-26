@@ -1150,11 +1150,15 @@ describe('main: ответы клиентам, службы этапа 5 и ве
       };
       await harness.run(env, { startPanel: panel.startPanel });
       const app = panel.app();
-      const page = (host: string) => app.inject({ url: '/login', headers: { host } });
+      const page = (host: string, headers: Record<string, string> = {}) =>
+        app.inject({ url: '/login', headers: { host, ...headers } });
+      const viaCaddy = { 'x-forwarded-proto': 'https' };
 
       expect((await page(HOST_HEADER)).statusCode).toBe(200);
-      expect((await page('panel.example.kz')).statusCode).toBe(200);
-      expect((await page('evil.example')).statusCode).toBe(403);
+      expect((await page('panel.example.kz', viaCaddy)).statusCode).toBe(200);
+      // На VPS только HTTPS: домен по обычному HTTP закрыт, как и чужой домен.
+      expect((await page('panel.example.kz')).statusCode).toBe(403);
+      expect((await page('evil.example', viaCaddy)).statusCode).toBe(403);
       expect((await signIn(app, 'неверный-пароль-123')).length).toBe(0);
       expect((await signIn(app, STRONG_PASSWORD)).startsWith('tanbala_sid=')).toBe(true);
     });

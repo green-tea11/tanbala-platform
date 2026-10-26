@@ -224,27 +224,6 @@ describe('панель: ограничение попыток входа', () =>
     expect(other.statusCode).toBe(303);
   });
 
-  it('X-Forwarded-For от недоверенного адреса игнорируется: подделка не обходит счётчик', async () => {
-    const h = createHarness();
-    for (let i = 0; i < 5; i += 1) {
-      await h.request({
-        url: '/login',
-        form: wrong,
-        remoteAddress: '198.51.100.7',
-        headers: { 'x-forwarded-for': `10.0.0.${String(i)}` },
-      });
-    }
-
-    const response = await h.request({
-      url: '/login',
-      form: wrong,
-      remoteAddress: '198.51.100.7',
-      headers: { 'x-forwarded-for': '10.9.9.9' },
-    });
-
-    expect(response.statusCode).toBe(429);
-  });
-
   it('успешный вход обнуляет счётчик неудач', async () => {
     const h = createHarness();
     for (let i = 0; i < 4; i += 1) await h.request({ url: '/login', form: wrong });
@@ -320,21 +299,6 @@ describe('панель: заголовок Host, HTTPS и прокси', () => {
 
     const response = await h.request({ url: '/login', form: { password: STRONG_PASSWORD } });
 
-    expect(setCookieLines(response)[0]).not.toContain('Secure');
-    expect(response.headers['strict-transport-security']).toBeUndefined();
-  });
-
-  it('X-Forwarded-Proto от недоверенного адреса не включает Secure', async () => {
-    const h = createHarness({ password: STRONG_PASSWORD });
-
-    const response = await h.request({
-      url: '/login',
-      form: { password: STRONG_PASSWORD },
-      remoteAddress: '198.51.100.7',
-      headers: { 'x-forwarded-proto': 'https' },
-    });
-
-    expect(response.statusCode).toBe(303);
     expect(setCookieLines(response)[0]).not.toContain('Secure');
     expect(response.headers['strict-transport-security']).toBeUndefined();
   });

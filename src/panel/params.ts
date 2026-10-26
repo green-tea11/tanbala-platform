@@ -6,9 +6,9 @@ export const LIST_PAGE_SIZE = 30;
 export const HISTORY_PAGE_SIZE = 50;
 
 /** Пометка после действия: фиксированный набор, чужой текст из адреса на страницу не попадает. */
-export type NoticeKey = 'sent' | 'returned' | 'already_bot';
+export type NoticeKey = 'sent' | 'returned' | 'already_bot' | 'duplicate';
 
-const NOTICE_KEYS: readonly NoticeKey[] = ['sent', 'returned', 'already_bot'];
+const NOTICE_KEYS: readonly NoticeKey[] = ['sent', 'returned', 'already_bot', 'duplicate'];
 const CHAT_STATUSES: readonly ChatStatus[] = ['bot', 'manager'];
 /** Целое без нулей в начале; до 15 цифр, чтобы число оставалось точным. */
 const ID_PATTERN = /^[1-9]\d{0,14}$/;

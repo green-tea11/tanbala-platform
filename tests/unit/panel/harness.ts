@@ -285,6 +285,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     sendHandoffNotice: unused('outbox.sendHandoffNotice'),
     sendVoiceNotice: unused('outbox.sendVoiceNotice'),
     notifyManager: unused('outbox.notifyManager'),
+    canSendFromPanel: vi.fn(() => true),
     sendFromPanel: vi.fn(() => Promise.resolve('sent' as const)),
   };
   const handoff: Harness['handoff'] = {

@@ -167,6 +167,9 @@ function createLateOutbox(): LateOutbox {
     sendVoiceNotice: (chatId, replyToWaId) =>
       later((real) => real.sendVoiceNotice(chatId, replyToWaId)),
     notifyManager: (text, kind) => later((real) => real.notifyManager(text, kind)),
+    // Проверка синхронная, поэтому без later: до подключения ответ всё равно не уйдёт, и панель не должна
+    // передавать чат менеджеру зря.
+    canSendFromPanel: (chatId) => target !== null && target.canSendFromPanel(chatId),
     sendFromPanel: (chatId, text) => later((real) => real.sendFromPanel(chatId, text)),
   };
   return {

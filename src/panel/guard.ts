@@ -5,6 +5,8 @@ import { ConfigError } from '../config/errors.js';
 const LOOPBACK_HOST = '127.0.0.1';
 /** Имена, под которыми браузер владельца открывает локальную панель. */
 const LOCAL_HOST_NAMES: readonly string[] = [LOOPBACK_HOST, 'localhost'];
+/** Адреса сокета, с которых панель принимает соединения: этот же ПК или локальный прокси (Caddy) на нём. */
+const LOOPBACK_PEERS: ReadonlySet<string> = new Set([LOOPBACK_HOST, '::1', '::ffff:127.0.0.1']);
 /** Решение владельца: не короче 16 символов (admin и пустой пароль короче, поэтому тоже слабые). */
 const MIN_STRONG_PASSWORD_LENGTH = 16;
 /** Порт HTTP по умолчанию: браузер шлёт Host без него. */
@@ -30,6 +32,15 @@ interface HostCheckInput {
  */
 export function isLoopback(host: string): boolean {
   return host === LOOPBACK_HOST;
+}
+
+/**
+ * Пришло ли соединение с этого же компьютера: адрес сокета (а не X-Forwarded-For, который может подделать любой)
+ * равен 127.0.0.1, ::1 или ::ffff:127.0.0.1. Так панель доступна только из браузера на этом ПК или через локальный
+ * прокси Caddy, даже если слушает не только 127.0.0.1. Нет адреса (сокет уже закрыт) => нет. Регистр IPv6 не важен.
+ */
+export function isLoopbackPeer(address: string | undefined): boolean {
+  return address !== undefined && LOOPBACK_PEERS.has(address.toLowerCase());
 }
 
 /**
@@ -65,10 +76,24 @@ export function hostHeaderAllowed(input: HostCheckInput): boolean {
   return allowedHostsOf(input).has(host);
 }
 
-function allowedHostsOf(input: HostCheckInput): ReadonlySet<string> {
-  const local = LOCAL_HOST_NAMES.flatMap((name) =>
-    input.port === HTTP_DEFAULT_PORT ? [`${name}:${input.port}`, name] : [`${name}:${input.port}`],
+/** Значения Host, под которыми панель открывают на этом ПК: имя с портом панели, при порте 80 ещё и без порта. */
+function localHostsOf(port: number): readonly string[] {
+  return LOCAL_HOST_NAMES.flatMap((name) =>
+    port === HTTP_DEFAULT_PORT ? [`${name}:${port}`, name] : [`${name}:${port}`],
   );
+}
+
+/**
+ * Указывает ли заголовок Host на этот же ПК (127.0.0.1 или localhost с портом панели), а не на домен за Caddy.
+ * Правило «домен только по HTTPS» не касается локального Host. Регистр не важен; нет заголовка => нет.
+ */
+export function isLocalHostHeader(hostHeader: string | undefined, port: number): boolean {
+  const host = hostHeader?.toLowerCase();
+  return host !== undefined && localHostsOf(port).includes(host);
+}
+
+function allowedHostsOf(input: HostCheckInput): ReadonlySet<string> {
+  const local = localHostsOf(input.port);
   if (isWeakPassword(input.password)) return new Set(local);
   const domains = (input.allowedHosts ?? []).map((host) => host.trim().toLowerCase());
   return new Set([...local, ...domains.filter((host) => host !== '')]);

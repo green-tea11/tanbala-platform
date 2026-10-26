@@ -231,7 +231,7 @@ describe('pipeline/responder-setup', () => {
     });
   });
 
-  it('горячий клиент и номер менеджера задан: уведомление уходит менеджеру после фразы клиенту', async () => {
+  it('горячий клиент и номер менеджера задан: уведомление уходит менеджеру до фразы клиенту', async () => {
     const config = configWith({
       VENMART_ANTHROPIC_KEY: 'sk-test-not-a-real-key',
       MANAGER_WHATSAPP: MANAGER_PHONE,
@@ -260,8 +260,8 @@ describe('pipeline/responder-setup', () => {
     await responder.batcher.drain();
 
     expect(sendText.mock.calls.map(([jid, , waId]) => [jid, waId])).toEqual([
-      [JID, 'OUT-1'],
-      [MANAGER_JID, 'OUT-2'],
+      [MANAGER_JID, 'OUT-1'],
+      [JID, 'OUT-2'],
     ]);
     expect(storage.notifications.latestForChat(chat.id)).toMatchObject({
       status: 'sent',

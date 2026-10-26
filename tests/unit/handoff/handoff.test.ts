@@ -79,6 +79,8 @@ interface SetupOptions {
   readonly phraseScript?: readonly (Phrase | Error)[];
   /** Отправка фразы бросает не ошибку, а это значение (например, строку). */
   readonly phraseThrows?: { readonly value: unknown };
+  /** Отправка фразы не завершается никогда: так выглядит окно, в котором процесс может упасть. */
+  readonly phraseHangs?: boolean;
   /** Что ответит отправка уведомления менеджеру. */
   readonly notify?: ManagerNotificationStatus | Error;
   /** Смена статуса чата падает этой ошибкой. */
@@ -147,6 +149,7 @@ function setup(options: SetupOptions = {}): Harness {
       const phrase = options.phraseScript?.[notices.length] ?? options.phrase ?? 'sent';
       notices.push({ chatId, notice, replyToWaId });
       if (options.phraseThrows !== undefined) throw options.phraseThrows.value;
+      if (options.phraseHangs === true) return new Promise<Phrase>(() => undefined);
       return phrase instanceof Error ? Promise.reject(phrase) : Promise.resolve(phrase);
     },
   };
@@ -177,13 +180,15 @@ function setup(options: SetupOptions = {}): Harness {
   return { service, events, logs, opened, resolved, statusChanges, notices, notifications };
 }
 
+// Уведомление менеджеру идёт сразу после транзакции, до фразы клиенту: фраза может ждать повтор 5 с, и падение
+// процесса в этом окне не должно оставить горячего клиента без записи в manager_notifications.
 const FULL_FLOW = [
   'tx:begin',
   'handoffs.open',
   'chats.setStatus',
   'tx:commit',
-  'outbox.sendHandoffNotice',
   'notifier.notify',
+  'outbox.sendHandoffNotice',
 ];
 
 type PlainReason = 'hot' | 'no_answer' | 'check_failed' | 'asked_human' | 'llm_error';
@@ -212,7 +217,7 @@ function notificationFor(reason: NotificationReason): string {
 }
 
 describe('createHandoffService: handOff с фразой клиенту', () => {
-  it('горячий клиент: запись передачи и статус manager в одной транзакции, затем фраза, затем уведомление', async () => {
+  it('горячий клиент: запись передачи и статус manager в одной транзакции, затем уведомление менеджеру, затем фраза клиенту', async () => {
     const h = setup();
 
     await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
@@ -375,7 +380,7 @@ describe('createHandoffService: handOff с фразой клиенту', () => {
     expect(h.events).toEqual(['tx:begin', 'handoffs.open', 'tx:rollback']);
   });
 
-  it('исключение отправки фразы (сокет переподключается): один повтор через 5 с, затем уведомление менеджеру', async () => {
+  it('исключение отправки фразы (сокет переподключается): один повтор через 5 с, уведомление менеджеру уже записано до первой попытки', async () => {
     const h = setup({ phraseScript: [new Error('Connection Closed'), 'sent'] });
 
     await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
@@ -386,10 +391,10 @@ describe('createHandoffService: handOff с фразой клиенту', () => {
       'handoffs.open',
       'chats.setStatus',
       'tx:commit',
+      'notifier.notify',
       'outbox.sendHandoffNotice',
       'clock.sleep:5000',
       'outbox.sendHandoffNotice',
-      'notifier.notify',
     ]);
     expect(h.notices).toEqual([
       { chatId: CHAT_ID, notice: { reason: 'hot' }, replyToWaId: IN_1 },
@@ -402,7 +407,7 @@ describe('createHandoffService: handOff с фразой клиенту', () => {
   });
 
   it.each(['hot', 'no_answer', 'check_failed', 'asked_human', 'llm_error'] as const)(
-    'оба раза исключение (повод %s): ошибка «клиент остался без фразы передачи» без текста и номера, уведомление менеджеру всё равно уходит',
+    'оба раза исключение (повод %s): ошибка «клиент остался без фразы передачи» без текста и номера, уведомление менеджеру уже ушло до фразы',
     async (reason) => {
       const h = setup({ phrase: new Error('Connection Closed') });
 
@@ -484,7 +489,7 @@ describe('createHandoffService: handOff с фразой клиенту', () => {
     expect(h.logs.filter((entry) => entry.level === 'error')).toEqual([]);
   });
 
-  it('уведомление не записалось: передача остаётся, ошибка в лог, наружу не бросается', async () => {
+  it('уведомление не записалось: передача остаётся, фраза клиенту всё равно уходит, ошибка в лог, наружу не бросается', async () => {
     const failure = new Error('база недоступна');
     const h = setup({ notify: failure });
 
@@ -493,10 +498,26 @@ describe('createHandoffService: handOff с фразой клиенту', () => {
     ).resolves.toBeUndefined();
 
     expect(h.statusChanges).toHaveLength(1);
+    expect(h.events).toEqual(FULL_FLOW);
+    expect(h.notices).toEqual([{ chatId: CHAT_ID, notice: { reason: 'hot' }, replyToWaId: IN_1 }]);
     expect(h.logs.filter((entry) => entry.level === 'error')).toEqual([
       expect.objectContaining({
         context: { err: failure, chatId: CHAT_ID, kind: 'handoff' },
       }),
+    ]);
+  });
+
+  it('фраза клиенту зависла (так выглядит падение в окне повтора): уведомление менеджеру уже записано', async () => {
+    const h = setup({ phraseHangs: true });
+
+    void h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+
+    expect(h.events).toEqual(FULL_FLOW);
+    expect(h.notifications).toEqual([
+      expect.objectContaining({ kind: 'handoff', chatId: CHAT_ID, context: { reason: 'hot' } }),
     ]);
   });
 

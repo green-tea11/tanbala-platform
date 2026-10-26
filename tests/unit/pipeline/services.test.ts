@@ -10,6 +10,7 @@ import { createOutboundIdsRepo } from '../../../src/db/repos/outbound-ids.js';
 import type { Clock, Logger, MessageSender } from '../../../src/domain/ports.js';
 import type {
   Chat,
+  ChatId,
   Jid,
   PhoneDigits,
   ReviewedText,
@@ -195,6 +196,25 @@ describe('pipeline/services: подключение появляется поз�
     ]);
   });
 
+  it('canSendFromPanel: до подключения нельзя (ответ не уйдёт), после connect решает настоящий outbox', () => {
+    const h = setup();
+    const strangerJid = '77000000003@s.whatsapp.net' as Jid;
+    const stranger = h.storage.chats.upsertByIdentity(
+      { replyJid: strangerJid, lidJid: null, pnJid: strangerJid },
+      'Чужой',
+      T0,
+    );
+    const { outbox } = h.services;
+
+    expect(outbox.canSendFromPanel(h.chat.id)).toBe(false);
+
+    h.services.connect(h.connection);
+    expect(outbox.canSendFromPanel(h.chat.id)).toBe(true);
+    expect(outbox.canSendFromPanel(stranger.id)).toBe(false);
+    expect(outbox.canSendFromPanel(404 as ChatId)).toBe(false);
+    expect(h.sendText).not.toHaveBeenCalled();
+  });
+
   it('после connect и открытия подключения неотправленное уходит менеджеру', async () => {
     const h = setup();
     await limitHandoff(h);
@@ -207,7 +227,7 @@ describe('pipeline/services: подключение появляется поз�
     expect(h.sendText).toHaveBeenCalledWith(MANAGER_JID, expect.any(String), 'OUT-1');
   });
 
-  it('одни службы на всех: фраза клиенту и уведомление идут через общий outbox и подключение', async () => {
+  it('одни службы на всех: уведомление менеджеру и фраза клиенту идут через общий outbox и подключение, уведомление первым', async () => {
     const h = setup();
     h.services.connect(h.connection);
     const message = {
@@ -222,7 +242,7 @@ describe('pipeline/services: подключение появляется поз�
 
     await h.services.handoff.handOff(h.chat.id, { reason: 'hot', replyToWaId: message.waId });
 
-    expect(h.sendText.mock.calls.map(([jid]) => jid)).toEqual([CLIENT_JID, MANAGER_JID]);
+    expect(h.sendText.mock.calls.map(([jid]) => jid)).toEqual([MANAGER_JID, CLIENT_JID]);
     expect(h.storage.handoffs.findOpen(h.chat.id)).toMatchObject({ reason: 'hot' });
   });
 });
