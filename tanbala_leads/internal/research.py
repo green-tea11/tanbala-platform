@@ -1,12 +1,15 @@
 """Проверка новой компании по запросу WhatsApp-бота (POST /internal/research).
 
 Тот же путь, что в поиске: 2ГИС → сайт → оценка Haiku. Почты не проверяются, письмо не пишется.
-Компания помечается requested_via = 'whatsapp' и в рассылку не попадает никогда (решение владельца 27.10.2026).
+Компания, которую проверка сама добавила в базу, получает requested_via = 'whatsapp' и в рассылку не попадает
+никогда (решение владельца 27.10.2026). Уже известные компании не помечаем: иначе любой собеседник бота мог бы
+закрыть рассылку чужой компании, назвав её домен (вопрос владельцу).
 Задачи лежат в research_jobs. Одновременно выполняется одна, очередь своя: поиск в интерфейсе её не держит.
 """
 
 import logging
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -40,6 +43,17 @@ WHERE id = (SELECT id FROM research_jobs WHERE status = 'queued' ORDER BY create
             FOR UPDATE SKIP LOCKED)
 RETURNING id, name, city, phone, domain, company_id
 """
+# Та же заявка, пока первая ещё в очереди или в работе: повтор бота не тратит лимит и второй вызов Haiku.
+ACTIVE_JOB_SQL = """
+SELECT id FROM research_jobs
+WHERE status IN ('queued', 'running')
+  AND (company_id = %(company_id)s
+       OR (lower(name) = lower(%(name)s) AND city IS NOT DISTINCT FROM %(city)s
+           AND phone IS NOT DISTINCT FROM %(phone)s AND domain IS NOT DISTINCT FROM %(domain)s))
+ORDER BY created_at LIMIT 1
+"""
+# Очередь после сбоя (база пропала посреди задачи): пауза и новая попытка.
+RETRY_SECONDS = 30
 # Название города для сравнения: по-русски и кодом 2ГИС, без регистра, ё как е.
 CITY_KEYS = {key: code for code, name in CITIES.items() for key in (code, name.lower().replace("ё", "е"))}
 
@@ -115,14 +129,6 @@ def _is_qualified(conn: psycopg.Connection, company_id: int) -> bool:
                         (company_id,)).fetchone()[0]
 
 
-def mark_whatsapp(conn: psycopg.Connection, company_id: int) -> None:
-    """Компания из WhatsApp: пометка и отказ от её неотправленных черновиков. Писем ей не пишем никогда."""
-    with conn.transaction():
-        conn.execute("UPDATE companies SET requested_via = 'whatsapp' WHERE id = %s", (company_id,))
-        conn.execute("UPDATE drafts SET review_status = 'rejected', approved_by = NULL, approved_at = NULL"
-                     " WHERE company_id = %s AND sent_at IS NULL AND review_status <> 'rejected'", (company_id,))
-
-
 def _insert_job(conn: psycopg.Connection, request: Request, company_id: int | None, *,
                 failed_reason: str | None = None) -> str:
     job_id = str(uuid.uuid4())
@@ -136,16 +142,19 @@ def _insert_job(conn: psycopg.Connection, request: Request, company_id: int | No
 
 
 def start(conn: psycopg.Connection, request: Request, *, per_day: int, budget_usd: float) -> Started:
-    """Компания уже оценена: сразу её id. Иначе задача в очередь в пределах дневных лимитов."""
+    """Компания уже оценена: сразу её id. Та же заявка уже в работе: её job_id. Иначе задача в пределах лимитов."""
     city_name = CITIES.get(request.city) if request.city else None
     known = lookup.find_known(conn, request.query, city_name)
     if known is not None and _is_qualified(conn, known):
-        mark_whatsapp(conn, known)
         return Started(company_id=known)
     if known is None and request.city is None:
         return Started(job_id=_insert_job(conn, request, None, failed_reason="city_unsupported"))
     with conn.transaction():
         conn.execute("SELECT pg_advisory_xact_lock(%s)", (LIMIT_LOCK_KEY,))
+        active = conn.execute(ACTIVE_JOB_SQL, {"company_id": known, "name": request.name, "city": request.city,
+                                               "phone": request.phone, "domain": request.domain}).fetchone()
+        if active is not None:
+            return Started(job_id=str(active[0]))
         if conn.execute(TODAY_JOBS_SQL).fetchone()[0] >= per_day:
             raise LimitReached("rate_limited")
         if pipeline.spent_today_usd(conn) >= budget_usd:
@@ -169,11 +178,11 @@ def job_status(conn: psycopg.Connection, job_id: str) -> dict:
             "brief": brief.company_brief(conn, company_id) if done else None, "reason": reason}
 
 
-def recover_stale_jobs(conn: psycopg.Connection) -> int:
-    """Задачи, прерванные перезапуском приложения: failed / error. Задачи в очереди остаются в ней."""
+def recover_stale_jobs(conn: psycopg.Connection, note: str = "Проверка прервана: приложение было перезапущено") -> int:
+    """Задачи, прерванные перезапуском или сбоем: failed / error. Задачи в очереди остаются в ней."""
     return conn.execute(
-        "UPDATE research_jobs SET status = 'failed', reason = 'error', finished_at = now(),"
-        " error = 'Проверка прервана: приложение было перезапущено' WHERE status = 'running'"
+        "UPDATE research_jobs SET status = 'failed', reason = 'error', finished_at = now(), error = %s"
+        " WHERE status = 'running'", (note,)
     ).rowcount
 
 
@@ -214,7 +223,7 @@ def _find_in_2gis(conn: psycopg.Connection, job: dict, deps: pipeline.Deps) -> i
     deps.run_parser(collect.build_search_url(job["city"], job["name"]), export, PARSER_RECORDS)
     cards = [card for item in collect.read_export(export) if (card := collect.parse_item(item))]
     card = best_card(cards, request)
-    return collect.save_card(conn, card) if card else None
+    return collect.save_card(conn, card, requested_via="whatsapp") if card else None
 
 
 def _crawl_if_new(conn: psycopg.Connection, company_id: int, deps: pipeline.Deps) -> None:
@@ -250,10 +259,11 @@ def run_job(conn: psycopg.Connection, job: dict, deps: pipeline.Deps, budget_usd
         if company_id is None:
             _finish(conn, job_id, reason="not_in_2gis")
             return
-        mark_whatsapp(conn, company_id)
-        _crawl_if_new(conn, company_id, deps)
-        qualify.qualify_company(conn, company_id, client=deps.client, owner_doc=deps.owner_doc,
-                                on_usage=pipeline.usage_recorder(conn, None, company_id, deps.log_path))
+        # Компанию уже оценила другая задача или поиск: второй вызов Haiku не нужен.
+        if not _is_qualified(conn, company_id):
+            _crawl_if_new(conn, company_id, deps)
+            qualify.qualify_company(conn, company_id, client=deps.client, owner_doc=deps.owner_doc,
+                                    on_usage=pipeline.usage_recorder(conn, None, company_id, deps.log_path))
         _finish(conn, job_id, company_id=company_id)
     except Exception as exc:  # noqa: BLE001  любая ошибка задачи видна боту как failed / error
         logger.exception("Проверка из WhatsApp %s упала", job_id)
@@ -305,13 +315,21 @@ class ResearchQueue:
             try:
                 self.drain()
             except Exception:  # noqa: BLE001  поток очереди не должен умирать молча
-                logger.exception("Очередь проверок из WhatsApp: сбой")
+                logger.exception("Очередь проверок из WhatsApp: сбой, новая попытка через %s с", RETRY_SECONDS)
+                with self._lock:
+                    self._pending = True
+                time.sleep(RETRY_SECONDS)
 
     def drain(self) -> int:
-        """Выполнить все задачи из очереди по одной. Вернуть, сколько выполнено."""
+        """Выполнить все задачи из очереди по одной. Вернуть, сколько выполнено.
+
+        Обработчик очереди один, поэтому задача в статусе running здесь осталась от сбоя: она failed / error,
+        иначе уникальный индекс не дал бы взять следующую.
+        """
         done = 0
         with self.connect() as conn:
             while True:
+                recover_stale_jobs(conn, "Проверка прервана сбоем базы или приложения")
                 with conn.cursor(row_factory=dict_row) as cursor:
                     job = cursor.execute(CLAIM_SQL).fetchone()
                 if job is None:

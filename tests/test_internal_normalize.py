@@ -79,3 +79,13 @@ def test_clean_text_removes_control_and_invisible_characters_and_cuts():
 def test_contacts_are_hidden_but_numbers_stay():
     text = "Пишите ivan@sklad.kz или звоните +7 (727) 355-10-20, склад 11 400 м², с 2008 года."
     assert norm.hide_contacts(text) == "Пишите [скрыто] или звоните [скрыто], склад 11 400 м², с 2008 года."
+
+
+def test_at_sign_in_url_path_does_not_change_host():
+    assert norm.parse_domain("https://sklad.kz/contact@x.com") == "sklad.kz"
+    assert norm.parse_domain("https://ivan@sklad.kz/") == "sklad.kz"
+
+
+def test_masked_emails_and_dotted_phones_are_hidden():
+    text = "ivan [at] sklad [dot] kz, тел. 701.123.45.67 и 727/355-10-20, площадь 11.400 м², 27.10.2026"
+    assert norm.hide_contacts(text) == "[скрыто], тел. [скрыто] и [скрыто], площадь 11.400 м², 27.10.2026"

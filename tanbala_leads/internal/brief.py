@@ -9,7 +9,7 @@ from psycopg.rows import dict_row
 
 from tanbala_leads.internal import lookup
 from tanbala_leads.internal import normalize as norm
-from tanbala_leads.steps.qualify import PAIN_SOURCES
+from tanbala_leads.steps.qualify import MAX_PAINS, PAIN_SOURCES
 
 MAX_NAME_CHARS = 200
 MAX_RUBRIC_CHARS = 200
@@ -47,7 +47,7 @@ def _pains(raw: object) -> list[dict]:
         evidence = _without_contacts(str(item.get("evidence") or ""), MAX_EVIDENCE_CHARS)
         if pain and evidence:
             pains.append({"pain": pain, "evidence": evidence, "source": item["source"]})
-    return pains
+    return pains[:MAX_PAINS]
 
 
 def company_brief(conn: psycopg.Connection, company_id: int) -> dict | None:

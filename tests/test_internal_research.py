@@ -171,7 +171,7 @@ def test_city_is_russian_name_or_2gis_code(city, code):
 
 
 @pytest.mark.db
-def test_company_already_qualified_comes_back_at_once_and_leaves_mailing(env):
+def test_company_already_qualified_comes_back_at_once_and_keeps_its_letters(env):
     company_id = add_company(env.conn, "Платформа-А", domain="platforma.kz")
     add_qualification(env.conn, company_id)
     contact_id = env.conn.execute("INSERT INTO contacts (company_id, email) VALUES (%s, 'info@platforma.kz')"
@@ -184,8 +184,9 @@ def test_company_already_qualified_comes_back_at_once_and_leaves_mailing(env):
         "status": "done", "company_id": company_id}
     assert deps.run_parser.urls == [] and deps.client.calls == []
     assert env.conn.execute("SELECT count(*) FROM research_jobs").fetchone()[0] == 0
-    assert env.conn.execute("SELECT requested_via FROM companies").fetchone()[0] == "whatsapp"
-    assert env.conn.execute("SELECT review_status FROM drafts").fetchone()[0] == "rejected"
+    # Уже известную компанию бот не убирает из рассылки: иначе любой собеседник закрыл бы её, назвав домен.
+    assert env.conn.execute("SELECT requested_via FROM companies").fetchone()[0] is None
+    assert env.conn.execute("SELECT review_status FROM drafts").fetchone()[0] == "pending"
 
 
 @pytest.mark.db
@@ -314,9 +315,10 @@ def test_unknown_job_is_not_found(env, job_id):
 
 @pytest.mark.db
 def test_restart_fails_running_job_and_keeps_queue(env):
-    request = research.parse_request({"name": "Аксенгер"})
-    running = research.start(env.conn, request, per_day=20, budget_usd=1.0).job_id
-    queued = research.start(env.conn, request, per_day=20, budget_usd=1.0).job_id
+    running = research.start(env.conn, research.parse_request({"name": "Аксенгер"}), per_day=20,
+                             budget_usd=1.0).job_id
+    queued = research.start(env.conn, research.parse_request({"name": "Станица"}), per_day=20,
+                            budget_usd=1.0).job_id
     env.conn.execute("UPDATE research_jobs SET status = 'running' WHERE id = %s", (running,))
 
     assert research.recover_stale_jobs(env.conn) == 1
@@ -379,3 +381,72 @@ class FakeLetters(FakeClient):
         answer = {"subject": "Учёт склада", "body": self.BODY, "notes": []}
         return SimpleNamespace(content=[SimpleNamespace(type="text", text=json.dumps(answer, ensure_ascii=False))],
                                stop_reason="end_turn", usage=usage, model="claude-haiku-5-5")
+
+
+# ---------- повторы, сбои очереди, разбор тела ----------
+
+
+@pytest.mark.db
+def test_same_request_while_first_is_waiting_returns_same_job(env):
+    client, deps, queue = env.client(per_day=1, inline=False)
+    queue.kick = lambda: None  # обработчик не запущен: задача остаётся в очереди
+
+    first = post(client, {"name": "Аксенгер"})["job_id"]
+    again = post(client, {"name": "аксенгер", "city": "Алматы"})["job_id"]
+
+    assert again == first
+    assert env.conn.execute("SELECT count(*) FROM research_jobs").fetchone()[0] == 1
+
+
+@pytest.mark.db
+def test_company_qualified_meanwhile_is_not_paid_for_twice(env):
+    company_id = add_company(env.conn, "Zeta, склад", status="new", phones=["+77773131364"])
+    client, deps, queue = env.client(inline=False)
+    queue.kick = lambda: None
+    job_id = post(client, {"name": "Zeta", "phone": "87773131364"})["job_id"]
+    add_qualification(env.conn, company_id)  # пока задача ждала, компанию оценил поиск
+
+    queue.drain()
+
+    assert (status(client, job_id)["status"], deps.client.calls) == ("done", [])
+
+
+@pytest.mark.db
+def test_job_left_running_after_failure_does_not_block_queue(env):
+    client, _, queue = env.client(inline=False)
+    queue.kick = lambda: None
+    stuck = post(client, {"name": "Аксенгер"})["job_id"]
+    env.conn.execute("UPDATE research_jobs SET status = 'running' WHERE id = %s", (stuck,))
+    waiting = post(client, {"name": "Станица"})["job_id"]
+
+    assert queue.drain() == 1
+
+    assert (status(client, stuck)["status"], status(client, stuck)["reason"]) == ("failed", "error")
+    assert status(client, waiting)["status"] == "done"
+
+
+@pytest.mark.db
+def test_queue_without_api_key_fails_jobs_and_keeps_going(env):
+    def no_key():
+        raise RuntimeError("Не задана переменная VENMART_ANTHROPIC_KEY")
+
+    queue = research.ResearchQueue(env.connect, no_key, per_day=20, budget_usd=1.0, inline=True)
+    request = research.parse_request({"name": "Аксенгер"})
+    job_id = queue.submit(env.conn, request).job_id
+
+    assert research.job_status(env.conn, job_id)["reason"] == "error"
+
+
+def test_deeply_nested_body_is_400():
+    response = make_client_without_db().post("/internal/research", content=b"[" * 3000,
+                                             headers={**AUTH, "Content-Type": "application/json"})
+
+    assert (response.status_code, response.json()) == (400, {"error": "bad_request"})
+
+
+@pytest.mark.parametrize("path", ["/internal/lookup/", "/internal/research/"])
+def test_trailing_slash_is_not_redirected_before_token(path):
+    client = make_client_without_db()
+
+    assert client.get(path, follow_redirects=False).status_code == 401
+    assert client.get(path, headers=AUTH, follow_redirects=False).status_code == 404

@@ -138,7 +138,8 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
     # Компаниям здесь не отправляется ничего: только тест, и только на зашитый в send.py адрес владельца.
     test_to = test_address if send_test is not None and test_address in send_step.TEST_RECIPIENTS else None
     templates = _make_templates()
-    app = FastAPI(title="Tanbala", docs_url=None, redoc_url=None, openapi_url=None)
+    # redirect_slashes: /internal/lookup/ иначе получил бы 307 до проверки токена.
+    app = FastAPI(title="Tanbala", docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False)
     app.middleware("http")(_security_headers)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(ALLOWED_HOSTS))
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

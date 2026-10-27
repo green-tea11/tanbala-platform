@@ -84,7 +84,8 @@ async def read_research(request: Request) -> research.Request:
             raise InternalError(400, "bad_request")
     try:
         return research.parse_request(json.loads(body))
-    except (ValueError, BadInput) as exc:  # json.JSONDecodeError и UnicodeDecodeError тоже ValueError
+    # json.JSONDecodeError и UnicodeDecodeError тоже ValueError; RecursionError: [[[[… глубже 1000 уровней.
+    except (ValueError, RecursionError, BadInput) as exc:
         raise InternalError(400, "bad_request") from exc
 
 

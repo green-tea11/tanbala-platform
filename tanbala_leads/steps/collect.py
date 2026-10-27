@@ -174,23 +174,29 @@ def find_duplicate(conn: psycopg.Connection, card: CompanyCard) -> int | None:
     return row[0] if row else None
 
 
-def save_card(conn: psycopg.Connection, card: CompanyCard) -> int:
-    """Одна карточка 2ГИС: id уже известной компании или новой со статусом new."""
+def save_card(conn: psycopg.Connection, card: CompanyCard, *, requested_via: str | None = None) -> int:
+    """Одна карточка 2ГИС: id уже известной компании или новой со статусом new.
+
+    requested_via ставится только новой компании и в той же вставке: поиск не успеет взять её в рассылку.
+    """
     existing = find_duplicate(conn, card)
     if existing is not None:
         return existing
-    company_id = _insert(conn, card, None, None)
+    company_id = _insert(conn, card, None, None, requested_via=requested_via)
     return company_id if company_id is not None else find_duplicate(conn, card)
 
 
-def _insert(conn: psycopg.Connection, card: CompanyCard, run_id: int | None, search_query: str | None) -> int | None:
+def _insert(conn: psycopg.Connection, card: CompanyCard, run_id: int | None, search_query: str | None, *,
+            requested_via: str | None = None) -> int | None:
     with conn.transaction():
         row = conn.execute(
             "INSERT INTO companies (name, city, rubric, address, phones, website, website_domain, source,"
-            " source_id, source_url, branches_count, raw, run_id, search_query)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, '2gis', %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING RETURNING id",
+            " source_id, source_url, branches_count, raw, run_id, search_query, requested_via)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, '2gis', %s, %s, %s, %s, %s, %s, %s)"
+            " ON CONFLICT DO NOTHING RETURNING id",
             (card.name, card.city, card.rubric, card.address, list(card.phones), card.website, card.website_domain,
-             card.source_id, card.source_url, card.branches_count, Jsonb(card.raw), run_id, search_query),
+             card.source_id, card.source_url, card.branches_count, Jsonb(card.raw), run_id, search_query,
+             requested_via),
         ).fetchone()
         if row is None:
             return None

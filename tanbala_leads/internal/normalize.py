@@ -6,7 +6,7 @@ from difflib import SequenceMatcher
 from urllib.parse import urlsplit
 
 from tanbala_leads.contact_policy import FREE_MAIL_DOMAINS, PUBLIC_SUFFIXES
-from tanbala_leads.sites import DOMAIN_RE, EMAIL_RE
+from tanbala_leads.sites import AT_RE, DOMAIN_RE, DOT_RE, EMAIL_RE
 
 MAX_DOMAIN_CHARS = 253
 MAX_PHONE_CHARS = 32
@@ -16,8 +16,8 @@ PHONE_DIGITS = 11
 LEGAL_FORMS = frozenset("тоо ип ао зао оао пао ооо llp llc ltd jsc inc".split())
 QUOTES_RE = re.compile(r"[«»\"'“”„‘’`]")
 NOT_WORD_RE = re.compile(r"[^\w]+")
-# Телефон в тексте: цифры с пробелами, скобками и дефисами. Прячем, только если цифр 10–15.
-PHONE_IN_TEXT_RE = re.compile(r"\+?\d[\d\s()\-]{8,}\d")
+# Телефон в тексте: цифры с пробелами, скобками, дефисами, точками и косой чертой. Прячем, только если цифр 10–15.
+PHONE_IN_TEXT_RE = re.compile(r"\+?\d[\d\s().\-/]{8,}\d")
 HIDDEN = "[скрыто]"
 
 
@@ -47,10 +47,9 @@ def parse_domain(value: str) -> str | None:
     компанию не узнать. Неразборчивое значение: BadInput.
     """
     text = _checked(value, MAX_DOMAIN_CHARS).lower()
-    if "@" in text:
-        text = text.rsplit("@", 1)[1]
     if "://" not in text:
-        text = "http://" + text
+        # Адрес почты: домен после @. В ссылке @ бывает в пути (/contact@x.com), там хост берёт urlsplit.
+        text = "http://" + text.rsplit("@", 1)[-1]
     try:
         host = urlsplit(text).hostname or ""
         host = host.rstrip(".").encode("idna").decode("ascii")
@@ -126,7 +125,8 @@ def _hide_phone(match: re.Match) -> str:
 
 
 def hide_contacts(value: str | None) -> str | None:
-    """Убрать из текста адреса почты и телефоны: бот не должен получать контакты людей."""
+    """Убрать из текста адреса почты (и ivan [at] sklad [dot] kz) и телефоны: бот не получает контакты людей."""
     if value is None:
         return None
-    return PHONE_IN_TEXT_RE.sub(_hide_phone, EMAIL_RE.sub(HIDDEN, value))
+    unmasked = DOT_RE.sub(".", AT_RE.sub("@", value))
+    return PHONE_IN_TEXT_RE.sub(_hide_phone, EMAIL_RE.sub(HIDDEN, unmasked))
