@@ -6,6 +6,7 @@
 """
 
 import hmac
+import json
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager
 
@@ -13,7 +14,7 @@ import psycopg
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
-from tanbala_leads.internal import brief, lookup
+from tanbala_leads.internal import brief, lookup, research
 from tanbala_leads.internal.normalize import BadInput
 from tanbala_leads.web.format import parse_id
 from tanbala_leads.web.labels import MAX_DB_ID
@@ -21,6 +22,7 @@ from tanbala_leads.web.labels import MAX_DB_ID
 PREFIX = "/internal"
 TOKEN_HEADER = "X-Internal-Token"
 MIN_TOKEN_CHARS = 32
+MAX_BODY_BYTES = 4096
 # Ошибки до маршрута (нет пути, не тот метод): код по HTTP-статусу, остальное bad_request.
 STATUS_CODES = {401: "unauthorized", 404: "not_found", 503: "db_unavailable"}
 
@@ -73,8 +75,25 @@ def parse_company_id(company_id: str) -> int:
     return parsed
 
 
-def make_router(open_conn: Callable[[], AbstractContextManager[psycopg.Connection]], token: str | None) -> APIRouter:
-    """Маршруты /internal/... Зависимость токена стоит на всём роутере и выполняется раньше остальных."""
+async def read_research(request: Request) -> research.Request:
+    """Тело POST /internal/research: JSON-объект не больше MAX_BODY_BYTES."""
+    body = bytearray()
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > MAX_BODY_BYTES:
+            raise InternalError(400, "bad_request")
+    try:
+        return research.parse_request(json.loads(body))
+    except (ValueError, BadInput) as exc:  # json.JSONDecodeError и UnicodeDecodeError тоже ValueError
+        raise InternalError(400, "bad_request") from exc
+
+
+def make_router(open_conn: Callable[[], AbstractContextManager[psycopg.Connection]], token: str | None,
+                queue: research.ResearchQueue | None = None) -> APIRouter:
+    """Маршруты /internal/... Зависимость токена стоит на всём роутере и выполняется раньше остальных.
+
+    queue: очередь проверок новых компаний; без неё маршрутов /internal/research нет.
+    """
 
     def require_token(request: Request) -> None:
         if not token_ok(token, request.headers.get(TOKEN_HEADER)):
@@ -98,5 +117,23 @@ def make_router(open_conn: Callable[[], AbstractContextManager[psycopg.Connectio
         if found is None:
             raise InternalError(404, "not_found")
         return found
+
+    if queue is None:
+        return router
+
+    @router.post("/research")
+    def start_research(request: research.Request = Depends(read_research),
+                       conn: psycopg.Connection = Depends(get_conn)) -> JSONResponse:
+        try:
+            started = queue.submit(conn, request)
+        except research.LimitReached as exc:
+            raise InternalError(429, exc.code) from exc
+        if started.job_id is None:
+            return JSONResponse({"status": "done", "company_id": started.company_id})
+        return JSONResponse({"job_id": started.job_id}, status_code=202)
+
+    @router.get("/research/{job_id}")
+    def research_status(job_id: str, conn: psycopg.Connection = Depends(get_conn)) -> dict:
+        return research.job_status(conn, job_id)
 
     return router
