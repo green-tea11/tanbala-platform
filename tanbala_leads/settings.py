@@ -23,6 +23,8 @@ ENV_NAMES: dict[str, str] = {
     "smtp_port": "SMTP_PORT",
     "smtp_user": "SMTP_USER",
     "smtp_password": "SMTP_PASSWORD",
+    "internal_api_token": "INTERNAL_API_TOKEN",
+    "research_per_day": "RESEARCH_PER_DAY",
 }
 
 DEFAULTS: dict[str, str] = {
@@ -30,6 +32,7 @@ DEFAULTS: dict[str, str] = {
     "parser_2gis_bin": ".venv-2gis/Scripts/parser-2gis.exe",
     "llm_log_path": "logs/llm_calls.jsonl",
     "daily_api_budget_usd": "1.00",
+    "research_per_day": "20",
 }
 
 
@@ -55,6 +58,8 @@ class Settings:
     smtp_port: str = ""
     smtp_user: str = ""
     smtp_password: str = field(default="", repr=False)
+    internal_api_token: str = field(default="", repr=False)
+    research_per_day: str = ""
 
     def require(self, name: str) -> str:
         """Вернуть значение поля или остановиться с понятной ошибкой, если оно пустое."""

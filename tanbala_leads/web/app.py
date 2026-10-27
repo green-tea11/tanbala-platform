@@ -5,7 +5,7 @@ Jinja экранирует всё, ссылки выводятся только 
 каждый POST требует CSRF-токен и своё Origin. Отправки писем здесь нет.
 
 Модули: labels (подписи и лимиты), format (форматирование), queries (чтение из базы),
-views (данные для шаблонов), этот файл: безопасность, маршруты и запуск.
+views (данные для шаблонов), internal (API для WhatsApp-бота по токену), этот файл: безопасность, маршруты и запуск.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ from tanbala_leads import __version__, contact_policy, db, pipeline
 from tanbala_leads.settings import load_settings
 from tanbala_leads.steps import approve as approve_step
 from tanbala_leads.steps import send as send_step
+from tanbala_leads.web import internal
 from tanbala_leads.web import queries as q
 from tanbala_leads.web import views
 from tanbala_leads.web.format import (
@@ -122,12 +123,13 @@ def _redirect(url: str) -> RedirectResponse:
 def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[str, str, int], int], *,
                csrf_token: str | None = None, daily_budget_usd: float | None = None,
                send_test: Callable[[psycopg.Connection, int], send_step.TestSendResult] | None = None,
-               test_address: str | None = None) -> FastAPI:
+               test_address: str | None = None, internal_token: str | None = None) -> FastAPI:
     """Собрать приложение. connect открывает соединение на запрос, start_run запускает поиск в фоне.
 
     daily_budget_usd: суточный лимит расходов на API для сводки на странице поиска (None: не показывать).
     send_test: тестовая отправка письма владельцу (steps/send.send_test); test_address: куда она уходит.
     Без них, или если адрес не из send.TEST_RECIPIENTS, тестовая отправка выключена.
+    internal_token: токен внутреннего API для WhatsApp-бота (web/internal.py); пустой выключает API.
     """
     token = csrf_token or secrets.token_urlsafe(32)
     # Компаниям здесь не отправляется ничего: только тест, и только на зашитый в send.py адрес владельца.
@@ -149,6 +151,8 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
     def get_conn() -> Iterator[psycopg.Connection]:
         with open_conn() as conn:
             yield conn
+
+    app.include_router(internal.make_router(open_conn, internal_token))
 
     def make_csrf_form(max_bytes: int) -> Callable:
         async def csrf_form(request: Request) -> dict[str, Any]:
@@ -238,6 +242,8 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
 
     @app.exception_handler(StarletteHTTPException)
     async def http_error(request: Request, exc: StarletteHTTPException) -> Response:
+        if internal.is_internal(request):
+            return internal.framework_error(request, exc.status_code, internal_token)
         detail = exc.detail if isinstance(exc.detail, str) else ""
         if not detail or detail == HTTPStatus(exc.status_code).phrase:
             detail = ERROR_MESSAGES.get(exc.status_code, "Что-то пошло не так.")
@@ -246,10 +252,16 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
         context = {"title": "Ошибка", "nav": "", "status_code": exc.status_code, "message": detail}
         return render(request, "error.html", context, status_code=exc.status_code)
 
+    @app.exception_handler(internal.InternalError)
+    async def internal_api_error(request: Request, exc: internal.InternalError) -> Response:
+        return internal.error(exc.status_code, exc.code)
+
     @app.exception_handler(psycopg.Error)
     async def db_error(request: Request, exc: psycopg.Error) -> Response:
         # Текст ошибки не пишем: в нём бывают адрес сервера и имя пользователя базы.
         logger.error("Ошибка базы данных: %s, sqlstate=%s", type(exc).__name__, getattr(exc, "sqlstate", None))
+        if internal.is_internal(request):
+            return internal.error(503, "db_unavailable")
         if request.url.path.startswith("/api/"):
             return JSONResponse({"detail": DB_ERROR_MESSAGE}, status_code=503)
         context = {"title": "База недоступна", "nav": "", "status_code": 503, "message": DB_ERROR_MESSAGE}
@@ -510,5 +522,9 @@ def serve(host: str = BIND_HOST, port: int = 8000) -> None:
         daily_budget_usd=budget,
         send_test=lambda conn, draft_id: send_step.send_test(conn, draft_id, load_settings()),
         test_address=test_address,
+        internal_token=settings.internal_api_token,
     )
+    if not internal.token_ok(settings.internal_api_token, settings.internal_api_token):
+        logger.warning("Внутренний API выключен: INTERNAL_API_TOKEN пустой или короче %s символов",
+                       internal.MIN_TOKEN_CHARS)
     uvicorn.run(app, host=host, port=port, proxy_headers=False, server_header=False)
