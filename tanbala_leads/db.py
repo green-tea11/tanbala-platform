@@ -279,12 +279,70 @@ CREATE TABLE test_sends (
 CREATE INDEX test_sends_draft_idx ON test_sends (draft_id, created_at DESC);
 """
 
+SCHEMA_V6 = """
+-- Компании, о которых спросил WhatsApp-бот (проект C). Владелец: в рассылку они не попадают никогда.
+-- source остаётся '2gis': по нему ищутся дубли, а пометка о WhatsApp отдельно.
+ALTER TABLE companies ADD COLUMN requested_via text CHECK (requested_via IN ('whatsapp'));
+
+-- Последний рубеж: компании из WhatsApp база не даст создать, одобрить или отправить черновик.
+CREATE FUNCTION forbid_whatsapp_draft() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'INSERT' OR (NEW.review_status = 'approved' AND OLD.review_status <> 'approved')
+       OR (NEW.sent_at IS NOT NULL AND OLD.sent_at IS NULL) THEN
+        IF EXISTS (SELECT 1 FROM companies WHERE id = NEW.company_id AND requested_via IS NOT NULL) THEN
+            RAISE EXCEPTION 'Компания % пришла из WhatsApp: писем ей не пишем', NEW.company_id
+                USING ERRCODE = 'check_violation';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER drafts_forbid_whatsapp BEFORE INSERT OR UPDATE ON drafts
+    FOR EACH ROW EXECUTE FUNCTION forbid_whatsapp_draft();
+
+-- И письмо пайплайна такой компании в историю не записать. Импорт прошлых писем владельца разрешён.
+CREATE FUNCTION forbid_whatsapp_send() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.direction = 'out' AND NEW.source = 'pipeline' AND EXISTS (
+        SELECT 1 FROM companies WHERE id = NEW.company_id AND requested_via IS NOT NULL
+    ) THEN
+        RAISE EXCEPTION 'Компания % пришла из WhatsApp: писем ей не пишем', NEW.company_id
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER contact_history_forbid_whatsapp BEFORE INSERT ON contact_history
+    FOR EACH ROW EXECUTE FUNCTION forbid_whatsapp_send();
+
+-- Проверки компаний по запросу WhatsApp-бота (POST /internal/research). Одновременно выполняется одна.
+CREATE TABLE research_jobs (
+    id           uuid PRIMARY KEY,
+    name         text NOT NULL,
+    city         text,  -- код города 2ГИС; NULL, если город не поддерживается
+    phone        text,
+    domain       text,
+    status       text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'done', 'failed')),
+    reason       text CHECK (reason IN ('not_in_2gis', 'city_unsupported', 'budget_exhausted', 'error')),
+    company_id   bigint REFERENCES companies (id) ON DELETE SET NULL,
+    error        text,  -- подробности для логов, наружу не отдаются
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    started_at   timestamptz,
+    finished_at  timestamptz,
+    CHECK ((status = 'failed') = (reason IS NOT NULL))
+);
+CREATE UNIQUE INDEX research_jobs_one_running_uq ON research_jobs ((true)) WHERE status = 'running';
+CREATE INDEX research_jobs_queue_idx ON research_jobs (created_at) WHERE status = 'queued';
+CREATE INDEX research_jobs_created_idx ON research_jobs (created_at);
+"""
+
 MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     (1, "init", SCHEMA_V1),
     (2, "runs_and_llm_calls", SCHEMA_V2),
     (3, "pains_and_history_source", SCHEMA_V3),
     (4, "search_query_per_company", SCHEMA_V4),
     (5, "test_sends", SCHEMA_V5),
+    (6, "whatsapp_research", SCHEMA_V6),
 )
 
 

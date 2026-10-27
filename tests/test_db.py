@@ -9,7 +9,7 @@ pytestmark = pytest.mark.db
 
 TABLES = {
     "companies", "contacts", "qualifications", "drafts", "contact_history", "do_not_contact",
-    "runs", "llm_calls",
+    "runs", "llm_calls", "test_sends", "research_jobs",
 }
 APPROVED = {"review_status": "approved", "approved_by": "owner", "approved_at": "2026-10-23T10:00:00+05:00"}
 
@@ -55,7 +55,7 @@ def conn(db_conn):
 def test_migrate_creates_all_tables(db_conn):
     applied = db.migrate(db_conn)
 
-    assert applied == [1, 2, 3, 4, 5]
+    assert applied == [1, 2, 3, 4, 5, 6]
     assert TABLES <= table_names(db_conn)
 
 

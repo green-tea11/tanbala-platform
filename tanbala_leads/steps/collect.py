@@ -164,12 +164,23 @@ def parse_item(item: dict) -> CompanyCard | None:
     )
 
 
-def _is_duplicate(conn: psycopg.Connection, card: CompanyCard) -> bool:
-    return conn.execute(
-        "SELECT EXISTS (SELECT 1 FROM companies WHERE (source = '2gis' AND source_id = %s)"
-        " OR website_domain = %s OR (cardinality(%s::text[]) > 0 AND phones && %s::text[]))",
+def find_duplicate(conn: psycopg.Connection, card: CompanyCard) -> int | None:
+    """id компании, которая уже есть в базе: тот же 2ГИС id, сайт или телефон."""
+    row = conn.execute(
+        "SELECT id FROM companies WHERE (source = '2gis' AND source_id = %s)"
+        " OR website_domain = %s OR (cardinality(%s::text[]) > 0 AND phones && %s::text[]) ORDER BY id LIMIT 1",
         (card.source_id, card.website_domain, list(card.phones), list(card.phones)),
-    ).fetchone()[0]
+    ).fetchone()
+    return row[0] if row else None
+
+
+def save_card(conn: psycopg.Connection, card: CompanyCard) -> int:
+    """Одна карточка 2ГИС: id уже известной компании или новой со статусом new."""
+    existing = find_duplicate(conn, card)
+    if existing is not None:
+        return existing
+    company_id = _insert(conn, card, None, None)
+    return company_id if company_id is not None else find_duplicate(conn, card)
 
 
 def _insert(conn: psycopg.Connection, card: CompanyCard, run_id: int | None, search_query: str | None) -> int | None:
@@ -201,7 +212,7 @@ def load_companies(conn: psycopg.Connection, export_path: Path, *, run_id: int |
     for card in cards:
         if limit is not None and len(new_ids) >= limit:
             break
-        company_id = None if _is_duplicate(conn, card) else _insert(conn, card, run_id, search_query)
+        company_id = None if find_duplicate(conn, card) is not None else _insert(conn, card, run_id, search_query)
         if company_id is None:
             duplicates += 1
         else:

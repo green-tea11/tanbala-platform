@@ -222,8 +222,8 @@ def _ids_with_status(conn: psycopg.Connection, company_ids: tuple[int, ...], sta
     return [company_id for (company_id,) in rows]
 
 
-def _usage_recorder(conn: psycopg.Connection, run_id: int, company_id: int, log_path: Path):
-    """Учёт токенов. Его сбой не должен выбросить уже оплаченный ответ модели."""
+def usage_recorder(conn: psycopg.Connection, run_id: int | None, company_id: int, log_path: Path):
+    """Учёт токенов. Его сбой не должен выбросить уже оплаченный ответ модели. run_id None: проверка из WhatsApp."""
 
     def record(usage: llm.LLMUsage) -> None:
         try:
@@ -239,9 +239,11 @@ def _usage_recorder(conn: psycopg.Connection, run_id: int, company_id: int, log_
 
 
 # Компании прошлых запусков, у которых шаг упал: дообрабатываем их в пределах лимита запуска.
+# Компании из WhatsApp сюда не попадают никогда: им не пишем (решение владельца).
 UNFINISHED_SQL = """
 SELECT c.id FROM companies c
 WHERE c.id <> ALL(%(exclude)s)
+  AND c.requested_via IS NULL
   AND NOT EXISTS (SELECT 1 FROM drafts d WHERE d.company_id = c.id)
   AND (
       c.status IN ('new', 'crawled')
@@ -327,7 +329,7 @@ def _steps(conn: psycopg.Connection, run_id: int, company_ids: tuple[int, ...], 
                          " last_error = 'Почта не найдена ни в 2ГИС, ни на сайте' WHERE id = %s", (cid,))
             return "rejected"
         answer = qualify.qualify_company(conn, cid, client=deps.client, owner_doc=deps.owner_doc,
-                                         on_usage=_usage_recorder(conn, run_id, cid, log_path))
+                                         on_usage=usage_recorder(conn, run_id, cid, log_path))
         return "rejected" if answer["fit"] == "no" else "qualified"
 
     _each(conn, run_id, _ids_with_status(conn, company_ids, "crawled"), do_qualify)
@@ -347,7 +349,7 @@ def _steps(conn: psycopg.Connection, run_id: int, company_ids: tuple[int, ...], 
 
     def do_draft(cid: int) -> str:
         draft.draft_first_email(conn, cid, client=deps.client, owner_doc=deps.owner_doc, settings=deps.settings,
-                                on_usage=_usage_recorder(conn, run_id, cid, log_path))
+                                on_usage=usage_recorder(conn, run_id, cid, log_path))
         return "drafted"
 
     _each(conn, run_id, _ids_with_status(conn, company_ids, "verified"), do_draft)
