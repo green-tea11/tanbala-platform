@@ -13,8 +13,10 @@ import psycopg
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
-from tanbala_leads.internal import lookup
+from tanbala_leads.internal import brief, lookup
 from tanbala_leads.internal.normalize import BadInput
+from tanbala_leads.web.format import parse_id
+from tanbala_leads.web.labels import MAX_DB_ID
 
 PREFIX = "/internal"
 TOKEN_HEADER = "X-Internal-Token"
@@ -64,6 +66,13 @@ def parse_lookup(domain: str | None = None, phone: str | None = None, name: str 
         raise InternalError(400, "bad_request") from exc
 
 
+def parse_company_id(company_id: str) -> int:
+    parsed = parse_id(company_id)
+    if parsed is None or not 1 <= parsed <= MAX_DB_ID:
+        raise InternalError(400, "bad_request")
+    return parsed
+
+
 def make_router(open_conn: Callable[[], AbstractContextManager[psycopg.Connection]], token: str | None) -> APIRouter:
     """Маршруты /internal/... Зависимость токена стоит на всём роутере и выполняется раньше остальных."""
 
@@ -81,5 +90,13 @@ def make_router(open_conn: Callable[[], AbstractContextManager[psycopg.Connectio
     def lookup_company(query: lookup.Query = Depends(parse_lookup),
                        conn: psycopg.Connection = Depends(get_conn)) -> dict:
         return {"candidates": lookup.find_candidates(conn, query)}
+
+    @router.get("/companies/{company_id}/brief")
+    def company_brief(company_id: int = Depends(parse_company_id),
+                      conn: psycopg.Connection = Depends(get_conn)) -> dict:
+        found = brief.company_brief(conn, company_id)
+        if found is None:
+            raise InternalError(404, "not_found")
+        return found
 
     return router
