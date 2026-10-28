@@ -80,6 +80,7 @@
         <span class="pill {{ letter.review_tone }}">{{ letter.review_label }}</span>
       </span>
     </header>
+    {{ lu.whatsapp_notice(letter.whatsapp_contacted_at) }}
 
     <section class="brief" aria-label="О компании">
       <div class="brief-score">

@@ -117,6 +117,9 @@ def make_router(open_conn: Callable[[], AbstractContextManager[psycopg.Connectio
         found = brief.company_brief(conn, company_id)
         if found is None:
             raise InternalError(404, "not_found")
+        # Бот просит справку, когда клиент подтвердил «да, это мы»: запоминаем, что клиент писал в WhatsApp.
+        # Справка внутри статуса research отметку не ставит: там клиент ещё ничего не подтверждал.
+        brief.mark_whatsapp_contact(conn, company_id)
         return found
 
     if queue is None:

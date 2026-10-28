@@ -176,6 +176,11 @@ def fmt_dt(value: datetime | None, now: datetime | None = None) -> str:
     return f"{local:%d.%m.%Y}, {clock}"
 
 
+def fmt_date(value: datetime | None) -> str:
+    """Дата по часам компьютера: «28.10.2026»."""
+    return value.astimezone().strftime("%d.%m.%Y") if value else "—"
+
+
 def safe_href(value: str | None) -> str | None:
     """Ссылка для href только http(s). javascript:, data: и прочее с чужих сайтов не пропускаем."""
     if not value:

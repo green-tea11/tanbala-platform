@@ -50,6 +50,12 @@ def _pains(raw: object) -> list[dict]:
     return pains[:MAX_PAINS]
 
 
+def mark_whatsapp_contact(conn: psycopg.Connection, company_id: int) -> None:
+    """Отметка «клиент писал в WhatsApp»: дата первого запроса справки, повторный запрос её не меняет."""
+    conn.execute("UPDATE companies SET whatsapp_contacted_at = now() WHERE id = %s AND whatsapp_contacted_at IS NULL",
+                 (company_id,))
+
+
 def company_brief(conn: psycopg.Connection, company_id: int) -> dict | None:
     """Справка по контракту или None, если компании нет."""
     with conn.cursor(row_factory=dict_row) as cursor:

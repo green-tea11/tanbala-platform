@@ -314,3 +314,39 @@ def test_email_subject_only_after_real_letter_not_after_test_send(api_db):
     result = brief(client, company_id)
     assert (result["emailed"], result["emailed_at"], result["email_subject"]) == (
         True, "2026-10-20T09:00:00+00:00", "Учёт склада")
+
+
+# ---------- отметка «клиент писал в WhatsApp» ----------
+
+
+def contacted_at(conn, company_id):
+    return conn.execute("SELECT whatsapp_contacted_at FROM companies WHERE id = %s", (company_id,)).fetchone()[0]
+
+
+@pytest.mark.db
+def test_brief_marks_whatsapp_contact_once(api_db):
+    conn, client = api_db
+    company_id = add_company(conn, "Платформа-А", domain="platforma.kz")
+    assert contacted_at(conn, company_id) is None
+
+    first = brief(client, company_id)
+    marked = contacted_at(conn, company_id)
+    assert marked is not None
+    conn.execute("UPDATE companies SET whatsapp_contacted_at = whatsapp_contacted_at - interval '2 days'"
+                 " WHERE id = %s", (company_id,))
+    earlier = contacted_at(conn, company_id)
+
+    assert brief(client, company_id) == first  # ответ прежний, нового поля нет
+    assert contacted_at(conn, company_id) == earlier  # повторный запрос дату не портит
+
+
+@pytest.mark.db
+def test_lookup_and_missing_brief_do_not_mark(api_db):
+    conn, client = api_db
+    company_id = add_company(conn, "Платформа-А", domain="platforma.kz", phones=["+77273551020"])
+
+    lookup(client, domain="platforma.kz", phone="87273551020", name="Платформа-А")
+    assert client.get("/internal/companies/999999/brief", headers=AUTH).status_code == 404
+    assert client.get(f"/internal/companies/{company_id}/brief").status_code == 401
+
+    assert contacted_at(conn, company_id) is None

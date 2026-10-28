@@ -18,6 +18,7 @@
 </div>
 
 {% if done_message %}<p class="notice pos" role="status">{{ done_message }}</p>{% endif %}
+{{ lu.whatsapp_notice(company.whatsapp_contacted_at) }}
 {% if company.last_error %}<p class="notice neg"><b>Ошибка на последнем шаге.</b> {{ company.last_error }}</p>{% endif %}
 
 <div class="detail">

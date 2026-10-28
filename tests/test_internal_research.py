@@ -450,3 +450,13 @@ def test_trailing_slash_is_not_redirected_before_token(path):
 
     assert client.get(path, follow_redirects=False).status_code == 401
     assert client.get(path, headers=AUTH, follow_redirects=False).status_code == 404
+
+
+@pytest.mark.db
+def test_research_status_brief_does_not_mark_whatsapp_contact(env):
+    client, _, _ = env.client()
+
+    company_id = status(client, post(client, {"name": "Аксенгер"})["job_id"])["company_id"]
+
+    assert env.conn.execute("SELECT whatsapp_contacted_at FROM companies WHERE id = %s",
+                            (company_id,)).fetchone()[0] is None

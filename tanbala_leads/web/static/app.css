@@ -110,6 +110,7 @@ a { color: inherit; text-decoration: none; }
 .notice { margin-bottom: 16px; padding: 10px 12px; border-radius: var(--radius-control); background: var(--pill-neutral-bg); color: var(--pill-neutral-ink); overflow-wrap: anywhere; }
 .notice.neg { background: var(--pill-negative-bg); color: var(--pill-negative-ink); }
 .notice.pos { background: var(--pill-positive-bg); color: var(--pill-positive-ink); }
+.notice.warn { background: var(--pill-warning-bg); color: var(--pill-warning-ink); box-shadow: inset 3px 0 0 var(--warning); }
 
 /* ---------- пилюли статусов: бледный тон и тёмный текст того же тона ---------- */
 .pill { display: inline-flex; flex: none; align-items: center; height: 22px; padding: 0 8px; border-radius: 999px; font-size: var(--fs-small); font-weight: 500; white-space: nowrap; background: var(--pill-neutral-bg); color: var(--pill-neutral-ink); }

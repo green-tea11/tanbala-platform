@@ -31,6 +31,13 @@
 </section>
 {% endmacro %}
 
+{# Клиент уже писал в WhatsApp: рассылку это не блокирует, решение при одобрении за владельцем. #}
+{% macro whatsapp_notice(contacted_at) %}
+{% if contacted_at %}
+<p class="notice warn whatsapp-notice" role="note"><b>Клиент уже писал в WhatsApp ({{ contacted_at|fmt_date }}).</b> Проверьте, нужно ли письмо.</p>
+{% endif %}
+{% endmacro %}
+
 {% macro notes_box(letter) %}
 {% if letter.notes %}
 <section class="notes-box" aria-labelledby="notes-title-{{ letter.id }}">

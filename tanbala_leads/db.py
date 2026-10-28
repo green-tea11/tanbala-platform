@@ -336,6 +336,13 @@ CREATE INDEX research_jobs_queue_idx ON research_jobs (created_at) WHERE status 
 CREATE INDEX research_jobs_created_idx ON research_jobs (created_at);
 """
 
+SCHEMA_V7 = """
+-- Клиент писал в WhatsApp: бот запрашивает справку (GET /internal/companies/{id}/brief) только после того,
+-- как клиент подтвердил «да, это мы». Дата первого такого запроса, повторные её не меняют.
+-- Рассылку отметка не блокирует: интерфейс показывает предупреждение, решение за владельцем при одобрении.
+ALTER TABLE companies ADD COLUMN whatsapp_contacted_at timestamptz;
+"""
+
 MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     (1, "init", SCHEMA_V1),
     (2, "runs_and_llm_calls", SCHEMA_V2),
@@ -343,6 +350,7 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     (4, "search_query_per_company", SCHEMA_V4),
     (5, "test_sends", SCHEMA_V5),
     (6, "whatsapp_research", SCHEMA_V6),
+    (7, "whatsapp_contacted_at", SCHEMA_V7),
 )
 
 

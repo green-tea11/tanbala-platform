@@ -42,6 +42,7 @@ from tanbala_leads.web import views
 from tanbala_leads.web.format import (
     Cost,
     decode_upload,
+    fmt_date,
     fmt_dt,
     fmt_int,
     format_usd,
@@ -100,7 +101,7 @@ def _make_templates() -> Jinja2Templates:
                       trim_blocks=True, lstrip_blocks=True)
     version = _static_version()
     env.globals["static"] = lambda name: f"/static/{name}?v={version}"
-    env.filters.update(fmt_int=fmt_int, fmt_dt=fmt_dt, plural=plural)
+    env.filters.update(fmt_int=fmt_int, fmt_dt=fmt_dt, fmt_date=fmt_date, plural=plural)
     return Jinja2Templates(env=env)
 
 

@@ -88,7 +88,7 @@ LETTER_SQL = f"""
 SELECT d.id, d.kind, d.subject, d.body, d.model, d.check_result, d.review_status, d.approved_by, d.approved_at,
        d.sent_at, d.created_at, d.updated_at,
        c.id AS company_id, c.name AS company_name, c.rubric, c.city, c.website, c.source_url, c.run_id,
-       c.search_query,
+       c.search_query, c.whatsapp_contacted_at,
        ct.email AS to_email, ct.verify_result, ct.is_catch_all, ct.is_role,
        q.score, q.fit, q.reason, q.segment, q.pains, {LETTER_BLOCKED} AS blocked
 {LETTER_FROM}
@@ -198,7 +198,7 @@ def fetch_company(conn, company_id: int) -> dict[str, Any] | None:
     return _row(conn, (
         "SELECT c.id, c.name, c.city, c.rubric, c.address, c.phones, c.website, c.website_domain, c.source_url,"
         " c.search_query,"
-        " c.branches_count, c.site_text, c.status, c.last_error, c.run_id, c.created_at,"
+        " c.branches_count, c.site_text, c.status, c.last_error, c.run_id, c.created_at, c.whatsapp_contacted_at,"
         f" {COMPANY_BLOCKED} AS blocked FROM companies c WHERE c.id = %s"), (company_id,))
 
 

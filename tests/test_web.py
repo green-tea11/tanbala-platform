@@ -1340,3 +1340,32 @@ def test_rejected_or_disabled_test_send_is_refused(web_db):
     assert refused.status_code == 409 and "Тестовая отправка выключена" in refused.text
     assert sender.calls == []
     assert client.post("/drafts/999999/send-test", data={"csrf_token": TOKEN}).status_code == 404
+
+
+# ---------- клиент писал в WhatsApp ----------
+
+CONTACTED_AT = datetime(2026, 10, 28, 12, 0, tzinfo=UTC)
+
+
+def test_whatsapp_date_is_shown_as_day_month_year():
+    assert fmt.fmt_date(CONTACTED_AT) == CONTACTED_AT.astimezone().strftime("%d.%m.%Y")
+    assert fmt.fmt_date(None) == "—"
+
+
+@pytest.mark.db
+def test_whatsapp_contact_warning_on_letter_page_and_company_card(web_db):
+    conn, connect, _ = web_db
+    company_id, _, draft_id = full_company(conn)
+    client = make_client(connect)
+    assert "писал в WhatsApp" not in client.get(f"/companies/{company_id}").text
+    assert "писал в WhatsApp" not in client.get(f"/letters/{draft_id}").text
+
+    conn.execute("UPDATE companies SET whatsapp_contacted_at = %s WHERE id = %s", (CONTACTED_AT, company_id))
+
+    card = client.get(f"/companies/{company_id}").text
+    letter = client.get(f"/letters/{draft_id}").text
+    # Дата по часам компьютера, как остальные даты интерфейса.
+    notice = f"<b>Клиент уже писал в WhatsApp ({fmt.fmt_date(CONTACTED_AT)}).</b> Проверьте, нужно ли письмо."
+    assert notice in card and notice in letter
+    # Рассылку отметка не блокирует: решение при одобрении за владельцем.
+    assert f'action="/drafts/{draft_id}/approve"' in card and f'action="/drafts/{draft_id}/approve"' in letter
