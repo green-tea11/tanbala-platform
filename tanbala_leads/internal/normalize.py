@@ -29,6 +29,8 @@ def _checked(value: str, limit: int) -> str:
     text = value.strip()
     if len(text) > limit:
         raise BadInput(f"длиннее {limit} символов")
+    if "\x00" in text:  # Postgres не хранит NUL: без проверки ответ был бы 503, а не 400
+        raise BadInput("символ NUL")
     return text
 
 

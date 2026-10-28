@@ -1,4 +1,4 @@
-"""Access-лог uvicorn: у путей /internal/... нет строки запроса, номера клиентов бота в лог не попадают."""
+"""Access-лог uvicorn: строки запроса в нём нет, номера и названия от клиентов бота в лог не попадают."""
 
 import io
 import logging
@@ -14,7 +14,7 @@ import uvicorn
 
 from tanbala_leads.web import app as web
 from tanbala_leads.web import create_app
-from tanbala_leads.web.internal import HideInternalQuery
+from tanbala_leads.web.internal import HideQuery
 
 PHONE = "77001234567"
 ACCESS_FORMAT = '%s - "%s %s HTTP/%s" %d'  # как пишет uvicorn (protocols/http/h11_impl.py)
@@ -31,21 +31,38 @@ def access_record(path: str) -> logging.LogRecord:
     ("/internal?phone=1", "/internal"),
     (f"//internal/lookup?phone={PHONE}", "//internal/lookup"),
     ("/internal/research/3f2c9e0a-0000-4000-8000-000000000000", "/internal/research/3f2c9e0a-0000-4000-8000-000000000000"),
-    ("/companies?q=склад", "/companies?q=склад"),
-    ("/internalx?phone=1", "/internalx?phone=1"),
+    ("/companies/12?done=whatsapp_cleared", "/companies/12"),
+    ("/static/app.css?v=1", "/static/app.css"),
+    # Клиент бота ошибся в адресе: данные в самом пути тоже не пишутся.
+    (f"/INTERNAL/lookup?phone={PHONE}", "/INTERNAL/lookup"),
+    (f"/./internal/lookup?phone={PHONE}", "/./internal/lookup"),
+    (f"http://127.0.0.1:8000/internal/lookup?phone={PHONE}", "http://127.0.0.1:8000/internal/lookup"),
+    (f"/internal/lookup%3Fphone%3D{PHONE}", "/internal/lookup"),
+    (f"/internal/lookup%253Fphone%253D{PHONE}", "/internal/lookup"),
+    (f"/internal/lookup;phone={PHONE}", "/internal/lookup"),
+    (f"/internal/lookup/{PHONE}", "/internal/lookup/[скрыто]"),
 ])
-def test_query_of_internal_paths_is_dropped(path, logged):
+def test_query_and_client_data_are_dropped(path, logged):
     record = access_record(path)
 
-    assert HideInternalQuery().filter(record) is True
+    assert HideQuery().filter(record) is True
     assert record.getMessage() == f'127.0.0.1:50000 - "GET {logged} HTTP/1.1" 200'
 
 
-def test_other_records_are_kept_as_is():
-    record = logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1, "%s %s", ("a", f"?phone={PHONE}"), None)
+def test_record_of_unknown_shape_loses_query_too():
+    """Если uvicorn поменяет аргументы строки доступа, строка запроса всё равно вырезается из текста."""
+    record = logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1, '%s "GET %s"',
+                               ("127.0.0.1", f"/internal/lookup?phone={PHONE}&name=Рахат"), None)
 
-    assert HideInternalQuery().filter(record) is True
-    assert record.args == ("a", f"?phone={PHONE}")
+    assert HideQuery().filter(record) is True
+    assert record.getMessage() == '127.0.0.1 "GET /internal/lookup"'
+
+
+def test_log_config_shows_app_info_lines():
+    config = web.log_config()
+
+    assert config["loggers"]["uvicorn.access"]["filters"] == ["hide_query"]
+    assert config["loggers"]["tanbala_leads"]["level"] == "INFO"
 
 
 @pytest.fixture
@@ -64,6 +81,7 @@ def live_server():
     deadline = time.monotonic() + 10
     while not server.started and time.monotonic() < deadline:
         time.sleep(0.05)
+    assert server.started, "uvicorn не запустился за 10 с"
     yield f"http://127.0.0.1:{port}", buffer
     server.should_exit = True
     thread.join(10)
@@ -89,4 +107,4 @@ def test_live_server_does_not_log_client_phone(live_server):
     log = buffer.getvalue()
     assert '"GET /internal/lookup HTTP/1.1" 401' in log
     assert PHONE not in log and "name=" not in log
-    assert '"GET /static/app.css?v=1 HTTP/1.1" 200' in log
+    assert '"GET /static/app.css HTTP/1.1" 200' in log and "v=1" not in log

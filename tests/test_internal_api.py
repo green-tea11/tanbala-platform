@@ -54,7 +54,7 @@ def test_wrong_method_and_unknown_path_with_token():
 
 
 @pytest.mark.parametrize("query", ["", "?domain=&phone=%20&name=", "?phone=12345", "?domain=com.kz", "?name=ТОО",
-                                   "?name=" + "я" * 201])
+                                   "?name=" + "я" * 201, "?name=Рахат%00", "?domain=sklad.kz%00"])
 def test_bad_lookup_is_400_before_database(query):
     response = make_client().get("/internal/lookup" + query, headers=AUTH)
 

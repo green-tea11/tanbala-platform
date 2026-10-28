@@ -1,5 +1,6 @@
 """Веб-интерфейс: страницы, экранирование чужого текста, CSRF и Host, запуск поиска, одобрение писем, расходы."""
 
+import logging
 import os
 import re
 from datetime import UTC, datetime
@@ -1372,8 +1373,9 @@ def test_whatsapp_contact_warning_on_letter_page_and_company_card(web_db):
 
 
 @pytest.mark.db
-def test_clear_whatsapp_marks_removes_warning_and_returns_company_to_mailing(web_db):
+def test_clear_whatsapp_marks_removes_warning_and_returns_company_to_mailing(web_db, caplog):
     conn, connect, opened = web_db
+    caplog.set_level(logging.INFO, logger="tanbala_leads")
     company_id = seed_company(conn, "ТОО «Рахат»", status="qualified")
     seed_contact(conn, company_id, "info@rahat.example.kz", verify_result=None)
     conn.execute("UPDATE companies SET requested_via = 'whatsapp', whatsapp_contacted_at = %s WHERE id = %s",
@@ -1402,6 +1404,8 @@ def test_clear_whatsapp_marks_removes_warning_and_returns_company_to_mailing(web
     assert "Отметки WhatsApp сняты" in card
     assert "проверка из WhatsApp" not in card and "Клиент уже писал в WhatsApp" not in card and action not in card
     assert pipeline._unfinished(conn, (), 10) == (company_id,)
+    # Кто и когда снял: строка в логе сервера (log_config выводит INFO приложения).
+    assert f"Компания {company_id}: отметки WhatsApp сняты кнопкой в карточке" in caplog.text
     assert all(c.closed for c in opened)
 
 

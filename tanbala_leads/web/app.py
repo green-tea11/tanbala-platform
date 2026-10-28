@@ -520,10 +520,14 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
 
 
 def log_config() -> dict[str, Any]:
-    """Логи uvicorn как по умолчанию, но у путей /internal/... в access-логе нет строки запроса."""
+    """Логи uvicorn как по умолчанию, но в access-логе нет строки запроса (телефоны клиентов бота).
+
+    Логи приложения от INFO идут туда же, куда ошибки uvicorn: например, кто снял отметку WhatsApp.
+    """
     config = copy.deepcopy(uvicorn.config.LOGGING_CONFIG)
-    config["filters"] = {"hide_internal_query": {"()": internal.HideInternalQuery}}
-    config["loggers"]["uvicorn.access"]["filters"] = ["hide_internal_query"]
+    config["filters"] = {"hide_query": {"()": internal.HideQuery}}
+    config["loggers"]["uvicorn.access"]["filters"] = ["hide_query"]
+    config["loggers"]["tanbala_leads"] = {"handlers": ["default"], "level": "INFO", "propagate": False}
     return config
 
 

@@ -3,7 +3,7 @@
 Контракт: ..\\D-Email+WhatsApp\\contract\\INTERNAL_API.md. Слушает только 127.0.0.1, как весь интерфейс.
 Токен X-Internal-Token проверяется первым: без него 401 на любой путь /internal/..., даже несуществующий.
 Ответы JSON, ошибки {"error": код}. Вход разбирается до соединения с базой: неверный запрос даёт 400, а не 503.
-В access-лог путь /internal/... попадает без строки запроса: в ней телефоны, почты и названия от клиентов бота.
+В access-лог строка запроса не попадает (HideQuery): в ней телефоны, почты и названия от клиентов бота.
 """
 
 import hmac
@@ -30,6 +30,11 @@ MAX_BODY_BYTES = 4096
 STATUS_CODES = {401: "unauthorized", 404: "not_found", 503: "db_unavailable"}
 # Строка access-лога uvicorn: '%s - "%s %s HTTP/%s" %d', путь третий.
 ACCESS_LOG_ARGS = 5
+# Путь, похожий на /internal (в любом регистре, с //, ./ или http://хост), пишется только до первого символа
+# не из этого набора: %3F, ;, пробел и прочее, чем клиент бота мог бы протащить данные в сам путь.
+LOG_SAFE_PATH_RE = re.compile(r"[A-Za-z0-9/_.:-]*")
+LOG_PHONE_RE = re.compile(r"(?<![\w-])\d{10,}(?!\w)")  # телефон прямо в пути, но не кусок job_id (UUID)
+LOG_QUERY_RE = re.compile(r"\?[^\s\"]*")
 
 
 class InternalError(Exception):
@@ -49,20 +54,28 @@ def is_internal(request: Request) -> bool:
     return is_internal_path(request.url.path)
 
 
-class HideInternalQuery(logging.Filter):
-    """Фильтр логгера uvicorn.access: у путей /internal/... строка запроса не пишется (?phone=… → ничего).
+def log_path(path: str) -> str:
+    """Путь для access-лога: без строки запроса; похожий на /internal ещё и без подозрительного хвоста."""
+    path = path.split("?", 1)[0]
+    if "internal" not in path.lower():
+        return path
+    return LOG_PHONE_RE.sub("[скрыто]", LOG_SAFE_PATH_RE.match(path).group())
+
+
+class HideQuery(logging.Filter):
+    """Фильтр логгера uvicorn.access: строка запроса не пишется ни у одного пути (?phone=… → ничего).
 
     uvicorn пишет строку доступа с аргументами (адрес, метод, путь со строкой запроса, версия HTTP, статус).
-    Другие пути и записи не трогаются. Запись не отбрасывается.
+    Если новая версия uvicorn пишет иначе, из готового текста вырезается всё от «?» до пробела.
+    Запись не отбрасывается.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
         args = record.args
         if isinstance(args, tuple) and len(args) == ACCESS_LOG_ARGS and isinstance(args[2], str):
-            path = args[2].split("?", 1)[0]
-            # //internal/... uvicorn тоже пишет как есть: в логе не должно остаться и его телефона.
-            if path != args[2] and is_internal_path(re.sub("/{2,}", "/", path)):
-                record.args = (*args[:2], path, *args[3:])
+            record.args = (*args[:2], log_path(args[2]), *args[3:])
+        else:
+            record.msg, record.args = LOG_QUERY_RE.sub("", record.getMessage()), ()
         return True
 
 

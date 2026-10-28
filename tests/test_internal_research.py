@@ -137,7 +137,7 @@ def make_client_without_db():
     "", "not json", "[]", '"name"', "{}", '{"name": ""}', '{"name": 5}', '{"name": "ТОО"}',
     '{"name": "Платформа-А", "phone": "123"}', '{"name": "Платформа-А", "domain": "com.kz"}',
     '{"name": "Платформа-А", "city": 5}', '{"name": "Платформа-А", "city": "' + "x" * 101 + '"}',
-    '{"name": "' + "a" * 5000 + '"}',
+    '{"name": "' + "a" * 5000 + '"}', '{"name": "Рахат\\u0000"}', '{"name": "Рахат", "phone": "7700\\u00001234567"}',
 ])
 def test_bad_research_request_is_400_before_database(body):
     response = make_client_without_db().post("/internal/research", content=body.encode(),
@@ -320,15 +320,18 @@ def test_budget_is_429_before_job_and_failed_if_it_ran_out_in_queue(env):
 
 
 @pytest.mark.db
-def test_parser_failure_is_failed_error(env):
+def test_parser_failure_is_failed_error(env, caplog):
     from tanbala_leads.steps.collect import ParserError
 
-    client, _, _ = env.client(deps=make_deps(env.tmp_path, parser=FakeParser(error=ParserError("Chrome упал"))))
+    error = ParserError("Chrome упал на https://2gis.kz/almaty/search/Аксенгер")
+    client, _, _ = env.client(deps=make_deps(env.tmp_path, parser=FakeParser(error=error)))
 
     result = status(client, post(client, {"name": "Аксенгер"})["job_id"])
 
     assert (result["status"], result["reason"]) == ("failed", "error")
     assert "Chrome упал" in env.conn.execute("SELECT error FROM research_jobs").fetchone()[0]
+    # В лог сервера только номер задачи и вид ошибки: название компании от клиента бота туда не идёт.
+    assert "ParserError" in caplog.text and "Аксенгер" not in caplog.text
 
 
 @pytest.mark.db

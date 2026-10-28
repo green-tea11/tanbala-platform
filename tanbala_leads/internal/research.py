@@ -267,7 +267,10 @@ def run_job(conn: psycopg.Connection, job: dict, deps: pipeline.Deps, budget_usd
                                     on_usage=pipeline.usage_recorder(conn, None, company_id, deps.log_path))
         _finish(conn, job_id, company_id=company_id)
     except Exception as exc:  # noqa: BLE001  любая ошибка задачи видна боту как failed / error
-        logger.exception("Проверка из WhatsApp %s упала", job_id)
+        # Без traceback: в тексте ошибки parser-2gis ссылка с названием компании от клиента бота.
+        # Подробности в research_jobs.error, наружу они не отдаются.
+        logger.error("Проверка из WhatsApp %s упала: %s, подробности в research_jobs.error", job_id,
+                     type(exc).__name__)
         _finish(conn, job_id, reason="error", error=pipeline.safe_error(exc))
 
 
