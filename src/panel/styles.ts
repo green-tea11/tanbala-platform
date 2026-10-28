@@ -164,6 +164,11 @@ th {
   overflow-wrap: anywhere;
 }
 
+.pains {
+  margin: 0;
+  padding-left: 1.2em;
+}
+
 .messages {
   display: flex;
   flex-direction: column;

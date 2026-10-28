@@ -10,8 +10,9 @@ import { createHandoffsRepo } from '../../../src/db/repos/handoffs.js';
 import { createManagerNotificationsRepo } from '../../../src/db/repos/manager-notifications.js';
 import { createMessagesRepo } from '../../../src/db/repos/messages.js';
 import { createOutboundIdsRepo } from '../../../src/db/repos/outbound-ids.js';
-import type { Clock, LlmClient, Logger } from '../../../src/domain/ports.js';
-import type { InboundMessage, Jid, WaMessageId } from '../../../src/domain/types.js';
+import type { CompanyService, CompanySummary, CompanyTurn } from '../../../src/domain/company.js';
+import type { Clock, ImageInput, LlmClient, Logger } from '../../../src/domain/ports.js';
+import type { ChatId, InboundMessage, Jid, WaMessageId } from '../../../src/domain/types.js';
 import {
   assembleResponder,
   NO_CLAUDE_KEY_WARNING,
@@ -82,6 +83,39 @@ function configWith(env: Readonly<Record<string, string>>): AppConfig {
 /** LLM отвечает по назначению вызова в форме схем агента: черновик answer, проверка пройдена, клиент холодный. */
 const ANSWERING_LLM: LlmClient = scriptedLlm({ replies: [REPLY] }).llm;
 
+/** Определение компании выключено: так сервис отвечает без INTERNAL_API_TOKEN. */
+const OFF_TURN: CompanyTurn = { prompt: { kind: 'off' }, awaitingAnswer: false };
+
+const OFF_SUMMARY: CompanySummary = {
+  status: 'off',
+  companyId: null,
+  name: null,
+  city: null,
+  rubric: null,
+  candidateSource: null,
+  cardUrl: null,
+  confirmedPains: [],
+  briefPains: [],
+  emailed: null,
+  research: null,
+  statedName: null,
+};
+
+/** Поддельный сервис компании: выключен (блок off), вызовы видны тесту. */
+type CompanyFake = { readonly [K in keyof CompanyService]: Mock<CompanyService[K]> };
+
+function companyOff(): CompanyFake {
+  return {
+    prepare: vi.fn<CompanyService['prepare']>(() => Promise.resolve(OFF_TURN)),
+    applyAssessment: vi.fn<CompanyService['applyAssessment']>(() =>
+      Promise.resolve(OFF_TURN.prompt),
+    ),
+    markAsked: vi.fn<CompanyService['markAsked']>(),
+    identifyAfterReply: vi.fn<CompanyService['identifyAfterReply']>(() => Promise.resolve()),
+    summary: vi.fn<CompanyService['summary']>(() => OFF_SUMMARY),
+  };
+}
+
 /** Всё хранилище на одной базе в памяти: для ответов и для общих служб этапа 5. */
 type Storage = ResponderStorage & ServicesStorage;
 
@@ -100,8 +134,13 @@ function storageOf(config: AppConfig): Storage {
 }
 
 /** Общие службы на том же хранилище; отправляют они через подключение, которое тест передаёт в connect. */
-function servicesOf(config: AppConfig, storage: Storage, logger: Logger): Services {
-  return assembleServices({ config, logger, clock: CLOCK, storage });
+function servicesOf(
+  config: AppConfig,
+  storage: Storage,
+  logger: Logger,
+  company: CompanyFake = companyOff(),
+): Services {
+  return assembleServices({ config, logger, clock: CLOCK, storage, company });
 }
 
 /** Входящее клиента, уже записанное в базу, как это делает pipeline/recorder.ts. */
@@ -155,6 +194,7 @@ describe('pipeline/responder-setup', () => {
       clock: CLOCK,
       storage,
       services: servicesOf(config, storage, logger),
+      company: companyOff(),
     });
 
     expect(responder).toBeNull();
@@ -173,6 +213,7 @@ describe('pipeline/responder-setup', () => {
       clock: CLOCK,
       storage,
       services,
+      company: companyOff(),
       createLlm: () => ANSWERING_LLM,
     });
     if (responder === null) throw new Error('ответы не собраны');
@@ -209,6 +250,7 @@ describe('pipeline/responder-setup', () => {
       clock: CLOCK,
       storage,
       services,
+      company: companyOff(),
       createLlm: () => llm.llm,
     });
     if (responder === null) throw new Error('ответы не собраны');
@@ -249,6 +291,7 @@ describe('pipeline/responder-setup', () => {
       clock: CLOCK,
       storage,
       services,
+      company: companyOff(),
       createLlm: () => scriptedLlm({ replies: [{ outcome: 'hot', text: HOT_REPLY }] }).llm,
     });
     if (responder === null) throw new Error('ответы не собраны');
@@ -291,6 +334,7 @@ describe('pipeline/responder-setup', () => {
       clock: CLOCK,
       storage,
       services: servicesOf(config, storage, logger),
+      company: companyOff(),
       createLlm: () => ANSWERING_LLM,
     });
     responder?.connect(connection().link);
@@ -298,5 +342,62 @@ describe('pipeline/responder-setup', () => {
     expect(entries).toContainEqual(
       expect.objectContaining({ level: 'info', context: { voice: true } }),
     );
+  });
+
+  it('конвейер ходит в сервис компании из context.company: блок перед ответом, поиск после него', async () => {
+    const config = configWith({ VENMART_ANTHROPIC_KEY: 'sk-test-not-a-real-key' });
+    const logger = createLogger([]);
+    const storage = storageOf(config);
+    const company = companyOff();
+    const services = servicesOf(config, storage, logger, company);
+    const responder = await assembleResponder({
+      config,
+      logger,
+      clock: CLOCK,
+      storage,
+      services,
+      company,
+      createLlm: () => ANSWERING_LLM,
+    });
+    if (responder === null) throw new Error('ответы не собраны');
+    const { link, sendText } = connection();
+    services.connect(link);
+    responder.connect(link);
+    const message = recorded(storage, 'WA-1');
+    const chat = storage.chats.findByJid(JID);
+    if (chat === null) throw new Error('чат не записан');
+
+    responder.batcher.push(chat.id, message);
+    await vi.waitFor(() => expect(company.identifyAfterReply).toHaveBeenCalledTimes(1));
+    await responder.batcher.drain();
+
+    expect(sendText).toHaveBeenCalledWith(JID, REPLY, 'OUT-1');
+    expect(company.prepare).toHaveBeenCalledWith(expect.objectContaining({ id: chat.id }), [
+      message,
+    ]);
+    expect(company.markAsked).toHaveBeenCalledWith(chat.id, 'none');
+  });
+
+  it('агент наружу как logo: название с логотипа читает модель logo', async () => {
+    const config = configWith({ VENMART_ANTHROPIC_KEY: 'sk-test-not-a-real-key' });
+    const logger = createLogger([]);
+    const storage = storageOf(config);
+    const llm = scriptedLlm({ replies: [REPLY] });
+    const responder = await assembleResponder({
+      config,
+      logger,
+      clock: CLOCK,
+      storage,
+      services: servicesOf(config, storage, logger),
+      company: companyOff(),
+      createLlm: () => llm.llm,
+    });
+    const photo: ImageInput = { data: new Uint8Array([1, 2, 3]), mimeType: 'image/png' };
+
+    const read = await responder?.logo.readLogo(3 as ChatId, photo);
+
+    expect(read).toEqual({ ok: true, value: null });
+    expect(llm.purposes()).toEqual(['logo']);
+    expect(llm.requests[0]?.chatId).toBe(3);
   });
 });

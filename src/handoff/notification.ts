@@ -1,3 +1,4 @@
+import type { CompanySummary } from '../domain/company.js';
 import type {
   BacklogChat,
   BudgetScope,
@@ -23,6 +24,11 @@ export type ManagerNotificationInput = NotificationReason & {
   readonly profile: ClientProfile;
   /** ID чата в панели. */
   readonly chatId: ChatId;
+  /**
+   * Что известно о компании клиента: строки после выжимки, только при передаче. Нет поля или null: строк о компании
+   * нет. Уведомление о лимите их не получает никогда.
+   */
+  readonly company?: CompanySummary | null;
 };
 
 /** Длина имени из профиля в уведомлении, в символах Unicode. */
@@ -30,6 +36,15 @@ export const NAME_MAX_LENGTH = 50;
 
 /** Длина каждого поля выжимки в уведомлении: столько же оставляет оценка интереса. */
 export const PROFILE_FIELD_MAX_LENGTH = 200;
+
+/** Длина названия и города компании в уведомлении, в символах Unicode. */
+export const COMPANY_FIELD_MAX_LENGTH = 100;
+
+/** Длина одной подтверждённой боли в уведомлении, в символах Unicode. */
+export const PAIN_MAX_LENGTH = 150;
+
+/** Сколько подтверждённых болей идёт в уведомление: столько хранит состояние чата. */
+export const PAINS_MAX_COUNT = 5;
 
 /** Общий предел текста со списком простоя: лишние чаты сворачиваются в одну строку. */
 export const BACKLOG_TEXT_MAX_LENGTH = 3_000;
@@ -48,6 +63,10 @@ const NO_NAME_IN_LIST = 'без имени';
 const HIDDEN_PHONE = 'номер скрыт';
 const UNKNOWN_TIME = 'время неизвестно';
 const ALMATY_ZONE = 'Asia/Almaty';
+const PAIN_SEPARATOR = '; ';
+
+/** Ссылка на карточку компании идёт в уведомление только с этими протоколами. */
+const WEB_PROTOCOLS: ReadonlySet<string> = new Set(['http:', 'https:']);
 
 /** Пробелы всех видов и переводы строк (в том числе NEL, U+2028 и U+2029), кроме которых ничего не склеивается. */
 const SPACES_AND_BREAKS = /[\s\u0085]+/gu;
@@ -102,11 +121,13 @@ const PROFILE_FIELDS: readonly ProfileField[] = [
  * Чистая функция, без LLM. Фиксированный шаблон: первая строка с причиной, затем имя, номер, ID чата в панели,
  * уровень и семь полей выжимки с пометкой «всё со слов клиента». Нет номера: «номер скрыт» и ID чата, по которому
  * чат ищут в панели. Лимит (reason 'limit'): «бот замолчал в этом чате» с названием настройки, ID чата и номер те же.
- * Имя и каждое поле выжимки недоверенные (клиент или модель): одной строкой (переводы строк, управляющие и
- * невидимые символы убираются), без ссылок, с лимитом длины, поэтому подделать строки шаблона или доставить
- * менеджеру ссылку нельзя.
+ * При передаче (не лимит) с данными о компании после выжимки и пустой строки идёт блок о компании (companyLines).
+ * Имя, каждое поле выжимки и тексты о компании недоверенные (клиент, модель, сайты и 2ГИС): одной строкой (переводы
+ * строк, управляющие и невидимые символы убираются), без ссылок, с лимитом длины, поэтому подделать строки шаблона
+ * или доставить менеджеру чужую ссылку нельзя.
  */
 export function formatManagerNotification(input: ManagerNotificationInput): string {
+  const company = input.reason === 'limit' ? null : (input.company ?? null);
   return [
     headline(input),
     `Имя в WhatsApp: ${knownOr(input.name, NAME_MAX_LENGTH, NO_NAME)}`,
@@ -119,6 +140,7 @@ export function formatManagerNotification(input: ManagerNotificationInput): stri
       ([label, value]) =>
         `${label}: ${knownOr(value(input.profile), PROFILE_FIELD_MAX_LENGTH, NOT_KNOWN)}`,
     ),
+    ...(company === null ? [] : ['', ...companyLines(company)]),
   ].join('\n');
 }
 
@@ -147,6 +169,52 @@ export function formatBacklogNotification(
   const hidden = entries.length - shown;
   const tail = hidden === 0 ? [] : [hiddenChatsLine(hidden)];
   return [...head, '', ...entries.slice(0, shown), ...tail].join('\n');
+}
+
+/**
+ * Блок о компании клиента: подтверждена, кандидат или не определена (с названием со слов клиента, если оно есть),
+ * затем ссылка на карточку в почтовом проекте и боли, которые клиент подтвердил. Город пропускается, если его нет.
+ * Ссылка своя (адрес EMAIL_UI_URL и числовой ID) и идёт без замены, но только с протоколом http или https.
+ */
+function companyLines(summary: CompanySummary): readonly string[] {
+  const card = cardLink(summary.cardUrl);
+  const pains = summary.confirmedPains
+    .slice(0, PAINS_MAX_COUNT)
+    .map((pain) => oneLine(pain, PAIN_MAX_LENGTH))
+    .filter((pain) => pain !== '');
+  return [
+    `Компания: ${companyWords(summary)}`,
+    ...(card === null ? [] : [`Карточка: ${card}`]),
+    ...(pains.length === 0 ? [] : [`Подтверждённые боли: ${pains.join(PAIN_SEPARATOR)}`]),
+  ];
+}
+
+/** Кто компания клиента. Кандидат или подтверждённая без названия после очистки считаются неопределёнными. */
+function companyWords(summary: CompanySummary): string {
+  const name = companyField(summary.name);
+  const place = `«${name}»${cityPart(summary.city)}`;
+  if (name !== '' && summary.status === 'confirmed') return `${place} (клиент подтвердил)`;
+  if (name !== '' && summary.status === 'candidate') {
+    return `возможно ${place} (клиент не подтвердил)`;
+  }
+  const stated = companyField(summary.statedName);
+  return stated === '' ? 'не определена' : `не определена, клиент назвал «${stated}»`;
+}
+
+function cityPart(city: string | null): string {
+  const line = companyField(city);
+  return line === '' ? '' : `, ${line}`;
+}
+
+function companyField(value: string | null): string {
+  return value === null ? '' : oneLine(value, COMPANY_FIELD_MAX_LENGTH);
+}
+
+/** Ссылка на карточку в разобранном виде (без пробелов и переводов строк) или null, если это не http и не https. */
+function cardLink(url: string | null): string | null {
+  if (url === null || !URL.canParse(url)) return null;
+  const parsed = new URL(url);
+  return WEB_PROTOCOLS.has(parsed.protocol) ? parsed.href : null;
 }
 
 function headline(input: NotificationReason): string {

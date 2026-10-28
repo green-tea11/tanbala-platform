@@ -7,6 +7,7 @@ import { createHandoffsRepo } from '../../../src/db/repos/handoffs.js';
 import { createManagerNotificationsRepo } from '../../../src/db/repos/manager-notifications.js';
 import { createMessagesRepo } from '../../../src/db/repos/messages.js';
 import { createOutboundIdsRepo } from '../../../src/db/repos/outbound-ids.js';
+import type { CompanyId, CompanyService, CompanySummary } from '../../../src/domain/company.js';
 import type { Clock, Logger, MessageSender } from '../../../src/domain/ports.js';
 import type {
   Chat,
@@ -44,6 +45,22 @@ const CLOCK: Clock = { now: () => Date.now(), sleep: () => Promise.resolve() };
 
 type SendText = MessageSender['sendText'];
 
+/** Сводка о компании, которую сервис компании отдал бы по подтверждённой компании клиента. */
+const CONFIRMED_SUMMARY: CompanySummary = {
+  status: 'confirmed',
+  companyId: 42 as CompanyId,
+  name: 'ТОО Склад',
+  city: 'Алматы',
+  rubric: 'Склады',
+  candidateSource: null,
+  cardUrl: 'https://mail.example.kz/companies/42',
+  confirmedPains: ['Пересорт при отгрузке'],
+  briefPains: [],
+  emailed: false,
+  research: null,
+  statedName: null,
+};
+
 interface Harness {
   readonly db: Database.Database;
   readonly storage: ServicesStorage;
@@ -52,6 +69,7 @@ interface Harness {
   readonly connection: MessageSender;
   readonly logs: { readonly level: string; readonly context: unknown }[];
   readonly chat: Chat;
+  readonly summary: Mock<CompanyService['summary']>;
 }
 
 function createLogger(logs: Harness['logs']): Logger {
@@ -86,7 +104,14 @@ function setup(config: ServicesConfig = CONFIG): Harness {
     unitOfWork: createUnitOfWork(db),
   };
   const logs: Harness['logs'] = [];
-  const services = assembleServices({ config, logger: createLogger(logs), clock: CLOCK, storage });
+  const summary = vi.fn<CompanyService['summary']>(() => CONFIRMED_SUMMARY);
+  const services = assembleServices({
+    config,
+    logger: createLogger(logs),
+    clock: CLOCK,
+    storage,
+    company: { summary },
+  });
   onTestFinished(async () => {
     await services.stop();
   });
@@ -102,7 +127,7 @@ function setup(config: ServicesConfig = CONFIG): Harness {
     'Клиент',
     T0,
   );
-  return { db, storage, services, sendText, connection, logs, chat };
+  return { db, storage, services, sendText, connection, logs, chat, summary };
 }
 
 /** Передача, после которой менеджеру уходит уведомление (лимит: фразы клиенту нет). */
@@ -248,6 +273,27 @@ describe('pipeline/services: подключение появляется поз�
 
     expect(h.sendText.mock.calls.map(([jid]) => jid)).toEqual([MANAGER_JID, CLIENT_JID]);
     expect(h.storage.handoffs.findOpen(h.chat.id)).toMatchObject({ reason: 'hot' });
+  });
+
+  it('сервис передачи берёт компанию клиента из общего сервиса компании: она в уведомлении менеджеру', async () => {
+    const h = setup();
+    h.services.connect(h.connection);
+    const waId = 'IN-1' as WaMessageId;
+    h.storage.messages.insertIfNew({
+      chatId: h.chat.id,
+      waId,
+      author: 'client',
+      kind: 'text',
+      text: 'Позовите человека',
+      tsMs: T0,
+    });
+
+    await h.services.handoff.handOff(h.chat.id, { reason: 'asked_human', replyToWaId: waId });
+
+    expect(h.summary).toHaveBeenCalledWith(h.chat.id);
+    const [jid, text] = h.sendText.mock.calls[0] ?? [];
+    expect(jid).toBe(MANAGER_JID);
+    expect(text).toContain('ТОО Склад');
   });
 });
 

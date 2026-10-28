@@ -1,5 +1,6 @@
 import type { FastifyInstance, LightMyRequestResponse } from 'fastify';
 import { vi, type Mock } from 'vitest';
+import type { CompanyService, CompanySummary } from '../../../src/domain/company.js';
 import type {
   ChatsRepo,
   Clock,
@@ -38,6 +39,22 @@ export const EMPTY_PROFILE: ClientProfile = {
   has1C: null,
   problem: null,
   specifics: null,
+};
+
+/** Сводка выключенной функции определения компании: так панель работает по умолчанию в тестах. */
+export const OFF_COMPANY: CompanySummary = {
+  status: 'off',
+  companyId: null,
+  name: null,
+  city: null,
+  rubric: null,
+  candidateSource: null,
+  cardUrl: null,
+  confirmedPains: [],
+  briefPains: [],
+  emailed: null,
+  research: null,
+  statedName: null,
 };
 
 export function chatIdOf(id: number): ChatId {
@@ -99,6 +116,8 @@ export interface PanelData {
   notifications: ManagerNotification[];
   /** Времена последних сообщений для списка чатов (по умолчанию из messages). */
   lastMessageAt: Map<number, number>;
+  /** Сводки о компании по ID чата (по умолчанию OFF_COMPANY); Error: чтение сводки падает этой ошибкой. */
+  companies: Map<number, CompanySummary | Error>;
 }
 
 export interface HarnessOptions {
@@ -139,6 +158,7 @@ export interface Harness {
   };
   readonly outbox: { [K in keyof Outbox]: Mock<Outbox[K]> };
   readonly handoff: { [K in keyof HandoffService]: Mock<HandoffService[K]> };
+  readonly company: { summary: Mock<CompanyService['summary']> };
   /** Действия над чатом в порядке вызова: handOff, sendFromPanel, returnToBot. */
   actions(): string[];
   advance(ms: number): void;
@@ -266,6 +286,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     handoffs: new Map(),
     notifications: [],
     lastMessageAt: new Map(),
+    companies: new Map(),
     ...options.data,
   };
   const password = options.password ?? WEAK_PASSWORD;
@@ -293,6 +314,13 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     handOff: vi.fn(() => Promise.resolve()),
     returnToBot: vi.fn(() => Promise.resolve()),
   };
+  const company: Harness['company'] = {
+    summary: vi.fn((chatId) => {
+      const summary = data.companies.get(chatId) ?? OFF_COMPANY;
+      if (summary instanceof Error) throw summary;
+      return summary;
+    }),
+  };
   const chats = createChatsRepo(data);
   const messages = createMessagesRepo(data);
   const handoffs = createHandoffsRepo(data);
@@ -304,6 +332,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     notifications,
     outbox,
     handoff,
+    company,
     clock,
     logger,
     password,
@@ -343,6 +372,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     notifications,
     outbox,
     handoff,
+    company,
     actions: () =>
       [
         ...orderedCalls('handOff', handoff.handOff),

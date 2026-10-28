@@ -15,6 +15,7 @@ import type {
 } from '../../../src/domain/types.js';
 import {
   decideReply,
+  requestAssessment,
   requestDraft,
   type Drafted,
   type ReplyFlowDeps,
@@ -900,5 +901,70 @@ describe('pipeline/reply-flow: форма входных данных', () => {
     await expect(decideReply(h.deps, contextOf(), drafted)).resolves.toEqual(sent());
     expect(h.assessInterest).not.toHaveBeenCalled();
     expect(h.draftReply).not.toHaveBeenCalled();
+  });
+});
+
+describe('pipeline/reply-flow: компания клиента', () => {
+  function asking(question: 'confirm' | 'name', text: string = ANSWER): LlmResult<ReplyDraft> {
+    return { ok: true, value: { outcome: 'answer', text, companyQuestion: question } };
+  }
+
+  it('requestAssessment: только оценка интереса с контекстом, без черновика', async () => {
+    const h = setup({ assessment: assessed('warm') });
+    const context = contextOf('Да, это мы');
+
+    await expect(requestAssessment(h.deps, context)).resolves.toEqual(assessed('warm'));
+
+    expect(h.assessInterest).toHaveBeenCalledWith(context);
+    expect(h.draftReply).not.toHaveBeenCalled();
+  });
+
+  it.each<[string, () => Promise<never>]>([
+    ['исключение', () => Promise.reject(new TypeError('сбой'))],
+    [
+      'исключение сразу при вызове',
+      () => {
+        throw new TypeError('сбой');
+      },
+    ],
+  ])('requestAssessment: %s => сбой unavailable и предупреждение', async (_c, fails) => {
+    const h = setup();
+    h.assessInterest.mockImplementation(fails);
+
+    await expect(requestAssessment(h.deps, contextOf())).resolves.toEqual(UNAVAILABLE);
+
+    expect(logsOf(h, 'warn')).toEqual([{ chatId: CHAT_ID, errorName: 'TypeError' }]);
+  });
+
+  it.each(['confirm', 'name'] as const)(
+    'вердикт send несёт вопрос о компании %s из черновика answer',
+    async (question) => {
+      const h = setup({ drafts: [asking(question)] });
+
+      await expect(flow(h)).resolves.toStrictEqual({
+        kind: 'send',
+        text: ANSWER,
+        companyQuestion: question,
+      });
+    },
+  );
+
+  it('черновик без вопроса о компании: в вердикте поля нет', async () => {
+    const h = setup();
+
+    await expect(flow(h)).resolves.toStrictEqual({ kind: 'send', text: ANSWER });
+  });
+
+  it('после повтора вопрос берётся из того черновика, чей текст уходит', async () => {
+    const h = setup({
+      drafts: [asking('confirm'), asking('name', SECOND_ANSWER)],
+      reviews: [reviewProblems('Назван срок, его нет в знаниях'), REVIEW_OK],
+    });
+
+    await expect(flow(h)).resolves.toStrictEqual({
+      kind: 'send',
+      text: SECOND_ANSWER,
+      companyQuestion: 'name',
+    });
   });
 });

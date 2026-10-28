@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { CompanySummary } from '../../../src/domain/company.js';
 import type { ChatsRepo, Clock, HandoffsRepo } from '../../../src/domain/ports.js';
 import type {
   Chat,
@@ -27,12 +28,14 @@ import type { Outbox } from '../../../src/messaging/outbox.js';
 import {
   chatIdOf,
   CLIENT_PHONE,
+  CONFIRMED_SUMMARY,
   createFakeLogger,
   createFakeUnitOfWork,
   createManualClock,
   FULL_PROFILE,
   loggedText,
   makeChat,
+  OFF_SUMMARY,
   T0,
   type LogEntry,
 } from './fakes.js';
@@ -98,6 +101,8 @@ interface SetupOptions {
   readonly setStatusError?: Error;
   /** Запись передачи падает этой ошибкой. */
   readonly openError?: Error;
+  /** Сводка о компании клиента (по умолчанию функция выключена) или ошибка её чтения. */
+  readonly company?: CompanySummary | Error;
 }
 
 interface Harness {
@@ -111,6 +116,8 @@ interface Harness {
   /** Сообщения модели, отправленные клиенту вместо фиксированной фразы. */
   readonly texts: TextCall[];
   readonly notifications: NotifyCall[];
+  /** ID чатов, для которых читалась сводка о компании. */
+  readonly summaries: ChatId[];
 }
 
 function setup(options: SetupOptions = {}): Harness {
@@ -122,6 +129,7 @@ function setup(options: SetupOptions = {}): Harness {
   const notices: NoticeCall[] = [];
   const texts: TextCall[] = [];
   const notifications: NotifyCall[] = [];
+  const summaries: ChatId[] = [];
   let chat = options.chat === undefined ? makeChat() : options.chat;
   let isOpen = options.alreadyOpen === true;
   const unexpected = (): never => {
@@ -192,16 +200,36 @@ function setup(options: SetupOptions = {}): Harness {
       return Promise.resolve();
     },
   };
+  const company = {
+    summary: (chatId: ChatId): CompanySummary => {
+      summaries.push(chatId);
+      const summary = options.company ?? OFF_SUMMARY;
+      if (summary instanceof Error) throw summary;
+      return summary;
+    },
+  };
   const service = createHandoffService({
     chats,
     handoffs,
     unitOfWork: createFakeUnitOfWork(events),
     outbox,
     notifier,
+    company,
     clock,
     logger: createFakeLogger(logs),
   });
-  return { service, events, logs, opened, resolved, statusChanges, notices, texts, notifications };
+  return {
+    service,
+    events,
+    logs,
+    opened,
+    resolved,
+    statusChanges,
+    notices,
+    texts,
+    notifications,
+    summaries,
+  };
 }
 
 // Уведомление менеджеру идёт сразу после транзакции, до фразы клиенту: фраза может ждать повтор 5 с, и падение
@@ -228,8 +256,11 @@ function controlAfter(change: StatusChange): ChatControl {
     : { status: 'bot', by: change.by };
 }
 
-/** Текст уведомления для чата по умолчанию (makeChat) с заданной причиной. */
-function notificationFor(reason: NotificationReason): string {
+/** Текст уведомления для чата по умолчанию (makeChat) с заданной причиной; компания по умолчанию: функция выключена. */
+function notificationFor(
+  reason: NotificationReason,
+  company: CompanySummary | null = OFF_SUMMARY,
+): string {
   return formatManagerNotification({
     ...reason,
     name: 'Иван Петров',
@@ -237,6 +268,7 @@ function notificationFor(reason: NotificationReason): string {
     level: 'warm',
     profile: FULL_PROFILE,
     chatId: CHAT_ID,
+    company,
   });
 }
 
@@ -602,6 +634,7 @@ describe('createHandoffService: handOff с сообщением модели в�
           level: 'hot',
           profile: FULL_PROFILE,
           chatId: CHAT_ID,
+          company: OFF_SUMMARY,
         }),
         context: { reason: 'hot' },
       },
@@ -833,6 +866,74 @@ describe('createHandoffService: handOff без фразы клиенту', () =>
     ]);
     expect(h.notices).toEqual([]);
     expect(h.notifications).toEqual([]);
+  });
+});
+
+describe('createHandoffService: компания клиента в уведомлении', () => {
+  it('передача: сводка о компании этого чата идёт строками после выжимки', async () => {
+    const h = setup({ company: CONFIRMED_SUMMARY });
+
+    await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
+
+    expect(h.summaries).toEqual([CHAT_ID]);
+    expect(h.notifications[0]?.text).toBe(notificationFor({ reason: 'hot' }, CONFIRMED_SUMMARY));
+    expect(h.notifications[0]?.text).toContain(
+      'Компания: «Мебель Плюс», Алматы (клиент подтвердил)\nКарточка: https://mail.example.kz/companies/42',
+    );
+  });
+
+  it('функция выключена: «Компания: не определена» последней строкой', async () => {
+    const h = setup();
+
+    await h.service.handOff(CHAT_ID, { reason: 'no_answer', replyToWaId: IN_1 });
+
+    expect(h.notifications[0]?.text.split('\n').at(-1)).toBe('Компания: не определена');
+  });
+
+  it.each(['chat', 'global'] as const)(
+    'лимит (%s): сводку о компании не читает, текст уведомления прежний',
+    async (scope) => {
+      const h = setup({ company: CONFIRMED_SUMMARY });
+
+      await h.service.handOff(CHAT_ID, { reason: 'limit', scope });
+
+      expect(h.summaries).toEqual([]);
+      expect(h.notifications[0]?.text).toBe(notificationFor({ reason: 'limit', scope }, null));
+      expect(h.notifications[0]?.text).not.toContain('Компания');
+    },
+  );
+
+  it('человек подключился: ни уведомления, ни чтения сводки', async () => {
+    const h = setup({ company: CONFIRMED_SUMMARY });
+
+    await h.service.handOff(CHAT_ID, { reason: 'human_took_over', by: 'panel' });
+
+    expect(h.summaries).toEqual([]);
+    expect(h.notifications).toEqual([]);
+  });
+
+  it('сводку прочитать не удалось: уведомление и фраза уходят без строк о компании, в лог ID и имя ошибки', async () => {
+    const h = setup({ company: new TypeError('база недоступна: Мебель Плюс') });
+
+    await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
+
+    expect(h.events).toEqual(FULL_FLOW);
+    expect(h.notifications[0]?.text).toBe(notificationFor({ reason: 'hot' }, null));
+    expect(h.logs.filter((entry) => entry.level === 'warn')).toEqual([
+      expect.objectContaining({ context: { chatId: CHAT_ID, errorName: 'TypeError' } }),
+    ]);
+    expect(loggedText(h.logs)).not.toContain('Мебель');
+  });
+
+  it('в лог не попадает ничего из сводки: название, город, ссылка и боли', async () => {
+    const h = setup({ company: CONFIRMED_SUMMARY });
+
+    await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
+
+    const logged = loggedText(h.logs);
+    for (const secret of ['Мебель', 'Алматы', 'mail.example.kz', 'теряются', 'пересорт']) {
+      expect(logged).not.toContain(secret);
+    }
   });
 });
 

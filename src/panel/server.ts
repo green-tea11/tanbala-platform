@@ -4,6 +4,7 @@ import fastify, {
   type FastifyInstance,
   type RawServerDefault,
 } from 'fastify';
+import type { CompanyService } from '../domain/company.js';
 import type {
   ChatsRepo,
   Clock,
@@ -34,6 +35,8 @@ export interface PanelDeps {
   notifications: ManagerNotificationsRepo;
   outbox: Outbox;
   handoff: HandoffService;
+  /** Сводка о компании клиента для раздела «Компания» карточки чата. */
+  company: Pick<CompanyService, 'summary'>;
   clock: Clock;
   logger: Logger;
   /** ADMIN_PASSWORD. Пустой пароль не пускает никого. */
@@ -86,7 +89,7 @@ function registerRoutes(app: FastifyInstance, context: PanelContext): void {
 }
 
 /**
- * Собирает веб-панель на Fastify без запуска сервера: список чатов, переписка, карточка клиента,
+ * Собирает веб-панель на Fastify без запуска сервера: список чатов, переписка, карточка клиента с компанией,
  * ответ от имени номера, возврат чата боту, уведомления менеджеру. Без listen, чтобы тесты шли через inject без сети.
  * Вход по ADMIN_PASSWORD; сессии в памяти (cookie HttpOnly, SameSite=Strict, Secure по HTTPS); токен CSRF в каждой
  * форме и проверка Origin на изменяющих запросах; ограничение неудачных попыток входа; проверка Host на каждом запросе.

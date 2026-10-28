@@ -1,5 +1,6 @@
 import type { Agent, ConversationContext, DraftKind } from '../agent/agent.js';
 import { normalizeDraft, runCodeChecks } from '../checks/code-checks.js';
+import type { CompanyQuestion } from '../domain/company.js';
 import type { ChatsRepo, Clock, Logger } from '../domain/ports.js';
 import type {
   BudgetScope,
@@ -44,13 +45,21 @@ export type HandoffVerdict =
     };
 
 /**
+ * Ответ клиенту: проверенный текст и вопрос о компании из того черновика answer, чей текст уходит (нет поля => ни о
+ * чём). Вопрос запоминается только после отправки: каждый задаётся один раз.
+ */
+export interface SendVerdict {
+  readonly kind: 'send';
+  readonly text: ReviewedText;
+  readonly companyQuestion?: CompanyQuestion;
+}
+
+/**
  * Что делать с чатом по итогам хода: отправить проверенный текст, передать менеджеру (с проверенным сообщением
  * модели или с фиксированной фразой) или замолчать из-за исчерпанного дневного лимита API.
  */
 export type ReplyVerdict =
-  | { readonly kind: 'send'; readonly text: ReviewedText }
-  | HandoffVerdict
-  | { readonly kind: 'limit'; readonly scope: BudgetScope };
+  SendVerdict | HandoffVerdict | { readonly kind: 'limit'; readonly scope: BudgetScope };
 
 /**
  * Своего номера в ответах у бота нет: knowledge/whatsapp.md запрещает вставлять номер WhatsApp. Пустой «наш номер»
@@ -123,6 +132,18 @@ export async function requestDraft(
 }
 
 /**
+ * Только оценка интереса: ход, в котором бот ждёт ответа на «Вы из компании X?», получает её до черновика. Сбой и
+ * исключение как в requestDraft: исключение становится сбоем unavailable с предупреждением в лог.
+ */
+export async function requestAssessment(
+  deps: Pick<ReplyFlowDeps, 'agent' | 'logger'>,
+  context: ConversationContext,
+): Promise<LlmResult<InterestAssessment>> {
+  const [assessment] = await Promise.allSettled([call(() => deps.agent.assessInterest(context))]);
+  return settledAssessment(deps.logger, context.chatId, assessment);
+}
+
+/**
  * Шаги 4 и 5 плана и развилка. Оценка интереса сохраняется первой, до любой передачи: уровень и выжимка нужны
  * менеджеру в уведомлении (chats.saveAssessment, уровень и выжимка одной транзакцией). Передачу решает вызов
  * ответа (исход черновика), а не оценка интереса: она только хранит уровень и выжимку. Исчерпан дневной лимит API
@@ -137,7 +158,9 @@ export async function requestDraft(
  * символов) проверок не проходит: фиксированная фраза по причине. При передаче hot уровень hot записывается в чат
  * (оценка интереса могла дать ниже или не получиться), поэтому и в передаче, и в чате он hot. Вызовов API на ответ
  * три (черновик, оценка, проверка), с повтором пять. В лог только ID чата, номер попытки, виды нарушений
- * (CheckCode), причина передачи и числа: фрагменты текста клиента и модели в нём недопустимы.
+ * (CheckCode), причина передачи и числа: фрагменты текста клиента и модели в нём недопустимы. context тот же, с которым
+ * писался черновик: проверка судит с теми же данными о компании. Вердикт send несёт companyQuestion черновика answer,
+ * чей текст уходит (после повтора: повторного черновика).
  */
 export async function decideReply(
   deps: ReplyFlowDeps,
@@ -277,7 +300,11 @@ async function judge(flow: Flow, draft: ReplyDraft, attempt: Attempt): Promise<J
     attempt,
   });
   logDroppedText(flow, draft, decision);
-  return judgementOf(decision, keep);
+  return judgementOf(
+    decision,
+    keep,
+    draft.outcome === 'answer' ? draft.companyQuestion : undefined,
+  );
 }
 
 /** Решение исхода передачи, если вызов проверки не получился: та же передача с фиксированной фразой. */
@@ -375,10 +402,19 @@ function verdictOf(verdict: ReplyVerdict): Judgement {
   return { kind: 'verdict', verdict };
 }
 
-function judgementOf(decision: Decision, keep: ReplyVerdict | null): Judgement {
+/** Решение decideAction как итог попытки; question: вопрос о компании из черновика answer, он идёт с ответом. */
+function judgementOf(
+  decision: Decision,
+  keep: ReplyVerdict | null,
+  question?: CompanyQuestion,
+): Judgement {
   switch (decision.kind) {
     case 'send':
-      return verdictOf({ kind: 'send', text: decision.text });
+      return verdictOf(
+        question === undefined
+          ? { kind: 'send', text: decision.text }
+          : { kind: 'send', text: decision.text, companyQuestion: question },
+      );
     case 'retry':
       return { kind: 'retry', feedback: decision.feedback, keep };
     case 'handoff':

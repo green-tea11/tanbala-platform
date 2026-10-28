@@ -1,3 +1,4 @@
+import type { CompanySummary } from '../domain/company.js';
 import { PANEL_TEXT_MAX_LENGTH } from '../messaging/outbox.js';
 import type {
   Chat,
@@ -20,6 +21,7 @@ import {
 import { cleanText, markup, type SafeHtml } from './html.js';
 import { renderLayout } from './layout.js';
 import type { NoticeKey } from './params.js';
+import { renderCompanySection } from './view-company.js';
 import { timeTag } from './view-parts.js';
 
 export interface ChatPageModel {
@@ -32,6 +34,8 @@ export interface ChatPageModel {
   readonly isEarlierSlice: boolean;
   readonly openHandoff: OpenHandoff | null;
   readonly lastNotification: ManagerNotification | null;
+  /** Что известно о компании клиента; null: сводку прочитать не удалось. */
+  readonly company: CompanySummary | null;
   readonly csrf: string;
   readonly notice: NoticeKey | null;
   /** Причина отказа действия над формой ответа; null, если ошибки нет. */
@@ -164,8 +168,9 @@ ${csrfField(csrf)}
 }
 
 /**
- * Страница чата: карточка клиента, переписка (кусок из HISTORY_PAGE_SIZE сообщений с «Показать раньше»), форма ответа
- * и кнопка «Вернуть боту». Всё, что пришло из WhatsApp (имя, тексты, выжимка), экранирует markup``.
+ * Страница чата: карточка клиента, раздел «Компания», переписка (кусок из HISTORY_PAGE_SIZE сообщений с «Показать
+ * раньше»), форма ответа и кнопка «Вернуть боту». Всё, что пришло из WhatsApp и почтового проекта (имя, тексты,
+ * выжимка, данные о компании), экранирует markup``.
  */
 export function renderChatPage(model: ChatPageModel): string {
   const { chat, notice, error, csrf } = model;
@@ -178,6 +183,7 @@ export function renderChatPage(model: ChatPageModel): string {
 ${notice === null ? null : markup`<p class="notice" role="status">${NOTICE_TEXTS[notice]}</p>`}
 ${error === null ? null : markup`<p class="alert" role="alert">${error}</p>`}
 ${renderCard(model)}
+${renderCompanySection(model.company)}
 ${renderHistory(model)}
 ${renderReplyForm(model)}
 ${renderReturnForm(model)}`,

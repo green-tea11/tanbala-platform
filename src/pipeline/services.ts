@@ -1,4 +1,5 @@
 import type { AppConfig } from '../config/env.js';
+import type { CompanyService } from '../domain/company.js';
 import type {
   BacklogRepo,
   ChatsRepo,
@@ -45,6 +46,8 @@ export interface ServicesContext {
   readonly logger: Logger;
   readonly clock: Clock;
   readonly storage: ServicesStorage;
+  /** Сервис компании (pipeline/company-setup.ts): компания клиента в уведомлении менеджеру о передаче. */
+  readonly company: Pick<CompanyService, 'summary'>;
 }
 
 /**
@@ -106,6 +109,7 @@ export function assembleServices(context: ServicesContext): Services {
     unitOfWork: storage.unitOfWork,
     outbox,
     notifier,
+    company: context.company,
     clock,
     logger,
   });

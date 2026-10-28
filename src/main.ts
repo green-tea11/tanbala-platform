@@ -1,13 +1,13 @@
-import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig, type AppConfig, type TestMode } from './config/env.js';
-import { ConfigError } from './config/errors.js';
+import { readModelsJson } from './config/models-file.js';
 import { createUnitOfWork, openDatabase } from './db/connection.js';
 import { runMigrations } from './db/migrations.js';
 import { acquireProcessLock } from './db/process-lock.js';
 import { createAppStateRepo } from './db/repos/app-state.js';
 import { createBacklogRepo } from './db/repos/backlog.js';
 import { createCallBudget } from './db/repos/call-budget.js';
+import { createChatCompaniesRepo } from './db/repos/chat-companies.js';
 import { createChatsRepo } from './db/repos/chats.js';
 import { createHandoffsRepo } from './db/repos/handoffs.js';
 import { createKnownChatsRepo } from './db/repos/known-chats.js';
@@ -15,6 +15,7 @@ import { createManagerNotificationsRepo } from './db/repos/manager-notifications
 import { createMessagesRepo } from './db/repos/messages.js';
 import { createOutboundIdsRepo } from './db/repos/outbound-ids.js';
 import { createPairingGuard } from './db/repos/pairing-attempts.js';
+import type { ChatCompaniesRepo } from './domain/company.js';
 import type {
   AppStateRepo,
   BacklogRepo,
@@ -34,6 +35,7 @@ import type {
 import type { Jid, PhoneDigits, WaMessageId } from './domain/types.js';
 import type { AnthropicLlmDeps } from './llm/anthropic.js';
 import type { ChatBatcher } from './pipeline/batcher.js';
+import { assembleCompany, type CompanySetup } from './pipeline/company-setup.js';
 import {
   createInboundRecorder,
   type IgnoreStats,
@@ -94,14 +96,10 @@ export type AppStopReason = 'requested' | WhatsAppStopReason;
 
 /** Уровень лога приложения; у Baileys свой уровень warn (whatsapp/connection.ts). */
 const LOG_LEVEL = 'info';
-/** Модели LLM: файл в корне проекта, меняется без правки кода. */
-const MODELS_FILE = 'config/models.json';
 /** Замок «бот уже запущен» в папке данных (все пути данных обязаны лежать в data/): один на корень проекта. */
 const PROCESS_LOCK_FILE = join('data', 'process.lock');
 /** Картинка QR привязки: внутри data/ и под qr*.png в .gitignore. */
 const QR_PNG_FILE = join('data', 'qr.png');
-/** Метка порядка байтов UTF-8: её ставит Блокнот Windows, а JSON.parse на ней падает. */
-const BYTE_ORDER_MARK = String.fromCharCode(0xfeff);
 const MS_PER_MINUTE = 60_000;
 const MS_PER_HOUR = 60 * MS_PER_MINUTE;
 /** Весь Казахстан с 01.03.2024 живёт по UTC+5 без летнего времени: смещение Алматы постоянное. */
@@ -171,6 +169,8 @@ interface Storage {
   /** Передачи чатов менеджеру и уведомления ему (этап 5). */
   readonly handoffs: HandoffsRepo;
   readonly notifications: ManagerNotificationsRepo;
+  /** Определение компании клиента по чатам. */
+  readonly chatCompanies: ChatCompaniesRepo;
   isOpen(): boolean;
   /** Закрывает базу; повторный вызов ничего не делает. */
   close(): void;
@@ -260,6 +260,9 @@ class PairingLimitExplained extends PairingLimitError {
  * сразу после loadConfig, до замка, базы, WhatsApp и QR. Панель собирается на общих службах и начинает слушать порт
  * после старта WhatsApp (при WA_ENABLED=false сразу); не запустилась (порт занят) => остановка целиком и ошибка.
  * stop закрывает панель первой, до остановки WhatsApp и до закрытия базы. Пароль панели в логи не попадает.
+ * Определение компании клиента pipeline/company-setup.ts: один сервис до служб этапа 5 (уведомление о передаче),
+ * панели и ответов (конвейер); агент ответов читает логотип, подключение WhatsApp даёт профиль собеседника.
+ * Без INTERNAL_API_TOKEN сервис есть, но выключен. В лог одна строка, включено ли оно, без адреса и токена.
  * TODO(этап 8): переход TEST_MODE true => false: записать момент перехода в app_state как границу (сообщения чатов не из списка до неё не обрабатывать); до перехода предупредить менеджеров; как не ответить поверх менеджера в живых чатах рабочего номера: вопрос владельцу перед запуском.
  */
 export async function main(options: MainOptions): Promise<RunningApp> {
@@ -321,18 +324,20 @@ interface Launch {
 }
 
 /**
- * Службы, ответы клиентам и панель собираются до WhatsApp; WhatsApp запускается, если он включён; панель начинает
- * слушать порт последней, после старта WhatsApp, а при WA_ENABLED=false сразу.
+ * Определение компании, службы, ответы клиентам и панель собираются до WhatsApp; WhatsApp запускается, если он
+ * включён; панель начинает слушать порт последней, после старта WhatsApp, а при WA_ENABLED=false сразу.
  */
 async function launch(run: Launch): Promise<RunningApp> {
   const { config, options, logger, clock, storage } = run;
-  const services = assembleServices({ config, logger, clock, storage });
+  const company = assembleCompany({ config, logger, clock, repo: storage.chatCompanies });
+  const services = assembleServices({ config, logger, clock, storage, company: company.service });
   const panel = assemblePanel({
     config,
     logger,
     clock,
     storage,
     services,
+    company: company.service,
     startPanel: options.startPanel,
   });
   const responder = await assembleResponder({
@@ -341,8 +346,10 @@ async function launch(run: Launch): Promise<RunningApp> {
     clock,
     storage,
     services,
+    company: company.service,
     createLlm: options.createLlm,
   });
+  if (responder !== null) company.useLogo(responder.logo);
   const batcher = responder?.batcher ?? null;
   const resources: Resources = {
     storage,
@@ -354,7 +361,7 @@ async function launch(run: Launch): Promise<RunningApp> {
   };
   const lifecycle = createLifecycle(run.link, resources, logger);
   if (config.waEnabled) {
-    await connectWhatsApp(run, { services, responder, batcher, lifecycle });
+    await connectWhatsApp(run, { services, company, responder, batcher, lifecycle });
   } else {
     logger.warn({}, 'WhatsApp выключен (WA_ENABLED=false)');
   }
@@ -365,6 +372,7 @@ async function launch(run: Launch): Promise<RunningApp> {
 /** Что WhatsApp получает от остальной сборки. */
 interface WhatsAppParts {
   readonly services: Services;
+  readonly company: CompanySetup;
   readonly responder: Responder | null;
   readonly batcher: ChatBatcher | null;
   readonly lifecycle: Lifecycle;
@@ -372,7 +380,7 @@ interface WhatsAppParts {
 
 async function connectWhatsApp(run: Launch, parts: WhatsAppParts): Promise<void> {
   const { config, options, logger, clock, storage, summary, link } = run;
-  const { services, responder, batcher, lifecycle } = parts;
+  const { services, company, responder, batcher, lifecycle } = parts;
   const context: AppContext = {
     config,
     root: options.root,
@@ -390,6 +398,8 @@ async function connectWhatsApp(run: Launch, parts: WhatsAppParts): Promise<void>
   link.started = Promise.resolve().then(() => start(deps));
   const connection = await link.started;
   services.connect(connection);
+  // До конвейера: первая пачка уже идёт с профилем собеседника из этого подключения.
+  company.connect(connection);
   responder?.connect(connection);
 }
 
@@ -442,29 +452,7 @@ function warnManagerInAllowlist(config: AppConfig, logger: Logger): void {
   }
 }
 
-// Конфигурация и база.
-
-function readModelsJson(root: string): unknown {
-  const text = readModelsText(join(root, MODELS_FILE));
-  try {
-    const data: unknown = JSON.parse(text.startsWith(BYTE_ORDER_MARK) ? text.slice(1) : text);
-    return data;
-  } catch {
-    throw new ConfigError([`${MODELS_FILE}: файл не в формате JSON`]);
-  }
-}
-
-function readModelsText(path: string): string {
-  try {
-    return readFileSync(path, 'utf8');
-  } catch (error: unknown) {
-    const code =
-      error instanceof Error && 'code' in error && typeof error.code === 'string'
-        ? error.code
-        : 'неизвестная ошибка';
-    throw new ConfigError([`${MODELS_FILE}: файл не читается (${code})`]);
-  }
-}
+// База.
 
 /** База с миграциями; сбой миграции закрывает её до выхода ошибки. */
 function openStorage(config: AppConfig, logger: Logger, clock: Clock): Storage {
@@ -505,6 +493,7 @@ function assembleStorage(db: Database, config: AppConfig, logger: Logger, clock:
     budget: createCallBudget(db, config.limits),
     handoffs: createHandoffsRepo(db),
     notifications: createManagerNotificationsRepo(db),
+    chatCompanies: createChatCompaniesRepo(db, logger),
     isOpen: () => db.open,
     // close в better-sqlite3 сам ничего не делает с уже закрытой базой.
     close: () => {

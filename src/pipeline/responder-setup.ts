@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { createAgent, type Agent } from '../agent/agent.js';
 import { loadKnowledge, type Knowledge } from '../agent/knowledge.js';
 import type { AppConfig } from '../config/env.js';
+import type { LogoReader } from '../domain/company.js';
 import type {
   CallBudget,
   ChatsRepo,
@@ -53,6 +54,8 @@ export interface ResponderContext {
   readonly storage: ResponderStorage;
   /** Общие службы этапа 5 (pipeline/services.ts): отправка и передача менеджеру одни на всё приложение. */
   readonly services: Pick<Services, 'outbox' | 'handoff'>;
+  /** Сервис компании (pipeline/company-setup.ts), один на приложение: конвейер берёт из него блок о компании. */
+  readonly company: PipelineDeps['company'];
   /** Шов для тестов, в рабочем режиме не передаётся: клиент LLM (по умолчанию createAnthropicLlm). */
   readonly createLlm?: ((deps: AnthropicLlmDeps) => LlmClient) | undefined;
 }
@@ -60,6 +63,8 @@ export interface ResponderContext {
 /** Ответы клиентам: очередь склейки есть до WhatsApp, конвейер получает подключение после запуска. */
 export interface Responder {
   readonly batcher: ChatBatcher;
+  /** Агент как чтение названия с логотипа: его получает сервис компании (шаг д). */
+  readonly logo: LogoReader;
   /** WhatsApp подключён: «печатает», прочтение и голосовые идут через это подключение. */
   connect(connection: ResponderConnection): void;
 }
@@ -75,8 +80,9 @@ interface ResponderParts {
  * принимает и сохраняет, как на этапе 2. Знания (knowledge/, при сбое чтения понятная ошибка при старте), лог
  * расхода TOKEN_LOG_PATH, LLM с дневным предохранителем, агент, расшифровка голосовых по AppConfig.voice (нет ключа
  * OpenRouter => выключена) и очередь склейки. Отправка (outbox) и передача менеджеру (handoff/handoff.ts) общие
- * для приложения и приходят в context.services; конвейер pipeline/handle-inbound.ts собирается на подключении
- * WhatsApp (connect); пачка до подключения не обрабатывается: ошибка в лог очереди.
+ * для приложения и приходят в context.services, сервис компании в context.company; агент отдаётся наружу как logo
+ * (чтение логотипа для сервиса компании). Конвейер pipeline/handle-inbound.ts собирается на подключении WhatsApp
+ * (connect); пачка до подключения не обрабатывается: ошибка в лог очереди.
  */
 export async function assembleResponder(context: ResponderContext): Promise<Responder | null> {
   const { config, logger, clock } = context;
@@ -107,6 +113,7 @@ export async function assembleResponder(context: ResponderContext): Promise<Resp
   });
   return {
     batcher,
+    logo: parts.agent,
     connect: (connection) => {
       pipeline = pipelineDeps(context, parts, connection);
     },
@@ -142,6 +149,7 @@ function pipelineDeps(
     agent: parts.agent,
     outbox: services.outbox,
     handoff: services.handoff,
+    company: context.company,
     transcriber: parts.transcriber,
     inbox: connection,
     typing: connection,

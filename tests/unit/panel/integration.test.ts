@@ -13,7 +13,7 @@ import { createOutbox } from '../../../src/messaging/outbox.js';
 import { buildPanel } from '../../../src/panel/server.js';
 import { createLogger } from '../../../src/shared/logger.js';
 import { PN_A, PN_B, useMigratedDb } from '../db/fixture.js';
-import { csrfOf, HOST_HEADER, ORIGIN, PORT, sessionCookieOf, T0 } from './harness.js';
+import { csrfOf, HOST_HEADER, OFF_COMPANY, ORIGIN, PORT, sessionCookieOf, T0 } from './harness.js';
 
 // Панель на настоящих репозиториях, службе передачи и исходящих (SQLite в памяти); WhatsApp заменён отправителем-записью.
 const PHONE_A = '77000000001' as PhoneDigits;
@@ -55,6 +55,7 @@ function build(options: { readonly allowlist: ReadonlySet<PhoneDigits> | null })
   };
   const clock: Clock = { now: () => T0, sleep: () => Promise.resolve() };
   const logger = createLogger({ level: 'silent' });
+  const company = { summary: () => OFF_COMPANY };
   const outbox = createOutbox({
     sender,
     chats,
@@ -71,6 +72,7 @@ function build(options: { readonly allowlist: ReadonlySet<PhoneDigits> | null })
     unitOfWork: createUnitOfWork(db),
     outbox,
     notifier: { notify: () => Promise.resolve('no_manager' as const) },
+    company,
     clock,
     logger,
   });
@@ -94,6 +96,7 @@ function build(options: { readonly allowlist: ReadonlySet<PhoneDigits> | null })
     notifications,
     outbox,
     handoff,
+    company,
     clock,
     logger,
     password: 'admin',

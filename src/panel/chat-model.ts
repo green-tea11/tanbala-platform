@@ -1,4 +1,5 @@
-import type { Chat } from '../domain/types.js';
+import type { CompanySummary } from '../domain/company.js';
+import type { Chat, ChatId } from '../domain/types.js';
 import type { PanelContext } from './context.js';
 import { HISTORY_PAGE_SIZE, type NoticeKey } from './params.js';
 import type { ChatPageModel } from './view-chat.js';
@@ -37,9 +38,30 @@ export function loadChatPage(
     isEarlierSlice: extras.before !== undefined,
     openHandoff: handoffs.findOpen(chat.id),
     lastNotification: notifications.latestForChat(chat.id),
+    company: companyOf(context, chat.id),
     csrf: extras.csrf,
     notice: extras.notice,
     error: extras.error,
     draft: extras.draft,
   };
+}
+
+/**
+ * Сводка о компании для карточки. Сбой чтения не закрывает страницу: менеджер видит переписку и может ответить,
+ * а в разделе «Компания» пометку. В лог только ID чата и имя ошибки, без данных о компании.
+ */
+function companyOf(context: PanelContext, chatId: ChatId): CompanySummary | null {
+  try {
+    return context.deps.company.summary(chatId);
+  } catch (error: unknown) {
+    context.audit.warn(
+      {
+        action: 'company_summary_failed',
+        chatId,
+        errorName: error instanceof Error ? error.name : typeof error,
+      },
+      'Панель: сводка о компании не прочитана',
+    );
+    return null;
+  }
 }

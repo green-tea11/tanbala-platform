@@ -1,3 +1,4 @@
+import type { CompanyId, CompanySummary } from '../../../src/domain/company.js';
 import type {
   Clock,
   Logger,
@@ -246,6 +247,36 @@ export function makeChat(overrides: Partial<Chat> = {}): Chat {
     ...overrides,
   };
 }
+
+/** Сводка выключенной функции определения компании: так сервис передачи работает по умолчанию в тестах. */
+export const OFF_SUMMARY: CompanySummary = {
+  status: 'off',
+  companyId: null,
+  name: null,
+  city: null,
+  rubric: null,
+  candidateSource: null,
+  cardUrl: null,
+  confirmedPains: [],
+  briefPains: [],
+  emailed: null,
+  research: null,
+  statedName: null,
+};
+
+/** Подтверждённая компания со справкой, ссылкой на карточку и болями клиента (вымышленная). */
+export const CONFIRMED_SUMMARY: CompanySummary = {
+  ...OFF_SUMMARY,
+  status: 'confirmed',
+  companyId: 42 as CompanyId,
+  name: 'Мебель Плюс',
+  city: 'Алматы',
+  rubric: 'Мебель',
+  cardUrl: 'https://mail.example.kz/companies/42',
+  confirmedPains: ['теряются вещи', 'долгая инвентаризация'],
+  briefPains: [{ pain: 'пересорт на складе', evidence: 'склад на 2000 м²', source: 'site' }],
+  emailed: true,
+};
 
 /** Транзакция-пустышка: порядок и откат видны в журнале событий. */
 export function createFakeUnitOfWork(events: string[]): UnitOfWork {

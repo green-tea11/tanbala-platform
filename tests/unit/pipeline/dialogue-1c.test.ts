@@ -5,13 +5,16 @@ import { loadConfig, type AppConfig } from '../../../src/config/env.js';
 import { createUnitOfWork } from '../../../src/db/connection.js';
 import { createBacklogRepo } from '../../../src/db/repos/backlog.js';
 import { createCallBudget } from '../../../src/db/repos/call-budget.js';
+import { createChatCompaniesRepo } from '../../../src/db/repos/chat-companies.js';
 import { createChatsRepo } from '../../../src/db/repos/chats.js';
 import { createHandoffsRepo } from '../../../src/db/repos/handoffs.js';
 import { createManagerNotificationsRepo } from '../../../src/db/repos/manager-notifications.js';
 import { createMessagesRepo } from '../../../src/db/repos/messages.js';
 import { createOutboundIdsRepo } from '../../../src/db/repos/outbound-ids.js';
 import type { Clock, Logger } from '../../../src/domain/ports.js';
+import type { ChatCompaniesRepo } from '../../../src/domain/company.js';
 import type { Chat, InboundMessage, Jid, WaMessageId } from '../../../src/domain/types.js';
+import { assembleCompany } from '../../../src/pipeline/company-setup.js';
 import {
   assembleResponder,
   type ResponderConnection,
@@ -59,7 +62,7 @@ const SILENT_LOGGER: Logger = {
   child: () => SILENT_LOGGER,
 };
 
-type Storage = ResponderStorage & ServicesStorage;
+type Storage = ResponderStorage & ServicesStorage & { readonly chatCompanies: ChatCompaniesRepo };
 
 /** Настройки с настоящими файлами знаний проекта и номером менеджера. */
 function configOfProject(): AppConfig {
@@ -88,6 +91,7 @@ function storageOf(config: AppConfig): Storage {
     handoffs: createHandoffsRepo(db),
     notifications: createManagerNotificationsRepo(db),
     unitOfWork: createUnitOfWork(db),
+    chatCompanies: createChatCompaniesRepo(db, SILENT_LOGGER),
   };
 }
 
@@ -105,7 +109,20 @@ interface Dialogue {
 async function runDialogue(script: LlmScript): Promise<Dialogue> {
   const config = configOfProject();
   const storage = storageOf(config);
-  const services = assembleServices({ config, logger: SILENT_LOGGER, clock: CLOCK, storage });
+  // Определение компании как в main: без INTERNAL_API_TOKEN выключено, но сервис один на конвейер и передачу.
+  const company = assembleCompany({
+    config,
+    logger: SILENT_LOGGER,
+    clock: CLOCK,
+    repo: storage.chatCompanies,
+  });
+  const services = assembleServices({
+    config,
+    logger: SILENT_LOGGER,
+    clock: CLOCK,
+    storage,
+    company: company.service,
+  });
   const llm = scriptedLlm(script);
   const responder = await assembleResponder({
     config,
@@ -113,6 +130,7 @@ async function runDialogue(script: LlmScript): Promise<Dialogue> {
     clock: CLOCK,
     storage,
     services,
+    company: company.service,
     createLlm: () => llm.llm,
   });
   if (responder === null) throw new Error('ответы не собраны');

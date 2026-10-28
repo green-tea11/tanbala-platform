@@ -1,4 +1,5 @@
 import type { AppConfig } from '../config/env.js';
+import type { CompanyService } from '../domain/company.js';
 import type {
   ChatsRepo,
   Clock,
@@ -35,6 +36,8 @@ export interface PanelSetupContext {
   readonly storage: PanelStorage;
   /** Отправка и передача менеджеру общие для приложения (pipeline/services.ts): ответ из панели идёт через них. */
   readonly services: Pick<Services, 'outbox' | 'handoff'>;
+  /** Сервис компании (pipeline/company-setup.ts): раздел «Компания» в карточке чата. */
+  readonly company: Pick<CompanyService, 'summary'>;
   /** Шов для тестов, в рабочем режиме не передаётся: запуск панели (по умолчанию panel/server.startPanel). */
   readonly startPanel?: PanelStarter | undefined;
 }
@@ -68,6 +71,7 @@ export function assemblePanel(context: PanelSetupContext): Panel {
     notifications: storage.notifications,
     outbox: services.outbox,
     handoff: services.handoff,
+    company: context.company,
     clock: context.clock,
     logger,
     password: config.adminPassword,

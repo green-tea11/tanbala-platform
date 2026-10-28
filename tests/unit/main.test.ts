@@ -13,7 +13,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it, onTestFinished, vi, type Mock } from 'vitest';
 import { ConfigError, formatFatalError } from '../../src/config/errors.js';
 import { acquireProcessLock, ProcessLockBusyError } from '../../src/db/process-lock.js';
-import type { Clock, LlmClient } from '../../src/domain/ports.js';
+import type { Clock, ImageInput, LlmClient } from '../../src/domain/ports.js';
 import type { Jid, LlmResult, WaMessageId } from '../../src/domain/types.js';
 import { main, type MainOptions, type RunningApp } from '../../src/main.js';
 import type { PanelApp, PanelStarter } from '../../src/pipeline/panel-setup.js';
@@ -1381,5 +1381,76 @@ describe('main: ответы клиентам, службы этапа 5 и ве
     );
     expect(databaseOpen(harness.dbPath)).toBe(false);
     expect(lockFree(harness.lockPath)).toBe(true);
+  });
+
+  describe('определение компании клиента', () => {
+    const TOKEN = 'internal-token-0123456789-0123456789-abcdef';
+    const ENABLED_TEXT = 'Определение компании клиента включено: внутренний API почтового проекта';
+    const DISABLED_TEXT = 'Определение компании клиента выключено: INTERNAL_API_TOKEN не задан';
+    const PHOTO: ImageInput = { data: new Uint8Array([1, 2, 3]), mimeType: 'image/jpeg' };
+
+    /** Внутренний API почтового проекта отвечает «никого не нашли»; сеть по-прежнему закрыта. */
+    function stubCompanyApi(): Mock<typeof fetch> {
+      const fetchMock = vi.fn<typeof fetch>(() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ candidates: [] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        ),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      onTestFinished(() => {
+        vi.unstubAllGlobals();
+      });
+      return fetchMock;
+    }
+
+    it('без INTERNAL_API_TOKEN: при старте одна строка «выключено»', async () => {
+      const harness = useHarness();
+
+      await harness.run(DISABLED_ENV);
+
+      const lines = harness.records().filter((record) => 'companyApi' in record);
+      expect(lines).toEqual([
+        expect.objectContaining({ level: INFO, companyApi: false, msg: DISABLED_TEXT }),
+      ]);
+    });
+
+    it('с токеном: строка «включено» без адреса и токена; профиль из подключения, поиск в API, логотип через агента', async () => {
+      const harness = useHarness();
+      writeKnowledge(harness.root);
+      const fetchMock = stubCompanyApi();
+      const businessProfile = vi.fn<WhatsAppConnection['businessProfile']>(() =>
+        Promise.resolve({ kind: 'business', websites: [], email: null }),
+      );
+      const profilePhoto = vi.fn<WhatsAppConnection['profilePhoto']>(() => Promise.resolve(PHOTO));
+      const { connection, sendText } = sendingConnection();
+      const startWhatsApp = fakeStart({ ...connection, businessProfile, profilePhoto });
+      const { llm, purposes } = scriptedLlm({
+        replies: ['Расскажите, пожалуйста, что вы храните?'],
+      });
+      await harness.run(
+        { ...KEY_ENV, INTERNAL_API_TOKEN: TOKEN },
+        { startWhatsApp, clock: IMMEDIATE_CLOCK, createLlm: () => llm },
+      );
+
+      await depsOf(startWhatsApp).onEvent(CLIENT_EVENT);
+      // После ответа: шаг д (логотип) у бизнес-аккаунта, у которого бесплатные шаги ничего не нашли.
+      await vi.waitFor(() => expect(purposes()).toContain('logo'));
+
+      expect(sendText).toHaveBeenCalledTimes(1);
+      expect(businessProfile).toHaveBeenCalledWith(CLIENT_JID);
+      expect(profilePhoto).toHaveBeenCalledWith(CLIENT_JID, expect.any(Number));
+      const [url, init] = fetchMock.mock.calls[0] ?? [];
+      expect(url).toBe(`http://127.0.0.1:8000/internal/lookup?phone=${CLIENT_PHONE}`);
+      expect(new Headers(init?.headers).get('X-Internal-Token')).toBe(TOKEN);
+      const lines = harness.records().filter((record) => 'companyApi' in record);
+      expect(lines).toEqual([
+        expect.objectContaining({ level: INFO, companyApi: true, msg: ENABLED_TEXT }),
+      ]);
+      expect(JSON.stringify(lines)).not.toMatch(/127\.0\.0\.1|:8000/);
+      expect(JSON.stringify(harness.records())).not.toContain(TOKEN);
+    });
   });
 });

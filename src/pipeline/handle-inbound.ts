@@ -1,4 +1,5 @@
 import { HISTORY_MESSAGES, type Agent, type ConversationContext } from '../agent/agent.js';
+import type { CompanyService } from '../domain/company.js';
 import type {
   ChatsRepo,
   Clock,
@@ -15,14 +16,19 @@ import type {
   HandoffReason,
   InboundMessage,
   PhoneDigits,
-  ReviewedText,
   WaMessageId,
 } from '../domain/types.js';
 import type { HandOffRequest, HandoffService } from '../handoff/handoff.js';
 import { isChatAllowlisted } from '../messaging/allowlist.js';
 import type { Outbox, SendBlocked } from '../messaging/outbox.js';
 import type { ClientBatch } from './batcher.js';
-import { decideReply, requestDraft, type HandoffVerdict, type ReplyVerdict } from './reply-flow.js';
+import { draftWithCompany } from './company-turn.js';
+import {
+  decideReply,
+  type HandoffVerdict,
+  type ReplyVerdict,
+  type SendVerdict,
+} from './reply-flow.js';
 import { errorName, SEND_FAILED, sendWithRetry, typingPause } from './sending.js';
 import { transcribeVoices } from './voices.js';
 
@@ -39,6 +45,14 @@ export interface PipelineDeps {
    * отправки и уведомление менеджеру. Конвейер его только вызывает и не оборачивает в повтор.
    */
   readonly handoff: Pick<HandoffService, 'handOff'>;
+  /**
+   * Определение компании клиента (src/company): блок о компании перед ответом, итог оценки интереса, заданный вопрос
+   * о компании и поиск после ответа. Ни один метод не бросает из-за API или WhatsApp.
+   */
+  readonly company: Pick<
+    CompanyService,
+    'prepare' | 'applyAssessment' | 'markAsked' | 'identifyAfterReply'
+  >;
   readonly transcriber: Transcriber;
   readonly inbox: Pick<WhatsAppInbox, 'markRead' | 'downloadAudio'>;
   /** Статус «печатает»: outbox только отправляет, паузу перед ответом держит конвейер. */
@@ -113,14 +127,18 @@ interface Noticed {
  *    фразы про голосовое нет. В пачке простоя (старше OFFLINE_BATCH_AGE_MS) с текстом ОДИН ответ на чат без фразы
  *    (решение владельца). Исчерпан лимит на расшифровке => как лимит у LLM.
  * 3. Статус перечитывается (расшифровка идёт до минуты), отметка о прочтении (сбой не мешает ответу), снова статус,
- *    затем черновик и оценка интереса параллельно (pipeline/reply-flow.requestDraft, история HISTORY_MESSAGES).
+ *    затем company.prepare (бесплатные шаги определения компании, справка, опрос проверки; ходит в сеть, поэтому
+ *    после него статус перечитывается ещё раз), затем черновик и оценка интереса с блоком о компании
+ *    (pipeline/company-turn.draftWithCompany, история HISTORY_MESSAGES): параллельно, а если бот ждёт ответа на «Вы из
+ *    компании X?», сначала оценка, затем черновик. Итог оценки уходит в company.applyAssessment до решения.
  *    Пришли новые сообщения (ClientBatch.takeNewer), пока шли вызовы => пачка обрабатывается заново вместе с ними.
- * 4. Решение (pipeline/reply-flow.decideReply): оценка интереса сохраняется (она только хранит уровень и выжимку),
- *    текст ответа проходит нормализацию, проверки кодом и второй вызов LLM, развилка pipeline/decide.decideAction,
- *    при провале один повтор с замечаниями. Передачу решает вызов ответа (исходы hot, no_answer, asked_human,
- *    complaint). Вердикт send => «печатает» с паузой typingDelayMs (сбой статуса не мешает ответу), затем
- *    outbox.sendBotReply на последнее сообщение пачки того самого проверенного текста. Пришли новые сообщения,
- *    пока шла пауза => ответ перегенерируется один раз с ними, уходит один ответ.
+ * 4. Решение (pipeline/reply-flow.decideReply, с тем же контекстом, что у черновика): оценка интереса сохраняется
+ *    (она только хранит уровень и выжимку), текст ответа проходит нормализацию, проверки кодом и второй вызов LLM,
+ *    развилка pipeline/decide.decideAction, при провале один повтор с замечаниями. Передачу решает вызов ответа
+ *    (исходы hot, no_answer, asked_human, complaint). Вердикт send => «печатает» с паузой typingDelayMs (сбой статуса
+ *    не мешает ответу), затем outbox.sendBotReply на последнее сообщение пачки того самого проверенного текста;
+ *    ушёл => company.markAsked с вопросом о компании из черновика. Пришли новые сообщения, пока шла пауза => ответ
+ *    перегенерируется один раз с ними, уходит один ответ.
  * 5. Все передачи через сервис deps.handoff (handoff/handoff.ts): вердикт handoff (hot, no_answer, asked_human,
  *    complaint, check_failed, llm_error) => handOff с причиной и ответом на последнее сообщение пачки; вердикт limit
  *    (исчерпан дневной лимит API) => handOff limit со scope, без фразы клиенту. Статус manager, запись передачи,
@@ -133,9 +151,11 @@ interface Noticed {
  *    ставится.
  * 6. markAnswered один раз в конце пачки и только если что-то ушло (ответ, фраза про голосовое или записанная
  *    передача с фразой): иначе второй ответ пачки получил бы 'skipped_no_inbound'.
+ * 7. Итог replied => company.identifyAfterReply (поиск по названию со слов клиента, проверка новой компании, логотип);
+ *    его исключение идёт в лог предупреждением и итог не меняет. После передачи, лимита и молчания поиска нет.
  * Сбой отправки ответа или фразы про голосовое исключением повторяется один раз (pipeline/sending.sendWithRetry),
  * затем ошибка в лог «клиент остался без ответа». Сбой базы приходит отказом промиса: его пишет в лог
- * pipeline/batcher.ts.
+ * pipeline/batcher.ts. Чат вне TEST_ALLOWLIST не доходит ни до LLM, ни до сервиса компании.
  */
 export async function handleClientBatch(
   deps: PipelineDeps,
@@ -151,7 +171,25 @@ export async function handleClientBatch(
   };
   const outcome = await processTurn(deps, batch, turn);
   logOutcome(deps.logger, batch.chatId, outcome);
+  if (outcome.kind === 'replied') await identifyAfterReply(deps, batch);
   return outcome;
+}
+
+/**
+ * Поиск компании после ответа по чату, перечитанному из базы (как в начале хода, с поиском по адресу после слияния).
+ * Исключение (сбой базы) идёт в лог предупреждением без текста: ответ уже ушёл, итог хода не меняется.
+ */
+async function identifyAfterReply(deps: PipelineDeps, batch: ClientBatch): Promise<void> {
+  const chat = currentChat(deps, batch.chatId, batch.messages);
+  if (chat === null) return;
+  try {
+    await deps.company.identifyAfterReply(chat);
+  } catch (error: unknown) {
+    deps.logger.warn(
+      { chatId: chat.id, errorName: errorName(error) },
+      `Поиск компании после ответа не удался: чат #${chat.id}`,
+    );
+  }
 }
 
 async function processTurn(
@@ -264,8 +302,10 @@ async function draftAndAnswer(
 ): Promise<PipelineOutcome> {
   // Отметка о прочтении ушла в сеть: человек мог подключиться.
   if (isManagerNow(deps, chat.id)) return SILENT_MANAGER;
-  const context = contextOf(deps, chat);
-  const drafted = await requestDraft(deps, context);
+  const company = await deps.company.prepare(chat, turn.messages);
+  // Определение компании ходит к API и в WhatsApp (до нескольких секунд): человек мог подключиться.
+  if (isManagerNow(deps, chat.id)) return SILENT_MANAGER;
+  const { context, drafted } = await draftWithCompany(deps, contextOf(deps, chat), company);
   const regenerated = regenerate(deps, batch, turn);
   if (regenerated !== null) return regenerated;
   const verdict = await decideReply(deps, context, drafted);
@@ -282,7 +322,7 @@ function act(
 ): Promise<PipelineOutcome> {
   switch (verdict.kind) {
     case 'send':
-      return sendAnswer(deps, batch, chat, turn, verdict.text);
+      return sendAnswer(deps, batch, chat, turn, verdict);
     case 'handoff':
       return handOff(deps, batch, chat.id, turn, verdict);
     case 'limit':
@@ -308,14 +348,16 @@ function contextOf(deps: PipelineDeps, chat: Chat): ConversationContext {
   return { chatId: chat.id, history, profile: chat.profile, level: chat.level };
 }
 
+/** Ответ клиенту; ушёл => отвечено и запомнен вопрос о компании из черновика (каждый задаётся один раз). */
 async function sendAnswer(
   deps: PipelineDeps,
   batch: ClientBatch,
   chat: Chat,
   start: Turn,
-  text: ReviewedText,
+  verdict: SendVerdict,
 ): Promise<PipelineOutcome> {
   const chatId = chat.id;
+  const { text } = verdict;
   if (isManagerNow(deps, chatId)) return SILENT_MANAGER;
   const noticed = await voiceNotice(deps, chatId, start, true);
   if ('kind' in noticed) return noticed;
@@ -327,7 +369,11 @@ async function sendAnswer(
     deps.outbox.sendBotReply(chatId, text, lastId(turn)),
   );
   if (result === SEND_FAILED) return SEND_FAILED_OUTCOME;
-  if (result === 'sent') return finish(deps, chatId, turn, { kind: 'replied' });
+  if (result === 'sent') {
+    const replied = finish(deps, chatId, turn, { kind: 'replied' });
+    deps.company.markAsked(chatId, verdict.companyQuestion ?? 'none');
+    return replied;
+  }
   if (result === 'skipped_manager') return SILENT_MANAGER;
   if (result === 'skipped_no_inbound') return { kind: 'silent', reason: 'duplicate' };
   return { kind: 'blocked', reason: result };

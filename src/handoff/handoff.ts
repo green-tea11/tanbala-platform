@@ -1,3 +1,4 @@
+import type { CompanyService, CompanySummary } from '../domain/company.js';
 import type { ChatsRepo, Clock, HandoffsRepo, Logger, UnitOfWork } from '../domain/ports.js';
 import type {
   BudgetScope,
@@ -59,6 +60,8 @@ export interface HandoffDeps {
   outbox: Pick<Outbox, 'sendHandoffNotice' | 'sendHandoffText'>;
   /** Запись уведомления в базу, отправка менеджеру и повтор при сбое (handoff/notifier.ts). */
   notifier: Pick<ManagerNotifier, 'notify'>;
+  /** Сводка о компании клиента: строки уведомления о передаче (kind handoff). Лимит её не получает. */
+  company: Pick<CompanyService, 'summary'>;
   clock: Clock;
   logger: Logger;
 }
@@ -87,7 +90,8 @@ type ManagerChange = Extract<Parameters<ChatsRepo['setStatus']>[1], { readonly s
  * передача уже есть) => выход, повтор ничего не дублирует. Статус при этом всё равно приводится в порядок: чат без
  * статуса manager уходит менеджеру, а чат, который передал бот, переходит к человеку, подключившемуся с телефона или
  * из панели; чат, который уже ведёт человек, статус не меняет (время перехвата остаётся первым). Затем уведомление
- * менеджеру через notifier (кроме human_took_over): kind 'handoff', для лимита 'limit' со своей квотой, и только
+ * менеджеру через notifier (кроме human_took_over): kind 'handoff' со сводкой о компании клиента (company.summary;
+ * сбой её чтения не мешает уведомлению), для лимита 'limit' со своей квотой и без компании, и только
  * потом фраза клиенту через outbox.sendHandoffNotice, а если в запросе есть text (сообщение модели, прошедшее проверки)
  * то этот текст через outbox.sendHandoffText вместо фразы (кроме human_took_over и limit; при исключении один повтор
  * через 5 с). Порядок такой, чтобы запись в manager_notifications не зависела от фразы: пока фраза ждёт повтор,
@@ -214,6 +218,7 @@ async function tellManager(deps: HandoffDeps, chat: Chat, request: NotifiedReque
       level: chat.level,
       profile: chat.profile,
       chatId: chat.id,
+      company: kind === 'handoff' ? companyOf(deps, chat.id) : null,
     });
     await deps.notifier.notify(kind, chat.id, text, { reason: request.reason });
   } catch (error: unknown) {
@@ -221,6 +226,22 @@ async function tellManager(deps: HandoffDeps, chat: Chat, request: NotifiedReque
       { err: error, chatId: chat.id, kind },
       'Уведомление менеджеру не записано: чат отмечен в панели',
     );
+  }
+}
+
+/**
+ * Сводка о компании для уведомления. Сбой чтения (база) передачу не останавливает: уведомление уходит без строк
+ * о компании, в лог только ID чата и имя ошибки. Сама сводка в лог не идёт.
+ */
+function companyOf(deps: HandoffDeps, chatId: ChatId): CompanySummary | null {
+  try {
+    return deps.company.summary(chatId);
+  } catch (error: unknown) {
+    deps.logger.warn(
+      { chatId, errorName: errorNameOf(error) },
+      'Сводка о компании не прочитана: уведомление менеджеру без неё',
+    );
+    return null;
   }
 }
 
