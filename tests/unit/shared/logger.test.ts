@@ -95,6 +95,29 @@ describe('shared/logger createLogger: redact', () => {
     expect(lines.join('')).not.toMatch(/sk-ant-secret|пароль-панели|текст клиента|Иван/);
   });
 
+  it('скрывает токен, сайты, почту и домен компании (данные почтового проекта) на любой глубине', () => {
+    const { logger, lines, records } = capture();
+
+    logger.info({
+      token: 'internal-token-value',
+      websites: ['https://sklad.kz'],
+      email: 'ivan@sklad.kz',
+      domain: 'sklad.kz',
+      endpoint: 'lookup',
+      profile: { kind: 'business', Websites: ['https://other.kz'], nested: { Domain: 'other.kz' } },
+    });
+
+    expect(records()[0]).toMatchObject({
+      token: HIDDEN,
+      websites: HIDDEN,
+      email: HIDDEN,
+      domain: HIDDEN,
+      endpoint: 'lookup',
+      profile: { kind: 'business', Websites: HIDDEN, nested: { Domain: HIDDEN } },
+    });
+    expect(lines.join('')).not.toMatch(/internal-token-value|sklad\.kz|other\.kz/);
+  });
+
   it('скрывает чувствительные ключи и глубже, в любом регистре', () => {
     const { logger, lines } = capture();
 

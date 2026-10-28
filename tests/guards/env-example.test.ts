@@ -84,6 +84,17 @@ describe('.env.example', () => {
     expect(example.get('WA_ENABLED')).toBe('false');
   });
 
+  it('связь с почтовым проектом: закрытый блок с тремя переменными, на значения по умолчанию он не влияет', () => {
+    const text = readFileSync(EXAMPLE_PATH, 'utf8');
+
+    expect(text).toMatch(/^# INTERNAL_API_TOKEN=$/m);
+    expect(text).toMatch(/^# EMAIL_API_URL=http:\/\/127\.0\.0\.1:8000$/m);
+    expect(text).toMatch(/^# EMAIL_UI_URL=$/m);
+    for (const name of ['INTERNAL_API_TOKEN', 'EMAIL_API_URL', 'EMAIL_UI_URL']) {
+      expect(example.has(name)).toBe(false);
+    }
+  });
+
   it('не упоминает стандартную переменную ключа SDK: проект её не читает', () => {
     expect(readFileSync(EXAMPLE_PATH, 'utf8')).not.toMatch(/ANTHROPIC_API_KEY/);
   });

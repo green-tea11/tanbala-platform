@@ -79,12 +79,17 @@ describe('config/env loadConfig: значения по умолчанию', () =
       limits: { apiCallsPerDay: 500, apiCallsPerChatPerDay: 100 },
       backlogMaxAgeHours: 12,
       testMode: { enabled: true, allowlist: new Set() },
+      companyApi: null,
+      emailUiUrl: null,
     });
     expect(warnings).toEqual([EMPTY_ALLOWLIST_WARNING]);
   });
 
   it('пустые значения и значения из пробелов считаются незаданными', () => {
     const blank = {
+      INTERNAL_API_TOKEN: ' ',
+      EMAIL_API_URL: '',
+      EMAIL_UI_URL: '  ',
       WA_ENABLED: '',
       TEST_MODE: '  ',
       API_DAILY_LIMIT: '',

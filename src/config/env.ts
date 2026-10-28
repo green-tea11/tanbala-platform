@@ -1,6 +1,12 @@
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import type { ApiLimits, LlmPurpose, PhoneDigits } from '../domain/types.js';
+import {
+  EMAIL_API_DEFAULT_URL,
+  INTERNAL_API_TOKEN_PATTERN,
+  parseEmailApiUrl,
+  parseEmailUiUrl,
+} from './company-settings.js';
 import { ConfigError } from './errors.js';
 
 /** Переменные окружения: имя и значение. */
@@ -24,6 +30,14 @@ export interface VoiceConfig {
 export type TestMode =
   | { readonly enabled: false }
   | { readonly enabled: true; readonly allowlist: ReadonlySet<PhoneDigits> };
+
+/** Внутренний API почтового проекта: адрес (только эта машина) и токен. Токен в логи и тексты ошибок не попадает. */
+export interface CompanyApiConfig {
+  /** EMAIL_API_URL после проверки: http, хост 127.0.0.1 или localhost, без пути и хвостового «/». */
+  readonly baseUrl: string;
+  /** INTERNAL_API_TOKEN: от 32 до 512 видимых символов ASCII. */
+  readonly token: string;
+}
 
 /** Проверенные настройки приложения. Все пути абсолютные, от корня проекта. */
 export interface AppConfig {
@@ -66,6 +80,10 @@ export interface AppConfig {
   readonly backlogMaxAgeHours: number;
   /** TEST_MODE и TEST_ALLOWLIST: закрытый режим на рабочем номере. */
   readonly testMode: TestMode;
+  /** INTERNAL_API_TOKEN и EMAIL_API_URL. null: токен не задан, определение компании выключено. */
+  readonly companyApi: CompanyApiConfig | null;
+  /** EMAIL_UI_URL без хвостового «/»: адрес интерфейса почтового проекта для ссылок менеджеру; null: не задан. */
+  readonly emailUiUrl: string | null;
 }
 
 /** Итог loadConfig: настройки и предупреждения для лога (без значений переменных). */
@@ -92,6 +110,7 @@ const DEFAULTS = {
   backlogMaxAgeHours: 12,
   panelHost: '127.0.0.1',
   panelPort: 3100,
+  emailApiUrl: EMAIL_API_DEFAULT_URL,
 } as const;
 
 /** Потолок порога простоя: год. Больше не нужно, и перевод в мс остаётся точным. */
@@ -126,6 +145,10 @@ const PROBLEMS = {
   modelsShape: 'нужен объект с полями reply, review, interest, logo, transcribe',
   customHeaders:
     'уберите переменную из окружения: SDK Anthropic подмешивает эти заголовки к запросам и может подменить ключ',
+  internalApiToken: 'от 32 до 512 видимых символов ASCII без пробелов',
+  emailApiUrl:
+    'адрес только по http, хост 127.0.0.1 или localhost, без логина, пароля, пути, параметров и якоря',
+  emailUiUrl: 'адрес по http или https, без логина, пароля, параметров и якоря',
 } as const;
 
 const WARNINGS = {
@@ -210,6 +233,18 @@ function allowlist() {
     });
 }
 
+/** Адрес, который parse приводит к виду без хвостового «/»; неверный: проблема без значения (в адресе бывают данные). */
+function normalizedUrl(parse: (value: string) => string | null, problem: string) {
+  return z.string().transform((value, ctx): string => {
+    const normalized = parse(value);
+    if (normalized === null) {
+      ctx.issues.push({ code: 'custom', message: problem, input: undefined });
+      return value;
+    }
+    return normalized;
+  });
+}
+
 /** Домены панели через запятую; неверный называется позицией в списке, сам значение не печатается. */
 function panelHosts() {
   return z
@@ -263,6 +298,15 @@ function envSchema(root: string) {
     PANEL_HOST: z.string().regex(NO_WHITESPACE, PROBLEMS.host).default(DEFAULTS.panelHost),
     PANEL_PORT: integerInRange(1, MAX_PORT, PROBLEMS.port).default(DEFAULTS.panelPort),
     PANEL_ALLOWED_HOSTS: panelHosts(),
+    // Пусто: связь с почтовым проектом выключена. Токен не показывается ни в проблемах, ни в логе.
+    INTERNAL_API_TOKEN: z
+      .string()
+      .regex(INTERNAL_API_TOKEN_PATTERN, PROBLEMS.internalApiToken)
+      .optional(),
+    EMAIL_API_URL: normalizedUrl(parseEmailApiUrl, PROBLEMS.emailApiUrl).default(
+      DEFAULTS.emailApiUrl,
+    ),
+    EMAIL_UI_URL: normalizedUrl(parseEmailUiUrl, PROBLEMS.emailUiUrl).optional(),
   });
 }
 
@@ -351,6 +395,11 @@ function buildConfig(env: EnvValues, models: ModelsValues, root: string): AppCon
     backlogMaxAgeHours: env.BACKLOG_MAX_AGE_HOURS,
     // Схема пропускает только TEST_MODE=true: закрытый режим включён всегда (до этапа 8).
     testMode: { enabled: true, allowlist: env.TEST_ALLOWLIST },
+    companyApi:
+      env.INTERNAL_API_TOKEN === undefined
+        ? null
+        : { baseUrl: env.EMAIL_API_URL, token: env.INTERNAL_API_TOKEN },
+    emailUiUrl: env.EMAIL_UI_URL ?? null,
   };
 }
 
@@ -365,6 +414,10 @@ function buildConfig(env: EnvValues, models: ModelsValues, root: string): AppCon
  * возвращаются в warnings: логгера на этом шаге ещё нет, их пишет в лог вызывающий.
  * voice собирается при непустом OPENROUTER_API_KEY, модель из ключа transcribe в config/models.json
  * (обязателен всегда, как модели Claude); без ключа voice null и расшифровка выключена.
+ * Связь с почтовым проектом: INTERNAL_API_TOKEN пуст => companyApi null и определение компании выключено; непустой:
+ * от 32 до 512 видимых символов ASCII без пробелов. EMAIL_API_URL (по умолчанию http://127.0.0.1:8000): только http
+ * и хост 127.0.0.1 или localhost, без логина, пароля, пути, параметров и якоря: токен не должен уйти с этой
+ * машины. EMAIL_UI_URL (необязательно): http или https без логина, пароля, параметров и якоря, хвостовой «/» убирается.
  * TODO(этап 3): стандартную переменную ключа SDK не читать никогда: ключ только из VENMART_ANTHROPIC_KEY.
  */
 export function loadConfig(env: EnvVars, modelsJson: unknown, root: string): LoadedConfig {
