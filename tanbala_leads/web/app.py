@@ -10,6 +10,7 @@ views (данные для шаблонов), internal (API для WhatsApp-бо
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import logging
 import secrets
@@ -508,6 +509,19 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
     return app
 
 
+def log_config() -> dict[str, Any]:
+    """Логи uvicorn как по умолчанию, но у путей /internal/... в access-логе нет строки запроса."""
+    config = copy.deepcopy(uvicorn.config.LOGGING_CONFIG)
+    config["filters"] = {"hide_internal_query": {"()": internal.HideInternalQuery}}
+    config["loggers"]["uvicorn.access"]["filters"] = ["hide_internal_query"]
+    return config
+
+
+def server_options(host: str, port: int) -> dict[str, Any]:
+    """Настройки uvicorn для serve(): без заголовков прокси и Server, логи через log_config()."""
+    return {"host": host, "port": port, "proxy_headers": False, "server_header": False, "log_config": log_config()}
+
+
 def serve(host: str = BIND_HOST, port: int = 8000) -> None:
     """Настоящее приложение: миграции, пометить прерванные запуски и проверки, uvicorn только на 127.0.0.1."""
     if host != BIND_HOST:
@@ -542,4 +556,4 @@ def serve(host: str = BIND_HOST, port: int = 8000) -> None:
         logger.warning("Внутренний API выключен: INTERNAL_API_TOKEN пустой или короче %s символов",
                        internal.MIN_TOKEN_CHARS)
     research_queue.kick()  # задачи, оставшиеся в очереди до перезапуска
-    uvicorn.run(app, host=host, port=port, proxy_headers=False, server_header=False)
+    uvicorn.run(app, **server_options(host, port))

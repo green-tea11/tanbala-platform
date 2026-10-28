@@ -3,10 +3,13 @@
 Контракт: ..\\D-Email+WhatsApp\\contract\\INTERNAL_API.md. Слушает только 127.0.0.1, как весь интерфейс.
 Токен X-Internal-Token проверяется первым: без него 401 на любой путь /internal/..., даже несуществующий.
 Ответы JSON, ошибки {"error": код}. Вход разбирается до соединения с базой: неверный запрос даёт 400, а не 503.
+В access-лог путь /internal/... попадает без строки запроса: в ней телефоны, почты и названия от клиентов бота.
 """
 
 import hmac
 import json
+import logging
+import re
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager
 
@@ -25,6 +28,8 @@ MIN_TOKEN_CHARS = 32
 MAX_BODY_BYTES = 4096
 # Ошибки до маршрута (нет пути, не тот метод): код по HTTP-статусу, остальное bad_request.
 STATUS_CODES = {401: "unauthorized", 404: "not_found", 503: "db_unavailable"}
+# Строка access-лога uvicorn: '%s - "%s %s HTTP/%s" %d', путь третий.
+ACCESS_LOG_ARGS = 5
 
 
 class InternalError(Exception):
@@ -36,9 +41,29 @@ class InternalError(Exception):
         self.code = code
 
 
-def is_internal(request: Request) -> bool:
-    path = request.url.path
+def is_internal_path(path: str) -> bool:
     return path == PREFIX or path.startswith(PREFIX + "/")
+
+
+def is_internal(request: Request) -> bool:
+    return is_internal_path(request.url.path)
+
+
+class HideInternalQuery(logging.Filter):
+    """Фильтр логгера uvicorn.access: у путей /internal/... строка запроса не пишется (?phone=… → ничего).
+
+    uvicorn пишет строку доступа с аргументами (адрес, метод, путь со строкой запроса, версия HTTP, статус).
+    Другие пути и записи не трогаются. Запись не отбрасывается.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) == ACCESS_LOG_ARGS and isinstance(args[2], str):
+            path = args[2].split("?", 1)[0]
+            # //internal/... uvicorn тоже пишет как есть: в логе не должно остаться и его телефона.
+            if path != args[2] and is_internal_path(re.sub("/{2,}", "/", path)):
+                record.args = (*args[:2], path, *args[3:])
+        return True
 
 
 def token_ok(configured: str | None, given: str | None) -> bool:
