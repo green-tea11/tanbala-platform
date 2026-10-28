@@ -11,6 +11,7 @@ import {
   classifyUpsert,
   MAX_PUSH_NAME_CHARS,
   MAX_TEXT_CHARS,
+  MAX_VERIFIED_NAME_CHARS,
   type ClassifyContext,
   type WaEvent,
 } from '../../../src/whatsapp/inbound.js';
@@ -102,6 +103,7 @@ describe('classifyUpsert: обычное сообщение клиента', () 
         waId: MESSAGE_ID,
         identity: { replyJid: CLIENT_PN, lidJid: null, pnJid: CLIENT_PN },
         pushName: 'Айгерим',
+        verifiedName: null,
         content: { kind: 'text', text: 'Здравствуйте' },
         tsMs: FRESH_SECONDS * 1000,
       },
@@ -873,6 +875,58 @@ describe('classifyUpsert: очистка имени из профиля', () => 
 
   it.each([undefined, null, '', '  ​ ', 42])('имя %j => null', (pushName) => {
     expect(cleanedName(pushName)).toBeNull();
+  });
+});
+
+describe('classifyUpsert: подтверждённое имя бизнес-аккаунта', () => {
+  const ZERO_WIDTH_SPACE = String.fromCodePoint(0x200b);
+  const NUL = String.fromCodePoint(0);
+  const FULLWIDTH_KZ = String.fromCodePoint(0xff2b, 0xff3a);
+  const EMOJI = String.fromCodePoint(0x1f600);
+
+  function verifiedName(verifiedBizName: unknown): string | null | undefined {
+    return inboundOf(classify({ verifiedBizName })).verifiedName;
+  }
+
+  it('берётся из verifiedBizName и несётся в сообщении клиента', () => {
+    expect(verifiedName('ТОО Ромашка')).toBe('ТОО Ромашка');
+  });
+
+  it('очищается так же, как имя из профиля: Cc, Cf, NFKC, пробелы по краям', () => {
+    const raw = `  Ромашка\n${ZERO_WIDTH_SPACE}${NUL} ${FULLWIDTH_KZ} `;
+
+    expect(verifiedName(raw)).toBe('Ромашка KZ');
+  });
+
+  it('лимит имени 100 символов после NFKC, суррогатные пары не рвутся', () => {
+    const name = verifiedName(EMOJI.repeat(150)) ?? '';
+
+    expect([...name]).toHaveLength(MAX_VERIFIED_NAME_CHARS);
+    expect(MAX_VERIFIED_NAME_CHARS).toBe(100);
+    expect(name).toBe(EMOJI.repeat(MAX_VERIFIED_NAME_CHARS));
+  });
+
+  it.each([
+    ['нет поля', undefined],
+    ['null', null],
+    ['пустая строка', ''],
+    ['пробелы и невидимое', `  ${ZERO_WIDTH_SPACE} `],
+    ['не строка', 42],
+  ])('%s => null', (_label, raw) => {
+    expect(verifiedName(raw)).toBeNull();
+  });
+
+  it('есть и у сообщения простоя (stale)', () => {
+    const event = classify({ messageTimestamp: STALE_SECONDS, verifiedBizName: 'Ромашка' });
+
+    expect(event.type).toBe('stale');
+    expect(inboundOf(event).verifiedName).toBe('Ромашка');
+  });
+
+  it('у своих сообщений имени нет: наружу оно не уходит', () => {
+    const own = classify({ verifiedBizName: 'Ромашка' }, { fromMe: true });
+
+    expect(JSON.stringify(own)).not.toContain('Ромашка');
   });
 });
 

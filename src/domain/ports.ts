@@ -104,7 +104,7 @@ export interface WhatsAppContacts {
 }
 
 /** Всё, что адаптер WhatsApp (whatsapp/connection.ts) даёт приложению. */
-export type WhatsAppGateway = MessageSender & WhatsAppInbox;
+export type WhatsAppGateway = MessageSender & WhatsAppInbox & WhatsAppContacts;
 
 /** Блок системного промпта. cache: true ставит точку кэша (cache_control) после блока. */
 export interface SystemBlock {

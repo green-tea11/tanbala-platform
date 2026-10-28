@@ -267,6 +267,128 @@ describe('createAnthropicLlm: запрос', () => {
   });
 });
 
+describe('createAnthropicLlm: картинка в запросе (вызов logo)', () => {
+  const PHOTO_BYTES = new Uint8Array([1, 2, 3, 250, 251, 252]);
+  const PHOTO_BASE64 = Buffer.from(PHOTO_BYTES).toString('base64');
+  const LOGO_REQUEST: StructuredRequest<Answer> = {
+    ...REQUEST,
+    purpose: 'logo',
+    turns: [{ role: 'user', text: 'Какое название компании на логотипе?' }],
+    image: { data: PHOTO_BYTES, mimeType: 'image/png' },
+  };
+
+  it('последняя реплика user уходит блоками: сначала картинка base64 с media_type, затем текст', async () => {
+    const { create, deps } = setup();
+
+    await createAnthropicLlm(deps).structured(LOGO_REQUEST);
+
+    expect(sentParams(create).messages).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: PHOTO_BASE64 },
+          },
+          { type: 'text', text: 'Какое название компании на логотипе?' },
+        ],
+      },
+    ]);
+  });
+
+  it('картинка только у последней реплики: прежние реплики остаются строками', async () => {
+    const { create, deps } = setup();
+
+    await createAnthropicLlm(deps).structured({
+      ...LOGO_REQUEST,
+      turns: [
+        { role: 'user', text: 'Первая реплика' },
+        { role: 'assistant', text: 'Ответ' },
+        { role: 'user', text: 'Последняя реплика' },
+      ],
+    });
+
+    const { messages } = sentParams(create);
+    expect(messages[0]).toEqual({ role: 'user', content: 'Первая реплика' });
+    expect(messages[1]).toEqual({ role: 'assistant', content: 'Ответ' });
+    expect(messages[2]).toEqual({
+      role: 'user',
+      content: [
+        expect.objectContaining({ type: 'image' }),
+        { type: 'text', text: 'Последняя реплика' },
+      ],
+    });
+  });
+
+  it.each(['image/jpeg', 'image/png', 'image/webp'] as const)(
+    'тип %s уходит в media_type как есть',
+    async (mimeType) => {
+      const { create, deps } = setup();
+
+      await createAnthropicLlm(deps).structured({
+        ...LOGO_REQUEST,
+        image: { data: PHOTO_BYTES, mimeType },
+      });
+
+      const content = sentParams(create).messages[0]?.content;
+      expect(Array.isArray(content) && content[0]).toMatchObject({
+        source: { type: 'base64', media_type: mimeType },
+      });
+    },
+  );
+
+  it('байты берутся ровно те, что в массиве: часть общего буфера (byteOffset) не тянет соседние', async () => {
+    const { create, deps } = setup();
+    const shared = new Uint8Array([9, 9, 1, 2, 3, 9, 9]);
+
+    await createAnthropicLlm(deps).structured({
+      ...LOGO_REQUEST,
+      image: { data: shared.subarray(2, 5), mimeType: 'image/jpeg' },
+    });
+
+    const content = sentParams(create).messages[0]?.content;
+    expect(Array.isArray(content) && content[0]).toMatchObject({
+      source: { data: Buffer.from([1, 2, 3]).toString('base64') },
+    });
+  });
+
+  it('без картинки все реплики остаются строками, как раньше', async () => {
+    const { create, deps } = setup();
+
+    await createAnthropicLlm(deps).structured(REQUEST);
+
+    expect(sentParams(create).messages.map((message) => typeof message.content)).toEqual([
+      'string',
+      'string',
+      'string',
+    ]);
+  });
+
+  it('вызов logo: effort low, модель из запроса, а в лог расхода идёт вид вызова logo', async () => {
+    const { create, records, deps } = setup();
+
+    const result = await createAnthropicLlm(deps).structured(LOGO_REQUEST);
+
+    expect(result).toEqual({ ok: true, value: { answer: 'Понял вас' } });
+    expect(sentParams(create).output_config?.effort).toBe('low');
+    expect(sentParams(create).model).toBe(MODEL);
+    expect(records).toEqual([
+      expect.objectContaining({ provider: 'anthropic', purpose: 'logo', model: MODEL, ok: true }),
+    ]);
+  });
+
+  it('сбой вызова с картинкой тоже пишется в расход с видом logo; в лог не попадают байты и base64', async () => {
+    const { create, records, entries, deps } = setup();
+    create.mockRejectedValueOnce(new APIConnectionError({ message: 'Connection error.' }));
+
+    const result = await createAnthropicLlm(deps).structured(LOGO_REQUEST);
+
+    expect(result).toEqual({ ok: false, failure: 'unavailable' });
+    expect(records).toEqual([expect.objectContaining({ purpose: 'logo', ok: false })]);
+    expect(JSON.stringify(entries)).not.toContain(PHOTO_BASE64);
+  });
+});
+
 describe('createAnthropicLlm: ответ', () => {
   it('возвращает значение по схеме из текстового блока и пишет расход (null в кэше => 0)', async () => {
     const { records, deps } = setup();

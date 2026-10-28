@@ -176,6 +176,38 @@ describe('createAnthropicLlm с настоящим SDK', () => {
     },
   );
 
+  it('вызов logo: картинка идёт блоком base64 перед текстом последней реплики, тело запроса по формату API', async () => {
+    const { sent, records, llm } = setup(() => jsonResponse(200, API_MESSAGE));
+    const photo = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+
+    const result = await llm.structured({
+      ...REQUEST,
+      purpose: 'logo',
+      turns: [{ role: 'user', text: 'Название компании на логотипе?' }],
+      image: { data: photo, mimeType: 'image/png' },
+    });
+
+    expect(result).toEqual({ ok: true, value: { answer: 'Добрый день' } });
+    expect(sent[0]?.body['messages']).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: 'image/png',
+              data: Buffer.from(photo).toString('base64'),
+            },
+          },
+          { type: 'text', text: 'Название компании на логотипе?' },
+        ],
+      },
+    ]);
+    expect(sent[0]?.body['output_config']).toMatchObject({ effort: 'low' });
+    expect(records[0]).toMatchObject({ purpose: 'logo', input: 15, output: 30 });
+  });
+
   it('без фабрики создаёт настоящий SDK; заблокированная сеть => unavailable после одной попытки', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
     const records: TokenUsageEntry[] = [];

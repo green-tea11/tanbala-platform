@@ -171,6 +171,8 @@ function fakeConnection(stop: () => Promise<void> = () => Promise.resolve()): {
     markRead: () => Promise.reject(new Error('этап 2 ничего не отмечает')),
     downloadAudio: () => Promise.reject(new Error('этап 7')),
     resolvePhone: () => Promise.resolve(null),
+    businessProfile: () => Promise.resolve({ kind: 'failed' }),
+    profilePhoto: () => Promise.resolve(null),
     stop: stopMock,
   };
   return { connection, stop: stopMock };

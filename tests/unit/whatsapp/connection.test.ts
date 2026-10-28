@@ -9,6 +9,7 @@ import type {
   BaileysEventMap,
   Chat,
   UserFacingSocketConfig,
+  WABusinessProfile,
   WAMessage,
   WAMessageKey,
 } from 'baileys';
@@ -48,6 +49,7 @@ import {
   MAX_RECONNECTS_PER_HOUR,
   STABLE_CONNECTION_MS,
 } from '../../../src/whatsapp/reconnect-policy.js';
+import type { ProfileFetch } from '../../../src/whatsapp/contacts.js';
 import { VERSION_FETCH_TIMEOUT_MS } from '../../../src/whatsapp/socket-config.js';
 import type { MediaDownload } from '../../../src/whatsapp/voice-media.js';
 
@@ -204,6 +206,8 @@ interface FakeSocket {
   readonly sendMessage: Mock<WaSocket['sendMessage']>;
   readonly sendPresenceUpdate: Mock<WaSocket['sendPresenceUpdate']>;
   readonly readMessages: Mock<WaSocket['readMessages']>;
+  readonly getBusinessProfile: Mock<WaSocket['getBusinessProfile']>;
+  readonly profilePictureUrl: Mock<WaSocket['profilePictureUrl']>;
   /** Есть ли подписчик: Baileys снимает обработчики при закрытии, адаптер отписывается сам. */
   listening(): boolean;
   emit(events: Partial<BaileysEventMap>): void;
@@ -253,6 +257,10 @@ function createFakeSocket(
   const sendMessage = vi.fn<WaSocket['sendMessage']>(() => Promise.resolve(undefined));
   const sendPresenceUpdate = vi.fn<WaSocket['sendPresenceUpdate']>(() => Promise.resolve());
   const readMessages = vi.fn<WaSocket['readMessages']>(() => Promise.resolve());
+  const getBusinessProfile = vi.fn<WaSocket['getBusinessProfile']>(() =>
+    Promise.resolve(undefined),
+  );
+  const profilePictureUrl = vi.fn<WaSocket['profilePictureUrl']>(() => Promise.resolve(undefined));
   const socket: WaSocket = {
     ev: {
       process: (next) => {
@@ -274,6 +282,8 @@ function createFakeSocket(
     sendMessage,
     sendPresenceUpdate,
     readMessages,
+    getBusinessProfile,
+    profilePictureUrl,
   };
   return {
     config,
@@ -283,6 +293,8 @@ function createFakeSocket(
     sendMessage,
     sendPresenceUpdate,
     readMessages,
+    getBusinessProfile,
+    profilePictureUrl,
     listening: () => handler !== undefined,
     emit,
     buffer: (events) => {
@@ -343,6 +355,7 @@ interface Harness {
   readonly onHistoryChats: Mock<(chats: readonly HistoryChat[]) => Promise<void>>;
   readonly onStopped: Mock<(reason: WhatsAppStopReason) => void | Promise<void>>;
   readonly downloadMedia: Mock<MediaDownload>;
+  readonly fetchPhoto: Mock<ProfileFetch>;
   socket(index: number): FakeSocket;
 }
 
@@ -395,6 +408,7 @@ function setup(options: SetupOptions = {}): Harness {
     ),
     onStopped: vi.fn<(reason: WhatsAppStopReason) => void | Promise<void>>(),
     downloadMedia: vi.fn<MediaDownload>(() => Promise.resolve(byteChunks('ogg', '-opus'))),
+    fetchPhoto: vi.fn<ProfileFetch>(() => Promise.reject(new Error('Фото не подготовлено'))),
     socket: (index: number): FakeSocket => {
       const fake = sockets[index];
       if (fake === undefined) throw new Error(`Сокет ${String(index)} не создан`);
@@ -426,6 +440,7 @@ function setup(options: SetupOptions = {}): Harness {
     classify: harness.classify,
     decide: harness.decide,
     downloadMedia: harness.downloadMedia,
+    fetchPhoto: harness.fetchPhoto,
   };
   return { ...harness, deps };
 }
@@ -1350,5 +1365,134 @@ describe('whatsapp/connection: шлюз этапа 3', () => {
     await expect(connection.downloadAudio('V2' as MediaRef, 1024)).rejects.toThrow('не найдено');
     await expect(connection.downloadAudio('V9' as MediaRef, 1024)).rejects.toThrow('не найдено');
     expect(h.downloadMedia).not.toHaveBeenCalled();
+  });
+});
+
+describe('whatsapp/connection: профиль собеседника (определение компании)', () => {
+  const ALLOWLIST: ReadonlySet<PhoneDigits> = new Set([CLIENT_PHONE as PhoneDigits]);
+  const PHOTO_URL = 'https://pps.whatsapp.net/v/t61/photo.jpg?ccb=1';
+
+  function businessProfile(): WABusinessProfile {
+    return {
+      description: 'Склад в Алматы',
+      email: 'info@sklad.kz',
+      business_hours: {},
+      website: ['https://sklad.kz'],
+    };
+  }
+
+  function photoResponse(): Response {
+    return new Response(new Uint8Array([1, 2, 3]), {
+      status: 200,
+      headers: { 'content-type': 'image/png' },
+    });
+  }
+
+  it('businessProfile: бизнес-аккаунт из TEST_ALLOWLIST: сайты и почта, запрос в сокет с адресом чата', async () => {
+    const h = setup({ testAllowlist: ALLOWLIST });
+    const connection = await startOpen(h);
+    h.socket(0).getBusinessProfile.mockResolvedValueOnce(businessProfile());
+
+    const result = await connection.businessProfile(CLIENT_PN as Jid);
+
+    expect(result).toEqual({
+      kind: 'business',
+      websites: ['https://sklad.kz'],
+      email: 'info@sklad.kz',
+    });
+    expect(h.socket(0).getBusinessProfile).toHaveBeenCalledExactlyOnceWith(CLIENT_PN);
+  });
+
+  it('businessProfile: обычный аккаунт => personal; сбой запроса => failed', async () => {
+    const h = setup();
+    const connection = await startOpen(h);
+    h.socket(0).getBusinessProfile.mockRejectedValueOnce(new Error('Connection Closed'));
+
+    expect(await connection.businessProfile(CLIENT_PN as Jid)).toEqual({ kind: 'failed' });
+    expect(await connection.businessProfile(CLIENT_PN as Jid)).toEqual({ kind: 'personal' });
+  });
+
+  it('profilePhoto: адрес с сервера WhatsApp, скачивание только по нему, байты и тип', async () => {
+    const h = setup({ testAllowlist: ALLOWLIST });
+    const connection = await startOpen(h);
+    h.socket(0).profilePictureUrl.mockResolvedValueOnce(PHOTO_URL);
+    h.fetchPhoto.mockResolvedValueOnce(photoResponse());
+
+    const photo = await connection.profilePhoto(CLIENT_PN as Jid, 1024);
+
+    expect(photo).toEqual({ data: new Uint8Array([1, 2, 3]), mimeType: 'image/png' });
+    expect(h.socket(0).profilePictureUrl).toHaveBeenCalledExactlyOnceWith(
+      CLIENT_PN,
+      'image',
+      10_000,
+    );
+    expect(h.fetchPhoto.mock.calls[0]?.[0]).toBe(PHOTO_URL);
+  });
+
+  it('закрытый режим: чат не из списка, менеджер и не личный чат: failed и null, сокет не тронут', async () => {
+    const h = setup({ testAllowlist: ALLOWLIST, managerPhone: MANAGER_PHONE });
+    const connection = await startOpen(h);
+
+    for (const jid of [OTHER_PN, MANAGER_PN, CLIENT_LID, GROUP]) {
+      expect(await connection.businessProfile(jid as Jid)).toEqual({ kind: 'failed' });
+      expect(await connection.profilePhoto(jid as Jid, 1024)).toBeNull();
+    }
+
+    expect(h.socket(0).getBusinessProfile).not.toHaveBeenCalled();
+    expect(h.socket(0).profilePictureUrl).not.toHaveBeenCalled();
+    expect(h.fetchPhoto).not.toHaveBeenCalled();
+  });
+
+  it('закрытый режим: @lid, номер которого из списка (по сопоставлению), проходит', async () => {
+    const h = setup({ testAllowlist: ALLOWLIST, pnForLid: { [CLIENT_LID]: CLIENT_PN } });
+    const connection = await startOpen(h);
+
+    expect(await connection.businessProfile(CLIENT_LID as Jid)).toEqual({ kind: 'personal' });
+    expect(h.socket(0).getBusinessProfile).toHaveBeenCalledExactlyOnceWith(CLIENT_LID);
+  });
+
+  it('без закрытого режима проверяется только личный чат', async () => {
+    const h = setup();
+    const connection = await startOpen(h);
+
+    expect(await connection.businessProfile(OTHER_PN as Jid)).toEqual({ kind: 'personal' });
+    expect(await connection.businessProfile(GROUP as Jid)).toEqual({ kind: 'failed' });
+    expect(h.socket(0).getBusinessProfile).toHaveBeenCalledExactlyOnceWith(OTHER_PN);
+  });
+
+  it('после остановки подключения запросов к WhatsApp нет', async () => {
+    const h = setup();
+    const connection = await startOpen(h);
+    await connection.stop();
+
+    expect(await connection.businessProfile(CLIENT_PN as Jid)).toEqual({ kind: 'failed' });
+    expect(await connection.profilePhoto(CLIENT_PN as Jid, 1024)).toBeNull();
+    expect(h.socket(0).getBusinessProfile).not.toHaveBeenCalled();
+    expect(h.socket(0).profilePictureUrl).not.toHaveBeenCalled();
+  });
+
+  it('шлюз профиля ничего не отправляет: ни сообщений, ни «печатает», ни отметок прочтения', async () => {
+    const h = setup();
+    const connection = await startOpen(h);
+    h.socket(0).profilePictureUrl.mockResolvedValueOnce(PHOTO_URL);
+    h.fetchPhoto.mockResolvedValueOnce(photoResponse());
+
+    await connection.businessProfile(CLIENT_PN as Jid);
+    await connection.profilePhoto(CLIENT_PN as Jid, 1024);
+
+    expect(h.socket(0).sendMessage).not.toHaveBeenCalled();
+    expect(h.socket(0).sendPresenceUpdate).not.toHaveBeenCalled();
+    expect(h.socket(0).readMessages).not.toHaveBeenCalled();
+  });
+
+  it('без своей подмены скачивание идёт через глобальный fetch (в тестах он заблокирован): null', async () => {
+    const h = setup();
+    const connection = await start({ ...h.deps, fetchPhoto: undefined });
+    h.socket(0).emit({ 'connection.update': { connection: 'open' } });
+    h.socket(0).profilePictureUrl.mockResolvedValueOnce(PHOTO_URL);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    expect(await connection.profilePhoto(CLIENT_PN as Jid, 1024)).toBeNull();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 });

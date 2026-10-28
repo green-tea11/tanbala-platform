@@ -19,6 +19,7 @@ import type {
   PhoneDigits,
   WaMessageId,
 } from '../domain/types.js';
+import { cleanUntrusted, INVISIBLE, INVISIBLE_EXCEPT_NEWLINE } from '../shared/untrusted-text.js';
 import { jidToPhone, normalizeJid, phoneToJid } from './jid.js';
 
 /**
@@ -109,6 +110,9 @@ export const MAX_TEXT_CHARS = 4096;
 /** Лимит имени из профиля WhatsApp в символах после NFKC. */
 export const MAX_PUSH_NAME_CHARS = 64;
 
+/** Лимит подтверждённого имени бизнес-аккаунта (verifiedBizName) в символах после NFKC: названия компаний длиннее. */
+export const MAX_VERIFIED_NAME_CHARS = 100;
+
 /** Тип голосовых WhatsApp: подставляется вместо пустого или подозрительного типа от отправителя. */
 const DEFAULT_VOICE_MIME_TYPE = 'audio/ogg; codecs=opus';
 const MAX_MIME_TYPE_CHARS = 100;
@@ -122,11 +126,6 @@ const MS_PER_SECOND = 1000;
 
 /** Заглушка «не расшифровалось или ждёт пересылки с телефона»: считается и попадает в known_chats. */
 const CIPHERTEXT_STUB = proto.WebMessageInfo.StubType.CIPHERTEXT;
-
-/** Управляющие Cc и невидимые Cf: zero-width, U+FEFF, мягкий перенос, bidi U+202A..U+202E и U+2066..U+2069. */
-const INVISIBLE = /[\p{Cc}\p{Cf}]/gu;
-/** То же, но перенос строки в тексте клиента остаётся. */
-const INVISIBLE_EXCEPT_NEWLINE = /(?!\n)[\p{Cc}\p{Cf}]/gu;
 
 /**
  * Служебное содержимое: удаления и правки (protocolMessage; обёртку editedMessage снимает
@@ -210,6 +209,7 @@ export function classifyUpsert(message: WAMessage, context: ClassifyContext): Wa
     waId,
     identity: identityOf(chatJid, altJid, context.chatPhone),
     pushName: cleanUntrusted(message.pushName, INVISIBLE, MAX_PUSH_NAME_CHARS),
+    verifiedName: cleanUntrusted(message.verifiedBizName, INVISIBLE, MAX_VERIFIED_NAME_CHARS),
     content: parsedContent,
     tsMs,
   };
@@ -322,27 +322,4 @@ function voiceMimeType(raw: string | null | undefined): string {
 /** Длительность со слов отправителя: целое число секунд не меньше 0, иначе null. */
 function voiceSeconds(raw: number | null | undefined): number | null {
   return typeof raw === 'number' && Number.isInteger(raw) && raw >= 0 ? raw : null;
-}
-
-/**
- * Недоверенный текст (сообщение, имя из профиля): удалить Cc и Cf, затем NFKC, обрезать пробелы,
- * затем лимит в символах. Удаление идёт до NFKC: после неё могла бы остаться ненормализованная
- * последовательность (e, U+200B, U+0301), а сама NFKC символов Cc и Cf не порождает (проверено
- * по всем кодовым точкам в Node 22). Лимит после NFKC: она удлиняет строку (U+FDFA даёт 18 символов).
- * Пусто после очистки или не строка: null.
- */
-function cleanUntrusted(
-  raw: string | null | undefined,
-  invisible: RegExp,
-  maxChars: number,
-): string | null {
-  if (typeof raw !== 'string') return null;
-  const cleaned = limitChars(raw.replace(invisible, '').normalize('NFKC').trim(), maxChars);
-  return cleaned === '' ? null : cleaned;
-}
-
-/** Обрезает до maxChars кодовых точек, не разрывая суррогатные пары. */
-function limitChars(text: string, maxChars: number): string {
-  if (text.length <= maxChars) return text;
-  return Array.from(text).slice(0, maxChars).join('').trimEnd();
 }

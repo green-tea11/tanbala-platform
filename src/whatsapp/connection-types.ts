@@ -2,6 +2,7 @@ import type {
   AuthenticationState,
   BaileysEventMap,
   UserFacingSocketConfig,
+  WABusinessProfile,
   WAMessage,
   WAMessageKey,
   WAVersion,
@@ -15,6 +16,7 @@ import type {
 } from '../domain/ports.js';
 import type { Jid, PhoneDigits, WaMessageId } from '../domain/types.js';
 import { SafeError } from '../shared/safe-error.js';
+import type { ProfileFetch } from './contacts.js';
 import type { ClassifyContext, WaEvent } from './inbound.js';
 import type { QrPresenter } from './qr.js';
 import type { DisconnectContext, ReconnectDecision } from './reconnect.js';
@@ -50,6 +52,20 @@ export interface WaSocket {
   sendPresenceUpdate(type: 'composing' | 'paused', toJid: string): Promise<void>;
   /** Отметка о прочтении. */
   readMessages(keys: WAMessageKey[]): Promise<void>;
+  /**
+   * Бизнес-профиль собеседника (запрос на чтение). Обычный аккаунт: undefined. Нет сети или WhatsApp отказал:
+   * исключение. Ответ недоверенный: поля читает адаптер (whatsapp/contacts.ts), а не код выше.
+   */
+  getBusinessProfile(jid: string): Promise<WABusinessProfile | void>;
+  /**
+   * Адрес фото профиля на сервере WhatsApp (type 'image': полный размер). Фото нет: undefined; скрыто настройками
+   * или не найдено: исключение с кодом 401 или 404. timeoutMs: срок ожидания ответа WhatsApp.
+   */
+  profilePictureUrl(
+    jid: string,
+    type?: 'preview' | 'image',
+    timeoutMs?: number,
+  ): Promise<string | undefined>;
 }
 
 /** Сессия Baileys из папки авторизации и её сохранение после creds.update. */
@@ -142,6 +158,8 @@ export interface WhatsAppDeps {
   decide?: (context: DisconnectContext) => ReconnectDecision;
   /** Скачивание голосового потоком; по умолчанию whatsapp/voice-media.createWhatsAppAudioDownload. */
   downloadMedia?: MediaDownload;
+  /** Скачивание фото профиля (whatsapp/contacts.ts); по умолчанию глобальный fetch. */
+  fetchPhoto?: ProfileFetch;
 }
 
 /** Подключённый номер: шлюз для приложения плюс остановка. */

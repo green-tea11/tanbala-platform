@@ -2,8 +2,10 @@ import { Anthropic, APIError, RateLimitError, type ClientOptions } from '@anthro
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import type {
   ContentBlock,
+  ContentBlockParam,
   Message,
   MessageCreateParamsNonStreaming,
+  MessageParam,
   OutputConfig,
   TextBlock,
   TextBlockParam,
@@ -12,6 +14,7 @@ import type {
 import type {
   CallBudget,
   Clock,
+  ImageInput,
   LlmClient,
   Logger,
   StructuredRequest,
@@ -101,6 +104,35 @@ function toSystemParam(block: SystemBlock): TextBlockParam {
 }
 
 /**
+ * Реплика с картинкой: блоки [картинка base64 с media_type, затем текст]. Байты берутся по byteOffset и byteLength:
+ * массив может быть частью общего буфера.
+ */
+function withImage(image: ImageInput, text: string): ContentBlockParam[] {
+  const { data } = image;
+  return [
+    {
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: image.mimeType,
+        data: Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString('base64'),
+      },
+    },
+    { type: 'text', text },
+  ];
+}
+
+/** Реплики запроса; картинка (вызов logo) только у последней реплики user, остальные реплики строками. */
+function toMessages<T>(request: StructuredRequest<T>): MessageParam[] {
+  const lastIndex = request.turns.length - 1;
+  return request.turns.map(({ role, text }, index) => ({
+    role,
+    content:
+      index === lastIndex && request.image !== undefined ? withImage(request.image, text) : text,
+  }));
+}
+
+/**
  * Без temperature, top_p, top_k, prefill и thinking: Haiku 5.5 и Sonnet 5.5 отвечают на них ошибкой 400 (для thinking
  * это значение disabled). Модель берётся из запроса, привязки к одной модели здесь нет.
  */
@@ -109,7 +141,7 @@ function toParams<T>(request: StructuredRequest<T>): MessageCreateParamsNonStrea
     model: request.model,
     max_tokens: request.maxTokens,
     system: request.system.map(toSystemParam),
-    messages: request.turns.map(({ role, text }) => ({ role, content: text })),
+    messages: toMessages(request),
     output_config: { format: zodOutputFormat(request.schema), effort: EFFORT[request.purpose] },
   };
 }
@@ -242,6 +274,8 @@ async function callStructured<T>(sdk: Anthropic, call: CallContext<T>): Promise<
  * разбора => invalid_output; RateLimitError => rate_limited; сеть, тайм-аут, 5xx и прочие ошибки => unavailable.
  * Повторов здесь нет: повтор делает вызывающий новым вызовом structured, и он тоже проходит лимит и лог расхода.
  * cache_control { type: 'ephemeral' } ставится на блоки system с cache: true (последний блок знаний).
+ * Картинка (StructuredRequest.image, вызов logo): последняя реплика user уходит блоками [картинка base64 с media_type,
+ * затем текст]; расход пишется с видом вызова из запроса (logo), как у остальных.
  * TODO(этап 3): TTL кэша 1 час решать по логу токенов.
  * TODO(этап 3): переход на SDK 1.x решить после карантина 7 дней для новых версий.
  */

@@ -20,6 +20,7 @@ import {
   type WhatsAppDeps,
   type WhatsAppStopReason,
 } from './connection-types.js';
+import { createWhatsAppContacts, type ContactsSocket } from './contacts.js';
 import { classifyUpsert } from './inbound.js';
 import { isPersonalJid } from './jid.js';
 import { createLidResolver, type LidResolver } from './lid-resolver.js';
@@ -147,6 +148,10 @@ class SessionSaveFailedError extends Error {
  * TTL и потолок, в базу не пишется), запоминается сразу после разбора и только для события client; downloadAudio
  * качает потоком только по directPath с сервера медиа WhatsApp (url отправителя не используется), обрывает на maxBytes
  * и по сроку; не нашлось => ошибка, конвейер ответит фразой про голосовое.
+ * Профиль собеседника (определение компании): businessProfile и profilePhoto (whatsapp/contacts.ts) только читают
+ * профиль и ничего не отправляют; адрес проверяется так же, как перед «печатает» (личный чат, в закрытом режиме номер
+ * из TEST_ALLOWLIST), поэтому у чужого чата профиль не запрашивается; не прошёл проверку или нет подключения => failed
+ * у businessProfile и null у profilePhoto, без обращения к WhatsApp.
  * TODO(этап 8): часы VPS синхронизировать (chrony): при отстающих или спешащих часах свежие сообщения уйдут в before_link или stale.
  * TODO(этап 8): на VPS права 700 на папку сессии, новая привязка, сессию не копировать.
  */
@@ -215,6 +220,12 @@ function resolveSeams(deps: WhatsAppDeps): Seams {
 }
 
 function createConnection(session: Session): WhatsAppConnection {
+  const contacts = createWhatsAppContacts({
+    socketFor: (jid) => contactsSocket(session, jid),
+    clock: session.deps.clock,
+    logger: session.deps.logger,
+    fetch: session.deps.fetchPhoto,
+  });
   return {
     newMessageId: () => generateMessageIDV2(session.link?.sock.user?.id) as WaMessageId,
     sendText: async (jid, text, messageId) => {
@@ -232,6 +243,8 @@ function createConnection(session: Session): WhatsAppConnection {
     },
     downloadAudio: (media, maxBytes) => session.voices.download(media, maxBytes),
     resolvePhone: (jid) => session.link?.resolver.phoneOf(jid) ?? Promise.resolve(null),
+    businessProfile: (jid) => contacts.businessProfile(jid),
+    profilePhoto: (jid, maxBytes) => contacts.profilePhoto(jid, maxBytes),
     stop: () => stopSession(session),
   };
 }
@@ -254,6 +267,19 @@ async function allowedSocket(session: Session, jid: Jid, audience: Audience): Pr
     throw new Error('Закрытый режим: чат не из TEST_ALLOWLIST, действие WhatsApp отменено');
   }
   return link.sock;
+}
+
+/**
+ * Сокет для чтения профиля собеседника (whatsapp/contacts.ts): та же проверка, что у «печатает» и отметки прочтения
+ * (личный чат, в закрытом режиме номер из TEST_ALLOWLIST), поэтому профиль чужого чата не запрашивается. Не прошёл
+ * проверку или нет подключения: null, и запроса нет.
+ */
+async function contactsSocket(session: Session, jid: Jid): Promise<ContactsSocket | null> {
+  try {
+    return await allowedSocket(session, jid, 'client');
+  } catch {
+    return null;
+  }
 }
 
 function connectedLink(session: Session): Link {
