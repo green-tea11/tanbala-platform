@@ -90,10 +90,15 @@ const MERGE_USAGE = `INSERT INTO api_usage (day, chat_id, count)
   ON CONFLICT (day, chat_id) DO UPDATE SET count = api_usage.count + excluded.count`;
 
 /**
- * Состояние определения компании: у оставшегося чата записи нет => запись слитого переходит к нему, есть => остаётся
- * своя, а запись слитого удаляется ниже (OR IGNORE: конфликт по первичному ключу chat_id пропускает перенос). ID чата
- * в самом JSON нет, поэтому после переноса запись читается уже как запись оставшегося чата.
+ * Состояние определения компании: остаётся запись с более поздним временем записи (в ней последний ответ клиента,
+ * например подтверждённая компания), при равном времени запись оставшегося чата. Сначала удаляется более старая
+ * запись оставшегося чата, затем запись слитого переходит к нему (OR IGNORE: если своя запись осталась, конфликт по
+ * первичному ключу chat_id пропускает перенос, а запись слитого удаляется ниже). ID чата в самом JSON нет, поэтому
+ * после переноса запись читается уже как запись оставшегося чата.
  */
+const DROP_OLDER_COMPANY_STATE = `DELETE FROM chat_companies WHERE chat_id = @survivor
+  AND updated_at < (SELECT updated_at FROM chat_companies WHERE chat_id = @absorbed)`;
+
 const MOVE_COMPANY_STATE =
   'UPDATE OR IGNORE chat_companies SET chat_id = @survivor WHERE chat_id = @absorbed';
 
@@ -112,6 +117,7 @@ const ABSORB_STEPS: readonly string[] = [
   CLOSE_DUPLICATE_HANDOFF,
   'UPDATE handoffs SET chat_id = @survivor WHERE chat_id = @absorbed',
   'UPDATE manager_notifications SET chat_id = @survivor WHERE chat_id = @absorbed',
+  DROP_OLDER_COMPANY_STATE,
   MOVE_COMPANY_STATE,
   'DELETE FROM chat_companies WHERE chat_id = @absorbed',
   'UPDATE OR IGNORE messages SET chat_id = @survivor WHERE chat_id = @absorbed',

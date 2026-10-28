@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { BusinessProfileResult } from '../../../src/domain/ports.js';
 import type { ChatIdentity } from '../../../src/domain/types.js';
 import { CLIENT_JID, makeChat } from '../handoff/fakes.js';
-import { companyIdOf, makeCandidate, makeChatCandidate, makeState } from './builders.js';
+import { companyIdOf, makeCandidate, makeChatCandidate, makeState, NOW } from './builders.js';
 import { createHarness, LID_JID, lookupBy, makeMessage, ok } from './fakes.js';
 
 // Шаги а, б и в: бизнес-профиль и домен, номер, имя профиля. Каждый ищет через lookup ровно по одному признаку.
@@ -33,7 +33,9 @@ describe('prepare: шаг а, бизнес-профиль и домен', () => 
     expect(h.repo.current()).toEqual(
       makeState({
         profileKind: 'business',
+        profileRequests: 1,
         profileDomain: 'sklad.kz',
+        freeStepsAtMs: NOW,
         candidate: makeChatCandidate({ source: 'profile_domain' }),
       }),
     );
@@ -113,13 +115,18 @@ describe('prepare: шаг а, бизнес-профиль и домен', () => 
     expect(h.repo.current()).toMatchObject({ profileKind: 'personal', profileDomain: null });
   });
 
-  it('профиль не получен: unknown, поиск продолжается с номера', async () => {
+  it('профиль не получен: unknown, поиск продолжается с номера, шаги не засчитаны (профиль спросят снова)', async () => {
     const h = createHarness({ contacts: { profile: { kind: 'failed' } } });
 
     await h.service.prepare(makeChat(), []);
 
     expect(h.directory.lookups().map((query) => query.by)).toEqual(['phone']);
-    expect(h.repo.current()).toMatchObject({ profileKind: 'unknown', profileDomain: null });
+    expect(h.repo.current()).toMatchObject({
+      profileKind: 'unknown',
+      profileRequests: 1,
+      profileDomain: null,
+      freeStepsAtMs: null,
+    });
   });
 
   const IDENTITIES: readonly (readonly [string, ChatIdentity, string])[] = [

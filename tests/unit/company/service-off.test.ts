@@ -121,7 +121,7 @@ describe('сервис компании: функция выключена', () 
       state: makeState({ candidate: makeChatCandidate() }),
     });
 
-    h.service.markAsked(CHAT_ID, question);
+    h.service.markAsked(CHAT_ID, question, 'Вы из компании Платформа-А?');
 
     expect(h.repo.saves).toEqual([]);
   });

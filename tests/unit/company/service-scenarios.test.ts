@@ -17,6 +17,8 @@ interface Reply {
   readonly mention?: CompanyMention | null;
   /** О чём спросил ответ бота. */
   readonly question?: CompanyQuestion;
+  /** Отправленный текст ответа бота. */
+  readonly sent?: string;
   readonly messages?: readonly InboundMessage[];
   readonly chat?: Chat;
 }
@@ -33,7 +35,7 @@ async function conversation(h: Harness, reply: Reply = {}): Promise<Outcome> {
   const chat = reply.chat ?? makeChat();
   const turn = await h.service.prepare(chat, reply.messages ?? [makeMessage()]);
   const prompt = await h.service.applyAssessment(chat.id, reply.mention ?? null);
-  h.service.markAsked(chat.id, reply.question ?? 'none');
+  h.service.markAsked(chat.id, reply.question ?? 'none', reply.sent ?? 'Понял вас.');
   await h.service.identifyAfterReply(chat);
   return { turn, prompt };
 }
@@ -66,7 +68,7 @@ describe('сценарий: найден по домену, номер скры�
     expect(first.turn.awaitingAnswer).toBe(false);
     expect(h.directory.lookups().map((query) => query.by)).toEqual(['domain']);
     expect(second.turn).toEqual({
-      prompt: { kind: 'asked', name: 'Платформа-А', city: 'Алматы' },
+      prompt: { kind: 'asked', name: 'Платформа-А', city: 'Алматы', awaitingAnswer: true },
       awaitingAnswer: true,
     });
     expect(second.prompt).toEqual({
@@ -189,6 +191,42 @@ describe('сценарий: «нет, это не мы»', () => {
   });
 });
 
+describe('сценарий: окно ответа на «Вы из компании X?»', () => {
+  it('клиент не ответил на вопрос, а потом сказал «да» на другой вопрос: компания не подтверждена', async () => {
+    const h = createHarness({
+      directory: { lookup: lookupBy({ phone: BY_PHONE }), brief: () => ok(BRIEF) },
+    });
+
+    await conversation(h, { question: 'confirm', sent: 'Вы из компании Платформа-А, правильно?' });
+    const ignored = await conversation(h, {
+      mention: NO_ANSWER,
+      sent: 'Хотите, расскажу подробнее?',
+    });
+    const later = await conversation(h, { mention: YES });
+
+    expect(ignored.turn.awaitingAnswer).toBe(true);
+    expect(later.turn).toEqual({
+      prompt: { kind: 'asked', name: 'Платформа-А', city: 'Алматы', awaitingAnswer: false },
+      awaitingAnswer: false,
+    });
+    expect(later.prompt.kind).toBe('asked');
+    expect(h.repo.current().confirmed).toBeNull();
+    expect(h.directory.count('brief')).toBe(0);
+  });
+
+  it('модель не отметила вопрос, но спросила название кандидата: следующее «да» подтверждает', async () => {
+    const h = createHarness({
+      directory: { lookup: lookupBy({ phone: BY_PHONE }), brief: () => ok(BRIEF) },
+    });
+
+    await conversation(h, { sent: 'Подскажите, вы из «Платформа-А»?' });
+    const yes = await conversation(h, { mention: YES });
+
+    expect(yes.turn.awaitingAnswer).toBe(true);
+    expect(yes.prompt).toMatchObject({ kind: 'confirmed', name: 'Платформа-А' });
+  });
+});
+
 describe('сценарий: неизвестная компания, проверка, справка, подтверждение', () => {
   it('research => справка => кандидат => «да» => confirmed со справкой', async () => {
     const brief = makeBrief({ id: companyIdOf(51), name: 'Гамма-Склад', city: 'Астана' });
@@ -217,7 +255,7 @@ describe('сценарий: неизвестная компания, прове�
     expect(first.turn.prompt).toEqual({ kind: 'unknown', askName: true });
     expect(second.turn.prompt).toEqual({ kind: 'unknown', askName: false });
     expect(h.directory.calls.find((call) => call.method === 'startResearch')).toMatchObject({
-      request: { name: 'Гамма', city: 'Астана', phone: '77000000001', domain: null },
+      request: { name: 'Гамма', city: 'Астана', phone: null, domain: null },
     });
     expect(third.turn.prompt).toEqual({ kind: 'searching' });
     expect(fourth.turn.prompt).toEqual({
@@ -320,7 +358,7 @@ describe('сценарий: API проекта B недоступен', () => {
     const up = await conversation(h, { question: 'confirm' });
 
     expect(down.turn).toEqual({
-      prompt: { kind: 'unknown', askName: true },
+      prompt: { kind: 'unknown', askName: false },
       awaitingAnswer: false,
     });
     expect(h.contacts.count('businessProfile')).toBe(1);

@@ -349,7 +349,7 @@ describe('слияние чатов: состояние определения �
     expect(db.prepare('SELECT chat_id FROM chat_companies').pluck().all()).toEqual([survivor.id]);
   });
 
-  it('запись есть у обоих: остаётся своя запись оставшегося чата, запись слитого пропадает', () => {
+  it('запись есть у обоих, у слитого свежее: остаётся она (подтверждённая компания не теряется)', () => {
     const { db, chats, survivor, absorbed } = pair();
     const { repo } = companies(db);
     repo.save(makeState({ chatId: survivor.id, statedName: 'Своя' }), T0 + 10);
@@ -357,10 +357,36 @@ describe('слияние чатов: состояние определения �
 
     merge(chats);
 
+    expect(repo.get(survivor.id)).toEqual(confirmedState(survivor.id));
+    expect(db.prepare('SELECT chat_id, updated_at FROM chat_companies').all()).toEqual([
+      { chat_id: survivor.id, updated_at: T0 + 20 },
+    ]);
+  });
+
+  it('запись есть у обоих, у оставшегося свежее: остаётся своя, запись слитого пропадает', () => {
+    const { db, chats, survivor, absorbed } = pair();
+    const { repo } = companies(db);
+    repo.save(confirmedState(absorbed.id), T0 + 10);
+    repo.save(makeState({ chatId: survivor.id, statedName: 'Своя' }), T0 + 20);
+
+    merge(chats);
+
     expect(repo.get(survivor.id)).toEqual(makeState({ chatId: survivor.id, statedName: 'Своя' }));
     expect(db.prepare('SELECT chat_id, updated_at FROM chat_companies').all()).toEqual([
-      { chat_id: survivor.id, updated_at: T0 + 10 },
+      { chat_id: survivor.id, updated_at: T0 + 20 },
     ]);
+  });
+
+  it('запись есть у обоих с одним временем записи: остаётся своя запись оставшегося чата', () => {
+    const { db, chats, survivor, absorbed } = pair();
+    const { repo } = companies(db);
+    repo.save(makeState({ chatId: survivor.id, statedName: 'Своя' }), T0 + 10);
+    repo.save(confirmedState(absorbed.id), T0 + 10);
+
+    merge(chats);
+
+    expect(repo.get(survivor.id)).toEqual(makeState({ chatId: survivor.id, statedName: 'Своя' }));
+    expect(db.prepare('SELECT count(*) FROM chat_companies').pluck().get()).toBe(1);
   });
 
   it('запись только у оставшегося чата не меняется', () => {
@@ -385,7 +411,7 @@ describe('слияние чатов: состояние определения �
     expect(logs).toEqual([]);
   });
 
-  it('три чата с записями у двух младших: остаётся запись более старшего из них', () => {
+  it('три чата с записями у двух младших: остаётся запись с более поздним временем записи', () => {
     const db = useMigratedDb();
     const chats = createChatsRepo(db);
     const { repo } = companies(db);
@@ -398,7 +424,7 @@ describe('слияние чатов: состояние определения �
 
     chats.upsertByIdentity({ replyJid: hosted, lidJid: LID_A, pnJid: PN_A }, null, MERGE_AT);
 
-    expect(repo.get(oldest).statedName).toBe('Из среднего');
+    expect(repo.get(oldest).statedName).toBe('Из младшего');
     expect(db.prepare('SELECT count(*) FROM chat_companies').pluck().get()).toBe(1);
     expect(db.pragma('foreign_key_check')).toEqual([]);
   });

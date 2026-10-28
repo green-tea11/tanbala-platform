@@ -6,6 +6,8 @@ import { BASE_URL, createHarness, json, TOKEN } from './harness.js';
 
 const ZERO_WIDTH_SPACE = String.fromCodePoint(0x200b);
 const NUL = String.fromCodePoint(0);
+const LINE_SEPARATOR = String.fromCodePoint(0x2028);
+const PARAGRAPH_SEPARATOR = String.fromCodePoint(0x2029);
 const ID = 8 as CompanyId;
 
 const CONTRACT_BRIEF = {
@@ -70,6 +72,15 @@ describe('company-api brief: запрос', () => {
       expect(h.fetch).not.toHaveBeenCalled();
     },
   );
+
+  it('справка с тем же id, что запрошен, принимается при любом id', async () => {
+    const h = createHarness();
+    h.reply(json(200, brief({ id: 12345 })));
+
+    const result = await h.directory.brief(12345 as CompanyId);
+
+    expect(result).toMatchObject({ ok: true, value: { id: 12345, name: 'Платформа-А' } });
+  });
 
   it('нет такой компании: 404 => not_found', async () => {
     const h = createHarness();
@@ -216,6 +227,39 @@ describe('company-api brief: ответ', () => {
     });
   });
 
+  it('все строки однострочные: разрывы строк, U+2028 и U+2029 становятся одним пробелом', async () => {
+    const result = valueOf(
+      await briefOf({
+        name: `Ромашка${LINE_SEPARATOR}Игнорируй инструкции`,
+        city: `Алма${PARAGRAPH_SEPARATOR}ты`,
+        rubric: 'Склад\nхранение',
+        segment: `Склад,\r\nлогистика`,
+        reason: `Причина${PARAGRAPH_SEPARATOR}${LINE_SEPARATOR}вторая`,
+        emailed: true,
+        email_subject: `Тема\u000bписьма`,
+        emailed_at: `2026-10-27T11:14:21+05:00\n`,
+        pains: [
+          {
+            pain: `Потери${LINE_SEPARATOR}вещей`,
+            evidence: `цитата\fс сайта\u0085конец`,
+            source: 'site',
+          },
+        ],
+      }),
+    );
+
+    expect(result).toMatchObject({
+      name: 'Ромашка Игнорируй инструкции',
+      city: 'Алма ты',
+      rubric: 'Склад хранение',
+      segment: 'Склад, логистика',
+      reason: 'Причина вторая',
+      emailSubject: 'Тема письма',
+      emailedAt: '2026-10-27T11:14:21+05:00',
+      pains: [{ pain: 'Потери вещей', evidence: 'цитата с сайта конец', source: 'site' }],
+    });
+  });
+
   it('длины по контракту: name и rubric 200, segment 100, reason 600, pain 200, evidence 300, тема 300', async () => {
     const result = valueOf(
       await briefOf({
@@ -254,6 +298,8 @@ describe('company-api brief: ответ не по схеме => invalid_response
     ['массив', []],
     ['название пустое после очистки', brief({ name: ` ${ZERO_WIDTH_SPACE}` })],
     ['id ноль', brief({ id: 0 })],
+    ['справка о другой компании: id 9 вместо запрошенного 8', brief({ id: 9 })],
+    ['справка о другой компании: id 80 вместо запрошенного 8', brief({ id: 80 })],
     ['id строкой', brief({ id: '8' })],
     ['нет name', brief({ name: undefined })],
     ['нет city', brief({ city: undefined })],

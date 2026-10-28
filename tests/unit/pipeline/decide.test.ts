@@ -184,6 +184,48 @@ describe('pipeline/decide: сообщение передачи (hot, no_answer, 
   );
 });
 
+describe('pipeline/decide: hot после вопроса цены (aboutPrice)', () => {
+  const PRICED: TextDraft = { outcome: 'hot', text: HANDOFF_TEXT, aboutPrice: true };
+
+  it('hot без текста с aboutPrice: передача hot с пометкой, фраза о цене', () => {
+    expect(
+      decideAction({
+        kind: 'handoff_outcome',
+        draft: { outcome: 'hot', text: '', aboutPrice: true },
+      }),
+    ).toEqual({ kind: 'handoff', reason: 'hot', aboutPrice: true });
+  });
+
+  it('hot с aboutPrice, провал на попытке 2: пометка остаётся, текста нет', () => {
+    const decision = decideAction(withText(PRICED, CODE_FAILED, 2));
+
+    expect(decision).toEqual({ kind: 'handoff', reason: 'hot', aboutPrice: true });
+    expect(decision).not.toHaveProperty('text');
+  });
+
+  it('hot с aboutPrice, проверки пройдены: уходит текст модели, пометка не нужна', () => {
+    expect(decideAction(withText(PRICED, PASSED))).toEqual({
+      kind: 'handoff',
+      reason: 'hot',
+      text: HANDOFF_TEXT as ReviewedText,
+    });
+  });
+
+  it.each<[string, Extract<ReplyDraft, { outcome: ReplyHandoffOutcome }>]>([
+    ['hot с aboutPrice false', { outcome: 'hot', text: '', aboutPrice: false }],
+    ['hot без поля (подделка LLM)', { outcome: 'hot', text: '' }],
+    ['no_answer с aboutPrice', { outcome: 'no_answer', text: '', aboutPrice: true }],
+    ['asked_human с aboutPrice', { outcome: 'asked_human', text: '', aboutPrice: true }],
+  ])('%s: пометки нет, обычная фраза по причине', (_case, draft) => {
+    const expected = { kind: 'handoff', reason: draft.outcome };
+
+    expect(decideAction({ kind: 'handoff_outcome', draft })).toEqual(expected);
+    expect(decideAction({ kind: 'handoff_outcome', draft })).not.toHaveProperty('aboutPrice');
+    expect(decideAction(withText(draft, REVIEW_FAILED, 2))).toEqual(expected);
+    expect(decideAction(withText(draft, REVIEW_FAILED, 2))).not.toHaveProperty('aboutPrice');
+  });
+});
+
 describe('pipeline/decide: без проверки текст не уходит', () => {
   const FAILED_GATES: readonly [string, DraftGate][] = [
     ['проверки кодом не пройдены', CODE_FAILED],

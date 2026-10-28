@@ -20,7 +20,7 @@ function instruction(purpose: 'review' | 'interest'): string {
 describe('вопрос цены: проверка и оценка интереса', () => {
   it('проверка не отклоняет «цена сильно зависит от объёма» и фразу передачи владельца', () => {
     const text = instruction('review');
-    expect(text).toMatch(/без чисел «цена сильно зависит от объёма»/);
+    expect(text).toMatch(/без чисел [^\n]*«цена сильно зависит от объёма»/);
     expect(text).toContain(`в сообщении о передаче «${PRICE_HANDOFF}»`);
   });
 
@@ -45,7 +45,7 @@ describe('knowledge/whatsapp.md: вопрос цены', () => {
     expect(whatsapp).toContain('### Вопрос цены');
     expect(whatsapp).toMatch(/Клиент спросил цену впервые[^\n]*чат не передавай/);
     expect(whatsapp).toMatch(
-      /спроси «Вы из компании X\?», а после ответа напиши одно сообщение о трудности/,
+      /Если в блоке данных сказано спросить о компании, спроси это \(один раз за разговор\), а после ответа напиши одно сообщение о трудности/,
     );
     expect(whatsapp).toContain(`напиши «${PRICE_HANDOFF}» и передай чат`);
     expect(whatsapp).toMatch(/Клиент спрашивает цену второй раз или настаивает: передай чат сразу/);

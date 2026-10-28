@@ -5,10 +5,12 @@ import type {
   CompanyBrief,
   CompanyCandidate,
   CompanyMention,
+  CompanyQuestion,
   ResearchState,
 } from '../domain/company.js';
 import type { BusinessProfileResult } from '../domain/ports.js';
 import { clipText } from './clip-text.js';
+import { normalizeName } from './normalize-name.js';
 import { domainFromProfile } from './profile-domain.js';
 
 /** Длина названия и города со слов клиента: как ограничивает их проект B. */
@@ -25,21 +27,30 @@ export function isRunning(research: ResearchState | null): research is RunningRe
   return research?.status === 'queued' || research?.status === 'running';
 }
 
+/** Кандидат найден по шагам а, б, в или д, а не по словам клиента: если клиент назвал другую компанию, верят ему. */
+const NOT_FROM_CLIENT: ReadonlySet<CandidateSource> = new Set([
+  'profile_domain',
+  'phone',
+  'profile_name',
+  'logo',
+]);
+
 /**
- * Итог запроса бизнес-профиля (шаг а): вид аккаунта и домен компании из сайтов и почты. Запрос не удался: вид
- * unknown (второй раз профиль не запрашивается), домена нет.
+ * Итог запроса бизнес-профиля (шаг а): вид аккаунта и домен компании из сайтов и почты, запрос засчитан. Запрос не
+ * удался: вид unknown, домена нет (повтор решает prepare).
  */
 export function withProfile(
   state: ChatCompanyState,
   profile: BusinessProfileResult,
 ): ChatCompanyState {
+  const counted = { ...state, profileRequests: state.profileRequests + 1 };
   switch (profile.kind) {
     case 'business':
-      return { ...state, profileKind: 'business', profileDomain: domainFromProfile(profile) };
+      return { ...counted, profileKind: 'business', profileDomain: domainFromProfile(profile) };
     case 'personal':
-      return { ...state, profileKind: 'personal', profileDomain: null };
+      return { ...counted, profileKind: 'personal', profileDomain: null };
     case 'failed':
-      return { ...state, profileKind: 'unknown', profileDomain: null };
+      return { ...counted, profileKind: 'unknown', profileDomain: null };
   }
 }
 
@@ -88,14 +99,36 @@ export function confirmCandidate(state: ChatCompanyState, nowMs: number): ChatCo
   };
 }
 
-/** Клиент сказал «нет, это не мы»: ID в отклонённые (без повтора), кандидат сброшен. */
-export function rejectCandidate(state: ChatCompanyState): ChatCompanyState {
+/**
+ * Клиент сказал «нет, это не мы»: ID в отклонённые (без повтора), кандидат сброшен. Бесплатные шаги а, б, в и
+ * логотип больше не идут (уже записанное время не меняется): дальше один вопрос о названии.
+ */
+export function rejectCandidate(state: ChatCompanyState, nowMs: number): ChatCompanyState {
   const { candidate } = state;
   if (candidate === null) return state;
   const rejectedIds = state.rejectedIds.includes(candidate.id)
     ? state.rejectedIds
     : [...state.rejectedIds, candidate.id];
-  return { ...state, candidate: null, rejectedIds };
+  return {
+    ...state,
+    candidate: null,
+    rejectedIds,
+    freeStepsAtMs: state.freeStepsAtMs ?? nowMs,
+    logoCheckedAtMs: state.logoCheckedAtMs ?? nowMs,
+  };
+}
+
+/**
+ * Клиент сам назвал компанию, а кандидат найден не по его словам (профиль, номер, логотип), ещё не спрошен и
+ * называется иначе (после нормализации): кандидат снимается без отклонения, поиск пойдёт по словам клиента.
+ * Бесплатные шаги больше не идут, иначе они снова нашли бы того же кандидата.
+ */
+export function dropForeignCandidate(state: ChatCompanyState, nowMs: number): ChatCompanyState {
+  const { candidate, statedName } = state;
+  if (candidate === null || statedName === null || candidate.askedAtMs !== null) return state;
+  if (!NOT_FROM_CLIENT.has(candidate.source)) return state;
+  if (normalizeName(statedName) === normalizeName(candidate.name)) return state;
+  return { ...state, candidate: null, freeStepsAtMs: state.freeStepsAtMs ?? nowMs };
 }
 
 /** Бот спросил «Вы из компании X?»: время вопроса и ожидание ответа. Спрошенного кандидата не трогает. */
@@ -103,6 +136,32 @@ export function markCandidateAsked(state: ChatCompanyState, nowMs: number): Chat
   const { candidate } = state;
   if (candidate === null || candidate.askedAtMs !== null) return state;
   return { ...state, candidate: { ...candidate, askedAtMs: nowMs, awaitingAnswer: true } };
+}
+
+/** В тексте есть название кандидата целыми словами (без регистра, кавычек и форм собственности). */
+function mentionsName(text: string, name: string): boolean {
+  const wanted = normalizeName(name);
+  return wanted !== '' && ` ${normalizeName(text)} `.includes(` ${wanted} `);
+}
+
+/**
+ * Ответ бота ушёл клиенту. Кандидат ещё не спрошен, а модель отметила вопрос confirm или в тексте его название:
+ * вопрос задан, ждём ответа. Иначе ожидание прошлого вопроса снимается (ответ на пачку ушёл, «да» или «нет» в ней
+ * не было), и вопрос больше не задаётся. name: время вопроса о названии (его по тексту не угадываем).
+ */
+export function afterReplySent(
+  state: ChatCompanyState,
+  question: CompanyQuestion,
+  sentText: string,
+  nowMs: number,
+): ChatCompanyState {
+  const { candidate } = state;
+  const asks =
+    candidate !== null &&
+    candidate.askedAtMs === null &&
+    (question === 'confirm' || mentionsName(sentText, candidate.name));
+  const marked = asks ? markCandidateAsked(state, nowMs) : stopAwaiting(state);
+  return question === 'name' ? markNameAsked(marked, nowMs) : marked;
 }
 
 /** Клиент не ответил на вопрос о кандидате: ожидание снимается, и вопрос больше не задаётся. */

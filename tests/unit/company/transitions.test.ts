@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  afterReplySent,
   candidateFromBrief,
   candidateFromLookup,
   confirmCandidate,
+  dropForeignCandidate,
   isRunning,
   markCandidateAsked,
   markNameAsked,
@@ -102,28 +104,184 @@ describe('confirmCandidate', () => {
 });
 
 describe('rejectCandidate', () => {
-  it('ID кандидата уходит в отклонённые, кандидат сброшен', () => {
+  it('ID кандидата в отклонённые, кандидат сброшен, бесплатные шаги и логотип закрыты: дальше вопрос о названии', () => {
     const state = deepFreeze(
       makeState({ candidate: makeChatCandidate(), rejectedIds: [companyIdOf(3)] }),
     );
 
-    expect(rejectCandidate(state)).toEqual({
+    expect(rejectCandidate(state, NOW)).toEqual({
       ...state,
       candidate: null,
       rejectedIds: [companyIdOf(3), companyIdOf(8)],
+      freeStepsAtMs: NOW,
+      logoCheckedAtMs: NOW,
+    });
+  });
+
+  it('время пройденных шагов и проверки логотипа не перезаписывается', () => {
+    const state = makeState({
+      candidate: makeChatCandidate(),
+      freeStepsAtMs: NOW - 20,
+      logoCheckedAtMs: NOW - 10,
+    });
+
+    expect(rejectCandidate(state, NOW)).toMatchObject({
+      freeStepsAtMs: NOW - 20,
+      logoCheckedAtMs: NOW - 10,
     });
   });
 
   it('повторно один ID не записывается', () => {
     const state = makeState({ candidate: makeChatCandidate(), rejectedIds: [companyIdOf(8)] });
 
-    expect(rejectCandidate(state).rejectedIds).toEqual([companyIdOf(8)]);
+    expect(rejectCandidate(state, NOW).rejectedIds).toEqual([companyIdOf(8)]);
   });
 
   it('кандидата нет: состояние то же', () => {
     const state = makeState({ rejectedIds: [companyIdOf(3)] });
 
-    expect(rejectCandidate(state)).toBe(state);
+    expect(rejectCandidate(state, NOW)).toBe(state);
+  });
+});
+
+describe('dropForeignCandidate: клиент сам назвал другую компанию', () => {
+  it.each(['profile_domain', 'phone', 'profile_name', 'logo'] as const)(
+    'кандидат из источника %s, ещё не спрошен, название другое: снят без отклонения, шаги закрыты',
+    (source) => {
+      const state = deepFreeze(
+        makeState({ statedName: 'Бета', candidate: makeChatCandidate({ source }) }),
+      );
+
+      expect(dropForeignCandidate(state, NOW)).toEqual({
+        ...state,
+        candidate: null,
+        freeStepsAtMs: NOW,
+      });
+    },
+  );
+
+  it('время пройденных шагов не перезаписывается', () => {
+    const state = makeState({
+      statedName: 'Бета',
+      freeStepsAtMs: NOW - 5,
+      candidate: makeChatCandidate({ source: 'phone' }),
+    });
+
+    expect(dropForeignCandidate(state, NOW)).toMatchObject({
+      candidate: null,
+      freeStepsAtMs: NOW - 5,
+      rejectedIds: [],
+    });
+  });
+
+  it.each([
+    [
+      'то же название без учёта регистра, кавычек и формы собственности',
+      { statedName: 'ТОО «платформа-а»' },
+    ],
+    ['клиент компанию не называл', { statedName: null }],
+    ['кандидат уже спрошен', { candidate: makeChatCandidate({ source: 'phone', askedAtMs: NOW }) }],
+    ['кандидат найден по словам клиента', { candidate: makeChatCandidate({ source: 'message' }) }],
+    [
+      'кандидат из проверки по словам клиента',
+      { candidate: makeChatCandidate({ source: 'research' }) },
+    ],
+    ['кандидата нет', { candidate: null }],
+  ] as const)('%s: состояние то же', (_label, overrides) => {
+    const state = makeState({
+      statedName: 'Бета',
+      candidate: makeChatCandidate({ source: 'phone' }),
+      ...overrides,
+    });
+
+    expect(dropForeignCandidate(state, NOW)).toBe(state);
+  });
+});
+
+describe('afterReplySent: ответ ушёл клиенту', () => {
+  const UNASKED = makeChatCandidate({ name: 'ТОО «Платформа-А»' });
+  const WAITING = makeChatCandidate({ askedAtMs: NOW - 10, awaitingAnswer: true });
+
+  it('confirm при ещё не спрошенном кандидате: время вопроса и ожидание ответа', () => {
+    const state = deepFreeze(makeState({ candidate: UNASKED }));
+
+    expect(afterReplySent(state, 'confirm', 'Подскажите, вы из какой сферы?', NOW)).toEqual({
+      ...state,
+      candidate: { ...UNASKED, askedAtMs: NOW, awaitingAnswer: true },
+    });
+  });
+
+  it.each([
+    ['кавычки и регистр другие', 'Вы из компании "платформа-а", правильно?'],
+    ['без формы собственности, с городом', 'Платформа А, Алматы, верно?'],
+    ['название посреди фразы со знаками', 'Скажите, вы из Платформа-А? Всё верно?'],
+  ])(
+    'модель не отметила вопрос, но в тексте название кандидата (%s): вопрос засчитан',
+    (_label, text) => {
+      const state = makeState({ candidate: UNASKED });
+
+      expect(afterReplySent(state, 'none', text, NOW).candidate).toEqual({
+        ...UNASKED,
+        askedAtMs: NOW,
+        awaitingAnswer: true,
+      });
+    },
+  );
+
+  it('название кандидата только частью слова: не вопрос', () => {
+    const state = makeState({ candidate: makeChatCandidate({ name: 'Альфа' }) });
+
+    expect(afterReplySent(state, 'none', 'Работаем с компанией Альфатех', NOW)).toBe(state);
+  });
+
+  it('название из одних форм собственности ни с чем не совпадает', () => {
+    const state = makeState({ candidate: makeChatCandidate({ name: 'ТОО' }) });
+
+    expect(afterReplySent(state, 'none', 'ТОО', NOW)).toBe(state);
+  });
+
+  it.each(['none', 'name', 'confirm'] as const)(
+    'кандидат ждал ответа, ушёл ответ %s: ожидание снято, вопрос больше не задаётся',
+    (question) => {
+      const state = makeState({ candidate: WAITING });
+
+      expect(afterReplySent(state, question, 'Платформа-А, верно?', NOW).candidate).toEqual({
+        ...WAITING,
+        awaitingAnswer: false,
+      });
+    },
+  );
+
+  it('name: время вопроса о названии', () => {
+    const state = deepFreeze(makeState());
+
+    expect(afterReplySent(state, 'name', 'Из какой вы компании?', NOW)).toEqual({
+      ...state,
+      nameAskedAtMs: NOW,
+    });
+  });
+
+  it('name при ждущем кандидате: ожидание снято и время вопроса о названии записано', () => {
+    const state = makeState({ candidate: WAITING });
+
+    expect(afterReplySent(state, 'name', 'Из какой вы компании?', NOW)).toMatchObject({
+      candidate: { awaitingAnswer: false },
+      nameAskedAtMs: NOW,
+    });
+  });
+
+  it('модель не отметила вопрос о названии: ничего не угадываем', () => {
+    const state = makeState();
+
+    expect(afterReplySent(state, 'none', 'Из какой вы компании?', NOW)).toBe(state);
+  });
+
+  it('ничего не изменилось: то же состояние', () => {
+    const asked = makeState({ candidate: makeChatCandidate({ askedAtMs: NOW - 10 }) });
+    const noCandidate = makeState();
+
+    expect(afterReplySent(asked, 'confirm', 'Платформа-А', NOW)).toBe(asked);
+    expect(afterReplySent(noCandidate, 'confirm', 'Платформа-А', NOW)).toBe(noCandidate);
   });
 });
 
@@ -199,7 +357,16 @@ describe('withProfile', () => {
         websites: ['https://www.sklad.kz/about'],
         email: null,
       }),
-    ).toEqual({ ...state, profileKind: 'business', profileDomain: 'sklad.kz' });
+    ).toEqual({ ...state, profileKind: 'business', profileDomain: 'sklad.kz', profileRequests: 1 });
+  });
+
+  it('каждый запрос профиля считается: после сбоя запрос повторяют, но не бесконечно', () => {
+    const state = makeState({ profileKind: 'unknown', profileRequests: 2 });
+
+    expect(withProfile(state, { kind: 'failed' })).toMatchObject({
+      profileKind: 'unknown',
+      profileRequests: 3,
+    });
   });
 
   it('бизнес-аккаунт без подходящего домена: домен null', () => {

@@ -78,10 +78,14 @@ export type HandoffReason =
  * stopRequested: клиент просит больше не писать, тогда только извинение.
  * Перехват человеком и лимит идут без фразы клиенту, поэтому их здесь нет.
  * Проверенное сообщение модели при hot, no_answer и asked_human идёт отдельным путём (HandOffRequest.text) и
- * заменяет фразу; повод остаётся тем же.
+ * заменяет фразу; повод остаётся тем же. aboutPrice у hot: клиент спрашивал цену (решил вызов ответа), фраза
+ * тогда ровно «Цена сильно зависит от объёма. Передал ваш вопрос специалисту, он вам напишет.»; нет поля => false.
  */
 export type HandoffNotice =
-  | { readonly reason: Exclude<HandoffReason, 'human_took_over' | 'complaint' | 'limit'> }
+  | {
+      readonly reason: Exclude<HandoffReason, 'human_took_over' | 'complaint' | 'limit' | 'hot'>;
+    }
+  | { readonly reason: 'hot'; readonly aboutPrice?: boolean }
   | { readonly reason: 'complaint'; readonly stopRequested: boolean };
 
 /** Какой дневной лимит вызовов API исчерпан: одного чата или всего бота. */
@@ -259,7 +263,15 @@ export type ReplyDraft =
       /** О чём из компании спросил ответ (вопрос задаётся один раз); нет поля => ни о чём. */
       readonly companyQuestion?: CompanyQuestion;
     }
-  | { readonly outcome: ReplyHandoffOutcome; readonly text: string }
+  | {
+      readonly outcome: ReplyHandoffOutcome;
+      readonly text: string;
+      /**
+       * Клиент в последних сообщениях спрашивал цену или стоимость; нет поля => false (подделки LLM в тестах его
+       * не пишут). У hot с фиксированной фразой клиенту уходит фраза о цене (HandoffNotice).
+       */
+      readonly aboutPrice?: boolean;
+    }
   | { readonly outcome: Extract<HandoffReason, 'complaint'>; readonly stopRequested: boolean };
 
 /** Итог проверки черновика вторым вызовом LLM: нет ли фактов не из знаний, цен, скидок, сроков, объёмов. */

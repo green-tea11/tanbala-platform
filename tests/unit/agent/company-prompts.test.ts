@@ -17,7 +17,13 @@ function instruction(purpose: 'reply' | 'review' | 'interest' | 'logo'): string 
 describe('инструкции: компания клиента', () => {
   it('ответ: о компании только по данным, один раз, только в answer, без объяснения, откуда известно', () => {
     const text = instruction('reply');
-    expect(text).toContain('Верни JSON с полями outcome, text, stopRequested и companyQuestion.');
+    expect(text).toContain(
+      'Верни JSON с полями outcome, text, stopRequested, companyQuestion и aboutPrice.',
+    );
+    expect(text).toMatch(/aboutPrice: true, если клиент в последних сообщениях спрашивал цену/);
+    expect(text).toMatch(
+      /Строки о компании клиента в блоке данных точнее общих правил whatsapp\.md о компании/,
+    );
     expect(text).toMatch(/что уже известно о клиенте и его компании/);
     expect(text).toMatch(
       /один раз и только в исходе answer: этот вопрос и будет единственным вопросом/,
@@ -71,7 +77,10 @@ describe('knowledge/whatsapp.md: компания клиента', () => {
 
   it('раздел о компании: вопрос один раз, с городом, если клиент назвал сам, «писали» только по справке', () => {
     expect(whatsapp).toContain('## Компания клиента');
-    expect(whatsapp).toContain('один раз спроси: «Вы из компании X, правильно?»');
+    expect(whatsapp).toContain('один раз за разговор спроси: «Вы из компании X, правильно?»');
+    expect(whatsapp).toContain(
+      'Если в блоке данных нет строк о компании, о компании не спрашивай.',
+    );
     expect(whatsapp).toContain('спроси с городом: «X, Алматы, верно?»');
     expect(whatsapp).toMatch(/Если клиент ответил «нет», эту компанию больше не предлагай/);
     expect(whatsapp).toMatch(

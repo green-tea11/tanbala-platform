@@ -270,6 +270,11 @@ describe('pipeline/handle-inbound: передача менеджеру (чере
       { reason: 'hot', replyToWaId: 'A2' as WaMessageId },
     ],
     [
+      'горячий клиент спросил цену, текста нет: фраза о цене',
+      { outcome: 'hot', text: '', aboutPrice: true },
+      { reason: 'hot', aboutPrice: true, replyToWaId: 'A2' as WaMessageId },
+    ],
+    [
       'жалоба с просьбой не писать',
       { outcome: 'complaint', stopRequested: true },
       { reason: 'complaint', stopRequested: true, replyToWaId: 'A2' as WaMessageId },
@@ -282,7 +287,7 @@ describe('pipeline/handle-inbound: передача менеджеру (чере
       const outcome = await run(h, batchOf([text('A1'), text('A2')]));
 
       expect(outcome).toEqual({ kind: 'handed_off', reason: draft.outcome });
-      expect(h.handOff).toHaveBeenCalledWith(CHAT_ID, request);
+      expect(h.handOff.mock.calls).toStrictEqual([[CHAT_ID, request]]);
       expect(h.calls).toEqual([
         'read:A1,A2',
         'draft',

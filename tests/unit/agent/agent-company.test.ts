@@ -138,7 +138,9 @@ describe('reviewDraft и assessInterest: компания клиента', () =>
   it('оценка интереса видит, что бот спросил «Вы из компании X?»', async () => {
     const { requests, agent } = agentWith({ ok: true, value: RAW });
 
-    await agent.assessInterest(context({ company: { kind: 'asked', name: 'Альфа', city: null } }));
+    await agent.assessInterest(
+      context({ company: { kind: 'asked', name: 'Альфа', city: null, awaitingAnswer: true } }),
+    );
 
     expect(lastTurn(requests)).toContain(
       'Бот спросил клиента, из компании ли он «Альфа». По сообщениям клиента после этого вопроса определи companyAnswer',
@@ -148,9 +150,73 @@ describe('reviewDraft и assessInterest: компания клиента', () =>
   it('оценка интереса без вопроса: companyAnswer none', async () => {
     const { requests, agent } = agentWith({ ok: true, value: RAW });
 
-    await agent.assessInterest(context());
+    await agent.assessInterest(context({ company: CANDIDATE }));
 
-    expect(lastTurn(requests)).toContain('companyAnswer none');
+    expect(lastTurn(requests)).toContain(
+      'Бот не ждёт ответа на вопрос «Вы из компании X?»: companyAnswer none.',
+    );
+  });
+});
+
+describe('draftReply и reviewDraft: боли справки только из документа владельца', () => {
+  const OWNER = [
+    '# Tanbala: что должен знать агент',
+    '## 5. Что болит у клиентов',
+    '- Пересорт при отгрузке',
+    '- Долгая инвентаризация',
+  ].join('\n');
+  const CONFIRMED: CompanyPrompt = {
+    kind: 'confirmed',
+    name: 'Альфа',
+    rubric: 'Склады',
+    pains: [' пересорт при отгрузке ', 'Выдуманная боль', 'ДОЛГАЯ ИНВЕНТАРИЗАЦИЯ', '   '],
+    emailed: false,
+  };
+
+  function ownerAgent(answer: LlmResult<unknown>) {
+    const { requests, llm } = fakeLlm(answer);
+    const knowledge = { ...KNOWLEDGE, owner: OWNER };
+    return { requests, agent: createAgent({ llm, knowledge, models: MODELS }) };
+  }
+
+  it('вызов ответа: боли, которых нет в документе, модели не передаются', async () => {
+    const { requests, agent } = ownerAgent({
+      ok: true,
+      value: { outcome: 'answer', text: 'Добрый день.', stopRequested: false },
+    });
+    const ctx = context({ company: CONFIRMED });
+
+    await agent.draftReply(ctx);
+
+    const data = lastTurn(requests);
+    expect(data).toContain('похожих компаний: пересорт при отгрузке; ДОЛГАЯ ИНВЕНТАРИЗАЦИЯ.');
+    expect(data).not.toContain('Выдуманная боль');
+    expect(ctx.company).toBe(CONFIRMED);
+    expect(CONFIRMED.kind === 'confirmed' && CONFIRMED.pains).toHaveLength(4);
+  });
+
+  it('вызов проверки: те же боли, что у ответа', async () => {
+    const { requests, agent } = ownerAgent({ ok: true, value: { ok: true, problems: [] } });
+
+    await agent.reviewDraft(context({ company: CONFIRMED }), 'Добрый день.');
+
+    const data = lastTurn(requests);
+    expect(data).toContain('похожих компаний: пересорт при отгрузке; ДОЛГАЯ ИНВЕНТАРИЗАЦИЯ.');
+    expect(data).not.toContain('Выдуманная боль');
+  });
+
+  it('ни одной боли из документа: строки о трудностях нет, рубрика остаётся', async () => {
+    const { requests, agent } = ownerAgent({
+      ok: true,
+      value: { outcome: 'answer', text: 'Добрый день.', stopRequested: false },
+    });
+
+    await agent.draftReply(context({ company: { ...CONFIRMED, pains: ['Выдуманная боль'] } }));
+
+    const data = lastTurn(requests);
+    expect(data).toContain('Рубрика: Склады.');
+    expect(data).not.toContain('Трудности');
+    expect(data).not.toContain('Выдуманная боль');
   });
 });
 

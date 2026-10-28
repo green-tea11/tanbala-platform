@@ -247,7 +247,8 @@ type PlainReason = 'hot' | 'no_answer' | 'check_failed' | 'asked_human' | 'llm_e
 
 /** Запрос передачи с фразой клиенту, кроме жалобы (у неё свой параметр). */
 function plainRequest(reason: PlainReason): HandOffRequest {
-  return { reason, replyToWaId: IN_1 };
+  const notice: HandoffNotice = { reason };
+  return { ...notice, replyToWaId: IN_1 };
 }
 
 function controlAfter(change: StatusChange): ChatControl {
@@ -299,6 +300,28 @@ describe('createHandoffService: handOff с фразой клиенту', () => {
         text: notificationFor({ reason: 'hot' }),
         context: { reason: 'hot' },
       },
+    ]);
+  });
+
+  it('hot после вопроса цены: фраза с пометкой aboutPrice, уведомление как у hot', async () => {
+    const h = setup();
+
+    await h.service.handOff(CHAT_ID, { reason: 'hot', aboutPrice: true, replyToWaId: IN_1 });
+
+    expect(h.events).toEqual(FULL_FLOW);
+    expect(h.notices).toStrictEqual([
+      { chatId: CHAT_ID, notice: { reason: 'hot', aboutPrice: true }, replyToWaId: IN_1 },
+    ]);
+    expect(h.notifications[0]?.text).toBe(notificationFor({ reason: 'hot' }));
+  });
+
+  it('hot с aboutPrice false: в фразе пометки нет', async () => {
+    const h = setup();
+
+    await h.service.handOff(CHAT_ID, { reason: 'hot', aboutPrice: false, replyToWaId: IN_1 });
+
+    expect(h.notices).toStrictEqual([
+      { chatId: CHAT_ID, notice: { reason: 'hot' }, replyToWaId: IN_1 },
     ]);
   });
 

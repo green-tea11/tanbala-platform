@@ -14,7 +14,7 @@ import { identifyChat } from './identify.js';
 import { prepareTurn } from './prepare.js';
 import { buildPrompt, OFF_PROMPT } from './prompt.js';
 import { buildOffSummary, buildSummary } from './summary.js';
-import { markCandidateAsked, markNameAsked } from './transitions.js';
+import { afterReplySent } from './transitions.js';
 
 /** Зависимости сервиса определения компании. */
 export interface CompanyDeps {
@@ -35,13 +35,19 @@ function resolved<T>(work: () => T): Promise<T> {
   });
 }
 
-/** Бот спросил о компании: кандидат (один раз) или название (один раз). Другое ничего не меняет. */
-function markAsked(env: CompanyEnv, chatId: ChatId, question: CompanyQuestion): void {
-  if (question === 'none') return;
+/**
+ * Ответ ушёл клиенту: вопрос о кандидате (один раз, в том числе по названию в тексте) или о названии (один раз),
+ * иначе снимается ожидание ответа на прошлый вопрос. Пишется, только если состояние изменилось.
+ */
+function markAsked(
+  env: CompanyEnv,
+  chatId: ChatId,
+  question: CompanyQuestion,
+  sentText: string,
+): void {
   const before = env.repo.get(chatId);
   const nowMs = env.clock.now();
-  const after =
-    question === 'confirm' ? markCandidateAsked(before, nowMs) : markNameAsked(before, nowMs);
+  const after = afterReplySent(before, question, sentText, nowMs);
   if (after !== before) env.repo.save(after, nowMs);
 }
 
@@ -62,8 +68,8 @@ export function createCompanyService(deps: CompanyDeps): CompanyService {
       buildPrompt(
         mention === null ? env.repo.get(chatId) : await applyMention(env, chatId, mention),
       ),
-    markAsked: (chatId, question) => {
-      markAsked(env, chatId, question);
+    markAsked: (chatId, question, sentText) => {
+      markAsked(env, chatId, question, sentText);
     },
     identifyAfterReply: (chat) => identifyChat(env, chat),
     summary: (chatId) => buildSummary(deps.repo.get(chatId), deps.emailUiUrl),

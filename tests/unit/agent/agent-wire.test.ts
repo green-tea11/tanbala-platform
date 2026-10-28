@@ -20,7 +20,13 @@ const MODELS = {
 } as const;
 
 const REPLIES = [
-  { outcome: 'answer', text: 'Какой у вас бизнес?', stopRequested: false, companyQuestion: 'none' },
+  {
+    outcome: 'answer',
+    text: 'Какой у вас бизнес?',
+    stopRequested: false,
+    companyQuestion: 'none',
+    aboutPrice: false,
+  },
   { ok: false, problems: ['Назван срок внедрения'] },
   {
     level: 'warm',
@@ -110,7 +116,7 @@ describe('агент с настоящим адаптером Anthropic', () => 
     expect(sent.map((body) => body.output_config.effort)).toEqual(['low', 'low', 'low']);
     expect(sent.map((body) => body.output_config.format.schema)).toEqual([
       expect.objectContaining({
-        required: ['outcome', 'text', 'stopRequested', 'companyQuestion'],
+        required: ['outcome', 'text', 'stopRequested', 'companyQuestion', 'aboutPrice'],
       }),
       expect.objectContaining({ required: ['ok', 'problems'] }),
       expect.objectContaining({

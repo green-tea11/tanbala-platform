@@ -39,3 +39,9 @@ export function promptPains(brief: CompanyBrief | null): readonly string[] {
     .filter((pain) => !HAS_NUMBER.test(pain))
     .slice(0, MAX_PROMPT_PAINS);
 }
+
+/** Рубрика справки для промпта: с цифрами (цифры о клиенте) не идёт, как и боли с цифрами. Справки нет => null. */
+export function promptRubric(brief: CompanyBrief | null): string | null {
+  const rubric = brief?.rubric ?? null;
+  return rubric === null || HAS_NUMBER.test(rubric) ? null : rubric;
+}

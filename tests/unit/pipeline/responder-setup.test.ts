@@ -375,7 +375,7 @@ describe('pipeline/responder-setup', () => {
     expect(company.prepare).toHaveBeenCalledWith(expect.objectContaining({ id: chat.id }), [
       message,
     ]);
-    expect(company.markAsked).toHaveBeenCalledWith(chat.id, 'none');
+    expect(company.markAsked).toHaveBeenCalledWith(chat.id, 'none', REPLY);
   });
 
   it('агент наружу как logo: название с логотипа читает модель logo', async () => {

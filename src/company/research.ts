@@ -1,9 +1,12 @@
 import type {
   ChatCompanyState,
   CompanyApiFailure,
+  CompanyApiResult,
   CompanyBrief,
   CompanyId,
+  ResearchJobId,
   ResearchRequest,
+  ResearchStart,
   ResearchState,
   ResearchStatus,
 } from '../domain/company.js';
@@ -18,6 +21,27 @@ const RESEARCH_POLL_INTERVAL_MS = 5_000;
 
 /** Проверка дольше 15 минут считается неудачной: обычно она занимает от одной до трёх минут. */
 const RESEARCH_TIMEOUT_MS = 15 * 60_000;
+
+/**
+ * Свой дневной предел бота: не больше 10 запусков проверки новой компании за скользящие 24 часа на все чаты.
+ * Константа в коде, а не настройка: каждая проверка тратит бюджет Claude в проекте B.
+ */
+export const RESEARCH_MAX_STARTS_PER_DAY = 10;
+
+const RESEARCH_WINDOW_MS = 24 * 60 * 60_000;
+
+/** После стольких ответов «компания уже есть» без справки запуск проверки больше не повторяется. */
+const MAX_ADOPT_FAILURES = 3;
+
+/**
+ * Запуск не дошёл до проверки в проекте B (сеть, 5xx, отказ в доступе, неизвестный адрес): повтор при следующем
+ * вызове, предел не тратится. timeout сюда не входит: запрос мог дойти, и повтор запустил бы вторую проверку.
+ */
+const RETRY_LATER: ReadonlySet<CompanyApiFailure> = new Set([
+  'unavailable',
+  'unauthorized',
+  'not_found',
+]);
 
 /** Причина неудачи проверки в состоянии чата (null: причина неизвестна). */
 type FailedReason = Extract<ResearchState, { readonly status: 'failed' }>['reason'];
@@ -120,9 +144,10 @@ export async function pollResearch(
 }
 
 /**
- * Отказ при запуске проверки. API недоступно: ничего не записывается, запуск повторится при следующем вызове.
- * Дневной лимит проверок (rate_limited) или бюджет Claude (budget_exhausted): проверка failed с этой причиной,
- * бот работает без справки. Прочие сбои: failed без причины.
+ * Отказ при запуске проверки. Запрос не дошёл до проверки (RETRY_LATER): ничего не записывается, запуск повторится
+ * при следующем вызове. Нет ответа за 3 с (timeout): запрос мог дойти, failed с причиной timeout, повтора нет.
+ * Дневной лимит проверок (rate_limited) или бюджет Claude (budget_exhausted): failed с этой причиной, бот работает
+ * без справки. Прочие сбои (bad_request, invalid_response): failed без причины.
  */
 function refuseResearch(
   env: CompanyEnv,
@@ -131,15 +156,17 @@ function refuseResearch(
   failure: CompanyApiFailure,
 ): ChatCompanyState {
   logFailure(env.logger, chatId, 'research_start', failure);
-  if (failure === 'unavailable') return state;
-  const reason = failure === 'rate_limited' || failure === 'budget_exhausted' ? failure : null;
-  return failResearch(env, chatId, state, reason);
+  if (RETRY_LATER.has(failure)) return state;
+  const named =
+    failure === 'rate_limited' || failure === 'budget_exhausted' || failure === 'timeout';
+  return failResearch(env, chatId, state, named ? failure : null);
 }
 
 /**
  * Проект B ответил на запуск «компания уже есть и оценена»: справка по company_id, кандидат с источником research.
- * Компанию, которую клиент уже отклонил, не предлагают и справку по ней не берут. Справка недоступна: ничего
- * не записывается, запуск повторится при следующем вызове (повторный запрос той же компании бесплатный).
+ * Компанию, которую клиент уже отклонил, не предлагают и справку по ней не берут. Справка не получена: неудача
+ * считается, проверка не записывается, запуск повторится при следующем вызове (повторный запрос той же компании
+ * бесплатный); после трёх таких неудач проверка failed без причины и больше не повторяется.
  */
 async function adoptReadyCompany(
   env: CompanyEnv,
@@ -151,17 +178,60 @@ async function adoptReadyCompany(
     return { ...state, research: { status: 'done', companyId, finishedAtMs: env.clock.now() } };
   }
   const result = await env.directory.brief(companyId);
-  if (!result.ok) {
-    logFailure(env.logger, chatId, 'brief', result.failure);
-    return state;
-  }
-  return finishResearch(env, chatId, state, result.value);
+  if (result.ok) return finishResearch(env, chatId, state, result.value);
+  logFailure(env.logger, chatId, 'brief', result.failure);
+  const failed = { ...state, adoptFailures: state.adoptFailures + 1 };
+  return failed.adoptFailures >= MAX_ADOPT_FAILURES
+    ? failResearch(env, chatId, failed, null)
+    : failed;
+}
+
+/** Задача поставлена в очередь: состояние queued с временем запуска. */
+function queueResearch(
+  env: CompanyEnv,
+  chatId: ChatId,
+  state: ChatCompanyState,
+  jobId: ResearchJobId,
+): ChatCompanyState {
+  const nowMs = env.clock.now();
+  env.logger.info(
+    { chatId, step: 'research', status: 'queued' },
+    'Проверка новой компании запущена',
+  );
+  return {
+    ...state,
+    research: { status: 'queued', jobId, startedAtMs: nowMs, checkedAtMs: nowMs },
+  };
 }
 
 /**
- * Запуск проверки новой компании (один раз на чат): название со слов клиента, его город, номер из адреса с номером
- * и домен из бизнес-профиля. Компания уже есть: сразу кандидат из справки; задача поставлена: состояние
- * queued с временем запуска; отказ: см. refuseResearch.
+ * Запрос проверки: название со слов клиента, его город, домен из бизнес-профиля и номер из адреса с номером, но
+ * номер только у бизнес-аккаунта (номер частного человека в проверку компании не отдаём).
+ */
+function researchRequest(chat: Chat, state: ChatCompanyState, name: string): ResearchRequest {
+  return {
+    name,
+    city: state.statedCity,
+    phone: state.profileKind === 'business' ? searchPhone(chat.identity.pnJid) : null,
+    domain: state.profileDomain,
+  };
+}
+
+/**
+ * Мог ли запуск начать работу в проекте B: задача поставлена, ответа нет за 3 с или ответ не по контракту.
+ * Только такие запуски остаются в дневном пределе.
+ */
+function mayHaveStarted(result: CompanyApiResult<ResearchStart>): boolean {
+  if (result.ok) return result.value.kind === 'queued';
+  return result.failure === 'timeout' || result.failure === 'invalid_response';
+}
+
+/**
+ * Запуск проверки новой компании (один раз на чат). Сначала свой дневной предел на весь бот: за 24 часа уже
+ * RESEARCH_MAX_STARTS_PER_DAY запусков => проверка не запускается, состояние то же (повтор позже), предупреждение
+ * без названий. Иначе отметка запуска пишется в базу до запроса (так предел видит запуск, пока ждём ответа) и
+ * снимается, если запуск не мог начать работу в проекте B. Компания уже есть: см. adoptReadyCompany; задача
+ * поставлена: queued; отказ: см. refuseResearch.
  */
 export async function startResearch(
   env: CompanyEnv,
@@ -169,29 +239,24 @@ export async function startResearch(
   state: ChatCompanyState,
   name: string,
 ): Promise<ChatCompanyState> {
-  const request: ResearchRequest = {
-    name,
-    city: state.statedCity,
-    phone: searchPhone(chat.identity.pnJid),
-    domain: state.profileDomain,
-  };
-  const result = await env.directory.startResearch(request);
-  if (!result.ok) return refuseResearch(env, chat.id, state, result.failure);
-  if (result.value.kind === 'done') {
-    return adoptReadyCompany(env, chat.id, state, result.value.companyId);
-  }
   const nowMs = env.clock.now();
-  env.logger.info(
-    { chatId: chat.id, step: 'research', status: 'queued' },
-    'Проверка новой компании запущена',
-  );
-  return {
-    ...state,
-    research: {
-      status: 'queued',
-      jobId: result.value.jobId,
-      startedAtMs: nowMs,
-      checkedAtMs: nowMs,
-    },
-  };
+  const windowStartMs = Math.max(0, nowMs - RESEARCH_WINDOW_MS);
+  if (env.repo.countResearchStarts(windowStartMs) >= RESEARCH_MAX_STARTS_PER_DAY) {
+    env.logger.warn(
+      { chatId: chat.id, step: 'research_start', limit: RESEARCH_MAX_STARTS_PER_DAY },
+      'Дневной предел проверок новых компаний исчерпан: проверка будет позже',
+    );
+    return state;
+  }
+  const reserved = { ...state, researchStartedAtMs: nowMs };
+  env.repo.save(reserved, nowMs);
+  const result = await env.directory.startResearch(researchRequest(chat, state, name));
+  const started = mayHaveStarted(result)
+    ? reserved
+    : { ...reserved, researchStartedAtMs: state.researchStartedAtMs };
+  if (!result.ok) return refuseResearch(env, chat.id, started, result.failure);
+  if (result.value.kind === 'done') {
+    return adoptReadyCompany(env, chat.id, started, result.value.companyId);
+  }
+  return queueResearch(env, chat.id, started, result.value.jobId);
 }

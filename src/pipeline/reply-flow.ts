@@ -1,6 +1,6 @@
 import type { Agent, ConversationContext, DraftKind } from '../agent/agent.js';
 import { normalizeDraft, runCodeChecks } from '../checks/code-checks.js';
-import type { CompanyQuestion } from '../domain/company.js';
+import type { CompanyPrompt, CompanyQuestion } from '../domain/company.js';
 import type { ChatsRepo, Clock, Logger } from '../domain/ports.js';
 import type {
   BudgetScope,
@@ -149,13 +149,16 @@ export async function requestAssessment(
  * ответа (исход черновика), а не оценка интереса: она только хранит уровень и выжимку. Исчерпан дневной лимит API
  * на черновике или на оценке => limit. Дальше черновик проходит попытку: сбой LLM => llm_error (fail-closed);
  * complaint => передача с фиксированной фразой; answer, hot, no_answer и asked_human с текстом => normalizeDraft,
- * проверки кодом (checks/code-checks.runCodeChecks), второй вызов agent.reviewDraft (только если проверки кодом
+ * проверки кодом (checks/code-checks.runCodeChecks; название компании клиента из блока о компании в капслоке, ссылках,
+ * тире и подмене букв не нарушение), второй вызов agent.reviewDraft (только если проверки кодом
  * пройдены; у hot, no_answer и asked_human с подписью «сообщение о передаче»), затем pipeline/decide.decideAction:
  * проверяется и уходит один и тот же нормализованный текст. Не прошёл: один повтор agent.draftReply с замечаниями
  * (оценка заново не запрашивается). Второй провал: для answer check_failed, для исхода передачи та же причина и
  * фиксированная фраза (причина не меняется). Сбой LLM при проверке или повторе исхода передачи тоже оставляет причину
  * и фиксированную фразу; исчерпанный лимит API даёт limit. Исход передачи с пустым text (или из одних невидимых
- * символов) проверок не проходит: фиксированная фраза по причине. При передаче hot уровень hot записывается в чат
+ * символов) проверок не проходит: фиксированная фраза по причине. Фиксированная фраза hot черновика с aboutPrice
+ * (клиент спрашивал цену) ровно «Цена сильно зависит от объёма. Передал ваш вопрос специалисту, он вам напишет.»
+ * (её выбирает messaging/outbox.ts по HandoffNotice.aboutPrice). При передаче hot уровень hot записывается в чат
  * (оценка интереса могла дать ниже или не получиться), поэтому и в передаче, и в чате он hot. Вызовов API на ответ
  * три (черновик, оценка, проверка), с повтором пять. В лог только ID чата, номер попытки, виды нарушений
  * (CheckCode), причина передачи и числа: фрагменты текста клиента и модели в нём недопустимы. context тот же, с которым
@@ -286,9 +289,9 @@ async function judge(flow: Flow, draft: ReplyDraft, attempt: Attempt): Promise<J
     return judgementOf(decideAction({ kind: 'handoff_outcome', draft }), null);
   }
   const text = normalizeDraft(draft.text);
-  const keep = keepOf(draft.outcome);
+  const keep = keepOf(draft);
   if (draft.outcome !== 'answer' && text.trim() === '') {
-    const empty = { outcome: draft.outcome, text: '' } as const;
+    const empty = { ...draft, text: '' };
     return judgementOf(decideAction({ kind: 'handoff_outcome', draft: empty }), keep);
   }
   const checked = await checkDraft(flow, draft.outcome, text, attempt, keep);
@@ -307,9 +310,18 @@ async function judge(flow: Flow, draft: ReplyDraft, attempt: Attempt): Promise<J
   );
 }
 
-/** Решение исхода передачи, если вызов проверки не получился: та же передача с фиксированной фразой. */
-function keepOf(outcome: TextDraft['outcome']): ReplyVerdict | null {
-  return outcome === 'answer' ? null : { kind: 'handoff', notice: { reason: outcome } };
+/**
+ * Решение исхода передачи, если вызов проверки не получился: та же передача с фиксированной фразой (у hot после
+ * вопроса цены фраза о цене).
+ */
+function keepOf(draft: TextDraft): ReplyVerdict | null {
+  if (draft.outcome === 'answer') return null;
+  return { kind: 'handoff', notice: replyNotice(draft.outcome, draft.aboutPrice) };
+}
+
+/** Повод передачи по исходу ответа; aboutPrice остаётся только у hot (фраза о цене) и только если true. */
+function replyNotice(reason: ReplyHandoffOutcome, aboutPrice: boolean | undefined): HandoffNotice {
+  return reason === 'hot' && aboutPrice === true ? { reason, aboutPrice } : { reason };
 }
 
 /** Текст модели при исходе передачи не прошёл проверки: пишется причина, клиенту уйдёт фиксированная фраза. */
@@ -359,7 +371,8 @@ function codeGateOf(
 ): Extract<DraftGate, { readonly kind: 'code_failed' }> | null {
   const { deps, context } = flow;
   const clientText = clientTextOf(context.history);
-  const [first, ...rest] = runCodeChecks(text, { ownPhone: NO_OWN_PHONE, clientText });
+  const companyName = companyNameOf(context.company);
+  const [first, ...rest] = runCodeChecks(text, { ownPhone: NO_OWN_PHONE, clientText, companyName });
   if (first === undefined) return null;
   const findings = [first, ...rest] as const;
   const codes = [...new Set(findings.map((finding) => finding.code))];
@@ -368,6 +381,21 @@ function codeGateOf(
     `Черновик не прошёл проверки кодом: чат #${context.chatId}`,
   );
   return { kind: 'code_failed', findings };
+}
+
+/**
+ * Название компании клиента из блока о компании (кандидат, вопрос о нём задан, подтверждённая): в нём капслок,
+ * ссылка, тире и подмена букв не нарушение. Иначе названия нет.
+ */
+function companyNameOf(company: CompanyPrompt | undefined): string | null {
+  switch (company?.kind) {
+    case 'candidate':
+    case 'asked':
+    case 'confirmed':
+      return company.name;
+    default:
+      return null;
+  }
 }
 
 /** Слова клиента из окна истории: технические термины, которые он написал сам, в ответе разрешены. */
@@ -429,8 +457,11 @@ function handoffOf(decision: Extract<Decision, { readonly kind: 'handoff' }>): H
       notice: { reason: 'complaint', stopRequested: decision.stopRequested },
     };
   }
-  if ('text' in decision && decision.text !== undefined) {
+  if (decision.reason === 'check_failed') {
+    return { kind: 'handoff', notice: { reason: 'check_failed' } };
+  }
+  if (decision.text !== undefined) {
     return { kind: 'handoff', notice: { reason: decision.reason }, text: decision.text };
   }
-  return { kind: 'handoff', notice: { reason: decision.reason } };
+  return { kind: 'handoff', notice: replyNotice(decision.reason, decision.aboutPrice) };
 }

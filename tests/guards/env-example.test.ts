@@ -95,6 +95,15 @@ describe('.env.example', () => {
     }
   });
 
+  it('объясняет правила связи с почтовым проектом: API только на 127.0.0.1, интерфейс по https, без прокси', () => {
+    const text = readFileSync(EXAMPLE_PATH, 'utf8');
+
+    expect(text).toMatch(/^# EMAIL_API_URL: .*только 127\.0\.0\.1 \(не localhost\)/m);
+    expect(text).toMatch(/^# EMAIL_UI_URL: .*https, http только для 127\.0\.0\.1 и localhost/m);
+    expect(text).toMatch(/^# Прокси Node для fetch \(NODE_USE_ENV_PROXY=1 .*бот не запустится/m);
+    expect(text).not.toMatch(/^NODE_USE_ENV_PROXY=|^NODE_OPTIONS=/m);
+  });
+
   it('не упоминает стандартную переменную ключа SDK: проект её не читает', () => {
     expect(readFileSync(EXAMPLE_PATH, 'utf8')).not.toMatch(/ANTHROPIC_API_KEY/);
   });

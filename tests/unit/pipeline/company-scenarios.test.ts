@@ -176,7 +176,7 @@ describe('сценарии владельца: как находится ком�
     });
   });
 
-  it('2. в бизнес-профиле почта на gmail и страница в соцсети: поиска по домену нет, бот один раз спрашивает компанию', async () => {
+  it('2. в бизнес-профиле почта на gmail и страница в соцсети: поиска по домену нет; сначала логотип, потом бот один раз спрашивает компанию', async () => {
     const s = createScenario({
       profile: {
         kind: 'business',
@@ -185,16 +185,22 @@ describe('сценарии владельца: как находится ком�
       },
     });
 
-    const turn = await s.say(CLIENT_HELLO, reply(ASK_NAME, 'name'));
+    const first = await s.say(CLIENT_HELLO, reply(PLAIN));
+    const second = await s.say('Как это работает?', reply(ASK_NAME, 'name'));
 
     expect(s.state()).toMatchObject({ profileKind: 'business', profileDomain: null });
-    expect(turn.api.map((call) => call.query)).toEqual([{ phone: CLIENT_PHONE }]);
+    expect(first.api.map((call) => call.query)).toEqual([{ phone: CLIENT_PHONE }]);
     expect(JSON.stringify(s.api)).not.toMatch(/domain|gmail|instagram/);
-    expect(turn.data('reply')).toContain(
+    // Шаг д раньше шага е: у бизнес-аккаунта название не спрашивают, пока не проверен логотип.
+    expect(first.data('reply')).toContain(
+      'Компания клиента неизвестна. О компании сейчас не спрашивай.',
+    );
+    expect(s.contacts.profilePhoto).toHaveBeenCalledTimes(1);
+    expect(second.data('reply')).toContain(
       'один раз естественно спроси, из какой он компании (companyQuestion: name)',
     );
-    expect(turn.toClient).toEqual([ASK_NAME]);
-    expect(s.state().nameAskedAtMs).toBe(turn.atMs);
+    expect(second.toClient).toEqual([ASK_NAME]);
+    expect(s.state().nameAskedAtMs).toBe(second.atMs);
   });
 
   it('3. найдена по номеру: черновик спрашивает подтверждение, кандидат спрошен, менеджеру видна ссылка на карточку', async () => {
@@ -275,7 +281,7 @@ describe('сценарии владельца: ответ клиента на в
     expect(refused.toClient).toEqual([ASK_NAME]);
     // Номер снова приводит к той же компании, но клиент от неё отказался: её не предлагают.
     expect(later.data('reply')).toContain(
-      'Компания клиента неизвестна. Снова её название не спрашивай.',
+      'Компания клиента неизвестна. О компании сейчас не спрашивай.',
     );
     expect(later.llm.requests.map(dataOf).join('\n')).not.toContain(SKLAD);
     expect(later.toClient).toEqual([HOW_IT_WORKS]);
@@ -313,7 +319,8 @@ describe('сценарии владельца: ответ клиента на в
     expect(named.api[2]?.body).toEqual({
       name: BEREKE,
       city: 'Караганда',
-      phone: CLIENT_PHONE,
+      // Обычный аккаунт: личный номер в проверку новой компании не уходит.
+      phone: null,
       domain: null,
     });
     expect(requestLines(polled.api)).toEqual([`GET /internal/research/${JOB_ID}`]);
@@ -326,8 +333,10 @@ describe('сценарии владельца: ответ клиента на в
     expect(data).toContain(`Компания клиента (клиент подтвердил): «${BEREKE}».`);
     expect(data).toContain('Рубрика: Оптовая торговля.');
     expect(data).toContain(
-      `Трудности, которые часто бывают у похожих компаний: ${PAIN_INVENTORY}; ${PAIN_MIXUP}.`,
+      `Трудности, которые часто бывают у похожих компаний: ${PAIN_INVENTORY}.`,
     );
+    // Боли нет в разделе 5 knowledge/tanbala-agent.md: в промпт она не идёт.
+    expect(data).not.toContain(PAIN_MIXUP);
     expect(data).toContain('Мы этой компании на почту не писали: не говори, что писали.');
     const allData = confirmed.llm.requests.map(dataOf).join('\n');
     for (const hidden of [EVIDENCE_SITE, EVIDENCE_2GIS, FIT_REASON, 'site', '2gis', '64']) {
@@ -355,7 +364,7 @@ describe('сценарии владельца: ответ клиента на в
     expect(next.toClient).toEqual([HOW_IT_WORKS]);
     expect(next.api).toEqual([]);
     expect(next.data('reply')).toContain(
-      'Компания клиента неизвестна. Снова её название не спрашивай.',
+      'Компания клиента неизвестна. О компании сейчас не спрашивай.',
     );
     expect(s.state()).toMatchObject({ candidate: null, confirmed: null });
   });

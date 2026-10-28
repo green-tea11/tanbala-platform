@@ -10,11 +10,12 @@ import type {
   ResearchStart,
   ResearchStatus,
 } from '../domain/company.js';
-import { cleanUntrusted, INVISIBLE } from '../shared/untrusted-text.js';
+import { cleanSingleLine } from '../shared/untrusted-text.js';
 import { fail, ok } from './result.js';
 
 // Ответы API почтового проекта: схема по контракту (INTERNAL_API.md), затем очистка строк. Тексты в ответах
-// недоверенные (сайты, 2ГИС, модель): NFKC, без управляющих и невидимых символов, по краям обрезаны, длины из контракта.
+// недоверенные (сайты, 2ГИС, модель): каждая строка однострочная (разрывы строк и абзацев, в том числе U+2028 и U+2029,
+// становятся пробелом), NFKC, без управляющих и невидимых символов, по краям обрезаны, длины из контракта.
 
 /** До трёх кандидатов в lookup и до двух болей в справке: больше проект B не отдаёт, лишнее отбрасывается. */
 const MAX_CANDIDATES = 3;
@@ -112,7 +113,7 @@ type RawBrief = z.output<typeof briefSchema>;
 type RawResearchStatus = z.output<typeof researchStatusSchema>;
 
 function clean(raw: string | null, maxChars: number): string | null {
-  return cleanUntrusted(raw, INVISIBLE, maxChars);
+  return cleanSingleLine(raw, maxChars);
 }
 
 /** Кандидат без названия после очистки не нужен: null. */
@@ -187,11 +188,11 @@ export function parseCandidates(json: unknown): CompanyApiResult<readonly Compan
   return ok(candidates.slice(0, MAX_CANDIDATES));
 }
 
-/** Ответ GET /internal/companies/{id}/brief. */
-export function parseBrief(json: unknown): CompanyApiResult<CompanyBrief> {
+/** Ответ GET /internal/companies/{id}/brief: справка о другой компании (id не тот, что запрошен) => invalid_response. */
+export function parseBrief(json: unknown, requestedId: CompanyId): CompanyApiResult<CompanyBrief> {
   const parsed = briefSchema.safeParse(json);
   const brief = parsed.success ? toBrief(parsed.data) : null;
-  return brief === null ? fail('invalid_response') : ok(brief);
+  return brief === null || brief.id !== requestedId ? fail('invalid_response') : ok(brief);
 }
 
 /** Ответ POST /internal/research: 202 с job_id (задача в очереди) или 200 done с company_id. */

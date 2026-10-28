@@ -27,6 +27,13 @@ function msg(author: Author, text: string | null, kind: MessageKind = 'text'): S
   return { id, chatId: CHAT_ID, author, kind, text, tsMs: BASE_TS + id * 1000 };
 }
 
+/** Список «Это не нарушение» инструкции проверки: от его заголовка до «Не придирайся». */
+function notViolations(instruction: string): string {
+  const start = instruction.indexOf('Это не нарушение:');
+  const end = instruction.indexOf('Не придирайся', start);
+  return start === -1 || end === -1 ? '' : instruction.slice(start, end);
+}
+
 describe('buildSystem', () => {
   it('знания одним блоком с кэшем (tanbala-agent.md, затем whatsapp.md), затем инструкция ответа без кэша', () => {
     const system = buildSystem(KNOWLEDGE, 'reply');
@@ -93,7 +100,7 @@ describe('buildSystem', () => {
       );
       expect(text).toMatch(/Напиши, что цена сильно зависит от объёма, и задай один вопрос/);
       expect(text).toMatch(
-        /если в блоке данных сказано спросить, из компании ли клиент, спроси это/,
+        /если в блоке данных сказано спросить о компании \(подтвердить её или назвать\), спроси это/,
       );
       expect(text).toMatch(/если компания подтверждена, спроси об одной трудности/);
       expect(text).toMatch(/иначе спроси о его задаче/);
@@ -103,8 +110,10 @@ describe('buildSystem', () => {
     it('цена после согласия или рассказа о задаче это hot; цена второй раз или настаивает: сразу hot', () => {
       const text = instruction();
       expect(text).toMatch(
-        /рассказал о задаче или масштабе[^.]*и спрашивает цену, сроки или договор: это hot/,
+        /сам рассказал о своей задаче \(что и зачем хочет учитывать\) и спрашивает цену, сроки или договор: это hot/,
       );
+      // Правило владельца: hot по рассказу о задаче, а не по одному масштабу (площадь, число вещей).
+      expect(text).not.toMatch(/рассказал о задаче или масштабе/);
       expect(text).toMatch(/Клиент спрашивает цену второй раз или настаивает: сразу hot/);
     });
 
@@ -261,16 +270,16 @@ describe('buildSystem', () => {
     it('ответ на вопрос клиента из документов и одна фраза о передаче не нарушение', () => {
       const instruction = buildSystem(KNOWLEDGE, 'review')[1]?.text ?? '';
 
-      expect(instruction).toMatch(/Это не нарушение:[^\n]*в сообщении о передаче/);
+      expect(notViolations(instruction)).toMatch(/в сообщении о передаче ответ на вопрос клиента/);
       expect(instruction).toMatch(/подпись в блоке данных/i);
     });
 
     it('«стоимость зависит от вашей задачи» не нарушение; замечание только о явном нарушении из списка', () => {
       const instruction = buildSystem(KNOWLEDGE, 'review')[1]?.text ?? '';
 
-      expect(instruction).toMatch(/Это не нарушение:[^\n]*«стоимость зависит от вашей задачи»/);
-      expect(instruction).toMatch(
-        /Это не нарушение:[^\n]*«решение и цену подбирает специалист под задачу»/,
+      expect(notViolations(instruction)).toMatch(/«стоимость зависит от вашей задачи»/);
+      expect(notViolations(instruction)).toMatch(
+        /«решение и цену подбирает специалист под задачу»/,
       );
       expect(instruction).toMatch(/Замечание пиши только о явном нарушении из списка выше/);
       expect(instruction).toMatch(/Если ты сам считаешь фразу допустимой, замечания по ней нет/);

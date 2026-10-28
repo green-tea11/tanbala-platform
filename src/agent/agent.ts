@@ -119,6 +119,11 @@ const replyDraftSchema = z.object({
     .describe(
       'О чём из компании ты спросил в text: confirm, если спросил, из той ли компании клиент; name, если спросил, из какой он компании; иначе none.',
     ),
+  aboutPrice: z
+    .boolean()
+    .describe(
+      'true, если клиент в последних сообщениях спрашивал цену или стоимость; иначе false.',
+    ),
 });
 
 type RawReplyDraft = z.infer<typeof replyDraftSchema>;
@@ -139,8 +144,9 @@ const MAX_LOGO_NAME_CHARS = 200;
 
 /**
  * Противоречивый ответ модели нормализуется здесь один раз: text берётся у answer, hot, no_answer и asked_human,
- * stopRequested только у complaint. answer без текста => invalid_output, не угадывать (fail-closed). У hot, no_answer
- * и asked_human пустой text допустим: чат всё равно уходит менеджеру, клиенту пишется фиксированная фраза.
+ * stopRequested только у complaint, aboutPrice только у исходов передачи. answer без текста => invalid_output, не
+ * угадывать (fail-closed). У hot, no_answer и asked_human пустой text допустим: чат всё равно уходит менеджеру,
+ * клиенту пишется фиксированная фраза.
  */
 function normalizeReplyDraft(raw: RawReplyDraft): LlmResult<ReplyDraft> {
   switch (raw.outcome) {
@@ -152,8 +158,11 @@ function normalizeReplyDraft(raw: RawReplyDraft): LlmResult<ReplyDraft> {
       return { ok: true, value: { outcome: 'complaint', stopRequested: raw.stopRequested } };
     case 'hot':
     case 'no_answer':
-    case 'asked_human':
-      return { ok: true, value: { outcome: raw.outcome, text: raw.text.trim() } };
+    case 'asked_human': {
+      const draft = { outcome: raw.outcome, text: raw.text.trim() };
+      // Подделки LLM в тестах поля не пишут: нет поля => false, и в черновик оно не попадает.
+      return { ok: true, value: raw.aboutPrice === true ? { ...draft, aboutPrice: true } : draft };
+    }
   }
 }
 
@@ -187,6 +196,23 @@ function replyCallData(
     (part) => part !== null,
   );
   return parts.length === 0 ? null : parts.join('\n\n');
+}
+
+/**
+ * Справку пишет почтовый проект: боль, которой нет в документе владельца (раздел 5 knowledge/tanbala-agent.md),
+ * модели не передаётся. Боль остаётся, если её строка без пробелов по краям входит в документ без учёта регистра
+ * (ownerLower: текст документа в нижнем регистре); пустая строка не остаётся. Не confirmed => блок как есть.
+ */
+function withKnownPains(
+  company: CompanyPrompt | undefined,
+  ownerLower: string,
+): CompanyPrompt | undefined {
+  if (company?.kind !== 'confirmed') return company;
+  const pains = company.pains.filter((pain) => {
+    const needle = pain.trim().toLowerCase();
+    return needle !== '' && ownerLower.includes(needle);
+  });
+  return { ...company, pains };
 }
 
 /** Один вызов LLM: что в нём общее для трёх назначений (история, лимит токенов, чат) и что своё (модель, инструкция). */
@@ -229,6 +255,7 @@ function createAsk(deps: AgentDeps): Ask {
  * (feedback); схема replyDraftSchema, ответ нормализуется в ReplyDraft.
  * reviewDraft: модель models.review, данные вызова: что допустимо о компании клиента и текст черновика (не репликой
  * assistant); схема reviewSchema, противоречия снимает normalizeReview. Пустой черновик не проходит и LLM не вызывает.
+ * В блоке о компании ответа и проверки боли справки только из документа владельца (withKnownPains).
  * assessInterest: модель models.interest, данные вызова: текущий уровень, выжимка и вопрос «Вы из компании X?»;
  * схема interestSchema, normalizeInterest чистит поля и сохраняет известное раньше.
  * readLogo: модель models.logo, system только инструкция logo (без знаний и истории), одна реплика user с фото;
@@ -237,12 +264,14 @@ function createAsk(deps: AgentDeps): Ask {
 export function createAgent(deps: AgentDeps): Agent {
   const ask = createAsk(deps);
   const logoSystem = buildSystem(deps.knowledge, 'logo');
+  const ownerLower = deps.knowledge.owner.toLowerCase();
   return {
     async draftReply(
       context: ConversationContext,
       feedback: readonly string[] = [],
     ): Promise<LlmResult<ReplyDraft>> {
-      const callData = replyCallData(context.profile, context.company, feedback);
+      const company = withKnownPains(context.company, ownerLower);
+      const callData = replyCallData(context.profile, company, feedback);
       const result = await ask('reply', replyDraftSchema, context, callData);
       return result.ok ? normalizeReplyDraft(result.value) : result;
     },
@@ -254,7 +283,8 @@ export function createAgent(deps: AgentDeps): Agent {
       if (draftText.trim() === '') {
         return { ok: true, value: EMPTY_DRAFT_REVIEW };
       }
-      const callData = reviewCallData(draftText, kind, companyReviewData(context.company));
+      const company = withKnownPains(context.company, ownerLower);
+      const callData = reviewCallData(draftText, kind, companyReviewData(company));
       const result = await ask('review', reviewSchema, context, callData);
       return result.ok ? { ok: true, value: normalizeReview(result.value) } : result;
     },

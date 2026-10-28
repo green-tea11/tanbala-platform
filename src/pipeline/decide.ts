@@ -23,6 +23,9 @@ export type DraftGate =
  */
 export type TextDraft = Extract<ReplyDraft, { readonly text: string }>;
 
+/** Черновик исхода передачи с текстом модели (hot, no_answer, asked_human). */
+type HandoffDraft = Extract<ReplyDraft, { readonly outcome: ReplyHandoffOutcome }>;
+
 /** Всё, что известно о черновике к моменту решения. kind на верхнем уровне сужает тип без проверки полей. */
 export type DecisionInput =
   | {
@@ -47,11 +50,15 @@ export type Decision =
   | { readonly kind: 'retry'; readonly feedback: readonly string[] }
   /** Ответ не прошёл проверки дважды: фиксированная фраза check_failed. */
   | { readonly kind: 'handoff'; readonly reason: 'check_failed' }
-  /** Передача по решению вызова ответа; text есть, если сообщение модели прошло проверки. */
+  /**
+   * Передача по решению вызова ответа; text есть, если сообщение модели прошло проверки. aboutPrice только у hot без
+   * text: клиент спрашивал цену, фиксированная фраза о цене.
+   */
   | {
       readonly kind: 'handoff';
       readonly reason: ReplyHandoffOutcome;
       readonly text?: ReviewedText;
+      readonly aboutPrice?: boolean;
     }
   | { readonly kind: 'handoff'; readonly reason: 'complaint'; readonly stopRequested: boolean };
 
@@ -67,7 +74,8 @@ const GENERIC_FEEDBACK =
  * (нарушения кода или замечания проверки), попытка 2 => для ответа handoff check_failed, для исхода передачи та же
  * причина без текста (клиенту уйдёт фиксированная фраза, причина не меняется). Проверки пройдены => answer даёт
  * send, исход передачи даёт handoff с этим текстом вместо фиксированной фразы. Здесь и только здесь текст
- * приводится к ReviewedText. Без ревью текст не отправляется никогда.
+ * приводится к ReviewedText. Без ревью текст не отправляется никогда. Передача hot без текста с aboutPrice черновика
+ * несёт aboutPrice: клиенту уйдёт фиксированная фраза о цене.
  */
 export function decideAction(input: DecisionInput): Decision {
   if (input.kind === 'handoff_outcome') return handoffFor(input.draft);
@@ -80,6 +88,13 @@ export function decideAction(input: DecisionInput): Decision {
 function handoffFor(draft: Exclude<ReplyDraft, { readonly outcome: 'answer' }>): Decision {
   return draft.outcome === 'complaint'
     ? { kind: 'handoff', reason: 'complaint', stopRequested: draft.stopRequested }
+    : byReply(draft);
+}
+
+/** Передача по исходу черновика с фиксированной фразой: у hot после вопроса цены с пометкой aboutPrice. */
+function byReply(draft: HandoffDraft): Decision {
+  return draft.outcome === 'hot' && draft.aboutPrice === true
+    ? { kind: 'handoff', reason: 'hot', aboutPrice: true }
     : { kind: 'handoff', reason: draft.outcome };
 }
 
@@ -93,7 +108,7 @@ function passed(draft: TextDraft): Decision {
 
 /** Вторая попытка не помогла: ответ даёт check_failed, исход передачи сохраняет причину и теряет только текст. */
 function exhausted(draft: TextDraft): Decision {
-  return { kind: 'handoff', reason: draft.outcome === 'answer' ? 'check_failed' : draft.outcome };
+  return draft.outcome === 'answer' ? { kind: 'handoff', reason: 'check_failed' } : byReply(draft);
 }
 
 /** Замечания для повтора; null, если оба вида проверок пройдены. Всегда новый массив. */

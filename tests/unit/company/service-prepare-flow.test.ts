@@ -24,7 +24,7 @@ const FOUND = ok([makeCandidate()]);
 const NAMED = [makeMessage({ verifiedName: 'Платформа-А' })];
 
 describe('prepare: порядок и остановка шагов', () => {
-  it('шаги идут по порядку а, б, в; ничего не найдено: шаги пройдены, компания неизвестна', async () => {
+  it('шаги идут по порядку а, б, в; ничего не найдено: шаги пройдены, у бизнес-аккаунта дальше логотип', async () => {
     const h = createHarness({ contacts: { profile: SITE } });
 
     const turn = await h.service.prepare(makeChat(), NAMED);
@@ -34,11 +34,31 @@ describe('prepare: порядок и остановка шагов', () => {
       { by: 'phone', phone: '77000000001' },
       { by: 'name', name: 'Платформа-А' },
     ]);
-    expect(turn).toEqual({ prompt: { kind: 'unknown', askName: true }, awaitingAnswer: false });
+    expect(turn).toEqual({ prompt: { kind: 'unknown', askName: false }, awaitingAnswer: false });
     expect(h.repo.current().freeStepsAtMs).toBe(NOW);
   });
 
-  it('останавливается на первом найденном кандидате: после домена номер и имя не запрашиваются', async () => {
+  it('шаг д раньше шага е: название спрашивается только после проверки логотипа', async () => {
+    const h = createHarness({ contacts: { profile: SITE, photo: null } });
+
+    const first = await h.service.prepare(makeChat(), NAMED);
+    await h.service.identifyAfterReply(makeChat());
+    const second = await h.service.prepare(makeChat(), NAMED);
+
+    expect(first.prompt).toEqual({ kind: 'unknown', askName: false });
+    expect(h.contacts.count('profilePhoto')).toBe(1);
+    expect(second.prompt).toEqual({ kind: 'unknown', askName: true });
+  });
+
+  it('обычный аккаунт, ничего не найдено: название можно спросить сразу', async () => {
+    const h = createHarness({ contacts: { profile: { kind: 'personal' } } });
+
+    const turn = await h.service.prepare(makeChat(), NAMED);
+
+    expect(turn.prompt).toEqual({ kind: 'unknown', askName: true });
+  });
+
+  it('останавливается на первом найденном кандидате: после домена номер и имя не запрашиваются, шаги пройдены', async () => {
     const h = createHarness({
       contacts: { profile: SITE },
       directory: {
@@ -50,7 +70,7 @@ describe('prepare: порядок и остановка шагов', () => {
 
     expect(h.directory.lookups()).toEqual([{ by: 'domain', domain: 'sklad.kz' }]);
     expect(h.repo.current().candidate).toMatchObject({ id: 8, source: 'profile_domain' });
-    expect(h.repo.current().freeStepsAtMs).toBeNull();
+    expect(h.repo.current().freeStepsAtMs).toBe(NOW);
   });
 
   it('домен ничего не нашёл, номер нашёл: имя не запрашивается, источник phone', async () => {
@@ -79,28 +99,47 @@ describe('prepare: порядок и остановка шагов', () => {
     expect(h.repo.current().candidate).toMatchObject({ source: 'profile_name' });
   });
 
-  it('после отказа клиента шаги идут снова: профиль WhatsApp не запрашивается, отклонённая компания не предлагается', async () => {
+  it('после отказа клиента от кандидата шаги а, б, в не повторяются: сразу вопрос о названии', async () => {
     const h = createHarness({
       contacts: { profile: SITE },
-      state: makeState({
-        profileKind: 'business',
-        profileDomain: 'sklad.kz',
-        rejectedIds: [companyIdOf(8)],
-      }),
       directory: {
         lookup: lookupBy({
-          domain: ok([makeCandidate({ id: companyIdOf(8) })]),
+          domain: FOUND,
           phone: ok([makeCandidate({ id: companyIdOf(9), name: 'Бета', matchBy: 'phone' })]),
         }),
       },
     });
+    await h.service.prepare(makeChat(), NAMED);
+    h.service.markAsked(makeChat().id, 'confirm', 'Вы из компании Платформа-А?');
+    await h.service.applyAssessment(makeChat().id, {
+      name: null,
+      city: null,
+      answer: 'no',
+      pains: [],
+    });
 
     const turn = await h.service.prepare(makeChat(), NAMED);
 
-    expect(h.contacts.calls).toEqual([]);
-    expect(h.directory.lookups().map((query) => query.by)).toEqual(['domain', 'phone']);
-    expect(turn.prompt).toMatchObject({ kind: 'candidate', name: 'Бета' });
-    expect(h.repo.current().candidate).toMatchObject({ id: 9, source: 'phone' });
+    expect(h.contacts.count('businessProfile')).toBe(1);
+    expect(h.directory.lookups().map((query) => query.by)).toEqual(['domain']);
+    expect(turn.prompt).toEqual({ kind: 'unknown', askName: true });
+    expect(h.repo.current()).toMatchObject({ candidate: null, rejectedIds: [companyIdOf(8)] });
+  });
+
+  it('клиент уже назвал другую компанию (API тогда не отвечало): найденный по номеру кандидат сразу снят, ищем по словам клиента', async () => {
+    const h = createHarness({
+      state: makeState({ statedName: 'Бета' }),
+      directory: { lookup: lookupBy({ phone: FOUND }) },
+    });
+
+    const turn = await h.service.prepare(makeChat(), NAMED);
+
+    expect(turn.prompt).toEqual({ kind: 'unknown', askName: false });
+    expect(h.repo.current()).toMatchObject({
+      candidate: null,
+      rejectedIds: [],
+      freeStepsAtMs: NOW,
+    });
   });
 
   it('шаги проходятся один раз на чат: второй prepare ничего не запрашивает и не пишет', async () => {
@@ -114,7 +153,7 @@ describe('prepare: порядок и остановка шагов', () => {
     expect(h.directory.calls).toHaveLength(callsBefore);
     expect(h.contacts.calls).toHaveLength(1);
     expect(h.repo.saves).toHaveLength(savesBefore);
-    expect(turn.prompt).toEqual({ kind: 'unknown', askName: true });
+    expect(turn.prompt).toEqual({ kind: 'unknown', askName: false });
   });
 
   it('кандидат уже есть: шаги не идут и ничего не запрашивается', async () => {
@@ -163,7 +202,7 @@ describe('prepare: порядок и остановка шагов', () => {
     const turn = await h.service.prepare(makeChat(), []);
 
     expect(turn).toEqual({
-      prompt: { kind: 'asked', name: 'Платформа-А', city: 'Алматы' },
+      prompt: { kind: 'asked', name: 'Платформа-А', city: 'Алматы', awaitingAnswer: true },
       awaitingAnswer: true,
     });
     expect(h.directory.calls).toEqual([]);
@@ -235,7 +274,7 @@ describe('prepare: выбор кандидата из ответа lookup', () =
 });
 
 describe('prepare: API недоступен и другие сбои', () => {
-  it('недоступный API: промпт без данных о компании, исключения нет, шаги не засчитаны', async () => {
+  it('недоступный API: промпт без данных о компании, исключения нет, шаги не засчитаны, название пока не спрашивать', async () => {
     const h = createHarness({
       contacts: { profile: SITE },
       directory: { lookup: () => fail('unavailable') },
@@ -243,7 +282,7 @@ describe('prepare: API недоступен и другие сбои', () => {
 
     const turn = await h.service.prepare(makeChat(), NAMED);
 
-    expect(turn).toEqual({ prompt: { kind: 'unknown', askName: true }, awaitingAnswer: false });
+    expect(turn).toEqual({ prompt: { kind: 'unknown', askName: false }, awaitingAnswer: false });
     expect(h.repo.current()).toMatchObject({ freeStepsAtMs: null, candidate: null });
     expect(h.directory.lookups().map((query) => query.by)).toEqual(['domain', 'phone', 'name']);
   });
@@ -301,18 +340,8 @@ describe('prepare: API недоступен и другие сбои', () => {
     expect(h.repo.current().freeStepsAtMs).toBe(NOW);
   });
 
-  it.each<CompanyApiFailure>([
-    'bad_request',
-    'unauthorized',
-    'not_found',
-    'rate_limited',
-    'budget_exhausted',
-    'invalid_response',
-  ])('сбой %s считается пройденным шагом: повтора на следующей пачке нет', async (failure) => {
-    const h = createHarness({
-      contacts: { profile: SITE },
-      directory: { lookup: () => fail(failure) },
-    });
+  it('сбой bad_request (повтор не поможет) считается пройденным шагом: повтора на следующей пачке нет', async () => {
+    const h = createHarness({ directory: { lookup: () => fail('bad_request') } });
 
     const turn = await h.service.prepare(makeChat(), NAMED);
     const callsAfterFirst = h.directory.calls.length;
@@ -321,6 +350,73 @@ describe('prepare: API недоступен и другие сбои', () => {
     expect(turn.prompt).toEqual({ kind: 'unknown', askName: true });
     expect(h.repo.current().freeStepsAtMs).toBe(NOW);
     expect(h.directory.calls).toHaveLength(callsAfterFirst);
+  });
+
+  it.each<CompanyApiFailure>([
+    'unauthorized',
+    'not_found',
+    'rate_limited',
+    'budget_exhausted',
+    'invalid_response',
+    'unavailable',
+    'timeout',
+  ])('сбой %s: шаги не засчитаны, повтор на следующей пачке', async (failure) => {
+    let failing = true;
+    const h = createHarness({
+      directory: {
+        lookup: (query) => (failing ? fail(failure) : lookupBy({ phone: FOUND })(query)),
+      },
+    });
+
+    await h.service.prepare(makeChat(), NAMED);
+    expect(h.repo.current().freeStepsAtMs).toBeNull();
+    failing = false;
+    const turn = await h.service.prepare(makeChat(), NAMED);
+
+    expect(h.directory.lookups().map((query) => query.by)).toEqual(['phone', 'name', 'phone']);
+    expect(turn.prompt).toMatchObject({ kind: 'candidate', name: 'Платформа-А' });
+  });
+
+  it('сбой бизнес-профиля: шаги не засчитаны, профиль запрашивается снова на следующей пачке', async () => {
+    let profile: BusinessProfileResult = { kind: 'failed' };
+    const h = createHarness({
+      contacts: { profile: () => profile },
+      directory: { lookup: lookupBy({ domain: FOUND }) },
+    });
+
+    const first = await h.service.prepare(makeChat(), NAMED);
+    profile = SITE;
+    const second = await h.service.prepare(makeChat(), NAMED);
+
+    expect(first.prompt).toEqual({ kind: 'unknown', askName: false });
+    expect(second.prompt).toMatchObject({ kind: 'candidate', name: 'Платформа-А' });
+    expect(h.repo.current()).toMatchObject({
+      profileKind: 'business',
+      profileDomain: 'sklad.kz',
+      profileRequests: 2,
+      candidate: { source: 'profile_domain' },
+    });
+  });
+
+  it('бизнес-профиль не получен три раза подряд (первый запрос и два повтора): больше не запрашивается, шаги засчитаны', async () => {
+    const h = createHarness({ contacts: { profile: { kind: 'failed' } } });
+
+    for (let batch = 0; batch < 4; batch += 1) await h.service.prepare(makeChat(), NAMED);
+
+    expect(h.contacts.count('businessProfile')).toBe(3);
+    expect(h.repo.current()).toMatchObject({
+      profileKind: 'unknown',
+      profileRequests: 3,
+      freeStepsAtMs: NOW,
+    });
+    expect(h.directory.lookups().map((query) => query.by)).toEqual([
+      'phone',
+      'name',
+      'phone',
+      'name',
+      'phone',
+      'name',
+    ]);
   });
 
   it('в лог попадают только ID чата, шаг и код сбоя: ни имён, ни домена, ни номера', async () => {

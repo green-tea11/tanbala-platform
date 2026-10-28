@@ -12,7 +12,10 @@ import { buildPrompt } from './prompt.js';
 import { profileNameForSearch } from './profile-name.js';
 import { pollResearch } from './research.js';
 import { searchPhone } from './search-phone.js';
-import { candidateFromLookup, withProfile } from './transitions.js';
+import { candidateFromLookup, dropForeignCandidate, withProfile } from './transitions.js';
+
+/** Бизнес-профиль запрашивается не больше трёх раз на чат: первый запрос и два повтора после сбоя. */
+const MAX_PROFILE_REQUESTS = 3;
 
 /** Шаг бесплатного поиска: откуда ищем и что искать; null: по этому шагу искать нечего (нет домена, номера, имени). */
 interface FreeStep {
@@ -58,16 +61,22 @@ function freeStepsOf(
   ];
 }
 
+/** Профиль ещё нужно запросить: не запрашивали или прошлый запрос не удался, а повторы не исчерпаны. */
+function profilePending(state: ChatCompanyState): boolean {
+  const known = state.profileKind === 'business' || state.profileKind === 'personal';
+  return !known && state.profileRequests < MAX_PROFILE_REQUESTS;
+}
+
 /**
- * Шаг а: бизнес-профиль WhatsApp запрашивается один раз на чат (вид аккаунта и домен), результат записывается
- * сразу: если дальше что-то пойдёт не так, профиль второй раз не запрашивается.
+ * Шаг а: бизнес-профиль WhatsApp (вид аккаунта и домен). Запрашивается, пока не получен, но не больше трёх раз на чат;
+ * результат записывается сразу: если дальше что-то пойдёт не так, удачный запрос не повторится.
  */
 async function ensureProfile(
   env: CompanyEnv,
   chat: Chat,
   state: ChatCompanyState,
 ): Promise<ChatCompanyState> {
-  if (state.profileKind !== null) return state;
+  if (!profilePending(state)) return state;
   const profile = await env.contacts.businessProfile(contactJid(chat));
   const next = withProfile(state, profile);
   env.repo.save(next, env.clock.now());
@@ -76,9 +85,9 @@ async function ensureProfile(
 
 /**
  * Бесплатные шаги а, б, в (один раз на чат), пока нет кандидата и подтверждённой компании. Останавливается на первом
- * выбранном кандидате (шаги не засчитываются: после отказа клиента поиск пойдёт дальше). Если хоть один запрос
- * не получил ответа (API недоступно), шаги не засчитываются и повторятся на следующей пачке; остальные сбои
- * считаются пройденным шагом.
+ * выбранном кандидате; шаги засчитываются (после отказа клиента они не повторяются). Если хоть один запрос не получил
+ * ответа по существу (LookupOutcome retry) или бизнес-профиль не получен и его ещё можно запросить, шаги не
+ * засчитываются и повторятся на следующей пачке.
  */
 async function runFreeSteps(
   env: CompanyEnv,
@@ -90,23 +99,25 @@ async function runFreeSteps(
     return state;
   }
   const profiled = await ensureProfile(env, chat, state);
-  let unavailable = false;
+  let retry = profilePending(profiled);
   for (const { source, query } of freeStepsOf(chat, messages, profiled)) {
     if (query === null) continue;
     const outcome = await lookupCompany(env, chat.id, source, query, profiled.rejectedIds);
     if (outcome.kind === 'found') {
       env.logger.info({ chatId: chat.id, step: source }, 'Найден кандидат компании');
-      return { ...profiled, candidate: candidateFromLookup(outcome.candidate, source) };
+      const candidate = candidateFromLookup(outcome.candidate, source);
+      return { ...profiled, candidate, freeStepsAtMs: env.clock.now() };
     }
-    unavailable ||= outcome.kind === 'unavailable';
+    retry ||= outcome.kind === 'retry';
   }
-  return unavailable ? profiled : { ...profiled, freeStepsAtMs: env.clock.now() };
+  return retry ? profiled : { ...profiled, freeStepsAtMs: env.clock.now() };
 }
 
 /**
- * Что делать перед ответом на пачку клиента: бесплатные шаги определения компании, справка подтверждённой
- * компании (если её ещё нет) и опрос идущей проверки новой компании. Состояние пишется только если оно изменилось.
- * Возвращает блок промпта и признак «ждём ответ клиента на вопрос о кандидате».
+ * Что делать перед ответом на пачку клиента: бесплатные шаги определения компании (найденный кандидат сразу
+ * снимается, если клиент уже назвал другую компанию), справка подтверждённой компании (если её ещё нет) и опрос
+ * идущей проверки новой компании. Состояние пишется только если оно изменилось. Возвращает блок промпта и признак
+ * «ждём ответ клиента на вопрос о кандидате».
  */
 export async function prepareTurn(
   env: CompanyEnv,
@@ -114,7 +125,8 @@ export async function prepareTurn(
   messages: readonly InboundMessage[],
 ): Promise<CompanyTurn> {
   const before = env.repo.get(chat.id);
-  const searched = await runFreeSteps(env, chat, messages, before);
+  const found = await runFreeSteps(env, chat, messages, before);
+  const searched = dropForeignCandidate(found, env.clock.now());
   const briefed = await ensureBrief(env, chat.id, searched);
   const state = await pollResearch(env, chat.id, briefed);
   if (state !== before) env.repo.save(state, env.clock.now());

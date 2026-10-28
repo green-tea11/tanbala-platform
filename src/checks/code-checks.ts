@@ -69,7 +69,22 @@ export interface CheckOptions {
   readonly ownPhone: PhoneDigits;
   /** Текст сообщений клиента: технические термины, которые он написал сам, разрешены. */
   readonly clientText: string;
+  /**
+   * Название компании клиента (кандидат или подтверждённая, из блока о компании): в нём тире, ссылка, капслок и
+   * прочий стиль, подмена букв и чужие цифры не нарушение, как термины клиента в проверке жаргона. Цены, стоп-слова,
+   * жаргон, скобки, разметка, контакты и длина проверяются по всему тексту. Нет поля или null: названия нет.
+   */
+  readonly companyName?: string | null;
 }
+
+/** Чем заменяется название компании клиента перед проверками формы: слово без тире, ссылки, капслока и латиницы. */
+const COMPANY_PLACEHOLDER = 'Компания';
+
+/** Знаки синтаксиса регулярных выражений: в названии экранируются, оно ищется как текст. */
+const REGEX_SYNTAX = /[\\^$.*+?()[\]{}|/]/gu;
+
+/** Без флага g: только для test(). */
+const LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;
 
 // Половинка суррогатной пары на краю среза: такой текст API может не принять (без флага u: по кодовым единицам).
 const LONE_SURROGATE_AT_EDGES = /^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/g;
@@ -272,8 +287,24 @@ export function checkLength(text: string): readonly CheckFinding[] {
 }
 
 /**
+ * Название компании клиента в тексте заменяется словом-заглушкой: только отдельно стоящее (не часть другого слова),
+ * без учёта регистра, пробелы между словами названия любые (до пяти). Название готовится как ответ (normalizeDraft).
+ * Названия нет или в нём нет ни буквы, ни цифры (иначе отдельное тире стало бы «названием») => текст как есть.
+ */
+function maskCompanyName(text: string, name: string | null | undefined): string {
+  const words = normalizeDraft(name ?? '')
+    .split(/\s+/u)
+    .filter((word) => word !== '');
+  if (!words.some((word) => LETTER_OR_DIGIT.test(word))) return text;
+  const source = words.map((word) => word.replace(REGEX_SYNTAX, '\\$&')).join(String.raw`\s{1,5}`);
+  const pattern = new RegExp(String.raw`(?<![\p{L}\p{N}_])${source}(?![\p{L}\p{N}_])`, 'giu');
+  return text.replace(pattern, COMPANY_PLACEHOLDER);
+}
+
+/**
  * Все проверки ответа клиенту. Текст заранее подготовлен normalizeDraft (бренд NormalizedText).
- * Пустой список: ответ можно отдавать на второй вызов (ревью).
+ * Тире, ссылки, стиль и подмена букв проверяются без названия компании клиента (options.companyName,
+ * maskCompanyName), остальное по всему тексту. Пустой список: ответ можно отдавать на второй вызов (ревью).
  */
 export function runCodeChecks(
   text: NormalizedText,
@@ -282,17 +313,18 @@ export function runCodeChecks(
   if (text.trim() === '') {
     return [{ code: 'empty', detail: 'пустой ответ' }];
   }
+  const form = maskCompanyName(text, options.companyName);
   return [
-    ...checkDashes(text),
+    ...checkDashes(form),
     ...checkPrices(text),
     ...checkStopWords(text),
-    ...checkLinks(text),
+    ...checkLinks(form),
     ...checkBrackets(text),
     ...checkJargon(text, options.clientText),
-    ...checkStyle(text),
+    ...checkStyle(form),
     ...checkMarkup(text),
     ...checkContacts(text, options.ownPhone),
-    ...checkHomoglyphs(text),
+    ...checkHomoglyphs(form),
     ...checkLength(text),
   ];
 }

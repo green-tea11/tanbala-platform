@@ -78,6 +78,9 @@ type PhraseResult = Awaited<ReturnType<Outbox['sendHandoffNotice']>>;
 /** Запрос, после которого клиенту пишут фразу или текст модели: всё, кроме перехвата человеком и лимита. */
 type PhraseRequest = Extract<HandOffRequest, { readonly replyToWaId: WaMessageId }>;
 
+/** Запрос с фиксированной фразой по поводу: без text модели. */
+type NoticeRequest = Exclude<PhraseRequest, { readonly text: ReviewedText }>;
+
 /** Запрос, после которого уведомляют менеджера: всё, кроме перехвата человеком. */
 type NotifiedRequest = Exclude<HandOffRequest, { readonly reason: 'human_took_over' }>;
 
@@ -202,10 +205,16 @@ function errorNameOf(error: unknown): string {
   return error instanceof Error ? error.name : typeof error;
 }
 
-function noticeOf(request: PhraseRequest): HandoffNotice {
-  return request.reason === 'complaint'
-    ? { reason: 'complaint', stopRequested: request.stopRequested }
-    : { reason: request.reason };
+/** Повод фразы из запроса без text: stopRequested у complaint и aboutPrice у hot (фраза о цене) сохраняются. */
+function noticeOf(request: NoticeRequest): HandoffNotice {
+  switch (request.reason) {
+    case 'complaint':
+      return { reason: 'complaint', stopRequested: request.stopRequested };
+    case 'hot':
+      return request.aboutPrice === true ? { reason: 'hot', aboutPrice: true } : { reason: 'hot' };
+    default:
+      return { reason: request.reason };
+  }
 }
 
 async function tellManager(deps: HandoffDeps, chat: Chat, request: NotifiedRequest): Promise<void> {

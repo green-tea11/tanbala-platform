@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ChatCompanyState, CompanyApiFailure } from '../../../src/domain/company.js';
 import { loggedText, makeChat } from '../handoff/fakes.js';
 import {
+  chatIdOf,
   companyIdOf,
   jobIdOf,
   makeBrief,
@@ -162,8 +163,30 @@ describe('identifyAfterReply: шаг г, название со слов клие
     expect(h.repo.current().candidate).toMatchObject({ source: 'message' });
   });
 
-  it.each<CompanyApiFailure>(['bad_request', 'unauthorized', 'not_found', 'invalid_response'])(
-    'сбой поиска %s считается пройденным шагом: название запомнено, дальше проверка новой компании',
+  it('сбой поиска bad_request (повтор не поможет) считается пройденным шагом: название запомнено, дальше проверка', async () => {
+    const h = createHarness({
+      state: named(),
+      directory: { lookup: () => fail('bad_request'), startResearch: () => QUEUED },
+    });
+
+    await h.service.identifyAfterReply(makeChat());
+
+    expect(h.repo.current().lookedUpName).toBe('платформа а');
+    expect(h.directory.count('startResearch')).toBe(1);
+    expect(h.logs.filter((entry) => entry.level === 'warn').map((entry) => entry.context)).toEqual([
+      { chatId: 12, step: 'message', failure: 'bad_request' },
+    ]);
+  });
+
+  it.each<CompanyApiFailure>([
+    'unauthorized',
+    'not_found',
+    'invalid_response',
+    'rate_limited',
+    'budget_exhausted',
+    'timeout',
+  ])(
+    'сбой поиска %s: название не запоминается, проверка не запускается, повтор позже',
     async (failure) => {
       const h = createHarness({
         state: named(),
@@ -171,12 +194,12 @@ describe('identifyAfterReply: шаг г, название со слов клие
       });
 
       await h.service.identifyAfterReply(makeChat());
+      await h.service.identifyAfterReply(makeChat());
 
-      expect(h.repo.current().lookedUpName).toBe('платформа а');
-      expect(h.directory.count('startResearch')).toBe(1);
-      expect(
-        h.logs.filter((entry) => entry.level === 'warn').map((entry) => entry.context),
-      ).toEqual([{ chatId: 12, step: 'message', failure }]);
+      expect(h.repo.current().lookedUpName).toBeNull();
+      expect(h.directory.lookups()).toHaveLength(2);
+      expect(h.directory.count('startResearch')).toBe(0);
+      expect(h.repo.saves).toEqual([]);
     },
   );
 });
@@ -208,6 +231,33 @@ describe('identifyAfterReply: проверка новой компании', () 
       startedAtMs: NOW + 3000,
       checkedAtMs: NOW + 3000,
     });
+    expect(h.repo.current().researchStartedAtMs).toBe(NOW + 3000);
+  });
+
+  it.each([
+    ['обычный аккаунт', 'personal'],
+    ['профиль не получен', 'unknown'],
+    ['профиль не запрашивался', null],
+  ] as const)('%s: номер клиента в проверку не передаётся', async (_label, profileKind) => {
+    const h = createHarness({
+      state: named({ profileKind }),
+      directory: { startResearch: () => QUEUED },
+    });
+
+    await h.service.identifyAfterReply(makeChat());
+
+    expect(h.directory.calls.find((call) => call.method === 'startResearch')).toMatchObject({
+      request: { phone: null },
+    });
+  });
+
+  it('отметка запуска пишется в базу до запроса: дневной предел видит запуск, даже если ответа ещё нет', async () => {
+    const h = createHarness({ state: named(), directory: { startResearch: () => QUEUED } });
+
+    await h.service.identifyAfterReply(makeChat());
+
+    expect(h.events.indexOf('repo.save')).toBeLessThan(h.events.indexOf('directory.startResearch'));
+    expect(h.repo.saves[0]?.researchStartedAtMs).toBe(NOW);
   });
 
   it('проверка идёт: промпт searching, название снова не спрашивается', async () => {
@@ -247,6 +297,7 @@ describe('identifyAfterReply: проверка новой компании', () 
 
     expect(h.directory.calls.at(-1)).toEqual({ method: 'brief', id: companyIdOf(51) });
     expect(h.repo.current()).toMatchObject({
+      researchStartedAtMs: null,
       research: { status: 'done', companyId: companyIdOf(51), finishedAtMs: NOW },
       candidate: {
         id: companyIdOf(51),
@@ -274,7 +325,7 @@ describe('identifyAfterReply: проверка новой компании', () 
     });
   });
 
-  it('проект B вернул готовую компанию, справка недоступна: проверка не записывается, повтор позже', async () => {
+  it('проект B вернул готовую компанию, справка недоступна: проверка не записывается, неудача считается, повтор позже', async () => {
     let briefAvailable = false;
     const h = createHarness({
       state: named(),
@@ -287,7 +338,12 @@ describe('identifyAfterReply: проверка новой компании', () 
 
     await h.service.identifyAfterReply(makeChat());
 
-    expect(h.repo.current()).toMatchObject({ research: null, candidate: null });
+    expect(h.repo.current()).toMatchObject({
+      research: null,
+      candidate: null,
+      adoptFailures: 1,
+      researchStartedAtMs: null,
+    });
     expect(h.repo.current().lookedUpName).toBe('платформа а');
 
     briefAvailable = true;
@@ -298,6 +354,26 @@ describe('identifyAfterReply: проверка новой компании', () 
     expect(h.repo.current()).toMatchObject({
       research: { status: 'done' },
       candidate: { id: 51, source: 'research' },
+    });
+  });
+
+  it('готовая компания трижды без справки: запуск больше не повторяется, проверка failed', async () => {
+    const h = createHarness({
+      state: named(),
+      directory: {
+        startResearch: () => ok({ kind: 'done', companyId: companyIdOf(51) }),
+        brief: () => fail('not_found'),
+      },
+    });
+
+    for (let reply = 0; reply < 5; reply += 1) await h.service.identifyAfterReply(makeChat());
+
+    expect(h.directory.count('startResearch')).toBe(3);
+    expect(h.directory.count('brief')).toBe(3);
+    expect(h.repo.current()).toMatchObject({
+      adoptFailures: 3,
+      candidate: null,
+      research: { status: 'failed', reason: null, finishedAtMs: NOW },
     });
   });
 
@@ -317,47 +393,136 @@ describe('identifyAfterReply: проверка новой компании', () 
         reason: failure,
         finishedAtMs: NOW,
       });
+      expect(h.repo.current().researchStartedAtMs).toBeNull();
       expect(turn).toEqual({ prompt: { kind: 'unknown', askName: false }, awaitingAnswer: false });
     },
   );
 
-  it('API недоступно при запуске: ничего не записывается о проверке, повтор при следующем вызове', async () => {
-    let available = false;
+  it.each<CompanyApiFailure>(['unavailable', 'unauthorized', 'not_found'])(
+    'запуск не дошёл до проверки (%s): ничего не записывается о проверке и о запуске, повтор при следующем вызове',
+    async (failure) => {
+      let available = false;
+      const h = createHarness({
+        state: named(),
+        directory: { startResearch: () => (available ? QUEUED : fail(failure)) },
+      });
+
+      await h.service.identifyAfterReply(makeChat());
+
+      expect(h.repo.current()).toMatchObject({
+        research: null,
+        researchStartedAtMs: null,
+        lookedUpName: 'платформа а',
+      });
+
+      available = true;
+      await h.service.identifyAfterReply(makeChat());
+
+      expect(h.directory.lookups()).toHaveLength(1);
+      expect(h.repo.current().research).toMatchObject({ status: 'queued' });
+    },
+  );
+
+  it('запуск без ответа за 3 с (timeout): запрос мог дойти, повтора нет, проверка failed с причиной timeout', async () => {
     const h = createHarness({
       state: named(),
-      directory: { startResearch: () => (available ? QUEUED : fail('unavailable')) },
+      directory: { startResearch: () => fail('timeout') },
     });
 
     await h.service.identifyAfterReply(makeChat());
-
-    expect(h.repo.current().research).toBeNull();
-    expect(h.repo.current().lookedUpName).toBe('платформа а');
-
-    available = true;
     await h.service.identifyAfterReply(makeChat());
 
-    expect(h.directory.lookups()).toHaveLength(1);
-    expect(h.repo.current().research).toMatchObject({ status: 'queued' });
+    expect(h.directory.count('startResearch')).toBe(1);
+    expect(h.repo.current()).toMatchObject({
+      research: { status: 'failed', reason: 'timeout', finishedAtMs: NOW },
+      researchStartedAtMs: NOW,
+    });
   });
 
-  it.each<CompanyApiFailure>(['bad_request', 'unauthorized', 'not_found', 'invalid_response'])(
-    'прочий сбой запуска %s: проверка failed без причины',
-    async (failure) => {
+  it.each<[CompanyApiFailure, number | null]>([
+    ['bad_request', null],
+    ['invalid_response', NOW],
+  ])(
+    'прочий сбой запуска %s: проверка failed без причины, повтора нет',
+    async (failure, startedAtMs) => {
       const h = createHarness({
         state: named(),
         directory: { startResearch: () => fail(failure) },
       });
 
       await h.service.identifyAfterReply(makeChat());
+      await h.service.identifyAfterReply(makeChat());
 
+      expect(h.directory.count('startResearch')).toBe(1);
       expect(h.repo.current().research).toEqual({
         status: 'failed',
         reason: null,
         finishedAtMs: NOW,
       });
+      expect(h.repo.current().researchStartedAtMs).toBe(startedAtMs);
     },
   );
+});
 
+describe('identifyAfterReply: дневной предел проверок новых компаний на весь бот', () => {
+  /** Другие чаты, которые запускали проверку в startedAtMs. */
+  function otherStarts(count: number, startedAtMs: number): ChatCompanyState[] {
+    return Array.from({ length: count }, (_, index) =>
+      makeState({ chatId: chatIdOf(100 + index), researchStartedAtMs: startedAtMs }),
+    );
+  }
+
+  it('за последние 24 часа уже 10 запусков: проверка не запускается, состояние проверки не меняется, предупреждение без названий', async () => {
+    const h = createHarness({ state: named(), directory: { startResearch: () => QUEUED } });
+    for (const other of otherStarts(10, NOW - 23 * 60 * MINUTE_MS)) h.repo.seed(other);
+
+    await h.service.identifyAfterReply(makeChat());
+
+    expect(h.directory.count('startResearch')).toBe(0);
+    expect(h.repo.current()).toMatchObject({
+      research: null,
+      researchStartedAtMs: null,
+      lookedUpName: 'платформа а',
+    });
+    const warns = h.logs.filter((entry) => entry.level === 'warn');
+    expect(warns.map((entry) => entry.context)).toEqual([
+      { chatId: 12, step: 'research_start', limit: 10 },
+    ]);
+    expect(loggedText(h.logs)).not.toContain('Платформа');
+  });
+
+  it('предел освободился: следующий ответ запускает проверку', async () => {
+    const h = createHarness({ state: named(), directory: { startResearch: () => QUEUED } });
+    for (const other of otherStarts(10, NOW - 23 * 60 * MINUTE_MS)) h.repo.seed(other);
+    await h.service.identifyAfterReply(makeChat());
+
+    h.clock.advance(60 * MINUTE_MS + 1);
+    await h.service.identifyAfterReply(makeChat());
+
+    expect(h.directory.count('startResearch')).toBe(1);
+    expect(h.repo.current().research).toMatchObject({ status: 'queued' });
+  });
+
+  it('9 запусков за сутки: десятый разрешён', async () => {
+    const h = createHarness({ state: named(), directory: { startResearch: () => QUEUED } });
+    for (const other of otherStarts(9, NOW - MINUTE_MS)) h.repo.seed(other);
+
+    await h.service.identifyAfterReply(makeChat());
+
+    expect(h.directory.count('startResearch')).toBe(1);
+  });
+
+  it('запуски старше 24 часов не считаются', async () => {
+    const h = createHarness({ state: named(), directory: { startResearch: () => QUEUED } });
+    for (const other of otherStarts(20, NOW - 24 * 60 * MINUTE_MS)) h.repo.seed(other);
+
+    await h.service.identifyAfterReply(makeChat());
+
+    expect(h.directory.count('startResearch')).toBe(1);
+  });
+});
+
+describe('identifyAfterReply: проверка новой компании, прочее', () => {
   it.each([
     ['в очереди', { status: 'queued', jobId: jobIdOf('j'), startedAtMs: NOW, checkedAtMs: NOW }],
     ['завершена', { status: 'done', companyId: companyIdOf(51), finishedAtMs: NOW }],

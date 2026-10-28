@@ -4,8 +4,12 @@ import {
   createChatCompaniesRepo,
   emptyCompanyState,
 } from '../../../../src/db/repos/chat-companies.js';
-import type { ChatCompaniesRepo, ChatCompanyState } from '../../../../src/domain/company.js';
-import type { ChatId } from '../../../../src/domain/types.js';
+import type {
+  ChatCompaniesRepo,
+  ChatCompanyState,
+  CompanyBrief,
+} from '../../../../src/domain/company.js';
+import type { ChatId, Jid } from '../../../../src/domain/types.js';
 import {
   companyIdOf,
   jobIdOf,
@@ -37,6 +41,7 @@ function fullState(chatId: ChatId): ChatCompanyState {
   return makeState({
     chatId,
     profileKind: 'business',
+    profileRequests: 2,
     profileDomain: 'sklad.kz',
     freeStepsAtMs: NOW,
     logoCheckedAtMs: NOW + 1,
@@ -46,6 +51,7 @@ function fullState(chatId: ChatId): ChatCompanyState {
     candidate: makeChatCandidate({ source: 'message', askedAtMs: NOW + 2, awaitingAnswer: true }),
     rejectedIds: [companyIdOf(3), companyIdOf(5)],
     confirmed: makeConfirmed({ confirmedAtMs: NOW + 3, brief: makeBrief(), briefAtMs: NOW + 4 }),
+    briefFailures: 1,
     nameAskedAtMs: NOW + 5,
     research: {
       status: 'running',
@@ -53,8 +59,44 @@ function fullState(chatId: ChatId): ChatCompanyState {
       startedAtMs: NOW,
       checkedAtMs: NOW + 6,
     },
+    researchStartedAtMs: NOW,
+    adoptFailures: 2,
     confirmedPains: ['Инвентаризация занимает дни', 'Пересорт при приёмке'],
   });
+}
+
+/** Поля справки, которые не нужны ни промпту, ни сводке, ни панели: в базу они не пишутся, при чтении null. */
+const UNUSED_BRIEF_FIELDS = {
+  segment: null,
+  fit: null,
+  fitScore: null,
+  reason: null,
+  emailedAt: null,
+  emailSubject: null,
+} as const;
+
+/** Справка так, как её возвращает чтение из базы: неиспользуемые поля null. */
+function readBack(brief: CompanyBrief): CompanyBrief {
+  return { ...brief, ...UNUSED_BRIEF_FIELDS };
+}
+
+/** Состояние так, как его возвращает чтение из базы после записи. */
+function asRead(state: ChatCompanyState): ChatCompanyState {
+  const { confirmed } = state;
+  if (confirmed === null || confirmed.brief === null) return state;
+  return { ...state, confirmed: { ...confirmed, brief: readBack(confirmed.brief) } };
+}
+
+/** Справка так, как она лежит в JSON: только ID, название, город, рубрика, боли и «писали ли». */
+function storedBriefOf(brief: CompanyBrief): Record<string, unknown> {
+  return {
+    id: brief.id,
+    name: brief.name,
+    city: brief.city,
+    rubric: brief.rubric,
+    pains: brief.pains,
+    emailed: brief.emailed,
+  };
 }
 
 /** Все причины неудачи проверки из ResearchState: каждая должна пройти запись и чтение. */
@@ -92,6 +134,7 @@ describe('createChatCompaniesRepo: чтение и запись', () => {
     expect(repo.get(chatId)).toEqual({
       chatId,
       profileKind: null,
+      profileRequests: 0,
       profileDomain: null,
       freeStepsAtMs: null,
       logoCheckedAtMs: null,
@@ -101,8 +144,11 @@ describe('createChatCompaniesRepo: чтение и запись', () => {
       candidate: null,
       rejectedIds: [],
       confirmed: null,
+      briefFailures: 0,
       nameAskedAtMs: null,
       research: null,
+      researchStartedAtMs: null,
+      adoptFailures: 0,
       confirmedPains: [],
     });
     expect(logs).toEqual([]);
@@ -114,13 +160,27 @@ describe('createChatCompaniesRepo: чтение и запись', () => {
     expect(repo.get(chatId)).toEqual(emptyCompanyState(chatId));
   });
 
-  it('состояние со всеми полями возвращается как записано', () => {
+  it('состояние со всеми полями возвращается как записано, кроме неиспользуемых полей справки', () => {
     const { repo, chatId } = setup();
     const state = fullState(chatId);
 
     repo.save(state, NOW);
 
-    expect(repo.get(chatId)).toEqual(state);
+    expect(repo.get(chatId)).toEqual(asRead(state));
+    expect(repo.get(chatId).confirmed?.brief).toEqual({ ...makeBrief(), ...UNUSED_BRIEF_FIELDS });
+  });
+
+  it('боли справки с цитатой и источником, рубрика и «писали ли» сохраняются: их видят промпт, сводка и панель', () => {
+    const { repo, chatId } = setup();
+    const brief = makeBrief({ emailed: true, rubric: 'Склады' });
+
+    repo.save(makeState({ chatId, confirmed: makeConfirmed({ brief, briefAtMs: NOW }) }), NOW);
+
+    expect(repo.get(chatId).confirmed?.brief).toMatchObject({
+      rubric: 'Склады',
+      pains: brief.pains,
+      emailed: true,
+    });
   });
 
   it.each([
@@ -154,7 +214,7 @@ describe('createChatCompaniesRepo: чтение и запись', () => {
     },
   );
 
-  it('справка со всеми необязательными полями пустыми тоже сохраняется', () => {
+  it('справка с пустыми городом и рубрикой тоже сохраняется', () => {
     const { repo, chatId } = setup();
     const brief = makeBrief({
       city: null,
@@ -172,7 +232,7 @@ describe('createChatCompaniesRepo: чтение и запись', () => {
 
     repo.save(state, NOW);
 
-    expect(repo.get(chatId)).toEqual(state);
+    expect(repo.get(chatId)).toEqual(asRead(state));
   });
 
   it('вторая запись заменяет первую целиком и обновляет время записи', () => {
@@ -187,15 +247,35 @@ describe('createChatCompaniesRepo: чтение и запись', () => {
     expect(db.prepare('SELECT updated_at FROM chat_companies').pluck().get()).toBe(NOW + 5000);
   });
 
-  it('состояние лежит в базе как JSON без ID чата', () => {
+  it('состояние лежит в базе как JSON без ID чата, справка без неиспользуемых полей', () => {
     const { db, repo, chatId } = setup();
     const state = fullState(chatId);
 
     repo.save(state, NOW);
 
-    const stored = db.prepare('SELECT state FROM chat_companies').pluck().get();
-    expect(JSON.parse(String(stored))).toEqual(JSON.parse(JSON.stringify(storedOf(state))));
-    expect(JSON.parse(String(stored))).not.toHaveProperty('chatId');
+    const text = String(db.prepare('SELECT state FROM chat_companies').pluck().get());
+    const confirmed = { ...state.confirmed, brief: storedBriefOf(makeBrief()) };
+    expect(JSON.parse(text)).toEqual(JSON.parse(JSON.stringify({ ...storedOf(state), confirmed })));
+    expect(JSON.parse(text)).not.toHaveProperty('chatId');
+    for (const unused of Object.keys(UNUSED_BRIEF_FIELDS)) expect(text).not.toContain(unused);
+    expect(text).not.toContain('Ответственное хранение');
+  });
+
+  it('старая запись без счётчиков и с полной справкой читается: счётчики 0, отметки запуска нет', () => {
+    const { db, repo, chatId } = setup();
+    const full = makeState({ confirmed: makeConfirmed({ brief: makeBrief(), briefAtMs: NOW }) });
+    const old = ['profileRequests', 'briefFailures', 'researchStartedAtMs', 'adoptFailures'].reduce(
+      (stored, key) => omit(stored, key),
+      storedOf(full),
+    );
+    insertRaw(db, chatId, JSON.stringify(old));
+
+    expect(repo.get(chatId)).toEqual(
+      makeState({
+        chatId,
+        confirmed: makeConfirmed({ brief: readBack(makeBrief()), briefAtMs: NOW }),
+      }),
+    );
   });
 
   it('состояния разных чатов не смешиваются', () => {
@@ -301,7 +381,11 @@ describe('createChatCompaniesRepo: испорченная запись', () => {
       { ...VALID, research: { status: 'failed', reason: 'fire', finishedAtMs: 1 } },
     ],
     ['справка без имени', withBrief(omit(VALID_BRIEF, 'name'))],
-    ['оценка соответствия вне списка', withBrief({ ...VALID_BRIEF, fit: 'perfect' })],
+    ['справка без болей', withBrief(omit(VALID_BRIEF, 'pains'))],
+    ['счётчик профиля отрицательный', { ...VALID, profileRequests: -1 }],
+    ['счётчик справки дробный', { ...VALID, briefFailures: 0.5 }],
+    ['счётчик запусков строкой', { ...VALID, adoptFailures: '1' }],
+    ['отметка запуска отрицательная', { ...VALID, researchStartedAtMs: -5 }],
     [
       'источник боли вне списка',
       withBrief({ ...VALID_BRIEF, pains: [{ pain: 'p', evidence: null, source: 'dream' }] }),
@@ -354,7 +438,74 @@ describe('createChatCompaniesRepo: испорченная запись', () => {
     const { db, repo, logs, chatId } = setup();
     insertRaw(db, chatId, JSON.stringify({ ...VALID, futureField: 1 }));
 
-    expect(repo.get(chatId)).toEqual({ ...fullState(chatId) });
+    expect(repo.get(chatId)).toEqual(asRead(fullState(chatId)));
     expect(logs).toEqual([]);
+  });
+
+  it('неиспользуемые поля справки в старой записи не проверяются: запись читается, поля null', () => {
+    const { db, repo, logs, chatId } = setup();
+    insertRaw(
+      db,
+      chatId,
+      JSON.stringify(withBrief({ ...VALID_BRIEF, fit: 'perfect', fitScore: 'x' })),
+    );
+
+    expect(repo.get(chatId).confirmed?.brief).toEqual(readBack(makeBrief()));
+    expect(logs).toEqual([]);
+  });
+});
+
+describe('createChatCompaniesRepo: дневной предел проверок новых компаний', () => {
+  let nextChat = 0;
+
+  /** Новый чат с отметкой запуска проверки в atMs (null: не запускал). */
+  function chatWithStart(
+    db: Database.Database,
+    repo: ChatCompaniesRepo,
+    atMs: number | null,
+  ): void {
+    nextChat += 1;
+    const chatId = insertChat(db, {
+      replyJid: `77000001${String(nextChat).padStart(3, '0')}@s.whatsapp.net` as Jid,
+    });
+    repo.save(makeState({ chatId, researchStartedAtMs: atMs }), NOW);
+  }
+
+  it('записей нет: ноль', () => {
+    const { repo } = setup();
+
+    expect(repo.countResearchStarts(NOW - 1000)).toBe(0);
+  });
+
+  it('считаются чаты с отметкой позже границы; ровно на границе, раньше и без отметки не считаются', () => {
+    const { db, repo } = setup();
+    chatWithStart(db, repo, NOW);
+    chatWithStart(db, repo, NOW - 999);
+    chatWithStart(db, repo, NOW - 1000);
+    chatWithStart(db, repo, NOW - 5000);
+    chatWithStart(db, repo, null);
+
+    expect(repo.countResearchStarts(NOW - 1000)).toBe(2);
+  });
+
+  it('испорченная запись (не JSON) не ломает счёт и не считается', () => {
+    const { db, repo, chatId } = setup();
+    insertRaw(db, chatId, 'мусор {');
+    chatWithStart(db, repo, NOW);
+
+    expect(repo.countResearchStarts(NOW - 1000)).toBe(1);
+  });
+
+  it('отметка не числом (испорченная запись) не считается', () => {
+    const { db, repo, chatId } = setup();
+    insertRaw(db, chatId, JSON.stringify({ researchStartedAtMs: 'завтра' }));
+
+    expect(repo.countResearchStarts(NOW - 1000)).toBe(0);
+  });
+
+  it.each([-1, 1.5, Number.NaN])('граница %s отклоняется RangeError', (sinceMs) => {
+    const { repo } = setup();
+
+    expect(() => repo.countResearchStarts(sinceMs)).toThrow(RangeError);
   });
 });

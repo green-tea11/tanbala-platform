@@ -115,11 +115,14 @@ describe('createAgent: draftReply, запрос', () => {
     expect(zodOutputFormat(request.schema).schema).toMatchObject({
       type: 'object',
       additionalProperties: false,
-      required: ['outcome', 'text', 'stopRequested', 'companyQuestion'],
+      required: ['outcome', 'text', 'stopRequested', 'companyQuestion', 'aboutPrice'],
     });
-    expect(request.schema.safeParse({ ...ANSWER, companyQuestion: 'none' }).success).toBe(true);
+    const full = { ...ANSWER, companyQuestion: 'none', aboutPrice: false };
+    expect(request.schema.safeParse(full).success).toBe(true);
     expect(request.schema.safeParse(ANSWER).success).toBe(false);
-    expect(request.schema.safeParse({ ...ANSWER, companyQuestion: 'phone' }).success).toBe(false);
+    expect(request.schema.safeParse({ ...full, companyQuestion: 'phone' }).success).toBe(false);
+    expect(request.schema.safeParse({ ...full, aboutPrice: 'yes' }).success).toBe(false);
+    expect(request.schema.safeParse({ ...ANSWER, companyQuestion: 'none' }).success).toBe(false);
     expect(
       request.schema.safeParse({ outcome: 'maybe', text: '', stopRequested: false }).success,
     ).toBe(false);
@@ -141,10 +144,24 @@ describe('createAgent: draftReply, запрос', () => {
           text: 'Текст',
           stopRequested: false,
           companyQuestion: 'none',
+          aboutPrice: false,
         }).success,
       ).toBe(true);
     }
     expect(schema.properties.text.description).toMatch(/hot, no_answer и asked_human/);
+  });
+
+  it('поле aboutPrice: true, если клиент в последних сообщениях спрашивал цену или стоимость', async () => {
+    const { request } = await draft({ ok: true, value: ANSWER });
+
+    const schema = zodOutputFormat(request.schema).schema as {
+      properties: { aboutPrice: { type: string; description: string } };
+    };
+    expect(schema.properties.aboutPrice).toEqual({
+      type: 'boolean',
+      description:
+        'true, если клиент в последних сообщениях спрашивал цену или стоимость; иначе false.',
+    });
   });
 });
 
@@ -196,6 +213,37 @@ describe('createAgent: draftReply, нормализация ответа мод�
 
     expect(result).toEqual({ ok: true, value: expected });
   });
+
+  it.each(['hot', 'no_answer', 'asked_human'] as const)(
+    '%s с aboutPrice true: пометка сохраняется в черновике',
+    async (outcome) => {
+      const { result } = await draft({
+        ok: true,
+        value: { outcome, text: ' Передал. ', stopRequested: false, aboutPrice: true },
+      });
+
+      expect(result).toStrictEqual({
+        ok: true,
+        value: { outcome, text: 'Передал.', aboutPrice: true },
+      });
+    },
+  );
+
+  it.each([false, undefined])(
+    'aboutPrice %s у передачи и любое значение у answer и complaint: поля нет',
+    async (aboutPrice) => {
+      const cases = [
+        { outcome: 'hot', text: '', stopRequested: false, aboutPrice },
+        { outcome: 'answer', text: 'Да.', stopRequested: false, aboutPrice: true },
+        { outcome: 'complaint', text: '', stopRequested: false, aboutPrice: true },
+      ];
+      for (const raw of cases) {
+        const { result } = await draft({ ok: true, value: raw });
+
+        expect(result.ok && result.value).not.toHaveProperty('aboutPrice');
+      }
+    },
+  );
 
   it.each(['', '   \n'])(
     'answer с пустым текстом %j => invalid_output, не угадывать',

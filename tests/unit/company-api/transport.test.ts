@@ -126,14 +126,14 @@ describe('company-api транспорт: сеть и таймаут', () => {
     ['TypeError без причины', () => Promise.reject(new TypeError('fetch failed'))],
     ['не Error', vi.fn<Responder>().mockRejectedValue('boom')],
     ['AbortError от самого fetch', () => Promise.reject(new DOMException('x', 'AbortError'))],
-  ])('%s => unavailable', async (_case, responder) => {
+  ])('%s => unavailable (не timeout: ответа точно не было)', async (_case, responder) => {
     const h = createHarness();
     h.reply(responder);
 
     expect(await lookup(h)).toEqual({ ok: false, failure: 'unavailable' });
   });
 
-  it('запрос, который не отвечает, прерывается по таймауту: сигнал отмены уходит в fetch', async () => {
+  it('запрос, который не отвечает, прерывается по таймауту => timeout, сигнал отмены уходит в fetch', async () => {
     const h = createHarness({ timeoutMs: 20 });
     let aborted = false;
     h.reply((request, signal) => {
@@ -145,7 +145,7 @@ describe('company-api транспорт: сеть и таймаут', () => {
 
     const result = await lookup(h);
 
-    expect(result).toEqual({ ok: false, failure: 'unavailable' });
+    expect(result).toEqual({ ok: false, failure: 'timeout' });
     expect(aborted).toBe(true);
   });
 
@@ -153,7 +153,7 @@ describe('company-api транспорт: сеть и таймаут', () => {
     const h = createHarness({ timeoutMs: 20 });
     h.reply(() => new Promise<Response>(() => undefined));
 
-    expect(await lookup(h)).toEqual({ ok: false, failure: 'unavailable' });
+    expect(await lookup(h)).toEqual({ ok: false, failure: 'timeout' });
   });
 
   it('таймаут по умолчанию 3 с: на 2999 мс вызов ещё ждёт, на 3000 мс он завершён', async () => {
@@ -170,7 +170,7 @@ describe('company-api транспорт: сеть и таймаут', () => {
     expect(settled).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
 
-    expect(await call).toEqual({ ok: false, failure: 'unavailable' });
+    expect(await call).toEqual({ ok: false, failure: 'timeout' });
   });
 
   it('таймаут охватывает и чтение тела: поток, который встал, прерывается и закрывается', async () => {
@@ -186,7 +186,7 @@ describe('company-api транспорт: сеть и таймаут', () => {
     });
     h.reply(new Response(stream, { status: 200 }));
 
-    expect(await lookup(h)).toEqual({ ok: false, failure: 'unavailable' });
+    expect(await lookup(h)).toEqual({ ok: false, failure: 'timeout' });
     await vi.waitFor(() => expect(cancelled).toBe(true));
   });
 
@@ -335,20 +335,20 @@ describe('company-api транспорт: тело ответа', () => {
 });
 
 describe('company-api транспорт: пауза после сбоя', () => {
-  const outages: readonly (readonly [string, Reply])[] = [
-    ['503', json(503, { error: 'db_unavailable' })],
-    ['500', plain(500, 'oops')],
-    ['сеть', networkError()],
-    ['таймаут', hanging()],
+  const outages: readonly (readonly [string, Reply, 'unavailable' | 'timeout'])[] = [
+    ['503', json(503, { error: 'db_unavailable' }), 'unavailable'],
+    ['500', plain(500, 'oops'), 'unavailable'],
+    ['сеть', networkError(), 'unavailable'],
+    ['таймаут', hanging(), 'timeout'],
   ];
 
   it.each(outages)(
-    'после сбоя (%s) вызовы сразу возвращают unavailable без сети',
-    async (_case, outage) => {
+    'после сбоя (%s, сам вызов: %s) вызовы сразу возвращают unavailable без сети',
+    async (_case, outage, first) => {
       const h = createHarness({ timeoutMs: 20 });
       h.reply(outage);
 
-      expect(await lookup(h)).toEqual({ ok: false, failure: 'unavailable' });
+      expect(await lookup(h)).toEqual({ ok: false, failure: first });
       expect(h.fetch).toHaveBeenCalledTimes(1);
 
       expect(await lookup(h)).toEqual({ ok: false, failure: 'unavailable' });
@@ -379,6 +379,29 @@ describe('company-api транспорт: пауза после сбоя', () =>
     h.clock.advance(1);
     expect(await lookup(h)).toEqual({ ok: true, value: [] });
     expect(h.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('после таймаута тоже пауза в минуту: за миллисекунду до конца unavailable, в конце запрос уходит', async () => {
+    const h = createHarness({ timeoutMs: 20 });
+    h.reply(hanging(), json(200, EMPTY_LOOKUP));
+
+    expect(await lookup(h)).toEqual({ ok: false, failure: 'timeout' });
+    h.clock.advance(MINUTE_MS - 1);
+    expect(await lookup(h)).toEqual({ ok: false, failure: 'unavailable' });
+    expect(h.fetch).toHaveBeenCalledTimes(1);
+
+    h.clock.advance(1);
+    expect(await lookup(h)).toEqual({ ok: true, value: [] });
+    expect(h.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('таймаут запуска проверки: timeout, а не unavailable (запрос мог дойти до проекта B)', async () => {
+    const h = createHarness({ timeoutMs: 20 });
+    h.reply(hanging());
+
+    expect(
+      await h.directory.startResearch({ name: 'Ромашка', city: null, phone: null, domain: null }),
+    ).toEqual({ ok: false, failure: 'timeout' });
   });
 
   it('длину паузы задаёт cooldownMs', async () => {
@@ -633,6 +656,8 @@ describe('company-api: создание клиента', () => {
   it.each([
     'http://mail.example.kz:8000',
     'http://192.168.1.10:8000',
+    'http://localhost:8000',
+    'http://[::1]:8000',
     'https://127.0.0.1:8000',
     'http://user:pass@127.0.0.1:8000',
     'http://127.0.0.1:8000/api',
@@ -664,7 +689,7 @@ describe('company-api: создание клиента', () => {
   );
 
   it.each([
-    ['http://localhost:8000/', 'http://localhost:8000'],
+    ['http://127.0.0.1:8000/', 'http://127.0.0.1:8000'],
     ['HTTP://127.0.0.1:8000', 'http://127.0.0.1:8000'],
   ])('адрес %s приводится к виду %s', async (baseUrl, expected) => {
     const h = createHarness({ baseUrl });

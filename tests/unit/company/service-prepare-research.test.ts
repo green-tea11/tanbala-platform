@@ -115,8 +115,15 @@ describe('prepare: справка подтверждённой компании'
     expect(h.repo.current().confirmed?.brief).not.toBeNull();
   });
 
-  it.each<CompanyApiFailure>(['not_found', 'invalid_response', 'unauthorized', 'bad_request'])(
-    'сбой справки %s: без исключения, в лог только чат, шаг и код',
+  it.each<CompanyApiFailure>([
+    'not_found',
+    'invalid_response',
+    'unauthorized',
+    'bad_request',
+    'rate_limited',
+    'budget_exhausted',
+  ])(
+    'сбой справки %s: без исключения, неудача считается, в лог только чат, шаг и код',
     async (failure) => {
       const h = createHarness({
         state: confirmedWithoutBrief,
@@ -126,12 +133,55 @@ describe('prepare: справка подтверждённой компании'
       const turn = await h.service.prepare(makeChat(), []);
 
       expect(turn.prompt.kind).toBe('confirmed');
+      expect(h.repo.current().briefFailures).toBe(1);
       expect(h.logs.map((entry) => entry.context)).toEqual([
         { chatId: 12, step: 'brief', failure },
       ]);
       expect(loggedText(h.logs)).not.toContain('Платформа');
     },
   );
+
+  it.each<CompanyApiFailure>(['unavailable', 'timeout'])(
+    'сбой справки %s (временный) не считается: справку спросят снова',
+    async (failure) => {
+      const h = createHarness({
+        state: makeState({ ...FREE_DONE, confirmed: makeConfirmed(), briefFailures: 2 }),
+        directory: { brief: () => fail(failure) },
+      });
+
+      for (let batch = 0; batch < 4; batch += 1) await h.service.prepare(makeChat(), []);
+
+      expect(h.directory.count('brief')).toBe(4);
+      expect(h.repo.current().briefFailures).toBe(2);
+    },
+  );
+
+  it('после трёх неудачных запросов справки подряд она больше не запрашивается', async () => {
+    const h = createHarness({
+      state: confirmedWithoutBrief,
+      directory: { brief: () => fail('not_found') },
+    });
+
+    for (let batch = 0; batch < 5; batch += 1) await h.service.prepare(makeChat(), []);
+
+    expect(h.directory.count('brief')).toBe(3);
+    expect(h.repo.current()).toMatchObject({ briefFailures: 3, confirmed: { brief: null } });
+  });
+
+  it('удачный запрос после неудач: справка записана, промпт со справкой', async () => {
+    let failing = true;
+    const h = createHarness({
+      state: confirmedWithoutBrief,
+      directory: { brief: () => (failing ? fail('invalid_response') : ok(makeBrief())) },
+    });
+    await h.service.prepare(makeChat(), []);
+    failing = false;
+
+    const turn = await h.service.prepare(makeChat(), []);
+
+    expect(turn.prompt).toMatchObject({ kind: 'confirmed', rubric: 'Складское хранение' });
+    expect(h.directory.count('brief')).toBe(2);
+  });
 
   it('справка идёт в промпт без цитат и источников', async () => {
     const h = createHarness({
@@ -248,8 +298,13 @@ describe('prepare: опрос идущей проверки новой комп�
     expect(h.repo.current().research?.status).toBe('done');
   });
 
-  it('завершена, но другой кандидат уже есть: он остаётся, проверка done', async () => {
-    const existing = makeChatCandidate({ id: companyIdOf(9), name: 'Другая', source: 'phone' });
+  it('завершена, но другой (уже спрошенный) кандидат есть: он остаётся, проверка done', async () => {
+    const existing = makeChatCandidate({
+      id: companyIdOf(9),
+      name: 'Другая',
+      source: 'phone',
+      askedAtMs: NOW - MINUTE_MS,
+    });
     const h = createHarness({
       state: stateWithResearch(running(MINUTE_MS, 10 * SECOND_MS), { candidate: existing }),
       directory: {

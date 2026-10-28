@@ -82,6 +82,10 @@ function memoryRepo(states: Map<ChatId, ChatCompanyState>): ChatCompaniesRepo {
     save: (state) => {
       states.set(state.chatId, state);
     },
+    countResearchStarts: (sinceMs) =>
+      [...states.values()].filter(
+        (state) => state.researchStartedAtMs !== null && state.researchStartedAtMs > sinceMs,
+      ).length,
   };
 }
 

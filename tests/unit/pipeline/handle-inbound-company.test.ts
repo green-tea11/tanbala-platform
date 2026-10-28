@@ -14,6 +14,8 @@ import {
   CHAT_ID,
   chatWith,
   EMPTY_PROFILE,
+  handoffAnswer,
+  HOT_TEXT,
   levels,
   run,
   SEND_STEPS,
@@ -26,7 +28,12 @@ import {
 // Конвейер и сервис компании: порядок вызовов prepare, оценки, applyAssessment, черновика, markAsked и
 // identifyAfterReply. Сервис поддельный (стенд inbound-harness.ts), его вызовы пишутся в общий журнал calls.
 
-const ASKED: CompanyPrompt = { kind: 'asked', name: 'ТОО Склад', city: 'Алматы' };
+const ASKED: CompanyPrompt = {
+  kind: 'asked',
+  name: 'ТОО Склад',
+  city: 'Алматы',
+  awaitingAnswer: true,
+};
 const CANDIDATE: CompanyPrompt = {
   kind: 'candidate',
   name: 'ТОО Склад',
@@ -43,6 +50,8 @@ const CONFIRMED: CompanyPrompt = {
 const SEARCHING: CompanyPrompt = { kind: 'searching' };
 const AWAITING: CompanyTurn = { prompt: ASKED, awaitingAnswer: true };
 const USUAL: CompanyTurn = { prompt: CANDIDATE, awaitingAnswer: false };
+
+const SECOND = 'Подберём учёт под вашу задачу. Что вы храните?';
 
 const YES: CompanyMention = { name: null, city: null, answer: 'yes', pains: ['Пересорт'] };
 const NAMED: CompanyMention = { name: 'ТОО Склад', city: 'Алматы', answer: 'none', pains: [] };
@@ -219,14 +228,44 @@ describe('pipeline/handle-inbound и компания: вопрос о комп�
 
       await run(h, batchOf([text('A1')]));
 
-      expect(h.company.markAsked).toHaveBeenCalledWith(CHAT_ID, question);
+      expect(h.company.markAsked).toHaveBeenCalledWith(CHAT_ID, question, ANSWER);
       expect(h.calls.slice(-3)).toEqual(['answered:A1', `asked:${question}`, 'identify']);
     },
   );
 
+  it('ответ без вопроса ушёл: markAsked с none и ушедшим текстом', async () => {
+    const h = setup();
+
+    await run(h, batchOf([text('A1')]));
+
+    expect(h.company.markAsked.mock.calls).toEqual([[CHAT_ID, 'none', ANSWER]]);
+  });
+
+  it('новые сообщения во время «печатает»: старый ответ не ушёл, markAsked один раз с новым текстом', async () => {
+    const h = setup({ drafts: [asking('confirm', 'Первый черновик.'), asking('name', SECOND)] });
+
+    const outcome = await run(h, batchOf([text('A1')], [[], [text('A2')]]));
+
+    expect(outcome).toEqual({ kind: 'replied' });
+    expect(h.outbox.sendBotReply).toHaveBeenCalledTimes(1);
+    expect(h.company.markAsked.mock.calls).toEqual([[CHAT_ID, 'name', SECOND]]);
+  });
+
+  it('передача с текстом модели: сообщение ушло, но markAsked не вызывается', async () => {
+    const h = setup({ drafts: [handoffAnswer('hot', HOT_TEXT)] });
+
+    await expect(run(h, batchOf([text('A1')]))).resolves.toEqual({
+      kind: 'handed_off',
+      reason: 'hot',
+    });
+
+    expect(h.handOff).toHaveBeenCalledWith(CHAT_ID, expect.objectContaining({ text: HOT_TEXT }));
+    expect(h.company.markAsked).not.toHaveBeenCalled();
+  });
+
   it('повтор после проверки: запоминается вопрос того черновика, чей текст ушёл', async () => {
     const h = setup({
-      drafts: [asking('confirm'), asking('name')],
+      drafts: [asking('confirm'), asking('name', SECOND)],
       reviews: [
         { ok: true, value: { ok: false, problems: ['Нет в знаниях'] } },
         { ok: true, value: { ok: true } },
@@ -235,7 +274,7 @@ describe('pipeline/handle-inbound и компания: вопрос о комп�
 
     await run(h, batchOf([text('A1')]));
 
-    expect(h.company.markAsked.mock.calls).toEqual([[CHAT_ID, 'name']]);
+    expect(h.company.markAsked.mock.calls).toEqual([[CHAT_ID, 'name', SECOND]]);
   });
 
   it.each<[string, Awaited<ReturnType<PipelineDeps['outbox']['sendBotReply']>>, PipelineOutcome]>([

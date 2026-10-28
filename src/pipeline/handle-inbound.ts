@@ -137,7 +137,8 @@ interface Noticed {
  *    развилка pipeline/decide.decideAction, при провале один повтор с замечаниями. Передачу решает вызов ответа
  *    (исходы hot, no_answer, asked_human, complaint). Вердикт send => «печатает» с паузой typingDelayMs (сбой статуса
  *    не мешает ответу), затем outbox.sendBotReply на последнее сообщение пачки того самого проверенного текста;
- *    ушёл => company.markAsked с вопросом о компании из черновика. Пришли новые сообщения, пока шла пауза => ответ
+ *    ушёл (sent) => company.markAsked с вопросом о компании из черновика (нет => none) и ушедшим текстом: после каждого
+ *    отправленного ответа, но не при перегенерации и не при передаче. Пришли новые сообщения, пока шла пауза => ответ
  *    перегенерируется один раз с ними, уходит один ответ.
  * 5. Все передачи через сервис deps.handoff (handoff/handoff.ts): вердикт handoff (hot, no_answer, asked_human,
  *    complaint, check_failed, llm_error) => handOff с причиной и ответом на последнее сообщение пачки; вердикт limit
@@ -348,7 +349,10 @@ function contextOf(deps: PipelineDeps, chat: Chat): ConversationContext {
   return { chatId: chat.id, history, profile: chat.profile, level: chat.level };
 }
 
-/** Ответ клиенту; ушёл => отвечено и запомнен вопрос о компании из черновика (каждый задаётся один раз). */
+/**
+ * Ответ клиенту; ушёл => отвечено, затем company.markAsked с вопросом о компании из черновика и ушедшим текстом
+ * (каждый вопрос задаётся один раз, ожидание ответа на «Вы из компании X?» снимается).
+ */
 async function sendAnswer(
   deps: PipelineDeps,
   batch: ClientBatch,
@@ -371,7 +375,7 @@ async function sendAnswer(
   if (result === SEND_FAILED) return SEND_FAILED_OUTCOME;
   if (result === 'sent') {
     const replied = finish(deps, chatId, turn, { kind: 'replied' });
-    deps.company.markAsked(chatId, verdict.companyQuestion ?? 'none');
+    deps.company.markAsked(chatId, verdict.companyQuestion ?? 'none', text);
     return replied;
   }
   if (result === 'skipped_manager') return SILENT_MANAGER;

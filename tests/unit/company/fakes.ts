@@ -133,8 +133,8 @@ export interface FakeContacts {
 }
 
 export interface ContactsOptions {
-  /** Ответ businessProfile; по умолчанию обычный аккаунт. */
-  readonly profile?: BusinessProfileResult;
+  /** Ответ businessProfile (функция: ответ на каждый вызов свой); по умолчанию обычный аккаунт. */
+  readonly profile?: BusinessProfileResult | (() => BusinessProfileResult);
   /** Ответ profilePhoto; по умолчанию фото нет. */
   readonly photo?: ImageInput | null;
 }
@@ -148,7 +148,10 @@ export function createFakeContacts(
     businessProfile: (jid) => {
       calls.push({ method: 'businessProfile', jid });
       events.push('contacts.businessProfile');
-      return Promise.resolve(options.profile ?? { kind: 'personal' });
+      const { profile } = options;
+      return Promise.resolve(
+        typeof profile === 'function' ? profile() : (profile ?? { kind: 'personal' }),
+      );
     },
     profilePhoto: (jid, maxBytes) => {
       calls.push({ method: 'profilePhoto', jid, maxBytes });
@@ -198,8 +201,9 @@ export interface MemoryRepo extends ChatCompaniesRepo {
 }
 
 /**
- * Репозиторий в памяти по документации порта ChatCompaniesRepo: записи нет => пустое состояние. Все состояния
- * заморожены: сервис, который изменил бы состояние на месте, а не собрал новое, упал бы ошибкой.
+ * Репозиторий в памяти по документации порта ChatCompaniesRepo: записи нет => пустое состояние; дневной предел
+ * проверок считает отметки researchStartedAtMs всех чатов. Все состояния заморожены: сервис, который изменил бы
+ * состояние на месте, а не собрал новое, упал бы ошибкой.
  */
 export function createMemoryRepo(events: string[] = []): MemoryRepo {
   const stored = new Map<ChatId, ChatCompanyState>();
@@ -225,6 +229,8 @@ export function createMemoryRepo(events: string[] = []): MemoryRepo {
       saves.push(deepFreeze(state));
       stored.set(state.chatId, state);
     },
+    countResearchStarts: (sinceMs) =>
+      [...stored.values()].filter((state) => (state.researchStartedAtMs ?? -1) > sinceMs).length,
     seed: (state) => {
       stored.set(state.chatId, deepFreeze(state));
     },

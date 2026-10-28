@@ -8,6 +8,7 @@ import type {
   InterestLevel,
   PhoneDigits,
 } from '../domain/types.js';
+import { companyCardHref } from './card-link.js';
 
 /** Причина в уведомлении: для лимита обязательно указать, какой лимит исчерпан. */
 export type NotificationReason =
@@ -64,9 +65,6 @@ const HIDDEN_PHONE = 'номер скрыт';
 const UNKNOWN_TIME = 'время неизвестно';
 const ALMATY_ZONE = 'Asia/Almaty';
 const PAIN_SEPARATOR = '; ';
-
-/** Ссылка на карточку компании идёт в уведомление только с этими протоколами. */
-const WEB_PROTOCOLS: ReadonlySet<string> = new Set(['http:', 'https:']);
 
 /** Пробелы всех видов и переводы строк (в том числе NEL, U+2028 и U+2029), кроме которых ничего не склеивается. */
 const SPACES_AND_BREAKS = /[\s\u0085]+/gu;
@@ -177,7 +175,7 @@ export function formatBacklogNotification(
  * Ссылка своя (адрес EMAIL_UI_URL и числовой ID) и идёт без замены, но только с протоколом http или https.
  */
 function companyLines(summary: CompanySummary): readonly string[] {
-  const card = cardLink(summary.cardUrl);
+  const card = companyCardHref(summary.cardUrl);
   const pains = summary.confirmedPains
     .slice(0, PAINS_MAX_COUNT)
     .map((pain) => oneLine(pain, PAIN_MAX_LENGTH))
@@ -208,13 +206,6 @@ function cityPart(city: string | null): string {
 
 function companyField(value: string | null): string {
   return value === null ? '' : oneLine(value, COMPANY_FIELD_MAX_LENGTH);
-}
-
-/** Ссылка на карточку в разобранном виде (без пробелов и переводов строк) или null, если это не http и не https. */
-function cardLink(url: string | null): string | null {
-  if (url === null || !URL.canParse(url)) return null;
-  const parsed = new URL(url);
-  return WEB_PROTOCOLS.has(parsed.protocol) ? parsed.href : null;
 }
 
 function headline(input: NotificationReason): string {

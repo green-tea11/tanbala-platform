@@ -4,6 +4,7 @@ import type {
   CompanySummary,
   ResearchState,
 } from '../domain/company.js';
+import { companyCardHref } from '../handoff/card-link.js';
 import { cleanText, markup, type Fragment, type SafeHtml } from './html.js';
 import { timeTag } from './view-parts.js';
 
@@ -45,9 +46,6 @@ const PAIN_SOURCE_LABELS: Readonly<Record<NonNullable<CompanyPain['source']>, st
   '2gis': '2ГИС',
 };
 
-/** Ссылка на карточку открывается только с этими протоколами. */
-const WEB_PROTOCOLS: ReadonlySet<string> = new Set(['http:', 'https:']);
-
 /** Недоверенный текст для вывода: без скрытых символов; нет значения или пусто => null (строки не будет). */
 function textOf(value: string | null): string | null {
   const text = value === null ? '' : cleanText(value).trim();
@@ -59,15 +57,9 @@ function row(label: string, value: Fragment): SafeHtml {
   return value === null ? markup`` : markup`<dt>${label}</dt><dd>${value}</dd>`;
 }
 
-/** Адрес карточки в разобранном виде или null: ссылка только по http и https. */
-function cardHref(url: string | null): string | null {
-  if (url === null || !URL.canParse(url)) return null;
-  const parsed = new URL(url);
-  return WEB_PROTOCOLS.has(parsed.protocol) ? parsed.href : null;
-}
-
+/** Ссылка на карточку: только по http и https (handoff/card-link.ts, то же правило, что в уведомлении). */
 function cardLink(url: string | null): SafeHtml | null {
-  const href = cardHref(url);
+  const href = companyCardHref(url);
   if (href === null) return null;
   return markup`<a href="${href}" target="_blank" rel="noopener noreferrer">Карточка в почтовом проекте</a>`;
 }

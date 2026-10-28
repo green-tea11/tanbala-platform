@@ -7,15 +7,15 @@ import type {
 } from '../domain/ports.js';
 import type { Jid } from '../domain/types.js';
 import { readLimitedBytes } from '../shared/read-limited.js';
-import { cleanUntrusted, INVISIBLE } from '../shared/untrusted-text.js';
+import { cleanSingleLine } from '../shared/untrusted-text.js';
 import type { WaSocket } from './connection-types.js';
 import { TIMED_OUT, withDeadline } from './deadline.js';
 
 // Профиль собеседника для определения компании (шаги а и д): бизнес-профиль и фото. Только запросы на чтение:
 // из сокета берутся только getBusinessProfile и profilePictureUrl, ничего не отправляется.
 
-/** Сколько ждать бизнес-профиль у WhatsApp. */
-export const BUSINESS_PROFILE_TIMEOUT_MS = 10_000;
+/** Сколько ждать бизнес-профиль у WhatsApp: запрос стоит на пути первого ответа клиенту, поэтому недолго. */
+export const BUSINESS_PROFILE_TIMEOUT_MS = 5_000;
 /** Срок ожидания адреса фото: передаётся в сам запрос WhatsApp. */
 export const PHOTO_URL_TIMEOUT_MS = 10_000;
 /** Сколько качать фото с сервера WhatsApp целиком (запрос и тело). */
@@ -80,8 +80,9 @@ function statusOf(error: unknown): number | undefined {
 
 // Бизнес-профиль.
 
+/** Сайт и почта профиля: однострочные (разрывы строк, U+2028 и U+2029 становятся пробелом), очищены как недоверенные. */
 function textOrNull(raw: unknown, maxChars: number): string | null {
-  return cleanUntrusted(typeof raw === 'string' ? raw : null, INVISIBLE, maxChars);
+  return cleanSingleLine(typeof raw === 'string' ? raw : null, maxChars);
 }
 
 function websitesOf(raw: unknown): readonly string[] {
@@ -248,9 +249,9 @@ async function fetchProfilePhoto(
 /**
  * Профиль собеседника в WhatsApp (порт WhatsAppContacts). Ничего не бросает: сбой приходит значением и пишется в лог
  * без адреса, номера и данных профиля (только имя ошибки, статус и причина).
- * businessProfile: нет сокета => failed; getBusinessProfile не дольше 10 с; undefined => personal; объект =>
- * business с сайтами (строки, очищены как недоверенные, до 5 штук по 300 символов) и почтой (до 200 символов или
- * null); исключение, не объект и таймаут => failed.
+ * businessProfile: нет сокета => failed; getBusinessProfile не дольше 5 с; undefined => personal; объект =>
+ * business с сайтами (строки, однострочные и очищены как недоверенные, до 5 штук по 300 символов) и почтой (так же,
+ * до 200 символов или null); исключение, не объект и таймаут => failed.
  * profilePhoto: profilePictureUrl(jid, 'image', 10000); нет адреса => null; адрес только https на поддомене
  * .whatsapp.net (иначе null: адрес приходит от WhatsApp, но проверка не лишняя); скачивание не дольше 10 с без
  * редиректов, только статус 200 и тип image/jpeg, image/png или image/webp, не больше maxBytes (поток обрывается);

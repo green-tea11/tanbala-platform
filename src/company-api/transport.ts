@@ -3,7 +3,8 @@ import type { Clock, Logger } from '../domain/ports.js';
 import { readLimitedBytes } from '../shared/read-limited.js';
 
 // Транспорт внутреннего API почтового проекта: один HTTP-обмен с таймаутом и пределом тела, перевод статусов
-// в CompanyApiFailure, пауза после недоступности и записи в лог. Содержимое запросов и ответов в лог не пишется.
+// в CompanyApiFailure, пауза после недоступности или таймаута и записи в лог. Содержимое запросов и ответов в лог
+// не пишется.
 
 /** fetch так, как его вызывает клиент: адрес строкой и настройки. В тестах подменяется. */
 export type CompanyFetch = (url: string, init: RequestInit) => Promise<Response>;
@@ -53,10 +54,14 @@ const TIMED_OUT = Symbol('timed-out');
 /** Код сетевой ошибки, который можно показать в логе: ECONNREFUSED, UND_ERR_SOCKET и подобные. */
 const SAFE_ERROR_CODE = /^[A-Z][A-Z0-9_]{1,63}$/;
 
-/** Обмен дошёл до ответа (text: тело, null: его не читали или оно больше предела) либо оборвался. */
+/**
+ * Обмен дошёл до ответа (text: тело, null: его не читали или оно больше предела), оборвался (сеть, обрыв потока) или
+ * не уложился в срок (запрос мог дойти до проекта B).
+ */
 type Attempt =
   | { readonly kind: 'answered'; readonly status: number; readonly text: string | null }
-  | { readonly kind: 'unreachable'; readonly code: string };
+  | { readonly kind: 'unreachable'; readonly code: string }
+  | { readonly kind: 'timed_out' };
 
 /** Что записать в лог в начале паузы: статус ответа или код сбоя. */
 type Outage = { readonly status: number } | { readonly code: string };
@@ -81,9 +86,10 @@ function failed(failure: CompanyApiFailure): ApiReply {
 }
 
 /**
- * Транспорт одного клиента. Порядок вызова: пауза после недоступности (сети нет), обмен с таймаутом timeoutMs на всё
- * (запрос и чтение тела), разбор статуса. Недоступность (сеть, таймаут, 5xx) включает паузу cooldownMs для всех вызовов
- * и одно предупреждение в лог на паузу (endpoint и status или code). Отказ токена (401) пишется в лог не чаще раза в
+ * Транспорт одного клиента. Порядок вызова: пауза (сети нет, сразу unavailable), обмен с таймаутом timeoutMs на всё
+ * (запрос и чтение тела), разбор статуса. Срок вышел: timeout (запрос мог дойти, вызывающий решает, повторять ли его).
+ * Сеть и 5xx: unavailable. И то и другое включает паузу cooldownMs для всех вызовов и одно предупреждение в лог на паузу
+ * (endpoint и status или code, у таймаута code timeout). Отказ токена (401) пишется в лог не чаще раза в
  * 10 минут. Ничего другого не логируется: в запросах и ответах домены, телефоны, названия компаний и токен.
  * Редиректы не выполняются: токен не должен уйти на другой адрес.
  */
@@ -127,7 +133,7 @@ async function withDeadline<T>(
 
 async function attemptOnce(deps: TransportDeps, request: ApiRequest): Promise<Attempt> {
   const outcome = await withDeadline(deps.timeoutMs, (signal) => exchange(deps, request, signal));
-  return outcome === TIMED_OUT ? { kind: 'unreachable', code: 'timeout' } : outcome;
+  return outcome === TIMED_OUT ? { kind: 'timed_out' } : outcome;
 }
 
 function requestInit(deps: TransportDeps, request: ApiRequest, signal: AbortSignal): RequestInit {
@@ -213,6 +219,9 @@ function limitFailure(text: string | null): CompanyApiFailure {
 }
 
 function classify(attempt: Attempt, accept: readonly number[]): Verdict {
+  if (attempt.kind === 'timed_out') {
+    return { reply: failed('timeout'), outage: { code: 'timeout' } };
+  }
   if (attempt.kind === 'unreachable') {
     return { reply: failed('unavailable'), outage: { code: attempt.code } };
   }

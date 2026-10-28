@@ -176,6 +176,68 @@ describe('runCodeChecks: сборка проверок', () => {
   });
 });
 
+describe('runCodeChecks: название компании клиента', () => {
+  function runWith(text: string, companyName: string | null): readonly CheckFinding[] {
+    return runCodeChecks(normalizeDraft(text), {
+      ownPhone: OWN_PHONE,
+      clientText: '',
+      companyName,
+    });
+  }
+
+  it.each<[string, string, string, readonly CheckCode[]]>([
+    [
+      'капслок и ссылка',
+      'ALFA-TRADE.KZ',
+      'Вы из компании ALFA-TRADE.KZ, правильно?',
+      ['link', 'caps'],
+    ],
+    ['тире', 'Альфа — Трейд', 'Вы из компании Альфа — Трейд, правильно?', ['dash']],
+    ['капслок кириллицей', 'ТОО «АЛЬФА»', 'Вы из компании ТОО «АЛЬФА», правильно?', ['caps']],
+    ['смешанное слово', 'KazСтрой', 'Вы из компании KazСтрой, правильно?', ['homoglyph']],
+    ['чужие цифры', 'Склад ٧', 'Вы из компании Склад ٧, правильно?', ['homoglyph']],
+    ['знаки регулярных выражений', 'STAR+ (ALFA.KZ)', 'Вы из STAR+ (ALFA.KZ)?', ['link', 'caps']],
+  ])('%s в названии не нарушение', (_case, name, text, without) => {
+    expect(runWith(text, name)).toEqual([]);
+    expect([...codes(runWith(text, null))].sort()).toEqual([...without].sort());
+  });
+
+  it('название ищется без учёта регистра и с любыми пробелами между словами', () => {
+    expect(runWith('Вы из компании ALFA-TRADE.KZ, правильно?', 'Alfa-Trade.kz')).toEqual([]);
+    expect(runWith('Вы из компании АЛЬФА ТРЕЙД, правильно?', '  АЛЬФА   ТРЕЙД ')).toEqual([]);
+  });
+
+  it('остальной текст проверяется как раньше', () => {
+    const findings = runWith(
+      'Вы из компании ALFA-TRADE.KZ — правильно? Смотрите tanbala.kz',
+      'ALFA-TRADE.KZ',
+    );
+
+    expect(codes(findings)).toEqual(new Set(['dash', 'link']));
+    expect(details(findings)).toContain('tanbala.kz');
+  });
+
+  it('название внутри другого слова не исключается', () => {
+    expect(codes(runWith('Вы из компании СУПЕРАЛЬФА?', 'АЛЬФА'))).toEqual(new Set(['caps']));
+  });
+
+  it.each<[string, string, string, CheckCode]>([
+    ['стоп-слово', 'Скидка Плюс', 'Вы из компании Скидка Плюс, правильно?', 'stop_word'],
+    ['цена', 'Склад 5000 тенге', 'Вы из компании Склад 5000 тенге?', 'price'],
+    ['бренд', 'Zebra Логистик', 'Вы из компании Zebra Логистик?', 'jargon'],
+  ])('%s в названии по-прежнему нарушение', (_case, name, text, code) => {
+    expect(codes(runWith(text, name)).has(code)).toBe(true);
+  });
+
+  it.each<[string, string | null]>([
+    ['без букв и цифр', '—'],
+    ['пустое', '   '],
+    ['нет названия', null],
+  ])('название %s: ничего не исключается', (_case, name) => {
+    expect(codes(runWith('Да — ALFA-TRADE.KZ', name))).toEqual(new Set(['dash', 'link', 'caps']));
+  });
+});
+
 describe('замечания без половинок эмодзи', () => {
   it.each([0, 1, 2, 3])('сдвиг %i: в замечаниях нет одиночных суррогатов', (shift) => {
     // Arrange: эмодзи на краях обрезки контекста и фрагмента

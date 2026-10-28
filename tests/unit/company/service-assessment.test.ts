@@ -5,13 +5,14 @@ import {
   CHAT_ID,
   companyIdOf,
   makeBrief,
+  makeCandidate,
   makeChatCandidate,
   makeConfirmed,
   makeState,
   MINUTE_MS,
   NOW,
 } from './builders.js';
-import { createHarness, fail, ok } from './fakes.js';
+import { createHarness, fail, lookupBy, makeMessage, ok, PHOTO } from './fakes.js';
 
 // applyAssessment (итог оценки интереса) и markAsked (ответ ушёл клиенту).
 
@@ -74,16 +75,27 @@ describe('applyAssessment: ответ на вопрос о кандидате', 
     expect(loggedText(h.logs)).not.toContain('Платформа');
   });
 
-  it('«да» сразу после вопроса, даже если ожидание ответа уже снято: всё равно подтверждение', async () => {
-    const h = createHarness({
-      state: waiting({ candidate: { ...ASKED, awaitingAnswer: false } }),
-      directory: { brief: () => ok(makeBrief()) },
-    });
+  it.each(['yes', 'no'] as const)(
+    'ответ %s, когда ожидание уже снято (вопрос был раньше): чужое «да» или «нет» не считается',
+    async (answer) => {
+      const candidate = { ...ASKED, awaitingAnswer: false };
+      const h = createHarness({
+        state: waiting({ candidate }),
+        directory: { brief: () => ok(makeBrief()) },
+      });
 
-    const prompt = await h.service.applyAssessment(CHAT_ID, mention({ answer: 'yes' }));
+      const prompt = await h.service.applyAssessment(CHAT_ID, mention({ answer }));
 
-    expect(prompt.kind).toBe('confirmed');
-  });
+      expect(prompt).toEqual({
+        kind: 'asked',
+        name: 'Платформа-А',
+        city: 'Алматы',
+        awaitingAnswer: false,
+      });
+      expect(h.repo.current()).toMatchObject({ candidate, confirmed: null, rejectedIds: [] });
+      expect(h.directory.calls).toEqual([]);
+    },
+  );
 
   it('«нет»: ID в отклонённые, кандидат сброшен, промпт unknown, название можно спросить', async () => {
     const h = createHarness({ state: waiting({ rejectedIds: [companyIdOf(3)] }) });
@@ -97,6 +109,34 @@ describe('applyAssessment: ответ на вопрос о кандидате', 
       rejectedIds: [companyIdOf(3), companyIdOf(8)],
     });
     expect(h.directory.calls).toEqual([]);
+  });
+
+  it('«нет» у бизнес-аккаунта до проверки логотипа: шаги а, б, в и логотип не повторяются, сразу вопрос о названии', async () => {
+    const h = createHarness({
+      state: makeState({
+        profileKind: 'business',
+        profileDomain: 'sklad.kz',
+        candidate: ASKED,
+      }),
+      contacts: { photo: PHOTO },
+      logo: { ok: true, value: 'Платформа-А' },
+      directory: { lookup: () => ok([makeCandidate({ id: companyIdOf(9) })]) },
+    });
+
+    const prompt = await h.service.applyAssessment(CHAT_ID, mention({ answer: 'no' }));
+    await h.service.identifyAfterReply(makeChat());
+    const turn = await h.service.prepare(makeChat(), [makeMessage({ verifiedName: 'Бета' })]);
+
+    expect(prompt).toEqual({ kind: 'unknown', askName: true });
+    expect(turn.prompt).toEqual({ kind: 'unknown', askName: true });
+    expect(h.directory.calls).toEqual([]);
+    expect(h.contacts.calls).toEqual([]);
+    expect(h.logo.calls).toEqual([]);
+    expect(h.repo.current()).toMatchObject({
+      freeStepsAtMs: NOW,
+      logoCheckedAtMs: NOW,
+      rejectedIds: [companyIdOf(8)],
+    });
   });
 
   it('«нет» на кандидата из проверки новой компании: тоже сброс и отклонение', async () => {
@@ -118,13 +158,27 @@ describe('applyAssessment: ответ на вопрос о кандидате', 
     expect(h.repo.current().rejectedIds).toEqual([companyIdOf(51)]);
   });
 
-  it('ответа не было: ожидание снимается, вопрос больше не задаётся, промпт asked', async () => {
+  it('ответа нет: ожидание здесь не снимается (его снимет markAsked после отправки), промпт asked', async () => {
     const h = createHarness({ state: waiting() });
 
     const prompt = await h.service.applyAssessment(CHAT_ID, mention({ answer: 'none' }));
 
-    expect(prompt).toEqual({ kind: 'asked', name: 'Платформа-А', city: 'Алматы' });
-    expect(h.repo.current().candidate).toEqual({ ...ASKED, awaitingAnswer: false });
+    expect(prompt).toEqual({
+      kind: 'asked',
+      name: 'Платформа-А',
+      city: 'Алматы',
+      awaitingAnswer: true,
+    });
+    expect(h.repo.current().candidate).toEqual(ASKED);
+  });
+
+  it('перегенерация пачки: первая оценка без ответа, вторая с «да» из дописанного сообщения подтверждает', async () => {
+    const h = createHarness({ state: waiting(), directory: { brief: () => ok(makeBrief()) } });
+
+    await h.service.applyAssessment(CHAT_ID, mention({ answer: 'none' }));
+    const prompt = await h.service.applyAssessment(CHAT_ID, mention({ answer: 'yes' }));
+
+    expect(prompt.kind).toBe('confirmed');
   });
 
   it.each(['yes', 'no'] as const)(
@@ -144,7 +198,9 @@ describe('applyAssessment: ответ на вопрос о кандидате', 
   it.each(['yes', 'no', 'none'] as const)(
     'ответ %s без кандидата: ничего не меняется, кроме слов клиента',
     async (answer) => {
-      const h = createHarness({ state: makeState({ freeStepsAtMs: NOW - MINUTE_MS }) });
+      const h = createHarness({
+        state: makeState({ freeStepsAtMs: NOW - MINUTE_MS, profileKind: 'personal' }),
+      });
 
       const prompt = await h.service.applyAssessment(CHAT_ID, mention({ answer }));
 
@@ -234,12 +290,61 @@ describe('applyAssessment: слова клиента', () => {
     });
   });
 
+  it('клиент сам назвал другую компанию, а кандидат по номеру ещё не спрошен: кандидат снят без отклонения, ищем по словам клиента', async () => {
+    const h = createHarness({
+      state: makeState({
+        freeStepsAtMs: NOW - MINUTE_MS,
+        candidate: makeChatCandidate({ source: 'phone' }),
+      }),
+      directory: {
+        lookup: lookupBy({
+          name: ok([
+            makeCandidate({ id: companyIdOf(9), name: 'Бета', matchBy: 'name', matchScore: 0.9 }),
+          ]),
+        }),
+      },
+    });
+
+    const prompt = await h.service.applyAssessment(CHAT_ID, mention({ name: 'ТОО «Бета»' }));
+    await h.service.identifyAfterReply(makeChat());
+
+    expect(prompt).toEqual({ kind: 'unknown', askName: false });
+    expect(h.directory.lookups()).toEqual([{ by: 'name', name: 'ТОО «Бета»' }]);
+    expect(h.repo.current()).toMatchObject({
+      rejectedIds: [],
+      candidate: { id: companyIdOf(9), source: 'message' },
+    });
+  });
+
+  it('клиент назвал ту же компанию, что и кандидат: кандидат остаётся и будет спрошен', async () => {
+    const candidate = makeChatCandidate({ source: 'phone' });
+    const h = createHarness({ state: makeState({ freeStepsAtMs: NOW - MINUTE_MS, candidate }) });
+
+    const prompt = await h.service.applyAssessment(CHAT_ID, mention({ name: 'платформа а' }));
+
+    expect(prompt).toMatchObject({ kind: 'candidate', name: 'Платформа-А' });
+    expect(h.repo.current().candidate).toEqual(candidate);
+  });
+
+  it('клиент назвал другую компанию, а кандидата уже спросили: кандидат остаётся', async () => {
+    const h = createHarness({ state: waiting({ candidate: { ...ASKED, awaitingAnswer: false } }) });
+
+    const prompt = await h.service.applyAssessment(CHAT_ID, mention({ name: 'Бета' }));
+
+    expect(prompt.kind).toBe('asked');
+  });
+
   it('оценки нет (null): возвращается текущий промпт, в базу ничего не пишется', async () => {
     const h = createHarness({ state: waiting() });
 
     const prompt = await h.service.applyAssessment(CHAT_ID, null);
 
-    expect(prompt).toEqual({ kind: 'asked', name: 'Платформа-А', city: 'Алматы' });
+    expect(prompt).toEqual({
+      kind: 'asked',
+      name: 'Платформа-А',
+      city: 'Алматы',
+      awaitingAnswer: true,
+    });
     expect(h.repo.saves).toEqual([]);
     expect(h.directory.calls).toEqual([]);
   });
@@ -256,12 +361,14 @@ describe('applyAssessment: слова клиента', () => {
 });
 
 describe('markAsked', () => {
+  const QUESTION = 'Вы из компании «Платформа-А», правильно?';
+
   it('confirm: кандидат помечен спрошенным и ждёт ответа, следующая пачка об этом знает', async () => {
     const h = createHarness({
       state: makeState({ freeStepsAtMs: NOW - MINUTE_MS, candidate: makeChatCandidate() }),
     });
 
-    h.service.markAsked(CHAT_ID, 'confirm');
+    h.service.markAsked(CHAT_ID, 'confirm', QUESTION);
     const turn = await h.service.prepare(makeChat(), []);
 
     expect(h.repo.current().candidate).toEqual({
@@ -270,7 +377,7 @@ describe('markAsked', () => {
       awaitingAnswer: true,
     });
     expect(turn).toEqual({
-      prompt: { kind: 'asked', name: 'Платформа-А', city: 'Алматы' },
+      prompt: { kind: 'asked', name: 'Платформа-А', city: 'Алматы', awaitingAnswer: true },
       awaitingAnswer: true,
     });
   });
@@ -279,15 +386,52 @@ describe('markAsked', () => {
     const h = createHarness({ state: makeState({ candidate: makeChatCandidate() }) });
     h.clock.advance(7 * MINUTE_MS);
 
-    h.service.markAsked(CHAT_ID, 'confirm');
+    h.service.markAsked(CHAT_ID, 'confirm', QUESTION);
 
     expect(h.repo.current().candidate?.askedAtMs).toBe(NOW + 7 * MINUTE_MS);
   });
 
-  it('confirm: уже спрошенный кандидат не меняется, в базу ничего не пишется', () => {
+  it('модель не отметила вопрос, но в ответе название кандидата: вопрос засчитан, ждём ответа', () => {
+    const h = createHarness({ state: makeState({ candidate: makeChatCandidate() }) });
+
+    h.service.markAsked(CHAT_ID, 'none', 'Платформа-А, Алматы, верно?');
+
+    expect(h.repo.current().candidate).toMatchObject({ askedAtMs: NOW, awaitingAnswer: true });
+  });
+
+  it('кандидат не спрошен, в ответе его названия нет: ничего не пишется', () => {
+    const h = createHarness({ state: makeState({ candidate: makeChatCandidate() }) });
+
+    h.service.markAsked(CHAT_ID, 'none', 'Расскажите, что у вас за склад?');
+
+    expect(h.repo.saves).toEqual([]);
+  });
+
+  it('ответ на пачку ушёл, «да» или «нет» в ней не было: ожидание снято, вопрос больше не задаётся', async () => {
     const h = createHarness({ state: waiting() });
 
-    h.service.markAsked(CHAT_ID, 'confirm');
+    h.service.markAsked(CHAT_ID, 'none', 'Понял вас.');
+    const turn = await h.service.prepare(makeChat(), []);
+
+    expect(h.repo.current().candidate).toEqual({ ...ASKED, awaitingAnswer: false });
+    expect(turn).toEqual({
+      prompt: { kind: 'asked', name: 'Платформа-А', city: 'Алматы', awaitingAnswer: false },
+      awaitingAnswer: false,
+    });
+  });
+
+  it('confirm при уже спрошенном кандидате: второй вопрос не засчитывается, ожидание снято', () => {
+    const h = createHarness({ state: waiting() });
+
+    h.service.markAsked(CHAT_ID, 'confirm', QUESTION);
+
+    expect(h.repo.current().candidate).toEqual({ ...ASKED, awaitingAnswer: false });
+  });
+
+  it('спрошенный кандидат без ожидания: ничего не пишется', () => {
+    const h = createHarness({ state: waiting({ candidate: { ...ASKED, awaitingAnswer: false } }) });
+
+    h.service.markAsked(CHAT_ID, 'confirm', QUESTION);
 
     expect(h.repo.saves).toEqual([]);
   });
@@ -295,7 +439,7 @@ describe('markAsked', () => {
   it('confirm: кандидата нет, в базу ничего не пишется', () => {
     const h = createHarness();
 
-    h.service.markAsked(CHAT_ID, 'confirm');
+    h.service.markAsked(CHAT_ID, 'confirm', QUESTION);
 
     expect(h.repo.saves).toEqual([]);
   });
@@ -303,7 +447,7 @@ describe('markAsked', () => {
   it('name: время вопроса о названии записывается, промпт перестаёт предлагать спросить', async () => {
     const h = createHarness({ state: makeState({ freeStepsAtMs: NOW - MINUTE_MS }) });
 
-    h.service.markAsked(CHAT_ID, 'name');
+    h.service.markAsked(CHAT_ID, 'name', 'Из какой вы компании?');
     const turn = await h.service.prepare(makeChat(), []);
 
     expect(h.repo.current().nameAskedAtMs).toBe(NOW);
@@ -313,27 +457,25 @@ describe('markAsked', () => {
   it('name: второй вопрос не перезаписывает время первого и ничего не пишет', () => {
     const h = createHarness({ state: makeState({ nameAskedAtMs: NOW - 1000 }) });
 
-    h.service.markAsked(CHAT_ID, 'name');
+    h.service.markAsked(CHAT_ID, 'name', 'Из какой вы компании?');
 
     expect(h.repo.current().nameAskedAtMs).toBe(NOW - 1000);
     expect(h.repo.saves).toEqual([]);
   });
 
-  it('none: ничего не происходит, даже базу не читаем лишний раз', () => {
-    const h = createHarness({ state: waiting() });
-    h.repo.failNext('get', new Error('читать не надо'));
+  it('none без кандидата: вопрос о названии не угадывается по тексту, ничего не пишется', () => {
+    const h = createHarness({ state: makeState({ freeStepsAtMs: NOW - MINUTE_MS }) });
 
-    expect(() => {
-      h.service.markAsked(CHAT_ID, 'none');
-    }).not.toThrow();
+    h.service.markAsked(CHAT_ID, 'none', 'Из какой вы компании?');
+
     expect(h.repo.saves).toEqual([]);
   });
 
   it('API и WhatsApp не вызываются', () => {
     const h = createHarness({ state: makeState({ candidate: makeChatCandidate() }) });
 
-    h.service.markAsked(CHAT_ID, 'confirm');
-    h.service.markAsked(CHAT_ID, 'name');
+    h.service.markAsked(CHAT_ID, 'confirm', QUESTION);
+    h.service.markAsked(CHAT_ID, 'name', 'Из какой вы компании?');
 
     expect(h.directory.calls).toEqual([]);
     expect(h.contacts.calls).toEqual([]);
@@ -345,7 +487,7 @@ describe('markAsked', () => {
     h.repo.failNext('save', failure);
 
     expect(() => {
-      h.service.markAsked(CHAT_ID, 'confirm');
+      h.service.markAsked(CHAT_ID, 'confirm', QUESTION);
     }).toThrow(failure);
   });
 });

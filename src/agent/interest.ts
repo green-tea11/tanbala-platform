@@ -154,8 +154,8 @@ export function normalizeInterest(raw: RawInterest, previous: ClientProfile): In
 
 /**
  * Данные вызова оценки: уровень, который система хранит сейчас (если конвейер его передал), текущая выжимка
- * (profileText) и строка о вопросе «Вы из компании X?» (companyInterestData). Блок есть всегда, даже при пустой
- * выжимке: последняя реплика user не остаётся без данных.
+ * (profileText) и, если определение компании включено, строка о вопросе «Вы из компании X?» (companyInterestData).
+ * Блок есть всегда, даже при пустой выжимке: последняя реплика user не остаётся без данных.
  */
 export function interestCallData(
   profile: ClientProfile,

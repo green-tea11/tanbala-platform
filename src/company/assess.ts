@@ -6,15 +6,16 @@ import type { CompanyEnv } from './env.js';
 import { mergeClientPains } from './pains.js';
 import {
   confirmCandidate,
+  dropForeignCandidate,
   rejectCandidate,
-  stopAwaiting,
   withStatedCompany,
 } from './transitions.js';
 
 /**
- * Ответ клиента на вопрос бота «Вы из компании X?». Вопрос задавался (askedAtMs не null): «да» подтверждает кандидата
- * и сразу запрашивает справку, «нет» отклоняет его навсегда. Ответа не было: ожидание снимается, и вопрос больше
- * не задаётся. Если вопроса не было, чужое «да» или «нет» игнорируется.
+ * Ответ клиента на вопрос бота «Вы из компании X?», только пока его ждём (вопрос в последнем отправленном ответе):
+ * «да» подтверждает кандидата и сразу запрашивает справку, «нет» отклоняет его навсегда (дальше вопрос о названии).
+ * Иначе чужое «да» или «нет» игнорируется. Ответа нет: ожидание остаётся, его снимет markAsked после отправки
+ * ответа, поэтому при перегенерации пачки «да» из дописанного сообщения не теряется.
  */
 async function applyAnswer(
   env: CompanyEnv,
@@ -23,20 +24,19 @@ async function applyAnswer(
   answer: CompanyMention['answer'],
 ): Promise<ChatCompanyState> {
   const { candidate } = state;
-  if (candidate === null) return state;
-  if (answer === 'none') return stopAwaiting(state);
-  if (candidate.askedAtMs === null) return state;
+  if (candidate === null || !candidate.awaitingAnswer || answer === 'none') return state;
   if (answer === 'no') {
     env.logger.info({ chatId, step: 'answer', answer }, 'Клиент отклонил предложенную компанию');
-    return rejectCandidate(state);
+    return rejectCandidate(state, env.clock.now());
   }
   env.logger.info({ chatId, step: 'answer', answer }, 'Клиент подтвердил компанию');
   return ensureBrief(env, chatId, confirmCandidate(state, env.clock.now()));
 }
 
 /**
- * Итог оценки интереса: ответ на вопрос о кандидате, название и город со слов клиента, боли клиента. Всё
- * сохраняется одной записью; возвращается новое состояние.
+ * Итог оценки интереса: ответ на вопрос о кандидате, название и город со слов клиента (другая названная компания
+ * снимает ещё не спрошенного кандидата не по его словам), боли клиента. Всё сохраняется одной записью; возвращается
+ * новое состояние.
  */
 export async function applyMention(
   env: CompanyEnv,
@@ -44,11 +44,12 @@ export async function applyMention(
   mention: CompanyMention,
 ): Promise<ChatCompanyState> {
   const answered = await applyAnswer(env, chatId, env.repo.get(chatId), mention.answer);
+  const nowMs = env.clock.now();
   const state: ChatCompanyState = {
-    ...withStatedCompany(answered, mention),
+    ...dropForeignCandidate(withStatedCompany(answered, mention), nowMs),
     confirmedPains: mergeClientPains(answered.confirmedPains, mention.pains),
   };
-  env.repo.save(state, env.clock.now());
+  env.repo.save(state, nowMs);
   return state;
 }
 

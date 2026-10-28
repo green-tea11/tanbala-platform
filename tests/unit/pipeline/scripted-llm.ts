@@ -6,7 +6,7 @@ import type { InterestLevel, LlmPurpose } from '../../../src/domain/types.js';
 
 /**
  * Ответ модели на вызов ответа. Строка: черновик с исходом answer и этим текстом. Объект: любой исход схемы
- * (hot, no_answer, asked_human, complaint) со своим текстом и stopRequested.
+ * (hot, no_answer, asked_human, complaint) со своим текстом, stopRequested и aboutPrice.
  */
 export type ReplyScript =
   | string
@@ -16,6 +16,8 @@ export type ReplyScript =
       readonly stopRequested?: boolean;
       /** О чём из компании спросил ответ; по умолчанию none. */
       readonly companyQuestion?: 'none' | 'confirm' | 'name';
+      /** Клиент спрашивал цену или стоимость; по умолчанию false. */
+      readonly aboutPrice?: boolean;
     };
 
 /** Ответ оценки интереса: уровень и то, что клиент сказал о своей компании (поля схемы оценки). */
@@ -86,13 +88,20 @@ function nth<T>(items: readonly T[] | undefined, calls: number): T | undefined {
 
 function rawReply(script: ReplyScript): unknown {
   if (typeof script === 'string') {
-    return { outcome: 'answer', text: script, stopRequested: false, companyQuestion: 'none' };
+    return {
+      outcome: 'answer',
+      text: script,
+      stopRequested: false,
+      companyQuestion: 'none',
+      aboutPrice: false,
+    };
   }
   return {
     outcome: script.outcome,
     text: script.text ?? '',
     stopRequested: script.stopRequested ?? false,
     companyQuestion: script.companyQuestion ?? 'none',
+    aboutPrice: script.aboutPrice ?? false,
   };
 }
 

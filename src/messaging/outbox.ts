@@ -109,6 +109,13 @@ export interface OutboxDeps {
 export const VOICE_NOTICE_TEXT =
   'Сейчас не могу прослушать голосовое, напишите, пожалуйста, текстом';
 
+/**
+ * Фраза передачи hot, когда клиент спрашивал цену (HandoffNotice.aboutPrice, решение владельца 27.10.2026): ровно
+ * этот текст, без вариантов.
+ */
+export const HOT_PRICE_HANDOFF_TEXT =
+  'Цена сильно зависит от объёма. Передал ваш вопрос специалисту, он вам напишет.';
+
 /** Наибольшая длина ответа из панели (без пробелов по краям), в символах. */
 export const PANEL_TEXT_MAX_LENGTH = 4096;
 
@@ -235,7 +242,8 @@ interface SendQuotas {
  * исходящих. «Печатает» с паузой (messaging/typing.ts) показывает конвейер до вызова: здесь паузы нет, иначе клиент
  * ждал бы дважды. Лимиты за скользящий час: CLIENT_SENDS_PER_CHAT_PER_HOUR на чат и CLIENT_SENDS_PER_HOUR на все чаты;
  * уведомления менеджеру по квотам MANAGER_NOTIFY_PER_HOUR раздельно по kind, нет managerJid => 'no_manager'.
- * Фразы передачи фиксированные по поводу, вариант выбирает random; сообщение передачи, написанное моделью
+ * Фразы передачи фиксированные по поводу, вариант выбирает random (у hot с aboutPrice одна фраза
+ * HOT_PRICE_HANDOFF_TEXT); сообщение передачи, написанное моделью
  * (sendHandoffText), уходит с тем же origin 'handoff_notice' и теми же проверками, но своим текстом; фраза про
  * голосовое одна, origin 'voice_notice'.
  * sendFromPanel (ответ человека из панели): текст непустой после trim и не длиннее PANEL_TEXT_MAX_LENGTH, чат существует,
@@ -427,6 +435,7 @@ function handoffPhrase(notice: HandoffNotice, random: () => number): string {
   if (notice.reason === 'complaint') {
     return pick(notice.stopRequested ? APOLOGY_ONLY : APOLOGY_PASSED, random);
   }
+  if (notice.reason === 'hot' && notice.aboutPrice === true) return HOT_PRICE_HANDOFF_TEXT;
   return pick(HANDOFF_PHRASES[notice.reason], random);
 }
 

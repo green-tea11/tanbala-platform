@@ -16,6 +16,7 @@ import {
   CLIENT_SENDS_PER_CHAT_PER_HOUR,
   CLIENT_SENDS_PER_HOUR,
   createOutbox,
+  HOT_PRICE_HANDOFF_TEXT,
   MANAGER_NOTIFY_PER_HOUR,
   PANEL_TEXT_MAX_LENGTH,
   panelTextProblem,
@@ -362,6 +363,22 @@ describe('createOutbox: sendHandoffNotice', () => {
       expect(new Set(texts).size).toBeGreaterThan(1);
     },
   );
+
+  it('hot после вопроса цены (aboutPrice): ровно фраза о цене при любой случайности', async () => {
+    const texts = await phrasesOf({ reason: 'hot', aboutPrice: true });
+
+    expect(HOT_PRICE_HANDOFF_TEXT).toBe(
+      'Цена сильно зависит от объёма. Передал ваш вопрос специалисту, он вам напишет.',
+    );
+    expect(texts).toEqual([HOT_PRICE_HANDOFF_TEXT, HOT_PRICE_HANDOFF_TEXT, HOT_PRICE_HANDOFF_TEXT]);
+  });
+
+  it('hot с aboutPrice false: обычные варианты без слов о цене', async () => {
+    const texts = await phrasesOf({ reason: 'hot', aboutPrice: false });
+
+    for (const text of texts) expect(text).toMatch(/передал.*специалисту, он вам напишет\.$/i);
+    for (const text of texts) expect(text).not.toMatch(/цен/i);
+  });
 
   it('complaint со stopRequested: только извинение, без передачи специалисту', async () => {
     const texts = await phrasesOf({ reason: 'complaint', stopRequested: true });

@@ -155,6 +155,18 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
     expect(model.purposes()).toEqual(['reply', 'interest']);
   });
 
+  it('исход hot без текста после вопроса цены: aboutPrice из ответа модели доходит до повода передачи', async () => {
+    const { verdict } = await run({ replies: [{ outcome: 'hot', aboutPrice: true }] });
+
+    expect(verdict).toStrictEqual({ kind: 'handoff', notice: { reason: 'hot', aboutPrice: true } });
+  });
+
+  it('модель отметила вопрос цены, но исход no_answer: обычная фраза без пометки', async () => {
+    const { verdict } = await run({ replies: [{ outcome: 'no_answer', aboutPrice: true }] });
+
+    expect(verdict).toStrictEqual({ kind: 'handoff', notice: { reason: 'no_answer' } });
+  });
+
   it('проверка не пропустила сообщение передачи дважды: та же причина и фиксированная фраза', async () => {
     const { verdict, model } = await run({
       replies: [

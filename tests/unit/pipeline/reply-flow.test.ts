@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, type Mock } from 'vitest';
 import type { ConversationContext } from '../../../src/agent/agent.js';
+import type { CompanyPrompt } from '../../../src/domain/company.js';
 import type { Logger } from '../../../src/domain/ports.js';
 import type {
   ChatId,
@@ -966,5 +967,117 @@ describe('pipeline/reply-flow: компания клиента', () => {
       text: SECOND_ANSWER,
       companyQuestion: 'name',
     });
+  });
+});
+
+describe('pipeline/reply-flow: hot после вопроса цены (aboutPrice)', () => {
+  function priced(
+    outcome: ReplyHandoffOutcome,
+    text: string,
+    aboutPrice: boolean,
+  ): LlmResult<ReplyDraft> {
+    return { ok: true, value: { outcome, text, aboutPrice } };
+  }
+
+  it('hot без текста с aboutPrice: передача hot с фразой о цене', async () => {
+    const h = setup({ drafts: [priced('hot', '', true)] });
+
+    await expect(flow(h)).resolves.toStrictEqual(handedOff({ reason: 'hot', aboutPrice: true }));
+    expect(h.reviewDraft).not.toHaveBeenCalled();
+  });
+
+  it('текст hot с aboutPrice дважды не прошёл проверки: фраза о цене', async () => {
+    const dashed = priced('hot', 'Интеграцию — проводим. Передал вопрос специалисту.', true);
+    const h = setup({ drafts: [dashed, dashed] });
+
+    await expect(flow(h)).resolves.toStrictEqual(handedOff({ reason: 'hot', aboutPrice: true }));
+  });
+
+  it('проверка текста hot с aboutPrice не получена: фраза о цене', async () => {
+    const h = setup({ drafts: [priced('hot', HANDOFF_TEXT, true)], reviews: [UNAVAILABLE] });
+
+    await expect(flow(h)).resolves.toStrictEqual(handedOff({ reason: 'hot', aboutPrice: true }));
+  });
+
+  it('повтор не получен после провала ревью hot с aboutPrice: фраза о цене', async () => {
+    const h = setup({
+      drafts: [priced('hot', HANDOFF_TEXT, true), UNAVAILABLE],
+      reviews: [reviewProblems('нет')],
+    });
+
+    await expect(flow(h)).resolves.toStrictEqual(handedOff({ reason: 'hot', aboutPrice: true }));
+  });
+
+  it('текст hot с aboutPrice прошёл проверки: уходит текст модели', async () => {
+    const h = setup({ drafts: [priced('hot', HANDOFF_TEXT, true)] });
+
+    await expect(flow(h)).resolves.toStrictEqual(handedOffWithText('hot'));
+  });
+
+  it.each<[string, LlmResult<ReplyDraft>, ReplyHandoffOutcome]>([
+    ['hot с aboutPrice false', priced('hot', '', false), 'hot'],
+    ['hot без поля', handoffDraft('hot', ''), 'hot'],
+    ['no_answer с aboutPrice', priced('no_answer', '', true), 'no_answer'],
+    ['asked_human с aboutPrice', priced('asked_human', '', true), 'asked_human'],
+  ])('%s: обычная фраза по причине', async (_case, draft, reason) => {
+    const h = setup({ drafts: [draft] });
+
+    await expect(flow(h)).resolves.toStrictEqual(handedOff({ reason }));
+  });
+});
+
+describe('pipeline/reply-flow: название компании клиента в проверках кодом', () => {
+  const NAME = 'ALFA-TRADE.KZ';
+  const QUESTION = `Вы из компании ${NAME}, правильно?`;
+  const CANDIDATE: CompanyPrompt = { kind: 'candidate', name: NAME, city: null, withCity: false };
+  const WITH_NAME: readonly CompanyPrompt[] = [
+    CANDIDATE,
+    { kind: 'asked', name: NAME, city: null, awaitingAnswer: false },
+    { kind: 'confirmed', name: NAME, rubric: null, pains: [], emailed: false },
+  ];
+
+  function contextWith(company: CompanyPrompt): ConversationContext {
+    return { ...contextOf(), company };
+  }
+
+  it.each(WITH_NAME)(
+    'блок $kind: название не нарушение, текст идёт на ревью и уходит',
+    async (company) => {
+      const h = setup({ drafts: [answerDraft(QUESTION)] });
+
+      await expect(flow(h, contextWith(company))).resolves.toEqual(sent(QUESTION));
+      expect(h.reviewDraft).toHaveBeenCalledWith(contextWith(company), QUESTION, 'answer');
+    },
+  );
+
+  it.each<CompanyPrompt>([
+    { kind: 'off' },
+    { kind: 'unknown', askName: false },
+    { kind: 'searching' },
+  ])('блок $kind без названия: капслок и ссылка нарушение, повтор', async (company) => {
+    const h = setup({ drafts: [answerDraft(QUESTION), answerDraft()] });
+
+    await expect(flow(h, contextWith(company))).resolves.toEqual(sent());
+    expect(logsOf(h, 'info')).toContainEqual({
+      chatId: CHAT_ID,
+      attempt: 1,
+      codes: ['link', 'caps'],
+    });
+  });
+
+  it('без блока о компании: как раньше, название нарушение', async () => {
+    const h = setup({ drafts: [answerDraft(QUESTION), answerDraft()] });
+
+    await expect(flow(h)).resolves.toEqual(sent());
+    expect(h.draftReply).toHaveBeenCalledTimes(2);
+  });
+
+  it('остальной текст проверяется как раньше: тире вне названия нарушение', async () => {
+    const dashed = `Вы из компании ${NAME} — правильно?`;
+    const h = setup({ drafts: [answerDraft(dashed), answerDraft()] });
+
+    await flow(h, contextWith(CANDIDATE));
+
+    expect(logsOf(h, 'info')).toContainEqual({ chatId: CHAT_ID, attempt: 1, codes: ['dash'] });
   });
 });

@@ -4,6 +4,7 @@ import type { ApiLimits, LlmPurpose, PhoneDigits } from '../domain/types.js';
 import {
   EMAIL_API_DEFAULT_URL,
   INTERNAL_API_TOKEN_PATTERN,
+  isNodeEnvProxyOn,
   parseEmailApiUrl,
   parseEmailUiUrl,
 } from './company-settings.js';
@@ -33,7 +34,7 @@ export type TestMode =
 
 /** Внутренний API почтового проекта: адрес (только эта машина) и токен. Токен в логи и тексты ошибок не попадает. */
 export interface CompanyApiConfig {
-  /** EMAIL_API_URL после проверки: http, хост 127.0.0.1 или localhost, без пути и хвостового «/». */
+  /** EMAIL_API_URL после проверки: http, хост только 127.0.0.1, без пути и хвостового «/». */
   readonly baseUrl: string;
   /** INTERNAL_API_TOKEN: от 32 до 512 видимых символов ASCII. */
   readonly token: string;
@@ -147,8 +148,11 @@ const PROBLEMS = {
     'уберите переменную из окружения: SDK Anthropic подмешивает эти заголовки к запросам и может подменить ключ',
   internalApiToken: 'от 32 до 512 видимых символов ASCII без пробелов',
   emailApiUrl:
-    'адрес только по http, хост 127.0.0.1 или localhost, без логина, пароля, пути, параметров и якоря',
-  emailUiUrl: 'адрес по http или https, без логина, пароля, параметров и якоря',
+    'адрес только по http, хост только 127.0.0.1 (localhost нельзя: он может указать на ::1), без логина, пароля, пути, параметров и якоря',
+  emailUiUrl:
+    'адрес по https (http только для 127.0.0.1 и localhost), без логина, пароля, параметров и якоря',
+  envProxy:
+    'включён прокси Node для fetch (NODE_USE_ENV_PROXY или --use-env-proxy в NODE_OPTIONS), токен мог бы уйти через прокси: выключите прокси для бота или уберите токен',
 } as const;
 
 const WARNINGS = {
@@ -352,6 +356,13 @@ function isSetForSdk(env: EnvVars, name: string): boolean {
   );
 }
 
+/** Задан токен внутреннего API, а fetch пошёл бы через прокси из окружения: запуск запрещён, токен не должен уйти. */
+function proxyProblems(env: EnvVars, token: string | undefined): string[] {
+  return token !== undefined && isNodeEnvProxyOn(env)
+    ? [`INTERNAL_API_TOKEN: ${PROBLEMS.envProxy}`]
+    : [];
+}
+
 /** SDK подмешивает ANTHROPIC_CUSTOM_HEADERS после ключа и может его подменить: с ней запуск запрещён. */
 function sdkProblems(env: EnvVars): string[] {
   return isSetForSdk(env, SDK_CUSTOM_HEADERS)
@@ -415,17 +426,21 @@ function buildConfig(env: EnvValues, models: ModelsValues, root: string): AppCon
  * voice собирается при непустом OPENROUTER_API_KEY, модель из ключа transcribe в config/models.json
  * (обязателен всегда, как модели Claude); без ключа voice null и расшифровка выключена.
  * Связь с почтовым проектом: INTERNAL_API_TOKEN пуст => companyApi null и определение компании выключено; непустой:
- * от 32 до 512 видимых символов ASCII без пробелов. EMAIL_API_URL (по умолчанию http://127.0.0.1:8000): только http
- * и хост 127.0.0.1 или localhost, без логина, пароля, пути, параметров и якоря: токен не должен уйти с этой
- * машины. EMAIL_UI_URL (необязательно): http или https без логина, пароля, параметров и якоря, хвостовой «/» убирается.
+ * от 32 до 512 видимых символов ASCII без пробелов; вместе с прокси Node для fetch (NODE_USE_ENV_PROXY=1 или true,
+ * --use-env-proxy в NODE_OPTIONS) отказ в запуске. EMAIL_API_URL (по умолчанию http://127.0.0.1:8000): только http
+ * и хост 127.0.0.1, без логина, пароля, пути, параметров и якоря: токен не должен уйти с этой машины. EMAIL_UI_URL
+ * (необязательно): https, а http только для 127.0.0.1 и localhost, без логина, пароля, параметров и якоря, хвостовой
+ * «/» убирается.
  * TODO(этап 3): стандартную переменную ключа SDK не читать никогда: ключ только из VENMART_ANTHROPIC_KEY.
  */
 export function loadConfig(env: EnvVars, modelsJson: unknown, root: string): LoadedConfig {
   const schema = envSchema(root);
-  const parsedEnv = schema.safeParse(normalizeEnv(env, Object.keys(schema.shape)));
+  const normalized = normalizeEnv(env, Object.keys(schema.shape));
+  const parsedEnv = schema.safeParse(normalized);
   const parsedModels = modelsSchema.safeParse(modelsJson);
   const problems = [
     ...sdkProblems(env),
+    ...proxyProblems(env, normalized['INTERNAL_API_TOKEN']),
     ...(parsedEnv.success ? [] : describeIssues(parsedEnv.error.issues, [])),
     ...(parsedModels.success ? [] : describeIssues(parsedModels.error.issues, [MODELS_FILE])),
   ];

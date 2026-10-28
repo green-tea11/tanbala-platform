@@ -20,24 +20,51 @@ const RUNNING = {
   checkedAtMs: NOW,
 } as const;
 
+/** Бесплатные шаги а, б, в пройдены. */
+const STEPS_DONE = { freeStepsAtMs: NOW - 1000 } as const;
+
 describe('buildPrompt: компания неизвестна', () => {
   it('OFF_PROMPT: функция выключена', () => {
     expect(OFF_PROMPT).toEqual({ kind: 'off' });
   });
 
-  it('чистое состояние: можно один раз спросить название', () => {
-    expect(buildPrompt(makeState())).toEqual({ kind: 'unknown', askName: true });
+  it('чистое состояние: бесплатные шаги ещё не пройдены, название не спрашивать', () => {
+    expect(buildPrompt(makeState())).toEqual({ kind: 'unknown', askName: false });
+  });
+
+  it.each([
+    ['обычный аккаунт', 'personal'],
+    ['профиль не получен', 'unknown'],
+    ['профиль не запрашивался', null],
+  ] as const)('шаги пройдены, %s: можно один раз спросить название', (_label, profileKind) => {
+    expect(buildPrompt(makeState({ ...STEPS_DONE, profileKind }))).toEqual({
+      kind: 'unknown',
+      askName: true,
+    });
+  });
+
+  it('бизнес-аккаунт, шаги пройдены, логотип ещё не проверен: сначала шаг д, название не спрашивать', () => {
+    expect(buildPrompt(makeState({ ...STEPS_DONE, profileKind: 'business' }))).toEqual({
+      kind: 'unknown',
+      askName: false,
+    });
+  });
+
+  it('бизнес-аккаунт, шаги пройдены и логотип проверен: можно спросить название', () => {
+    const state = makeState({ ...STEPS_DONE, profileKind: 'business', logoCheckedAtMs: NOW });
+
+    expect(buildPrompt(state)).toEqual({ kind: 'unknown', askName: true });
   });
 
   it('название уже спрашивали: не спрашивать', () => {
-    expect(buildPrompt(makeState({ nameAskedAtMs: NOW }))).toEqual({
+    expect(buildPrompt(makeState({ ...STEPS_DONE, nameAskedAtMs: NOW }))).toEqual({
       kind: 'unknown',
       askName: false,
     });
   });
 
   it('клиент сам назвал компанию: не спрашивать', () => {
-    expect(buildPrompt(makeState({ statedName: 'Платформа-А' }))).toEqual({
+    expect(buildPrompt(makeState({ ...STEPS_DONE, statedName: 'Платформа-А' }))).toEqual({
       kind: 'unknown',
       askName: false,
     });
@@ -47,7 +74,10 @@ describe('buildPrompt: компания неизвестна', () => {
     ['проверка завершена', { status: 'done', companyId: companyIdOf(8), finishedAtMs: NOW }],
     ['проверка не удалась', { status: 'failed', reason: 'not_in_2gis', finishedAtMs: NOW }],
   ] as const)('%s, кандидата нет: снова unknown', (_label, research) => {
-    expect(buildPrompt(makeState({ research }))).toEqual({ kind: 'unknown', askName: true });
+    expect(buildPrompt(makeState({ ...STEPS_DONE, research }))).toEqual({
+      kind: 'unknown',
+      askName: true,
+    });
   });
 
   it.each(['queued', 'running'] as const)(
@@ -85,13 +115,21 @@ describe('buildPrompt: кандидат', () => {
     expect(buildPrompt(state)).toMatchObject({ kind: 'candidate', city: null, withCity: true });
   });
 
-  it.each([true, false])('кандидат спрошен (ожидание ответа %s): asked', (awaitingAnswer) => {
-    const state = makeState({
-      candidate: makeChatCandidate({ askedAtMs: NOW, awaitingAnswer, source: 'message' }),
-    });
+  it.each([true, false])(
+    'кандидат спрошен (ожидание ответа %s): asked с тем же признаком ожидания',
+    (awaitingAnswer) => {
+      const state = makeState({
+        candidate: makeChatCandidate({ askedAtMs: NOW, awaitingAnswer, source: 'message' }),
+      });
 
-    expect(buildPrompt(state)).toEqual({ kind: 'asked', name: 'Платформа-А', city: 'Алматы' });
-  });
+      expect(buildPrompt(state)).toEqual({
+        kind: 'asked',
+        name: 'Платформа-А',
+        city: 'Алматы',
+        awaitingAnswer,
+      });
+    },
+  );
 
   it('кандидат важнее идущей проверки', () => {
     const state = makeState({ candidate: makeChatCandidate(), research: RUNNING });
@@ -136,6 +174,25 @@ describe('buildPrompt: подтверждённая компания', () => {
       pains: [],
       emailed: false,
     });
+  });
+
+  it.each(['Склады от 1000 м²', 'Склад №2', 'Хранение ½ паллеты'])(
+    'рубрика с цифрами (%s) в промпт не идёт, как и боли с цифрами',
+    (rubric) => {
+      const state = makeState({
+        confirmed: makeConfirmed({ brief: makeBrief({ rubric }), briefAtMs: NOW }),
+      });
+
+      expect(buildPrompt(state)).toMatchObject({ kind: 'confirmed', rubric: null });
+    },
+  );
+
+  it('рубрика с цифрами в сводке для менеджера остаётся', () => {
+    const state = makeState({
+      confirmed: makeConfirmed({ brief: makeBrief({ rubric: 'Склад №2' }), briefAtMs: NOW }),
+    });
+
+    expect(buildSummary(state, null).rubric).toBe('Склад №2');
   });
 
   it('в промпт не попадают цитата, источник и цифры справки', () => {
