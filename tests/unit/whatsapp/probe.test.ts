@@ -3,19 +3,27 @@ import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initAuthCreds, proto } from 'baileys';
-import type { AuthenticationCreds, BaileysEventMap, UserFacingSocketConfig } from 'baileys';
+import type {
+  AuthenticationCreds,
+  BaileysEventMap,
+  SignalKeyStore,
+  UserFacingSocketConfig,
+  WAMessage,
+} from 'baileys';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
-import type { Clock, ProcessLock } from '../../../src/domain/ports.js';
-import type { PhoneDigits } from '../../../src/domain/types.js';
+import type { Clock, KnownChatSource, ProcessLock } from '../../../src/domain/ports.js';
+import type { Jid, PhoneDigits } from '../../../src/domain/types.js';
 import type { FetchedVersion, LoadedAuthState } from '../../../src/whatsapp/connection-types.js';
 import {
   parseProbeNumber,
+  PROBE_CLOSE_TIMEOUT_MS,
   PROBE_TIMEOUT_MS,
   PROBE_USAGE,
   runBusinessProbe,
   type ProbeDeps,
   type ProbeSocket,
 } from '../../../src/whatsapp/probe.js';
+import type { ProbeChatStore } from '../../../src/whatsapp/probe-chats.js';
 import { VERSION_FETCH_TIMEOUT_MS } from '../../../src/whatsapp/socket-config.js';
 import { createFakeLogger, type LogEntry } from '../../helpers/fake-logger.js';
 
@@ -31,6 +39,33 @@ const VERSION: FetchedVersion = { version: [2, 3000, 1_000_000_001], isLatest: t
 const MESSAGE_BOT_RUNNING = 'Бот запущен: остановите его перед пробой';
 const MESSAGE_NO_SESSION = 'Сессии нет, QR не запускаю';
 const MESSAGE_QR = 'WhatsApp запросил QR: проба прекращена';
+const MESSAGE_CHATS_INCOMPLETE =
+  'Не все чаты из пробы записаны в known_chats: перед этапом 8 сверьте чаты с перепиской в телефоне';
+const MESSAGE_CREDS = /Сессия WhatsApp не сохранилась/;
+
+/** Строка о сообщениях, доставшихся пробе. */
+function receivedLine(count: number, saved = true): string {
+  const head = `Проба получила сообщений: ${String(count)}. Бот их не увидит, в телефоне они есть`;
+  return saved ? `${head}; чаты записаны для этапа 8\n` : `${head}\n`;
+}
+
+const CLIENT_PN = '77000000001@s.whatsapp.net' as Jid;
+const CLIENT_LID = '100000000000001@lid' as Jid;
+const MESSAGE_SECONDS = 1_790_000_000;
+
+/** Сообщение клиента в личном чате (как из офлайн-очереди): форма WAMessage Baileys rc14. */
+function clientMessage(remoteJid: string = CLIENT_PN, id = '3EB0A1B2C3D4E5F60718'): WAMessage {
+  const synthetic: unknown = {
+    key: { remoteJid, fromMe: false, id },
+    message: { conversation: 'Здравствуйте, нужен учёт' },
+    messageTimestamp: MESSAGE_SECONDS,
+  };
+  return synthetic as WAMessage;
+}
+
+function offlineQueue(messages: readonly WAMessage[]): Partial<BaileysEventMap> {
+  return { 'messages.upsert': { messages: [...messages], type: 'append' } };
+}
 
 const NO_PROFILE = {
   business: false,
@@ -106,6 +141,7 @@ type Handler = (events: Partial<BaileysEventMap>) => void | Promise<void>;
 interface FakeProbeSocket {
   readonly socket: ProbeSocket;
   readonly end: Mock<(error: Error | undefined) => Promise<void>>;
+  readonly flush: Mock<() => boolean>;
   /** Нет в типе ProbeSocket: проба обязана никогда не вызывать logout. */
   readonly logout: Mock<() => Promise<void>>;
   readonly getBusinessProfile: Mock<ProbeSocket['getBusinessProfile']>;
@@ -119,6 +155,11 @@ interface SocketOptions {
   readonly lid?: string | null;
   readonly lidFails?: boolean;
   readonly failures?: Readonly<Record<string, Error>>;
+  /** События в буфере Baileys: выдаются обработчику при первом flush. */
+  readonly buffered?: Partial<BaileysEventMap>;
+  readonly flushFails?: boolean;
+  /** Сопоставление @lid с номером не отвечает: запись чатов @lid ждёт. */
+  readonly pnHangs?: boolean;
 }
 
 function createFakeProbeSocket(calls: string[], options: SocketOptions): FakeProbeSocket {
@@ -136,6 +177,16 @@ function createFakeProbeSocket(calls: string[], options: SocketOptions): FakePro
     return Promise.resolve();
   });
   const logout = vi.fn(() => Promise.resolve());
+  let buffered = options.buffered;
+  const flush = vi.fn((): boolean => {
+    calls.push('flush');
+    if (options.flushFails === true) throw new Error('buffer destroyed');
+    const events = buffered;
+    buffered = undefined;
+    if (events === undefined) return false;
+    void handler?.(events);
+    return true;
+  });
   const getBusinessProfile = vi.fn((jid: string) => {
     const label = jid === PN_JID ? 'profile:number' : jid === LID_JID ? 'profile:lid' : 'profile:?';
     calls.push(label);
@@ -159,10 +210,16 @@ function createFakeProbeSocket(calls: string[], options: SocketOptions): FakePro
           if (handler === next) handler = undefined;
         };
       },
-      flush: () => false,
+      flush,
     },
     signalRepository: {
-      lidMapping: { getPNForLID: () => Promise.resolve(null), getLIDForPN },
+      lidMapping: {
+        getPNForLID: () =>
+          options.pnHangs === true
+            ? new Promise<string | null>(() => undefined)
+            : Promise.resolve(null),
+        getLIDForPN,
+      },
     },
     end,
     getBusinessProfile,
@@ -172,6 +229,7 @@ function createFakeProbeSocket(calls: string[], options: SocketOptions): FakePro
   return {
     socket,
     end,
+    flush,
     logout,
     getBusinessProfile,
     getLIDForPN,
@@ -182,8 +240,20 @@ function createFakeProbeSocket(calls: string[], options: SocketOptions): FakePro
   };
 }
 
+interface StoredTouch {
+  readonly jid: Jid;
+  readonly atMs: number;
+  readonly source: KnownChatSource;
+}
+
 interface Harness {
   readonly deps: ProbeDeps;
+  /** Что проба записала в known_chats. */
+  readonly touches: StoredTouch[];
+  readonly openChatStore: Mock<() => ProbeChatStore | null>;
+  readonly storeRun: Mock<(work: () => unknown) => unknown>;
+  readonly storeClose: Mock<() => void>;
+  readonly keysSet: Mock<SignalKeyStore['set']>;
   readonly calls: string[];
   readonly stdout: string[];
   readonly stderr: string[];
@@ -207,6 +277,9 @@ interface Harness {
 
 interface SetupOptions extends SocketOptions {
   readonly linked?: boolean;
+  /** База бота: нет файла (null) или сбой открытия. */
+  readonly storeMissing?: boolean;
+  readonly storeFails?: boolean;
   readonly locked?: boolean;
   readonly sessionExists?: boolean;
   /** Настоящий useMultiFileAuthState (по умолчанию в пробе) вместо подделки: только чтение временной папки. */
@@ -231,10 +304,33 @@ function setup(options: SetupOptions = {}): Harness {
   });
   const creds: AuthenticationCreds =
     options.linked === false ? initAuthCreds() : { ...initAuthCreds(), me: { id: SELF_ID } };
+  const keysSet = vi.fn<SignalKeyStore['set']>((): void => {
+    calls.push('keys-saved');
+  });
   const state: LoadedAuthState['state'] = {
     creds,
-    keys: { get: () => ({}), set: () => undefined },
+    keys: { get: () => ({}), set: keysSet },
   };
+  const touches: StoredTouch[] = [];
+  const storeRun = vi.fn((work: () => unknown): unknown => work());
+  const storeClose = vi.fn((): void => {
+    calls.push('db-close');
+  });
+  const store: ProbeChatStore = {
+    knownChats: {
+      touch: (jid, atMs, source) => {
+        touches.push({ jid, atMs, source });
+      },
+      count: () => touches.length,
+    },
+    unitOfWork: { run: <T>(work: () => T): T => storeRun(work) as T },
+    close: storeClose,
+  };
+  const openChatStore = vi.fn((): ProbeChatStore | null => {
+    calls.push('db');
+    if (options.storeFails === true) throw new Error(`SQLITE_CANTOPEN ${root}`);
+    return options.storeMissing === true ? null : store;
+  });
   const saveCreds = vi.fn((): Promise<void> => {
     if (options.saveFails === true) return Promise.reject(new Error('EACCES'));
     if (options.saveDelay !== true) {
@@ -271,6 +367,7 @@ function setup(options: SetupOptions = {}): Harness {
     logger: createFakeLogger(logs),
     clock: manual.clock,
     acquireLock,
+    openChatStore,
     out: {
       stdout: (text) => {
         stdout.push(text);
@@ -294,6 +391,11 @@ function setup(options: SetupOptions = {}): Harness {
   const socketReady = (): Promise<FakeProbeSocket> => firstSocket;
   return {
     deps,
+    touches,
+    openChatStore,
+    storeRun,
+    storeClose,
+    keysSet,
     calls,
     stdout,
     stderr,
@@ -449,7 +551,8 @@ describe('whatsapp/probe runBusinessProbe: сокет', () => {
 
     expect(h.createSocket).toHaveBeenCalledTimes(1);
     const config = h.createSocket.mock.calls[0]?.[0];
-    expect(config?.auth).toBe(h.state);
+    // Тот же объект creds: Baileys меняет его на месте, а saveCreds пишет именно его.
+    expect(config?.auth.creds).toBe(h.state.creds);
     expect(config?.markOnlineOnConnect).toBe(false);
     expect(config?.syncFullHistory).toBe(false);
     expect(config?.version).toEqual(VERSION.version);
@@ -476,7 +579,7 @@ describe('whatsapp/probe runBusinessProbe: сокет', () => {
     expect(h.createSocket.mock.calls[0]?.[0]).not.toHaveProperty('version');
   });
 
-  it('обработчик событий один: сообщения, история и прочее не разбираются', async () => {
+  it('обработчик событий один; пустые история и сообщения ничего не пишут и не считаются', async () => {
     const h = setup();
     const running = h.run();
     const fake = await h.socketReady();
@@ -492,6 +595,23 @@ describe('whatsapp/probe runBusinessProbe: сокет', () => {
     expect(fake.subscriptions()).toBe(1);
     expect(code).toBe(0);
     expect(h.stdout).toHaveLength(1);
+    expect(h.touches).toEqual([]);
+    expect(h.stderr).toEqual([]);
+  });
+
+  it('ключи сессии идут в сокет с учётом записей: keys.set доходит до исходного хранилища', async () => {
+    const h = setup();
+    const running = h.run();
+    const fake = await h.socketReady();
+    const config = h.createSocket.mock.calls[0]?.[0];
+    const data = { session: { '100000000000001.0': new Uint8Array([1]) } };
+
+    await config?.auth.keys.set(data);
+    fake.emit({ 'connection.update': { connection: 'open' } });
+    await running;
+
+    expect(config?.auth.keys).not.toBe(h.state.keys);
+    expect(h.keysSet).toHaveBeenCalledExactlyOnceWith(data);
   });
 });
 
@@ -634,13 +754,18 @@ describe('whatsapp/probe runBusinessProbe: open и два запроса', () =>
     expect(fake.getLIDForPN).toHaveBeenCalledExactlyOnceWith(PN_JID);
     expect(fake.end).toHaveBeenCalledWith(undefined);
     expect(fake.logout).not.toHaveBeenCalled();
+    // База под замком после проверки сессии; буфер выдаётся до end и при закрытии; база закрыта до снятия замка.
     expect(h.calls).toEqual([
       'lock',
+      'db',
       'socket',
       'profile:number',
       'lid-mapping',
       'profile:lid',
+      'flush',
       'end',
+      'flush',
+      'db-close',
       'release',
     ]);
   });
@@ -686,6 +811,7 @@ describe('whatsapp/probe runBusinessProbe: open и два запроса', () =>
         description: false,
         address: true,
       },
+      receivedMessages: 0,
     });
   });
 
@@ -694,7 +820,7 @@ describe('whatsapp/probe runBusinessProbe: open и два запроса', () =>
 
     await h.runToOpen();
 
-    expect(reportOf(h)).toEqual({ number: NO_PROFILE, lid: NO_PROFILE });
+    expect(reportOf(h)).toEqual({ number: NO_PROFILE, lid: NO_PROFILE, receivedMessages: 0 });
   });
 
   it('сайты считаются только по непустым строкам, остальные поля только по непустым строкам', async () => {
@@ -738,7 +864,11 @@ describe('whatsapp/probe runBusinessProbe: open и два запроса', () =>
 
     expect(code).toBe(0);
     expect(h.socket().getBusinessProfile).toHaveBeenCalledTimes(1);
-    expect(reportOf(h)).toEqual({ number: NO_PROFILE, lid: { error: 'LID неизвестен' } });
+    expect(reportOf(h)).toEqual({
+      number: NO_PROFILE,
+      lid: { error: 'LID неизвестен' },
+      receivedMessages: 0,
+    });
   });
 
   it('сбой запроса по номеру: в выводе имя ошибки и код, проба идёт дальше к LID', async () => {
@@ -753,6 +883,7 @@ describe('whatsapp/probe runBusinessProbe: open и два запроса', () =>
     expect(reportOf(h)).toEqual({
       number: { error: 'TypeError', status: 429 },
       lid: NO_PROFILE,
+      receivedMessages: 0,
     });
   });
 
@@ -768,7 +899,11 @@ describe('whatsapp/probe runBusinessProbe: open и два запроса', () =>
     fake.emit({ 'connection.update': { connection: 'open' } });
     await running;
 
-    expect(reportOf(h)).toEqual({ number: { error: 'RangeError' }, lid: { error: 'string' } });
+    expect(reportOf(h)).toEqual({
+      number: { error: 'RangeError' },
+      lid: { error: 'string' },
+      receivedMessages: 0,
+    });
   });
 
   it('ответ не объект (строка): ошибка UnexpectedResponse', async () => {
@@ -846,7 +981,7 @@ describe('whatsapp/probe runBusinessProbe: сессия WhatsApp', () => {
 
     expect(code).toBe(0);
     expect(h.saveCreds).toHaveBeenCalledTimes(2);
-    expect(h.calls.slice(-4)).toEqual(['end', 'saved', 'saved', 'release']);
+    expect(h.calls.slice(-6)).toEqual(['end', 'flush', 'saved', 'saved', 'db-close', 'release']);
   });
 
   it('сохранение сессии не удалось: JSON выведен, но выход 1 и понятная причина без текста ошибки', async () => {
@@ -941,7 +1076,7 @@ describe('whatsapp/probe runBusinessProbe: общий таймаут', () => {
     expect(code).toBe(1);
     expect(h.stderr.join('')).toMatch(/не уложилась в 5 с/);
     expect(h.createSocket).not.toHaveBeenCalled();
-    expect(h.calls).toEqual(['lock', 'release']);
+    expect(h.calls).toEqual(['lock', 'db', 'db-close', 'release']);
   });
 
   it('срок можно задать: timeoutMs', async () => {
@@ -1000,6 +1135,22 @@ describe('whatsapp/probe runBusinessProbe: сбои', () => {
     expect(h.calls.at(-1)).toBe('release');
   });
 
+  it('end отклонён не ошибкой: в лог тип значения', async () => {
+    const h = setup({ profiles: {} });
+    const running = h.run();
+    const fake = await h.socketReady();
+    fake.end.mockRejectedValueOnce('closed');
+
+    fake.emit({ 'connection.update': { connection: 'open' } });
+
+    expect(await running).toBe(0);
+    expect(h.logs).toContainEqual({
+      level: 'warn',
+      context: { errorName: 'string' },
+      message: 'Сокет WhatsApp не закрылся',
+    });
+  });
+
   it('замок снимается ровно один раз на любом пути', async () => {
     const successful = setup({ profiles: {} });
     const refused = setup({ locked: true });
@@ -1022,5 +1173,297 @@ describe('whatsapp/probe runBusinessProbe: сбои', () => {
     expect(h.socket().getBusinessProfile.mock.calls[0]?.[0]).toBe(
       `${PHONE as PhoneDigits}@s.whatsapp.net`,
     );
+  });
+});
+
+describe('whatsapp/probe runBusinessProbe: база бота', () => {
+  it('база открывается под замком только после проверки сессии: без сессии её не трогают', async () => {
+    const missing = setup({ sessionExists: false });
+    const unlinked = setup({ linked: false });
+
+    await missing.run();
+    await unlinked.run();
+
+    expect(missing.openChatStore).not.toHaveBeenCalled();
+    expect(unlinked.openChatStore).not.toHaveBeenCalled();
+  });
+
+  it('базы нет: выход 1 до версии и сокета, замок снят', async () => {
+    const h = setup({ storeMissing: true });
+
+    const code = await h.run();
+
+    expect(code).toBe(1);
+    expect(h.stderr).toEqual([
+      'База бота не найдена: проба не подключается, иначе чаты не попадут в known_chats\n',
+    ]);
+    expect(h.fetchVersion).not.toHaveBeenCalled();
+    expect(h.createSocket).not.toHaveBeenCalled();
+    expect(h.calls).toEqual(['lock', 'db', 'release']);
+  });
+
+  it('база не открылась: выход 1 с именем ошибки без её текста, сокета нет', async () => {
+    const h = setup({ storeFails: true });
+
+    const code = await h.run();
+
+    expect(code).toBe(1);
+    expect(h.stderr).toEqual(['База бота не открылась: проба не подключается (ошибка Error)\n']);
+    expect(h.stderr.join('')).not.toContain(root);
+    expect(h.createSocket).not.toHaveBeenCalled();
+    expect(h.calls).toEqual(['lock', 'db', 'release']);
+  });
+
+  it('база не закрылась: в лог имя ошибки, итог тот же, замок снят', async () => {
+    const h = setup({ profiles: {} });
+    h.storeClose.mockImplementationOnce(() => {
+      throw new TypeError(`database ${root} is busy`);
+    });
+
+    const code = await h.runToOpen();
+
+    expect(code).toBe(0);
+    expect(h.logs).toContainEqual({
+      level: 'warn',
+      context: { errorName: 'TypeError' },
+      message: 'База бота не закрылась',
+    });
+    expect(h.calls.at(-1)).toBe('release');
+  });
+});
+
+describe('whatsapp/probe runBusinessProbe: сообщения, доставшиеся пробе', () => {
+  it('офлайн-очередь до open: чаты в known_chats, число в JSON и строка в stderr, выход 0', async () => {
+    const h = setup({ profiles: {}, lid: null });
+    const running = h.run();
+    const fake = await h.socketReady();
+
+    fake.emit(offlineQueue([clientMessage(), clientMessage(CLIENT_LID, 'B2')]));
+    fake.emit({ 'connection.update': { connection: 'open' } });
+    const code = await running;
+
+    expect(code).toBe(0);
+    expect(h.touches).toEqual([
+      { jid: CLIENT_PN, atMs: MESSAGE_SECONDS * 1000, source: 'message' },
+      { jid: CLIENT_LID, atMs: MESSAGE_SECONDS * 1000, source: 'message' },
+    ]);
+    expect(reportOf(h)['receivedMessages']).toBe(2);
+    expect(h.stderr).toEqual([receivedLine(2)]);
+  });
+
+  it('сообщения во время запросов и чаты синхронизации тоже записываются', async () => {
+    const h = setup({ profiles: {}, lid: null });
+    const running = h.run();
+    const fake = await h.socketReady();
+
+    fake.emit({ 'connection.update': { connection: 'open' } });
+    fake.emit({
+      ...offlineQueue([clientMessage()]),
+      'messaging-history.set': {
+        chats: [{ id: CLIENT_LID, conversationTimestamp: MESSAGE_SECONDS }],
+        contacts: [],
+        messages: [],
+        syncType: proto.HistorySync.HistorySyncType.RECENT,
+      },
+    });
+    const code = await running;
+
+    expect(code).toBe(0);
+    expect(h.touches).toEqual([
+      { jid: CLIENT_LID, atMs: MESSAGE_SECONDS * 1000, source: 'history' },
+      { jid: CLIENT_PN, atMs: MESSAGE_SECONDS * 1000, source: 'message' },
+    ]);
+    expect(reportOf(h)['receivedMessages']).toBe(1);
+  });
+
+  it('группы не считаются: строки в stderr нет', async () => {
+    const h = setup({ profiles: {}, lid: null });
+    const running = h.run();
+    const fake = await h.socketReady();
+
+    fake.emit(offlineQueue([clientMessage('120363000000000001@g.us')]));
+    fake.emit({ 'connection.update': { connection: 'open' } });
+    await running;
+
+    expect(h.touches).toEqual([]);
+    expect(reportOf(h)['receivedMessages']).toBe(0);
+    expect(h.stderr).toEqual([]);
+  });
+
+  it('буфер Baileys выдаётся до end: его сообщения записаны и посчитаны до закрытия базы', async () => {
+    const h = setup({ profiles: {}, lid: null, buffered: offlineQueue([clientMessage()]) });
+
+    const code = await h.runToOpen();
+
+    expect(code).toBe(0);
+    expect(h.touches).toHaveLength(1);
+    expect(reportOf(h)['receivedMessages']).toBe(1);
+    expect(h.calls.indexOf('flush')).toBeLessThan(h.calls.indexOf('end'));
+    expect(h.calls.slice(-2)).toEqual(['db-close', 'release']);
+  });
+
+  it('буфер при закрытии соединения тоже выдаётся (как у бота)', async () => {
+    const h = setup({ buffered: offlineQueue([clientMessage()]) });
+    const running = h.run();
+    const fake = await h.socketReady();
+
+    fake.emit({ 'connection.update': { connection: 'close' } });
+    const code = await running;
+
+    expect(code).toBe(1);
+    expect(fake.flush).toHaveBeenCalled();
+    expect(h.touches).toHaveLength(1);
+    expect(h.stderr).toContain(receivedLine(1));
+  });
+
+  it('flush упал: в лог имя ошибки, проба завершается', async () => {
+    const h = setup({ profiles: {}, flushFails: true });
+
+    const code = await h.runToOpen();
+
+    expect(code).toBe(0);
+    expect(h.logs).toContainEqual({
+      level: 'error',
+      context: { errorName: 'Error' },
+      message: 'Накопленные события WhatsApp не выданы',
+    });
+  });
+
+  it('запись чатов упала: JSON есть, но выход 1, строка без «чаты записаны» и строка о неполных чатах', async () => {
+    const h = setup({ profiles: {}, lid: null });
+    h.storeRun.mockImplementation(() => {
+      throw new Error('SQLITE_FULL');
+    });
+    const running = h.run();
+    const fake = await h.socketReady();
+
+    fake.emit(offlineQueue([clientMessage()]));
+    fake.emit({ 'connection.update': { connection: 'open' } });
+    const code = await running;
+
+    expect(code).toBe(1);
+    expect(reportOf(h)['receivedMessages']).toBe(1);
+    expect(h.stderr).toEqual([receivedLine(1, false), `${MESSAGE_CHATS_INCOMPLETE}\n`]);
+  });
+
+  it('срок пробы вышел после сообщений: JSON нет, но число сообщений в stderr', async () => {
+    const h = setup();
+    const running = h.run();
+    const fake = await h.socketReady();
+    fake.getBusinessProfile.mockImplementationOnce(() => new Promise(() => undefined));
+
+    fake.emit(offlineQueue([clientMessage()]));
+    fake.emit({ 'connection.update': { connection: 'open' } });
+    h.clock.expire(PROBE_TIMEOUT_MS);
+    const code = await running;
+
+    expect(code).toBe(1);
+    expect(h.stdout).toEqual([]);
+    expect(h.stderr.join('')).toMatch(/не уложилась в 60 с/);
+    expect(h.stderr).toContain(receivedLine(1));
+    expect(h.touches).toHaveLength(1);
+  });
+
+  it('ни в выводе, ни в логе нет номеров, JID и текста сообщений', async () => {
+    const h = setup({ profiles: {}, lid: null });
+    const running = h.run();
+    const fake = await h.socketReady();
+
+    fake.emit(offlineQueue([clientMessage(), clientMessage(CLIENT_LID, 'B2')]));
+    fake.emit({ 'connection.update': { connection: 'open' } });
+    await running;
+
+    const everything = JSON.stringify([h.stdout, h.stderr, h.logs]);
+    expect(everything).not.toMatch(/77000000001|100000000000001|@s\.whatsapp|@lid|учёт/);
+  });
+});
+
+describe('whatsapp/probe runBusinessProbe: запись сессии при закрытии', () => {
+  const KEY = { session: { '100000000000001.0': new Uint8Array([1]) } };
+
+  it('незаконченная запись ключа: база закрывается и замок снимается только после неё', async () => {
+    const h = setup({ profiles: {}, lid: null });
+    h.keysSet.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          setImmediate(() => {
+            h.calls.push('keys-saved');
+            resolve();
+          });
+        }),
+    );
+    const running = h.run();
+    const fake = await h.socketReady();
+    const config = h.createSocket.mock.calls[0]?.[0];
+
+    void config?.auth.keys.set(KEY);
+    fake.emit({ 'connection.update': { connection: 'open' } });
+    const code = await running;
+
+    expect(code).toBe(0);
+    expect(h.calls.slice(-4)).toEqual(['flush', 'keys-saved', 'db-close', 'release']);
+  });
+
+  it('запись ключа упала: JSON есть, выход 1 и причина о сессии без текста ошибки', async () => {
+    const h = setup({ profiles: {}, lid: null });
+    h.keysSet.mockImplementationOnce(() => Promise.reject(new Error(`EACCES ${root}`)));
+    const running = h.run();
+    const fake = await h.socketReady();
+    const config = h.createSocket.mock.calls[0]?.[0];
+
+    await expect(config?.auth.keys.set(KEY)).rejects.toThrow();
+    fake.emit({ 'connection.update': { connection: 'open' } });
+    const code = await running;
+
+    expect(code).toBe(1);
+    expect(h.stdout).toHaveLength(1);
+    expect(h.stderr.join('')).toMatch(MESSAGE_CREDS);
+    expect(h.stderr.join('')).not.toContain(root);
+  });
+
+  it('запись сессии зависла: закрытие ждёт не дольше 20 с, выход 1, база закрыта, замок снят', async () => {
+    const h = setup({ profiles: {}, lid: null });
+    h.keysSet.mockImplementationOnce(() => new Promise<void>(() => undefined));
+    const running = h.run();
+    const fake = await h.socketReady();
+    const config = h.createSocket.mock.calls[0]?.[0];
+
+    void config?.auth.keys.set(KEY);
+    fake.emit({ 'connection.update': { connection: 'open' } });
+    await h.clock.sleeping(PROBE_CLOSE_TIMEOUT_MS);
+    h.clock.expire(PROBE_CLOSE_TIMEOUT_MS);
+    const code = await running;
+
+    expect(PROBE_CLOSE_TIMEOUT_MS).toBe(20_000);
+    expect(code).toBe(1);
+    expect(h.stdout).toHaveLength(1);
+    expect(h.stderr).toEqual([
+      'Запись сессии WhatsApp и чатов не закончилась за 20 с: сессия могла сохраниться не полностью\n',
+    ]);
+    expect(h.logs).toContainEqual({
+      level: 'error',
+      context: { timeoutMs: PROBE_CLOSE_TIMEOUT_MS },
+      message: 'Проба не дождалась записи сессии и чатов',
+    });
+    expect(h.calls.slice(-2)).toEqual(['db-close', 'release']);
+  });
+
+  it('чаты в очереди к сроку закрытия не записаны: строка о неполных чатах, сокет закрыт без ожидания, выход 1', async () => {
+    const h = setup({ profiles: {}, lid: null, pnHangs: true });
+    const running = h.run();
+    const fake = await h.socketReady();
+
+    fake.emit(offlineQueue([clientMessage(CLIENT_LID)]));
+    fake.emit({ 'connection.update': { connection: 'open' } });
+    await h.clock.sleeping(PROBE_CLOSE_TIMEOUT_MS);
+    expect(fake.end).not.toHaveBeenCalled();
+    h.clock.expire(PROBE_CLOSE_TIMEOUT_MS);
+    const code = await running;
+
+    expect(code).toBe(1);
+    expect(h.stderr).toContain(`${MESSAGE_CHATS_INCOMPLETE}\n`);
+    expect(fake.end).toHaveBeenCalledExactlyOnceWith(undefined);
+    expect(fake.logout).not.toHaveBeenCalled();
+    expect(h.calls.slice(-2)).toEqual(['db-close', 'release']);
   });
 });

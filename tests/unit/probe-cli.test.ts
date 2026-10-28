@@ -3,8 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { openDatabase } from '../../src/db/connection.js';
+import { runMigrations } from '../../src/db/migrations.js';
 import { acquireProcessLock } from '../../src/db/process-lock.js';
-import { runProbeCli, type ProbeCliOptions } from '../../src/probe-cli.js';
+import type { Jid } from '../../src/domain/types.js';
+import { openProbeChatStore, runProbeCli, type ProbeCliOptions } from '../../src/probe-cli.js';
 import { PROBE_USAGE } from '../../src/whatsapp/probe.js';
 
 // Точка входа пробы во временном корне: настоящие .env, config/models.json и замок data/process.lock, а до сокета
@@ -95,13 +98,14 @@ describe('probe-cli runProbeCli', () => {
     }
   });
 
-  it('сессии нет: выход 1 без QR, папка сессии не создаётся, замок снят', async () => {
+  it('сессии нет: выход 1 без QR, папка сессии и база не создаются, замок снят', async () => {
     const result = await run();
 
     expect(result.code).toBe(1);
     expect(result.stderr).toContain('Сессии нет, QR не запускаю');
     expect(result.stdout).toBe('');
     expect(existsSync(join(root, 'data', 'whatsapp-session'))).toBe(false);
+    expect(existsSync(join(root, 'data', 'tanbala.db'))).toBe(false);
     const nextLock = acquireProcessLock(join(root, 'data', 'process.lock'));
     nextLock.release();
   });
@@ -114,5 +118,66 @@ describe('probe-cli runProbeCli', () => {
     expect(result.code).toBe(1);
     expect(result.stderr).toMatch(/^Проба остановлена из-за ошибки \w+\n$/);
     expect(result.stderr).not.toContain(root);
+  });
+});
+
+describe('probe-cli openProbeChatStore: база бота для known_chats', () => {
+  const JID = '77000000001@s.whatsapp.net' as Jid;
+
+  function latestVersion(): number {
+    const fresh = openDatabase(':memory:');
+    try {
+      runMigrations(fresh);
+      return Number(fresh.pragma('user_version', { simple: true }));
+    } finally {
+      fresh.close();
+    }
+  }
+
+  function versionOf(path: string): number {
+    const db = openDatabase(path);
+    try {
+      return Number(db.pragma('user_version', { simple: true }));
+    } finally {
+      db.close();
+    }
+  }
+
+  it('файла базы нет: null, ни файла, ни папки не создаётся', () => {
+    const path = join(root, 'data', 'tanbala.db');
+
+    expect(openProbeChatStore(path)).toBeNull();
+    expect(existsSync(join(root, 'data'))).toBe(false);
+  });
+
+  it('старая схема: миграции как у бота, known_chats пишется транзакцией, close закрывает базу', () => {
+    const path = join(root, 'tanbala.db');
+    const old = openDatabase(path);
+    runMigrations(old, 1);
+    old.close();
+
+    const store = openProbeChatStore(path);
+    store?.unitOfWork.run(() => {
+      store.knownChats.touch(JID, 1000, 'message');
+    });
+    const count = store?.knownChats.count();
+    store?.close();
+
+    expect(store).not.toBeNull();
+    expect(count).toBe(1);
+    expect(versionOf(path)).toBe(latestVersion());
+    // На Windows открытый файл не удалить: удаление проверяет, что база закрыта.
+    rmSync(path);
+  });
+
+  it('схема новее кода: ошибка, база закрыта до выхода ошибки', () => {
+    const path = join(root, 'tanbala.db');
+    const newer = openDatabase(path);
+    newer.pragma('user_version = 999');
+    newer.close();
+
+    expect(() => openProbeChatStore(path)).toThrow(/Схема базы новее кода/);
+    expect(versionOf(path)).toBe(999);
+    rmSync(path);
   });
 });
