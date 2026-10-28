@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import signal
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,7 @@ from tanbala_leads import PROJECT_ROOT
 from tanbala_leads.sites import extract_emails, is_role_address, normalize_domain
 
 PARSER_TIMEOUT_SECONDS = 20 * 60
+IS_WINDOWS = os.name == "nt"
 # parser-2gis живёт в отдельном окружении со старыми зависимостями: ключа API и паролей он не видит.
 PASSED_ENV_KEYS = (
     "SYSTEMROOT", "WINDIR", "PATH", "PATHEXT", "COMSPEC", "NUMBER_OF_PROCESSORS",
@@ -44,7 +46,8 @@ def build_search_url(city: str, query: str) -> str:
         raise ValueError(f"Неизвестный город {city!r}")
     if not query.strip():
         raise ValueError("Пустой запрос")
-    return f"https://2gis.kz/{city}/search/{quote(query.strip())}"
+    # safe="": «/» в названии от клиента бота не уведёт parser-2gis на другую страницу 2ГИС.
+    return f"https://2gis.kz/{city}/search/{quote(query.strip(), safe='')}"
 
 
 def parser_env(tmp_dir: Path) -> dict[str, str]:
@@ -55,8 +58,9 @@ def parser_env(tmp_dir: Path) -> dict[str, str]:
     return env
 
 
-def run_parser(search_url: str, output_path: Path, max_records: int, parser_bin: str) -> Path:
-    """Выгрузить одну ссылку 2ГИС в JSON через CLI parser-2gis."""
+def run_parser(search_url: str, output_path: Path, max_records: int, parser_bin: str, *,
+               timeout_seconds: int = PARSER_TIMEOUT_SECONDS) -> Path:
+    """Выгрузить одну ссылку 2ГИС в JSON через CLI parser-2gis. Не уложился в timeout_seconds: ParserError."""
     if max_records < 1:
         raise ValueError("max_records должен быть больше нуля")
     binary = Path(parser_bin)
@@ -73,14 +77,15 @@ def run_parser(search_url: str, output_path: Path, max_records: int, parser_bin:
     ]
     process = subprocess.Popen(
         command, env=parser_env(tmp_dir), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        encoding="utf-8", errors="replace",
+        encoding="utf-8", errors="replace", start_new_session=not IS_WINDOWS,  # своя группа: убить и Chrome
     )
     try:
-        stdout, stderr = process.communicate(timeout=PARSER_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired as exc:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
         _kill_tree(process.pid)
         process.wait(timeout=30)
-        raise ParserError(f"parser-2gis не уложился в {PARSER_TIMEOUT_SECONDS} с") from exc
+        # from None: в TimeoutExpired вся команда со ссылкой, а в ней название компании от клиента бота.
+        raise ParserError(f"parser-2gis не уложился в {timeout_seconds} с") from None
     if process.returncode != 0 or not output_path.exists():
         tail = (stderr or stdout or "").strip()[-500:]
         raise ParserError(f"parser-2gis завершился с кодом {process.returncode}: {tail}")
@@ -88,11 +93,15 @@ def run_parser(search_url: str, output_path: Path, max_records: int, parser_bin:
 
 
 def _kill_tree(pid: int) -> None:
-    """Остановить parser-2gis вместе с его Chrome: обычный kill на Windows оставляет браузер жить."""
-    if os.name == "nt":
+    """Остановить parser-2gis вместе с его Chrome: обычный kill оставляет браузер жить, а место браузера
+    в лимите (browsers.py) уже свободно. На Linux parser-2gis запущен в своей группе процессов."""
+    if IS_WINDOWS:
         subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, check=False)
-    else:
-        os.kill(pid, 9)
+        return
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass  # уже завершился
 
 
 @dataclass(frozen=True)

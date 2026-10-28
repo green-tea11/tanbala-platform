@@ -32,7 +32,7 @@ from starlette.datastructures import UploadFile  # request.form() отдаёт �
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from tanbala_leads import __version__, contact_policy, db, pipeline
+from tanbala_leads import __version__, browsers, contact_policy, db, pipeline
 from tanbala_leads.internal import brief, research
 from tanbala_leads.settings import load_settings
 from tanbala_leads.steps import approve as approve_step
@@ -539,6 +539,10 @@ def serve(host: str = BIND_HOST, port: int = 8000) -> None:
     settings = load_settings()
     dsn = settings.require("database_url")
     budget = pipeline.daily_budget(settings)
+    per_day = research.per_day_limit(settings)
+    # Браузеры общие для поиска и проверок из WhatsApp: не больше MAX_2GIS_BROWSERS и MAX_SITE_BROWSERS сразу
+    # (по умолчанию по одному, VPS 4 ГБ). Неверная настройка останавливает запуск до миграций.
+    limits = browsers.limits_from_settings(settings)
     try:
         test_address = send_step.test_recipient(settings)
     except send_step.SendBlocked:
@@ -549,13 +553,13 @@ def serve(host: str = BIND_HOST, port: int = 8000) -> None:
         research.recover_stale_jobs(conn)
     research_queue = research.ResearchQueue(
         connect=lambda: db.connect(dsn),
-        deps_factory=lambda: pipeline.default_deps(load_settings()),
-        per_day=research.per_day_limit(settings),
+        deps_factory=lambda: pipeline.default_deps(load_settings(), limits, urgent=True),
+        per_day=per_day,
         budget_usd=budget,
     )
     app = create_app(
         connect=lambda: db.connect(dsn),
-        start_run=lambda city, query, n: pipeline.start_run(dsn, city, query, n),
+        start_run=lambda city, query, n: pipeline.start_run(dsn, city, query, n, limits=limits),
         daily_budget_usd=budget,
         send_test=lambda conn, draft_id: send_step.send_test(conn, draft_id, load_settings()),
         test_address=test_address,

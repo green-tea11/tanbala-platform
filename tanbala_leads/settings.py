@@ -25,6 +25,8 @@ ENV_NAMES: dict[str, str] = {
     "smtp_password": "SMTP_PASSWORD",
     "internal_api_token": "INTERNAL_API_TOKEN",
     "research_per_day": "RESEARCH_PER_DAY",
+    "max_2gis_browsers": "MAX_2GIS_BROWSERS",
+    "max_site_browsers": "MAX_SITE_BROWSERS",
 }
 
 DEFAULTS: dict[str, str] = {
@@ -33,6 +35,8 @@ DEFAULTS: dict[str, str] = {
     "llm_log_path": "logs/llm_calls.jsonl",
     "daily_api_budget_usd": "1.00",
     "research_per_day": "20",
+    "max_2gis_browsers": "1",
+    "max_site_browsers": "1",
 }
 
 
@@ -60,6 +64,8 @@ class Settings:
     smtp_password: str = field(default="", repr=False)
     internal_api_token: str = field(default="", repr=False)
     research_per_day: str = ""
+    max_2gis_browsers: str = ""
+    max_site_browsers: str = ""
 
     def require(self, name: str) -> str:
         """Вернуть значение поля или остановиться с понятной ошибкой, если оно пустое."""

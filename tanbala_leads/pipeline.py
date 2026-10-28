@@ -17,7 +17,7 @@ import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
 
-from tanbala_leads import PROJECT_ROOT, db, knowledge, llm
+from tanbala_leads import PROJECT_ROOT, browsers, db, knowledge, llm
 from tanbala_leads.settings import Settings, load_settings
 from tanbala_leads.steps import collect, crawl, draft, qualify, verify
 from tanbala_leads.steps.collect import CITIES
@@ -125,12 +125,17 @@ def daily_budget(settings: Settings) -> float:
         raise ValueError("DAILY_API_BUDGET_USD должен быть числом, например 1.00") from exc
 
 
-def start_run(dsn: str, city: str, query: str, max_companies: int) -> int:
-    """Создать запуск и выполнить его в фоновом потоке. Вернуть id запуска."""
+def start_run(dsn: str, city: str, query: str, max_companies: int, *,
+              limits: browsers.BrowserLimits | None = None) -> int:
+    """Создать запуск и выполнить его в фоновом потоке. Вернуть id запуска.
+
+    limits: браузеры, общие с проверками из WhatsApp (в сервере web); без них свои по настройкам.
+    """
     budget = daily_budget(load_settings())
     with db.connect(dsn) as conn:
         run_id = create_run(conn, city, query, max_companies, daily_budget_usd=budget)
-    thread = threading.Thread(target=execute_run, args=(dsn, run_id), name=f"run-{run_id}", daemon=True)
+    thread = threading.Thread(target=execute_run, args=(dsn, run_id), kwargs={"limits": limits},
+                              name=f"run-{run_id}", daemon=True)
     try:
         thread.start()
     except RuntimeError as exc:
@@ -171,15 +176,27 @@ class Deps:
     log_path: Path = PROJECT_ROOT / "logs" / "llm_calls.jsonl"
 
 
-def default_deps(settings: Settings) -> Deps:
-    """Настоящие зависимости: parser-2gis, crawl4ai, Reacher, Claude API."""
+# Проверка из WhatsApp берёт из 2ГИС 5 записей (≈ 15 с): дольше 5 минут она не должна держать браузер.
+RESEARCH_PARSER_TIMEOUT_SECONDS = 5 * 60
+
+
+def default_deps(settings: Settings, limits: browsers.BrowserLimits | None = None, *, urgent: bool = False) -> Deps:
+    """Настоящие зависимости: parser-2gis, crawl4ai, Reacher, Claude API.
+
+    Каждый запуск parser-2gis и обход сайта сначала занимает место браузера в limits (без них свои по настройкам).
+    urgent: проверка из WhatsApp, она идёт вне очереди между шагами поиска, и parser-2gis у неё короче.
+    """
     from tanbala_leads.sites import crawl_site
 
+    limits = limits or browsers.limits_from_settings(settings)
     client = llm.make_client(settings)
     secret = settings.require("reacher_secret")
+    parser_timeout = RESEARCH_PARSER_TIMEOUT_SECONDS if urgent else collect.PARSER_TIMEOUT_SECONDS
     return Deps(
-        run_parser=lambda url, out, n: collect.run_parser(url, out, n, settings.parser_2gis_bin),
-        crawl=lambda url: asyncio.run(crawl_site(url)),
+        run_parser=limits.gis.guard(lambda url, out, n: collect.run_parser(url, out, n, settings.parser_2gis_bin,
+                                                                           timeout_seconds=parser_timeout),
+                                    urgent=urgent),
+        crawl=limits.sites.guard(lambda url: asyncio.run(crawl_site(url)), urgent=urgent),
         check_email=lambda email: verify.check_email(email, base_url=settings.reacher_url, secret=secret),
         client=client,
         owner_doc=knowledge.load_owner_doc(),
@@ -355,8 +372,12 @@ def _steps(conn: psycopg.Connection, run_id: int, company_ids: tuple[int, ...], 
     _each(conn, run_id, _ids_with_status(conn, company_ids, "verified"), do_draft)
 
 
-def execute_run(dsn: str, run_id: int, deps: Deps | None = None) -> None:
-    """Выполнить все шаги запуска: 2ГИС → сайты → квалификация → проверка почт → письма."""
+def execute_run(dsn: str, run_id: int, deps: Deps | None = None, *,
+                limits: browsers.BrowserLimits | None = None) -> None:
+    """Выполнить все шаги запуска: 2ГИС → сайты → квалификация → проверка почт → письма.
+
+    limits: общие браузеры для настоящих зависимостей (deps не задан).
+    """
     try:
         conn = db.connect(dsn)
     except psycopg.Error as exc:
@@ -366,7 +387,7 @@ def execute_run(dsn: str, run_id: int, deps: Deps | None = None) -> None:
     with conn:
         try:
             _set(conn, run_id, status="running", started_at=datetime.now(timezone.utc), stage="Подготовка")
-            deps = deps or default_deps(load_settings())
+            deps = deps or default_deps(load_settings(), limits)
             with conn.cursor(row_factory=dict_row) as cursor:
                 run = cursor.execute("SELECT city, query, max_companies FROM runs WHERE id = %s", (run_id,)).fetchone()
             company_ids = _collect(conn, run_id, run, deps)

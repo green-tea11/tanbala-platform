@@ -126,3 +126,55 @@ def test_parser_timeout_kills_whole_process_tree(tmp_path, monkeypatch):
         collect.run_parser("https://2gis.kz/almaty/search/x", tmp_path / "out.json", 5, str(binary))
 
     assert killed[0] == 4242
+
+
+def test_slash_in_name_stays_inside_search():
+    url = collect.build_search_url("almaty", "x/../../almaty/firm/123")
+
+    assert url == "https://2gis.kz/almaty/search/x%2F..%2F..%2Falmaty%2Ffirm%2F123"
+
+
+def test_parser_on_linux_runs_in_own_group_and_timeout_hides_command(tmp_path, monkeypatch):
+    """На Linux Chrome parser-2gis убивается вместе с ним (группа процессов); в ошибке нет команды с названием."""
+    started, killed = [], []
+
+    class HangingProcess:
+        pid = 4242
+        returncode = None
+
+        def communicate(self, timeout=None):
+            started.append(timeout)
+            raise collect.subprocess.TimeoutExpired(["parser-2gis", "-i", "https://2gis.kz/almaty/search/Иванов"],
+                                                    timeout)
+
+        def wait(self, timeout=None):
+            return -9
+
+    def popen(command, **kwargs):
+        started.append(kwargs["start_new_session"])
+        return HangingProcess()
+
+    binary = tmp_path / "parser-2gis"
+    binary.write_text("")
+    monkeypatch.setattr(collect, "IS_WINDOWS", False)
+    monkeypatch.setattr(collect.subprocess, "Popen", popen)
+    monkeypatch.setattr(collect.os, "killpg", lambda pid, sig: killed.append((pid, sig)), raising=False)
+    monkeypatch.setattr(collect.signal, "SIGKILL", 9, raising=False)
+
+    with pytest.raises(collect.ParserError, match="не уложился в 300 с") as error:
+        collect.run_parser("https://2gis.kz/almaty/search/x", tmp_path / "out.json", 5, str(binary),
+                           timeout_seconds=300)
+
+    assert started == [True, 300] and killed == [(4242, 9)]
+    assert error.value.__cause__ is None and error.value.__suppress_context__
+
+
+def test_kill_of_finished_parser_on_linux_is_quiet(monkeypatch):
+    def gone(pid, sig):
+        raise ProcessLookupError(pid)
+
+    monkeypatch.setattr(collect, "IS_WINDOWS", False)
+    monkeypatch.setattr(collect.os, "killpg", gone, raising=False)
+    monkeypatch.setattr(collect.signal, "SIGKILL", 9, raising=False)
+
+    collect._kill_tree(4242)
