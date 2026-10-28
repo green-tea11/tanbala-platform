@@ -12,13 +12,14 @@ const BOUNDARIES: Readonly<Record<string, string>> = {
   fastify: 'src/panel/',
 };
 
-const ENV_READERS = ['src/config/', 'src/cli.ts'];
+// Точки входа: бот (cli.ts) и проба бизнес-профиля (probe-cli.ts, npm run probe:business). Только они что-то
+// запускают при импорте и, кроме src/config, читают окружение.
+const ENTRY_POINTS = ['src/cli.ts', 'src/probe-cli.ts'];
+
+const ENV_READERS = ['src/config/', ...ENTRY_POINTS];
 
 // Единая точка исходящих: вызовы отправки только в outbox и в адаптере WhatsApp.
 const SENDERS = ['src/messaging/outbox.ts', 'src/whatsapp/connection.ts'];
-
-// Точка входа одна: только она что-то запускает при импорте.
-const ENTRY_POINT = 'src/cli.ts';
 
 interface SourceFile {
   path: string;
@@ -54,7 +55,7 @@ describe('архитектура src', () => {
     expect(violations).toEqual([]);
   });
 
-  it('окружение читается только в src/config и src/cli.ts', () => {
+  it('окружение читается только в src/config и в точках входа', () => {
     const envAccess =
       /process\.env|process\[['"]env['"]\]|\benv\b[^;]*=\s*process\b|from\s+['"](?:node:)?process['"]|loadEnvFile/;
     const violations = violationsOf(({ path, text }) => {
@@ -85,10 +86,15 @@ describe('архитектура src', () => {
     expect(violations).toEqual([]);
   });
 
-  it('только точка входа запускает код при импорте: верхнеуровневые await и void', () => {
+  it('только точки входа запускают код при импорте: верхнеуровневые await и void', () => {
     const violations = violationsOf(({ path, text }) =>
-      /^(?:await|void)\s/m.test(text) && path !== ENTRY_POINT ? [path] : [],
+      /^(?:await|void)\s/m.test(text) && !ENTRY_POINTS.includes(path) ? [path] : [],
     );
     expect(violations).toEqual([]);
+  });
+
+  it('точки входа существуют: список выше не устарел', () => {
+    const paths = sources.map(({ path }) => path);
+    expect(ENTRY_POINTS.filter((entry) => !paths.includes(entry))).toEqual([]);
   });
 });
