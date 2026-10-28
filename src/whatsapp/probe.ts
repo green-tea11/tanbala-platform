@@ -6,7 +6,7 @@ import {
   type ConnectionState,
   type UserFacingSocketConfig,
 } from 'baileys';
-import type { Clock, Logger, ProcessLock } from '../domain/ports.js';
+import type { AppStateRepo, Clock, Logger, ProcessLock } from '../domain/ports.js';
 import type { PhoneDigits } from '../domain/types.js';
 import type { FetchedVersion, LoadedAuthState, WaSocket } from './connection-types.js';
 import { TIMED_OUT, withDeadline } from './deadline.js';
@@ -24,8 +24,8 @@ import { buildSocketConfig, fetchVersionWithTimeout } from './socket-config.js';
 // сессии, спрашивает бизнес-профиль одного номера и его LID и печатает только признаки (есть ли сайт, почта, категория),
 // без номеров, JID и значений. QR не показывает, привязку не считает и не начинает, logout не вызывает.
 // Сессия та же, что у бота: офлайн-очередь сообщений достаётся пробе, а не боту. Чаты из неё проба пишет в known_chats
-// (whatsapp/probe-chats.ts), а число сообщений сообщает владельцу. Поэтому запускать в тихое время, сразу после
-// остановки бота, и сразу после пробы снова запускать бота.
+// (whatsapp/probe-chats.ts), а число сообщений сообщает владельцу; записала не все: ставит флаг неполного списка, как
+// бот. Поэтому запускать в тихое время, сразу после остановки бота, и сразу после пробы снова запускать бота.
 
 /** Общий срок пробы: получение версии, подключение и оба запроса. */
 export const PROBE_TIMEOUT_MS = 60_000;
@@ -55,7 +55,18 @@ const MESSAGES = {
     'иначе при следующем запуске бота возможны сбои',
   chatsIncomplete:
     'Не все чаты из пробы записаны в known_chats: перед этапом 8 сверьте чаты с перепиской в телефоне',
+  flagSet:
+    'В базе бота поставлен флаг «список чатов неполный»: этап 8 не выключит TEST_MODE, ' +
+    'пока вы с разработчиком не сверите чаты и не снимете флаг',
 } as const;
+
+/** Флаг не записался: имя ошибки без её текста (в тексте бывают пути). */
+function flagFailedMessage(errorName: string): string {
+  return (
+    `Флаг «список чатов неполный» в базу не записан (ошибка ${errorName}): этап 8 о неполном списке ` +
+    'не узнает, сообщите разработчику до выключения TEST_MODE'
+  );
+}
 
 /** Что значит код закрытия до открытия (DisconnectReason и код 405): короткая причина для владельца. */
 const CLOSE_TEXTS: ReadonlyMap<number, string> = new Map([
@@ -85,6 +96,14 @@ export interface ProbeOutput {
   stderr(text: string): void;
 }
 
+/**
+ * База бота для пробы: known_chats с транзакциями (whatsapp/probe-chats.ts) и флаг неполного списка чатов в app_state
+ * (AppStateRepo.markHistoryIncomplete, как у бота): пока он стоит, этап 8 не выключает TEST_MODE.
+ */
+export interface ProbeStore extends ProbeChatStore {
+  readonly appState: Pick<AppStateRepo, 'markHistoryIncomplete'>;
+}
+
 export interface ProbeDeps {
   /** WHATSAPP_SESSION_DIR: та же сессия, что у бота. Её не создают и не меняют, кроме обычного сохранения сессии. */
   readonly sessionDir: string;
@@ -94,10 +113,10 @@ export interface ProbeDeps {
   /** Замок процесса бота (data/process.lock). null: замок занят, бот запущен. */
   readonly acquireLock: () => ProcessLock | null;
   /**
-   * База бота для known_chats; вызывается под замком, после проверки сессии и до подключения. null: базы нет.
-   * Исключение: база не открылась. В обоих случаях проба к WhatsApp не подключается.
+   * База бота для known_chats и флага неполного списка чатов; вызывается под замком, после проверки сессии и до
+   * подключения. null: базы нет. Исключение: база не открылась. В обоих случаях проба к WhatsApp не подключается.
    */
-  readonly openChatStore: () => ProbeChatStore | null;
+  readonly openChatStore: () => ProbeStore | null;
   readonly out: ProbeOutput;
   /** По умолчанию PROBE_TIMEOUT_MS. */
   readonly timeoutMs?: number;
@@ -120,11 +139,22 @@ type ProbeResult =
   | { readonly kind: 'qr' }
   | { readonly kind: 'closed'; readonly code: number | undefined };
 
-/** Итог закрытия: записи сессии (saved: все удались; timedOut: не закончились за срок закрытия) и чаты. */
-interface ProbeClosing {
+/** Сокет закрыт: записи сессии (saved: все удались; timedOut: не закончились за срок закрытия) и чаты. */
+interface ClosedLink {
   readonly saved: boolean;
   readonly timedOut: boolean;
   readonly chats: ProbeChatsSummary;
+}
+
+/** Флаг неполного списка чатов: не нужен (все чаты записаны), поставлен или не записался. */
+type IncompleteFlag =
+  | { readonly kind: 'not_needed' }
+  | { readonly kind: 'set' }
+  | { readonly kind: 'failed'; readonly errorName: string };
+
+/** Итог закрытия: сокет, записи сессии и чатов и флаг неполного списка чатов. */
+interface ProbeClosing extends ClosedLink {
+  readonly flag: IncompleteFlag;
 }
 
 /** Сессия пробы: итог, который не отклоняется, и закрытие. */
@@ -179,7 +209,7 @@ async function linkedAuth(deps: ProbeDeps): Promise<LoadedAuthState | null> {
 }
 
 /** База для known_chats или причина отказа для stderr (текст ошибки не печатается: в нём бывают пути). */
-function openStore(deps: ProbeDeps): ProbeChatStore | string {
+function openStore(deps: ProbeDeps): ProbeStore | string {
   try {
     return deps.openChatStore() ?? MESSAGES.noDatabase;
   } catch (error: unknown) {
@@ -187,7 +217,28 @@ function openStore(deps: ProbeDeps): ProbeChatStore | string {
   }
 }
 
-function closeStore(store: ProbeChatStore, logger: Logger): void {
+/**
+ * Не все чаты пробы попали в known_chats: флаг неполного списка в app_state, как ставит бот при сбое записи первой
+ * синхронизации (whatsapp/message-intake.ts). Пока он стоит, этап 8 не выключает TEST_MODE. Сбой записи флага: в лог
+ * имя ошибки, итог failed.
+ */
+function flagIncomplete(
+  deps: ProbeDeps,
+  store: ProbeStore,
+  chats: ProbeChatsSummary,
+): IncompleteFlag {
+  if (chats.complete) return { kind: 'not_needed' };
+  try {
+    store.appState.markHistoryIncomplete(deps.clock.now());
+    return { kind: 'set' };
+  } catch (error: unknown) {
+    const errorName = errorNameOf(error);
+    deps.logger.error({ errorName }, 'Проба не поставила флаг неполного списка чатов');
+    return { kind: 'failed', errorName };
+  }
+}
+
+function closeStore(store: ProbeStore, logger: Logger): void {
   try {
     store.close();
   } catch (error: unknown) {
@@ -268,7 +319,7 @@ async function closeLink(
   link: ProbeLink,
   writes: ProbeAuthWrites,
   logger: Logger,
-): Promise<ProbeClosing> {
+): Promise<ClosedLink> {
   flushEvents(link.sock, logger);
   await link.chats.idle();
   await endSocket(link.sock, logger);
@@ -279,16 +330,41 @@ async function closeLink(
 }
 
 /**
+ * Закрытие сокета в пределах PROBE_CLOSE_TIMEOUT_MS. Не успело: сессия считается не сохранённой, чаты в очереди не
+ * записанными, а сокет, до end которого закрытие не дошло, закрывается без ожидания: дальше выход процесса.
+ */
+async function closeWithin(
+  deps: ProbeDeps,
+  writes: ProbeAuthWrites,
+  link: ProbeLink | null,
+): Promise<ClosedLink> {
+  // Сокета нет: нет и записей сессии, Baileys пишет её только через сокет.
+  if (link === null) return { saved: await writes.settled(), timedOut: false, chats: NO_CHATS };
+  const finished = await withDeadline(deps.clock, PROBE_CLOSE_TIMEOUT_MS, () =>
+    closeLink(link, writes, deps.logger),
+  );
+  if (finished !== TIMED_OUT) return finished;
+  link.chats.stop();
+  void endSocket(link.sock, deps.logger);
+  deps.logger.error(
+    { timeoutMs: PROBE_CLOSE_TIMEOUT_MS },
+    'Проба не дождалась записи сессии и чатов',
+  );
+  // Чаты, которые ещё в очереди, итог чатов сам считает незаписанными.
+  return { saved: false, timedOut: true, chats: link.chats.summary() };
+}
+
+/**
  * Версия WhatsApp Web, сокет с настройками бота (buildSocketConfig: не онлайн при подключении, без полной истории,
  * сессия из папки, ключи с учётом записей) и ожидание решающего события. Всё внутри общего срока: close() вызывается
- * и после срока, а сокет, который ещё не создан, уже не создаётся. Закрытие ограничено PROBE_CLOSE_TIMEOUT_MS: не
- * успело, значит сессия считается не сохранённой, а чаты в очереди не записанными.
+ * и после срока, а сокет, который ещё не создан, уже не создаётся. Закрытие (closeWithin) ограничено
+ * PROBE_CLOSE_TIMEOUT_MS; после него, и в ветке срока тоже, неполный список чатов отмечается флагом в базе.
  */
 function openProbeSession(
   deps: ProbeDeps,
   auth: LoadedAuthState,
   phone: PhoneDigits,
-  store: ProbeChatStore,
+  store: ProbeStore,
 ): ProbeSession {
   const writes = trackAuthWrites(auth, deps.logger);
   let link: ProbeLink | null = null;
@@ -311,23 +387,9 @@ function openProbeSession(
   })();
   const shutdown = async (): Promise<ProbeClosing> => {
     closing = true;
-    const current = link;
-    // Сокета нет: нет и записей сессии, Baileys пишет её только через сокет.
-    if (current === null)
-      return { saved: await writes.settled(), timedOut: false, chats: NO_CHATS };
-    const finished = await withDeadline(deps.clock, PROBE_CLOSE_TIMEOUT_MS, () =>
-      closeLink(current, writes, deps.logger),
-    );
-    if (finished !== TIMED_OUT) return finished;
-    current.chats.stop();
-    // Сокет, до end которого закрытие не дошло, закрывается без ожидания: дальше выход процесса.
-    void endSocket(current.sock, deps.logger);
-    deps.logger.error(
-      { timeoutMs: PROBE_CLOSE_TIMEOUT_MS },
-      'Проба не дождалась записи сессии и чатов',
-    );
-    // Чаты, которые ещё в очереди, итог чатов сам считает незаписанными.
-    return { saved: false, timedOut: true, chats: current.chats.summary() };
+    const closed = await closeWithin(deps, writes, link);
+    // Один раз на любом пути и до закрытия базы: её закрывает runLocked после сессии.
+    return { ...closed, flag: flagIncomplete(deps, store, closed.chats) };
   };
   let closed: Promise<ProbeClosing> | null = null;
   return { result, close: () => (closed ??= shutdown()) };
@@ -370,11 +432,19 @@ function receivedMessage(chats: ProbeChatsSummary): string {
   return chats.complete ? `${head}; чаты записаны для этапа 8` : head;
 }
 
-/** Сообщения и чаты пробы в stderr; true, если все чаты записаны. */
-function reportChats(deps: ProbeDeps, chats: ProbeChatsSummary): boolean {
+/** Флаг неполного списка чатов в stderr: одна строка, что он поставлен и что это значит, или что он не записался. */
+function reportFlag(deps: ProbeDeps, flag: IncompleteFlag): void {
+  if (flag.kind === 'set') deps.out.stderr(`${MESSAGES.flagSet}\n`);
+  if (flag.kind === 'failed') deps.out.stderr(`${flagFailedMessage(flag.errorName)}\n`);
+}
+
+/** Сообщения, чаты пробы и флаг неполного списка в stderr; true, если все чаты записаны (флаг тогда не нужен). */
+function reportChats(deps: ProbeDeps, closing: ProbeClosing): boolean {
+  const { chats } = closing;
   if (chats.messages > 0) deps.out.stderr(`${receivedMessage(chats)}\n`);
   if (!chats.complete) deps.out.stderr(`${MESSAGES.chatsIncomplete}\n`);
-  return chats.complete;
+  reportFlag(deps, closing.flag);
+  return chats.complete && closing.flag.kind !== 'failed';
 }
 
 /** Итог пробы: у удачной JSON в stdout и 0, иначе причина в stderr и 1. */
@@ -397,7 +467,10 @@ function outcomeCode(
   }
 }
 
-/** Печать итога и код выхода: 0 только при удачной пробе, сохранённой сессии и записанных чатах. */
+/**
+ * Печать итога и код выхода: 0 только при удачной пробе, сохранённой сессии и записанных чатах. Не все чаты
+ * записаны (флаг поставлен или не записался): выход 1.
+ */
 function finish(
   deps: ProbeDeps,
   outcome: ProbeResult | typeof TIMED_OUT,
@@ -405,7 +478,7 @@ function finish(
 ): number {
   const code = outcomeCode(deps, outcome, closing.chats.messages);
   const saved = reportSession(deps, closing);
-  const chatsSaved = reportChats(deps, closing.chats);
+  const chatsSaved = reportChats(deps, closing);
   return code === 0 && saved && chatsSaved ? 0 : 1;
 }
 
@@ -413,7 +486,7 @@ async function runSession(
   phone: PhoneDigits,
   deps: ProbeDeps,
   auth: LoadedAuthState,
-  store: ProbeChatStore,
+  store: ProbeStore,
 ): Promise<number> {
   const session = openProbeSession(deps, auth, phone, store);
   try {
@@ -447,9 +520,10 @@ function timeoutOf(deps: ProbeDeps): number {
  * достанутся пробе, пишутся в known_chats, как у бота. qr или закрытие до open: выход 1 без повторов и
  * переподключений. open: getBusinessProfile по номеру, затем по LID из lidMapping.getLIDForPN (если WhatsApp его
  * знает). Потом выдача накопленных событий, end без logout, ожидание записей сессии (creds и ключи) и чатов в пределах
- * PROBE_CLOSE_TIMEOUT_MS, закрытие базы и снятие замка. Общий срок 60 с. В stdout одна строка JSON (признаки полей и
- * число сообщений, без номера, JID и значений), в stderr причины и, если пробе пришли сообщения, их число. Привязку
- * по QR не считает и не начинает. Возвращает код выхода.
+ * PROBE_CLOSE_TIMEOUT_MS; не все чаты записаны (сбой или срок закрытия): флаг неполного списка в app_state, как у
+ * бота, чтобы этап 8 не выключил TEST_MODE. Затем закрытие базы и снятие замка. Общий срок 60 с. В stdout одна строка
+ * JSON (признаки полей и число сообщений, без номера, JID и значений), в stderr причины, число сообщений, если они
+ * пришли пробе, и строка о флаге. Привязку по QR не считает и не начинает. Возвращает код выхода.
  */
 export async function runBusinessProbe(args: readonly string[], deps: ProbeDeps): Promise<number> {
   const phone = parseProbeNumber(args);

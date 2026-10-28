@@ -8,6 +8,7 @@ import { readModelsJson } from './config/models-file.js';
 import { createUnitOfWork, openDatabase } from './db/connection.js';
 import { runMigrations } from './db/migrations.js';
 import { acquireProcessLock, ProcessLockBusyError } from './db/process-lock.js';
+import { createAppStateRepo } from './db/repos/app-state.js';
 import { createKnownChatsRepo } from './db/repos/known-chats.js';
 import type { ProcessLock } from './domain/ports.js';
 import { createSystemClock } from './shared/clock.js';
@@ -18,8 +19,8 @@ import {
   PROBE_TIMEOUT_MS,
   PROBE_USAGE,
   runBusinessProbe,
+  type ProbeStore,
 } from './whatsapp/probe.js';
-import type { ProbeChatStore } from './whatsapp/probe-chats.js';
 
 // Вторая точка входа: проба бизнес-профиля, `npm run probe:business -- <номер>`. Один запуск по разрешению владельца.
 // Проба подключается сессией бота, и офлайн-очередь сообщений достаётся ей, а не боту: чаты из неё проба пишет
@@ -94,12 +95,13 @@ function settingsOf(options: ProbeCliOptions): ProbeSettings {
 }
 
 /**
- * База бота для known_chats пробы: тем же способом, что в main.ts (openDatabase и миграции runMigrations), но только
- * репозиторий known_chats. Файла базы нет: null, проба не подключается (с привязанной сессией база у бота уже есть;
- * пустая новая база боту не поможет). Миграции те же, что бот применит при следующем запуске: одной транзакцией;
- * схема новее кода: ошибка, проба не подключается. Сбой открытия закрывает базу до выхода ошибки.
+ * База бота для пробы: тем же способом, что в main.ts (openDatabase и миграции runMigrations), но только два
+ * репозитория: known_chats и app_state (флаг неполного списка чатов). Файла базы нет: null, проба не подключается
+ * (с привязанной сессией база у бота уже есть; пустая новая база боту не поможет). Миграции те же, что бот применит
+ * при следующем запуске: одной транзакцией; схема новее кода: ошибка, проба не подключается. Сбой открытия закрывает
+ * базу до выхода ошибки.
  */
-export function openProbeChatStore(databasePath: string): ProbeChatStore | null {
+export function openProbeChatStore(databasePath: string): ProbeStore | null {
   if (!existsSync(databasePath)) return null;
   const db = openDatabase(databasePath);
   try {
@@ -107,6 +109,7 @@ export function openProbeChatStore(databasePath: string): ProbeChatStore | null 
     return {
       knownChats: createKnownChatsRepo(db),
       unitOfWork: createUnitOfWork(db),
+      appState: createAppStateRepo(db),
       close: () => {
         db.close();
       },
@@ -120,8 +123,8 @@ export function openProbeChatStore(databasePath: string): ProbeChatStore | null 
 /**
  * Проба из командной строки: неверный номер => подсказка и код 1 до чтения .env, замка и сессии; настройки не прошли
  * проверку => их список (formatFatalError, как у бота) и код 1; WA_ENABLED=false => отказ и код 1 до замка и сессии;
- * дальше runBusinessProbe с замком бота, базой бота для known_chats (открывается под замком), системными часами и
- * логом в stderr. Возвращает код выхода.
+ * дальше runBusinessProbe с замком бота, базой бота для known_chats и флага неполного списка чатов (открывается под
+ * замком), системными часами и логом в stderr. Возвращает код выхода.
  */
 export async function runProbeCli(options: ProbeCliOptions): Promise<number> {
   if (parseProbeNumber(options.args) === null) {

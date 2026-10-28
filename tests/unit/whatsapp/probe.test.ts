@@ -22,8 +22,8 @@ import {
   runBusinessProbe,
   type ProbeDeps,
   type ProbeSocket,
+  type ProbeStore,
 } from '../../../src/whatsapp/probe.js';
-import type { ProbeChatStore } from '../../../src/whatsapp/probe-chats.js';
 import { VERSION_FETCH_TIMEOUT_MS } from '../../../src/whatsapp/socket-config.js';
 import { createFakeLogger, type LogEntry } from '../../helpers/fake-logger.js';
 
@@ -42,6 +42,15 @@ const MESSAGE_QR = 'WhatsApp запросил QR: проба прекращен�
 const MESSAGE_CHATS_INCOMPLETE =
   'Не все чаты из пробы записаны в known_chats: перед этапом 8 сверьте чаты с перепиской в телефоне';
 const MESSAGE_CREDS = /Сессия WhatsApp не сохранилась/;
+const MESSAGE_FLAG_SET =
+  'В базе бота поставлен флаг «список чатов неполный»: этап 8 не выключит TEST_MODE, ' +
+  'пока вы с разработчиком не сверите чаты и не снимете флаг';
+const MESSAGE_FLAG_FAILED =
+  'Флаг «список чатов неполный» в базу не записан (ошибка Error): этап 8 о неполном списке ' +
+  'не узнает, сообщите разработчику до выключения TEST_MODE';
+
+/** Время часов пробы: им помечается флаг неполного списка чатов. */
+const NOW_MS = 1_790_000_500_000;
 
 /** Строка о сообщениях, доставшихся пробе. */
 function receivedLine(count: number, saved = true): string {
@@ -92,14 +101,14 @@ interface Pause {
   readonly resolve: () => void;
 }
 
-/** Часы без настоящего времени: паузы заканчиваются только по expire или по сигналу отмены. */
-function createManualClock(): ManualClock {
+/** Часы без настоящего времени: now всегда nowMs, паузы заканчиваются только по expire или по сигналу отмены. */
+function createManualClock(nowMs: number): ManualClock {
   const pauses: Pause[] = [];
   const waiters: { readonly ms: number; readonly resolve: () => void }[] = [];
   const firstPending = (ms: number): Pause | undefined =>
     pauses.find((pause) => pause.ms === ms && !pause.settled);
   const clock: Clock = {
-    now: () => 0,
+    now: () => nowMs,
     sleep: (ms, signal) =>
       new Promise<void>((resolve, reject) => {
         const pause: Pause = { ms, settled: false, resolve };
@@ -250,9 +259,11 @@ interface Harness {
   readonly deps: ProbeDeps;
   /** Что проба записала в known_chats. */
   readonly touches: StoredTouch[];
-  readonly openChatStore: Mock<() => ProbeChatStore | null>;
+  readonly openChatStore: Mock<() => ProbeStore | null>;
   readonly storeRun: Mock<(work: () => unknown) => unknown>;
   readonly storeClose: Mock<() => void>;
+  /** Флаг неполного списка чатов в app_state. */
+  readonly markIncomplete: Mock<(atMs: number) => void>;
   readonly keysSet: Mock<SignalKeyStore['set']>;
   readonly calls: string[];
   readonly stdout: string[];
@@ -280,6 +291,8 @@ interface SetupOptions extends SocketOptions {
   /** База бота: нет файла (null) или сбой открытия. */
   readonly storeMissing?: boolean;
   readonly storeFails?: boolean;
+  /** Запись флага неполного списка чатов падает. */
+  readonly flagFails?: boolean;
   readonly locked?: boolean;
   readonly sessionExists?: boolean;
   /** Настоящий useMultiFileAuthState (по умолчанию в пробе) вместо подделки: только чтение временной папки. */
@@ -296,7 +309,7 @@ function setup(options: SetupOptions = {}): Harness {
   const stdout: string[] = [];
   const stderr: string[] = [];
   const logs: LogEntry[] = [];
-  const manual = createManualClock();
+  const manual = createManualClock(NOW_MS);
   const sockets: FakeProbeSocket[] = [];
   let socketCreated: (fake: FakeProbeSocket) => void = () => undefined;
   const firstSocket = new Promise<FakeProbeSocket>((resolve) => {
@@ -316,7 +329,11 @@ function setup(options: SetupOptions = {}): Harness {
   const storeClose = vi.fn((): void => {
     calls.push('db-close');
   });
-  const store: ProbeChatStore = {
+  const markIncomplete = vi.fn((_atMs: number): void => {
+    calls.push('flag');
+    if (options.flagFails === true) throw new Error(`SQLITE_READONLY ${root}`);
+  });
+  const store: ProbeStore = {
     knownChats: {
       touch: (jid, atMs, source) => {
         touches.push({ jid, atMs, source });
@@ -324,9 +341,10 @@ function setup(options: SetupOptions = {}): Harness {
       count: () => touches.length,
     },
     unitOfWork: { run: <T>(work: () => T): T => storeRun(work) as T },
+    appState: { markHistoryIncomplete: markIncomplete },
     close: storeClose,
   };
-  const openChatStore = vi.fn((): ProbeChatStore | null => {
+  const openChatStore = vi.fn((): ProbeStore | null => {
     calls.push('db');
     if (options.storeFails === true) throw new Error(`SQLITE_CANTOPEN ${root}`);
     return options.storeMissing === true ? null : store;
@@ -395,6 +413,7 @@ function setup(options: SetupOptions = {}): Harness {
     openChatStore,
     storeRun,
     storeClose,
+    markIncomplete,
     keysSet,
     calls,
     stdout,
@@ -1249,6 +1268,7 @@ describe('whatsapp/probe runBusinessProbe: сообщения, доставши�
     ]);
     expect(reportOf(h)['receivedMessages']).toBe(2);
     expect(h.stderr).toEqual([receivedLine(2)]);
+    expect(h.markIncomplete).not.toHaveBeenCalled();
   });
 
   it('сообщения во время запросов и чаты синхронизации тоже записываются', async () => {
@@ -1329,7 +1349,7 @@ describe('whatsapp/probe runBusinessProbe: сообщения, доставши�
     });
   });
 
-  it('запись чатов упала: JSON есть, но выход 1, строка без «чаты записаны» и строка о неполных чатах', async () => {
+  it('запись чатов упала: JSON есть, но выход 1, строка без «чаты записаны», строка о неполных чатах и о флаге', async () => {
     const h = setup({ profiles: {}, lid: null });
     h.storeRun.mockImplementation(() => {
       throw new Error('SQLITE_FULL');
@@ -1343,7 +1363,11 @@ describe('whatsapp/probe runBusinessProbe: сообщения, доставши�
 
     expect(code).toBe(1);
     expect(reportOf(h)['receivedMessages']).toBe(1);
-    expect(h.stderr).toEqual([receivedLine(1, false), `${MESSAGE_CHATS_INCOMPLETE}\n`]);
+    expect(h.stderr).toEqual([
+      receivedLine(1, false),
+      `${MESSAGE_CHATS_INCOMPLETE}\n`,
+      `${MESSAGE_FLAG_SET}\n`,
+    ]);
   });
 
   it('срок пробы вышел после сообщений: JSON нет, но число сообщений в stderr', async () => {
@@ -1440,6 +1464,8 @@ describe('whatsapp/probe runBusinessProbe: запись сессии при за
     expect(h.stderr).toEqual([
       'Запись сессии WhatsApp и чатов не закончилась за 20 с: сессия могла сохраниться не полностью\n',
     ]);
+    // Чатов не было: срок вышел только у записи сессии, список чатов полон и флаг не нужен.
+    expect(h.markIncomplete).not.toHaveBeenCalled();
     expect(h.logs).toContainEqual({
       level: 'error',
       context: { timeoutMs: PROBE_CLOSE_TIMEOUT_MS },
@@ -1465,5 +1491,117 @@ describe('whatsapp/probe runBusinessProbe: запись сессии при за
     expect(fake.end).toHaveBeenCalledExactlyOnceWith(undefined);
     expect(fake.logout).not.toHaveBeenCalled();
     expect(h.calls.slice(-2)).toEqual(['db-close', 'release']);
+  });
+});
+
+describe('whatsapp/probe runBusinessProbe: флаг неполного списка чатов для этапа 8', () => {
+  it('запись чатов упала: флаг с моментом по часам пробы ставится один раз, после end и до закрытия базы', async () => {
+    const h = setup({ profiles: {}, lid: null });
+    h.storeRun.mockImplementation(() => {
+      throw new Error('SQLITE_FULL');
+    });
+    const running = h.run();
+    const fake = await h.socketReady();
+
+    fake.emit(offlineQueue([clientMessage(), clientMessage(CLIENT_LID, 'B2')]));
+    fake.emit({ 'connection.update': { connection: 'open' } });
+    const code = await running;
+
+    expect(code).toBe(1);
+    expect(h.markIncomplete).toHaveBeenCalledExactlyOnceWith(NOW_MS);
+    expect(h.calls.indexOf('end')).toBeLessThan(h.calls.indexOf('flag'));
+    expect(h.calls.slice(-3)).toEqual(['flag', 'db-close', 'release']);
+    expect(h.stderr.filter((line) => line === `${MESSAGE_FLAG_SET}\n`)).toHaveLength(1);
+  });
+
+  it('срок закрытия истёк до записи очереди: флаг ставится и в этой ветке, до закрытия базы', async () => {
+    const h = setup({ profiles: {}, lid: null, pnHangs: true });
+    const running = h.run();
+    const fake = await h.socketReady();
+
+    fake.emit(offlineQueue([clientMessage(CLIENT_LID)]));
+    fake.emit({ 'connection.update': { connection: 'open' } });
+    await h.clock.sleeping(PROBE_CLOSE_TIMEOUT_MS);
+    expect(h.markIncomplete).not.toHaveBeenCalled();
+    h.clock.expire(PROBE_CLOSE_TIMEOUT_MS);
+    const code = await running;
+
+    expect(code).toBe(1);
+    expect(h.touches).toEqual([]);
+    expect(h.markIncomplete).toHaveBeenCalledExactlyOnceWith(NOW_MS);
+    expect(h.calls.slice(-3)).toEqual(['flag', 'db-close', 'release']);
+    expect(h.stderr).toContain(`${MESSAGE_FLAG_SET}\n`);
+  });
+
+  it('срок пробы вышел, а чаты не записались: флаг всё равно ставится', async () => {
+    const h = setup({ lid: null });
+    h.storeRun.mockImplementation(() => {
+      throw new Error('SQLITE_BUSY');
+    });
+    const running = h.run();
+    const fake = await h.socketReady();
+
+    fake.emit(offlineQueue([clientMessage()]));
+    h.clock.expire(PROBE_TIMEOUT_MS);
+    const code = await running;
+
+    expect(code).toBe(1);
+    expect(h.stderr.join('')).toMatch(/не уложилась в 60 с/);
+    expect(h.markIncomplete).toHaveBeenCalledExactlyOnceWith(NOW_MS);
+    expect(h.stderr).toContain(`${MESSAGE_FLAG_SET}\n`);
+  });
+
+  it('флаг не записался: строка в stderr без текста ошибки, в лог имя ошибки, выход 1, база закрыта, замок снят', async () => {
+    const h = setup({ profiles: {}, lid: null, flagFails: true });
+    h.storeRun.mockImplementation(() => {
+      throw new Error('SQLITE_FULL');
+    });
+    const running = h.run();
+    const fake = await h.socketReady();
+
+    fake.emit(offlineQueue([clientMessage()]));
+    fake.emit({ 'connection.update': { connection: 'open' } });
+    const code = await running;
+
+    expect(code).toBe(1);
+    expect(h.stderr).toEqual([
+      receivedLine(1, false),
+      `${MESSAGE_CHATS_INCOMPLETE}\n`,
+      `${MESSAGE_FLAG_FAILED}\n`,
+    ]);
+    expect(h.stderr.join('')).not.toContain(root);
+    expect(h.stderr.join('')).not.toContain('SQLITE_READONLY');
+    expect(h.logs).toContainEqual({
+      level: 'error',
+      context: { errorName: 'Error' },
+      message: 'Проба не поставила флаг неполного списка чатов',
+    });
+    expect(h.calls.slice(-3)).toEqual(['flag', 'db-close', 'release']);
+  });
+
+  it('все чаты записаны (сообщения и синхронизация) или чатов нет: флаг не ставится', async () => {
+    const written = setup({ profiles: {}, lid: null });
+    const refused = setup();
+    const running = written.run();
+    const fake = await written.socketReady();
+    fake.emit({
+      ...offlineQueue([clientMessage()]),
+      'messaging-history.set': {
+        chats: [{ id: CLIENT_LID, conversationTimestamp: MESSAGE_SECONDS }],
+        contacts: [],
+        messages: [],
+        syncType: proto.HistorySync.HistorySyncType.RECENT,
+      },
+    });
+    fake.emit({ 'connection.update': { connection: 'open' } });
+    const refusedRun = refused.run();
+    const refusedSocket = await refused.socketReady();
+    refusedSocket.emit({ 'connection.update': { qr: '2@ref' } });
+
+    expect([await running, await refusedRun]).toEqual([0, 1]);
+    expect(written.touches).toHaveLength(2);
+    expect(written.markIncomplete).not.toHaveBeenCalled();
+    expect(refused.markIncomplete).not.toHaveBeenCalled();
+    expect(written.stderr.join('') + refused.stderr.join('')).not.toContain('флаг');
   });
 });

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase } from '../../src/db/connection.js';
 import { runMigrations } from '../../src/db/migrations.js';
 import { acquireProcessLock } from '../../src/db/process-lock.js';
+import { createAppStateRepo } from '../../src/db/repos/app-state.js';
 import type { Jid } from '../../src/domain/types.js';
 import { openProbeChatStore, runProbeCli, type ProbeCliOptions } from '../../src/probe-cli.js';
 import { PROBE_USAGE } from '../../src/whatsapp/probe.js';
@@ -121,7 +122,7 @@ describe('probe-cli runProbeCli', () => {
   });
 });
 
-describe('probe-cli openProbeChatStore: база бота для known_chats', () => {
+describe('probe-cli openProbeChatStore: база бота для known_chats и флага неполного списка', () => {
   const JID = '77000000001@s.whatsapp.net' as Jid;
 
   function latestVersion(): number {
@@ -167,6 +168,25 @@ describe('probe-cli openProbeChatStore: база бота для known_chats', (
     expect(count).toBe(1);
     expect(versionOf(path)).toBe(latestVersion());
     // На Windows открытый файл не удалить: удаление проверяет, что база закрыта.
+    rmSync(path);
+  });
+
+  it('флаг неполного списка чатов пишется в app_state базы бота: бот его увидит, повтор момент не сдвигает', () => {
+    const path = join(root, 'tanbala.db');
+    const existing = openDatabase(path);
+    runMigrations(existing);
+    existing.close();
+
+    const store = openProbeChatStore(path);
+    store?.appState.markHistoryIncomplete(5000);
+    store?.appState.markHistoryIncomplete(9000);
+    store?.close();
+    const db = openDatabase(path);
+    const flaggedAt = createAppStateRepo(db).getHistoryIncomplete();
+    db.close();
+
+    expect(store).not.toBeNull();
+    expect(flaggedAt).toBe(5000);
     rmSync(path);
   });
 
