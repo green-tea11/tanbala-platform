@@ -18,12 +18,31 @@ export type ReplyScript =
       readonly companyQuestion?: 'none' | 'confirm' | 'name';
     };
 
+/** Ответ оценки интереса: уровень и то, что клиент сказал о своей компании (поля схемы оценки). */
+export interface InterestScript {
+  /** По умолчанию LlmScript.level, без него холодный. */
+  readonly level?: InterestLevel;
+  /** Название компании со слов клиента; по умолчанию null. */
+  readonly companyName?: string | null;
+  /** Город компании со слов клиента; по умолчанию null. */
+  readonly companyCity?: string | null;
+  /** Ответ на вопрос «Вы из компании X?»; по умолчанию none. */
+  readonly companyAnswer?: 'yes' | 'no' | 'none';
+  /** Боли, с которыми клиент согласился; по умолчанию пусто. */
+  readonly confirmedPains?: readonly string[];
+}
+
 /** Что отвечает поддельная модель. */
 export interface LlmScript {
   /** Ответы на вызов ответа: на каждый вызов следующий, последний повторяется. */
   readonly replies: readonly [ReplyScript, ...ReplyScript[]];
   /** Уровень интереса в оценке; по умолчанию холодный. */
   readonly level?: InterestLevel;
+  /**
+   * Ответы оценки интереса: на каждый вызов следующий, последний повторяется. По умолчанию уровень level и ничего
+   * о компании.
+   */
+  readonly interests?: readonly [InterestScript, ...InterestScript[]];
   /** Замечания проверки черновика; по умолчанию их нет и проверка пройдена. */
   readonly problems?: readonly string[];
 }
@@ -42,9 +61,9 @@ export interface ScriptedLlm {
   readonly purposes: () => LlmPurpose[];
 }
 
-function rawInterest(level: InterestLevel): unknown {
+function rawInterest(level: InterestLevel, interest: InterestScript = {}): unknown {
   return {
-    level,
+    level: interest.level ?? level,
     business: null,
     area: null,
     scope: null,
@@ -53,11 +72,16 @@ function rawInterest(level: InterestLevel): unknown {
     problem: null,
     specifics: null,
     reason: 'по разговору',
-    companyName: null,
-    companyCity: null,
-    companyAnswer: 'none',
-    confirmedPains: [],
+    companyName: interest.companyName ?? null,
+    companyCity: interest.companyCity ?? null,
+    companyAnswer: interest.companyAnswer ?? 'none',
+    confirmedPains: interest.confirmedPains ?? [],
   };
+}
+
+/** Элемент сценария для очередного вызова: следующий по счёту, последний повторяется; списка нет => undefined. */
+function nth<T>(items: readonly T[] | undefined, calls: number): T | undefined {
+  return items === undefined ? undefined : items[Math.min(calls, items.length - 1)];
 }
 
 function rawReply(script: ReplyScript): unknown {
@@ -75,10 +99,11 @@ function rawReply(script: ReplyScript): unknown {
 export function scriptedLlm(script: LlmScript): ScriptedLlm {
   const requests: RecordedRequest[] = [];
   let replyCalls = 0;
+  let interestCalls = 0;
   const rawAnswer = (purpose: LlmPurpose): unknown => {
     switch (purpose) {
       case 'reply': {
-        const reply = script.replies[Math.min(replyCalls, script.replies.length - 1)];
+        const reply = nth(script.replies, replyCalls);
         replyCalls += 1;
         if (reply === undefined) throw new Error('В сценарии нет ответа модели');
         return rawReply(reply);
@@ -87,8 +112,11 @@ export function scriptedLlm(script: LlmScript): ScriptedLlm {
         const problems = script.problems ?? [];
         return { ok: problems.length === 0, problems };
       }
-      case 'interest':
-        return rawInterest(script.level ?? 'cold');
+      case 'interest': {
+        const interest = nth(script.interests, interestCalls);
+        interestCalls += 1;
+        return rawInterest(script.level ?? 'cold', interest);
+      }
       case 'logo':
         return { companyName: null };
     }
