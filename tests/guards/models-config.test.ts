@@ -6,21 +6,28 @@ const config = JSON.parse(
 ) as Record<string, unknown>;
 
 describe('config/models.json', () => {
-  it('задаёт модели для трёх вызовов Claude и для расшифровки голосовых', () => {
-    expect(Object.keys(config).sort()).toEqual(['interest', 'reply', 'review', 'transcribe']);
+  it('задаёт модели для четырёх вызовов Claude и для расшифровки голосовых', () => {
+    expect(Object.keys(config).sort()).toEqual([
+      'interest',
+      'logo',
+      'reply',
+      'review',
+      'transcribe',
+    ]);
   });
 
-  it.each(['reply', 'review', 'interest'])(
+  it.each(['reply', 'review', 'interest', 'logo'])(
     'модель для вызова %s похожа на ID Claude',
     (purpose) => {
       expect(config[purpose]).toMatch(/^claude-[a-z0-9-]+$/);
     },
   );
 
-  it('ответ и решение о передаче на Sonnet, проверка и оценка интереса на Haiku (решение владельца)', () => {
+  it('ответ и решение о передаче на Sonnet, проверка, оценка интереса и логотип на Haiku (решение владельца)', () => {
     expect(config.reply).toBe('claude-sonnet-5-5');
     expect(config.review).toBe('claude-haiku-5-5');
     expect(config.interest).toBe('claude-haiku-5-5');
+    expect(config.logo).toBe('claude-haiku-5-5');
   });
 
   it('модель расшифровки задана в формате OpenRouter «провайдер/модель»', () => {

@@ -253,6 +253,7 @@ describe('createAgent: модели из config/models.json', () => {
     reply: file['reply'] ?? '',
     review: file['review'] ?? '',
     interest: file['interest'] ?? '',
+    logo: file['logo'] ?? '',
   };
 
   it('каждый вызов берёт свою модель из конфига: ответ на Sonnet, проверка и оценка на Haiku', async () => {

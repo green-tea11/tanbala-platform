@@ -6,7 +6,7 @@ import { ConfigError } from './errors.js';
 /** Переменные окружения: имя и значение. */
 export type EnvVars = Readonly<Record<string, string | undefined>>;
 
-/** ID моделей для трёх вызовов LLM. Источник: config/models.json, меняется без правки кода. */
+/** ID моделей Claude по видам вызова. Источник: config/models.json, меняется без правки кода. */
 export type ModelsConfig = Readonly<Record<LlmPurpose, string>>;
 
 /** Расшифровка голосовых через OpenRouter. */
@@ -123,7 +123,7 @@ const PROBLEMS = {
   panelHosts: 'домены через запятую вида panel.example.kz или panel.example.kz:8443',
   model: 'нужен ID модели Claude вида claude-...',
   transcribeModel: 'нужен ID модели OpenRouter без пробелов, например elevenlabs/scribe-v2',
-  modelsShape: 'нужен объект с полями reply, review, interest, transcribe',
+  modelsShape: 'нужен объект с полями reply, review, interest, logo, transcribe',
   customHeaders:
     'уберите переменную из окружения: SDK Anthropic подмешивает эти заголовки к запросам и может подменить ключ',
 } as const;
@@ -280,6 +280,7 @@ const modelsSchema = z.object(
     reply: claudeModelId,
     review: claudeModelId,
     interest: claudeModelId,
+    logo: claudeModelId,
     transcribe: transcribeModelId,
   },
   { error: PROBLEMS.modelsShape },

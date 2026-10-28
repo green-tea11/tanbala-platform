@@ -58,6 +58,7 @@ const EFFORT: Readonly<Record<LlmPurpose, Effort>> = {
   reply: 'low',
   review: 'low',
   interest: 'low',
+  logo: 'low',
 };
 
 /** Логгер SDK вызывает warn(message, ...rest), а порт ждёт контекст объектом. rest (тела запросов и ответов) не пишется. */

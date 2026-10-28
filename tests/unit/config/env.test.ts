@@ -15,6 +15,7 @@ const CLAUDE_MODELS = {
   reply: 'claude-haiku-5-5',
   review: 'claude-haiku-5-5',
   interest: 'claude-haiku-5-5',
+  logo: 'claude-haiku-5-5',
 };
 const TRANSCRIBE_MODEL = 'elevenlabs/scribe-v2';
 const MODELS = { ...CLAUDE_MODELS, transcribe: TRANSCRIBE_MODEL };
@@ -374,6 +375,7 @@ describe('config/env loadConfig: config/models.json', () => {
       reply: 'claude-sonnet-5',
       review: 'claude-haiku-5-5',
       interest: 'claude-3-5-haiku-20241022',
+      logo: 'claude-haiku-5-5',
       transcribe: 'openai/whisper-large-v3:free',
       comment: 'черновик',
     };
@@ -384,6 +386,7 @@ describe('config/env loadConfig: config/models.json', () => {
       reply: 'claude-sonnet-5',
       review: 'claude-haiku-5-5',
       interest: 'claude-3-5-haiku-20241022',
+      logo: 'claude-haiku-5-5',
     });
     expect(config.voice?.model).toBe('openai/whisper-large-v3:free');
   });

@@ -30,6 +30,7 @@ const MODELS: ModelsConfig = {
   reply: MODELS_FILE['reply'] ?? '',
   review: MODELS_FILE['review'] ?? '',
   interest: MODELS_FILE['interest'] ?? '',
+  logo: MODELS_FILE['logo'] ?? '',
 };
 const EMPTY_PROFILE: ClientProfile = {
   business: null,

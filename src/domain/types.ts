@@ -1,6 +1,9 @@
 // Общий словарь проекта: только типы, без кода. Значения из docs/PLAN.md и knowledge/whatsapp.md.
 // Брендированные ID не дают перепутать числа и строки разного смысла. Приводить к ним можно только
 // на границе: в src/db (ID из базы), src/whatsapp/jid.ts (адреса и номера) и src/config (номер менеджера).
+// Компания клиента и её определение: domain/company.ts.
+
+import type { CompanyMention, CompanyQuestion } from './company.js';
 
 /** Внутренний ID чата в базе. */
 export type ChatId = number & { readonly __brand: 'ChatId' };
@@ -101,8 +104,11 @@ export type Author = 'client' | 'bot' | 'human_phone' | 'human_panel';
 /** Вид сообщения. Голосовое после расшифровки хранится как текст (этап 7). */
 export type MessageKind = 'text' | 'voice' | 'other';
 
-/** Отдельный вызов LLM из плана: ответ, проверка черновика, оценка интереса. Ключи config/models.json. */
-export type LlmPurpose = 'reply' | 'review' | 'interest';
+/**
+ * Отдельный вызов LLM: ответ, проверка черновика, оценка интереса и название компании с фото профиля (logo,
+ * шаг д определения компании). Ключи config/models.json.
+ */
+export type LlmPurpose = 'reply' | 'review' | 'interest' | 'logo';
 
 /**
  * Откуда исходящее сообщение. Нужен в outbound_ids, чтобы отличить эхо бота от человека.
@@ -169,6 +175,11 @@ export interface InboundMessage {
   readonly identity: ChatIdentity;
   /** Имя из профиля WhatsApp: недоверенный и изменчивый текст, в ключ чата не входит. */
   readonly pushName: string | null;
+  /**
+   * Подтверждённое имя бизнес-аккаунта (verifiedBizName): недоверенный текст, очищенный как pushName. Нет у
+   * обычных аккаунтов; поле может отсутствовать.
+   */
+  readonly verifiedName?: string | null;
   /** Текст клиента: недоверенные данные, не инструкции. */
   readonly content: MessageContent;
   /** Время сообщения, мс UTC. */
@@ -242,7 +253,12 @@ export type ReplyHandoffOutcome = Extract<HandoffReason, 'hot' | 'no_answer' | '
  * stopRequested только извинение.
  */
 export type ReplyDraft =
-  | { readonly outcome: 'answer'; readonly text: string }
+  | {
+      readonly outcome: 'answer';
+      readonly text: string;
+      /** О чём из компании спросил ответ (вопрос задаётся один раз); нет поля => ни о чём. */
+      readonly companyQuestion?: CompanyQuestion;
+    }
   | { readonly outcome: ReplyHandoffOutcome; readonly text: string }
   | { readonly outcome: Extract<HandoffReason, 'complaint'>; readonly stopRequested: boolean };
 
@@ -255,6 +271,8 @@ export interface InterestAssessment {
   readonly level: InterestLevel;
   readonly profile: ClientProfile;
   readonly reason: string;
+  /** Что клиент сказал о своей компании; нет поля => оценка о компании ничего не вернула. */
+  readonly company?: CompanyMention;
 }
 
 /** Открытая передача чата менеджеру: причина, уровень интереса на момент передачи и время. */

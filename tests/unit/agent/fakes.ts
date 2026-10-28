@@ -16,6 +16,7 @@ export const MODELS = {
   reply: 'claude-sonnet-5-5',
   review: 'claude-review-model',
   interest: 'claude-interest-model',
+  logo: 'claude-logo-model',
 } as const;
 
 /**

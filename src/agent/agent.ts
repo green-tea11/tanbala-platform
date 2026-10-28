@@ -158,6 +158,7 @@ function createAsk(deps: AgentDeps): Ask {
     reply: buildSystem(deps.knowledge, 'reply'),
     review: buildSystem(deps.knowledge, 'review'),
     interest: buildSystem(deps.knowledge, 'interest'),
+    logo: buildSystem(deps.knowledge, 'logo'),
   };
   return (purpose, schema, context, callData) =>
     deps.llm.structured({

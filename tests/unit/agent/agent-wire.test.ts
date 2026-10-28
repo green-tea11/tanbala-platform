@@ -12,7 +12,12 @@ import { context, EMPTY_PROFILE, KNOWLEDGE } from './fakes.js';
 // Модели как в config/models.json: ответ на Sonnet 5.5, проверка и оценка интереса на Haiku 5.5.
 const REPLY_MODEL = 'claude-sonnet-5-5';
 const CHECK_MODEL = 'claude-haiku-5-5';
-const MODELS = { reply: REPLY_MODEL, review: CHECK_MODEL, interest: CHECK_MODEL } as const;
+const MODELS = {
+  reply: REPLY_MODEL,
+  review: CHECK_MODEL,
+  interest: CHECK_MODEL,
+  logo: CHECK_MODEL,
+} as const;
 
 const REPLIES = [
   { outcome: 'answer', text: 'Какой у вас бизнес?', stopRequested: false },

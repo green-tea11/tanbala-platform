@@ -77,6 +77,32 @@ export interface WhatsAppInbox {
   resolvePhone(jid: Jid): Promise<PhoneDigits | null>;
 }
 
+/** Картинка в памяти: фото профиля для вызова модели с картинкой. */
+export interface ImageInput {
+  readonly data: Uint8Array;
+  readonly mimeType: 'image/jpeg' | 'image/png' | 'image/webp';
+}
+
+/**
+ * Бизнес-профиль собеседника: только то, что нужно для поиска компании. Строки недоверенные.
+ * personal: обычный аккаунт (профиля нет); failed: запрос не удался.
+ */
+export type BusinessProfileResult =
+  | {
+      readonly kind: 'business';
+      readonly websites: readonly string[];
+      readonly email: string | null;
+    }
+  | { readonly kind: 'personal' }
+  | { readonly kind: 'failed' };
+
+/** Профиль собеседника в WhatsApp для определения компании: запросы только на чтение, ничего не отправляют. */
+export interface WhatsAppContacts {
+  businessProfile(jid: Jid): Promise<BusinessProfileResult>;
+  /** Фото профиля в полном размере; null: фото нет, оно скрыто, больше maxBytes или не скачалось. */
+  profilePhoto(jid: Jid, maxBytes: number): Promise<ImageInput | null>;
+}
+
 /** Всё, что адаптер WhatsApp (whatsapp/connection.ts) даёт приложению. */
 export type WhatsAppGateway = MessageSender & WhatsAppInbox;
 
@@ -103,6 +129,8 @@ export interface StructuredRequest<T> {
   readonly system: readonly SystemBlock[];
   /** История и задание вызова; последняя реплика всегда user. */
   readonly turns: readonly ChatTurn[];
+  /** Картинка к последней реплике user (вызов logo); у остальных вызовов её нет. */
+  readonly image?: ImageInput;
   /** Схема без transform: вход и выход совпадают, иначе её не перевести в JSON Schema. */
   readonly schema: z.ZodType<T, T>;
   readonly maxTokens: number;

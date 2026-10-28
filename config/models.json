@@ -2,5 +2,6 @@
   "reply": "claude-sonnet-5-5",
   "review": "claude-haiku-5-5",
   "interest": "claude-haiku-5-5",
+  "logo": "claude-haiku-5-5",
   "transcribe": "elevenlabs/scribe-v2"
 }
