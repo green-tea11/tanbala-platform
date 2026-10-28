@@ -1369,3 +1369,76 @@ def test_whatsapp_contact_warning_on_letter_page_and_company_card(web_db):
     assert notice in card and notice in letter
     # Рассылку отметка не блокирует: решение при одобрении за владельцем.
     assert f'action="/drafts/{draft_id}/approve"' in card and f'action="/drafts/{draft_id}/approve"' in letter
+
+
+@pytest.mark.db
+def test_clear_whatsapp_marks_removes_warning_and_returns_company_to_mailing(web_db):
+    conn, connect, opened = web_db
+    company_id = seed_company(conn, "ТОО «Рахат»", status="qualified")
+    seed_contact(conn, company_id, "info@rahat.example.kz", verify_result=None)
+    conn.execute("UPDATE companies SET requested_via = 'whatsapp', whatsapp_contacted_at = %s WHERE id = %s",
+                 (CONTACTED_AT, company_id))
+    client = make_client(connect)
+    action = f'action="/companies/{company_id}/whatsapp-clear"'
+
+    card = client.get(f"/companies/{company_id}").text
+    assert "<b>Компанию добавила проверка из WhatsApp.</b> В рассылку она не попадает." in card
+    assert "Клиент уже писал в WhatsApp" in card
+    assert action in card and "Снять отметку WhatsApp" in card
+    # Подтверждение в интерфейсе: форма с data-confirm, название компании экранировано.
+    assert ('data-confirm="Снять отметки WhatsApp с «ТОО «Рахат»»? Предупреждение пропадёт, и следующий поиск'
+            ' сможет взять компанию в рассылку."') in card
+    assert pipeline._unfinished(conn, (), 10) == ()
+
+    response = client.post(f"/companies/{company_id}/whatsapp-clear", data={"csrf_token": TOKEN},
+                           follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/companies/{company_id}?done=whatsapp_cleared"
+    marks = conn.execute("SELECT requested_via, whatsapp_contacted_at FROM companies WHERE id = %s",
+                         (company_id,)).fetchone()
+    assert marks == (None, None)
+    card = client.get(response.headers["location"]).text
+    assert "Отметки WhatsApp сняты" in card
+    assert "проверка из WhatsApp" not in card and "Клиент уже писал в WhatsApp" not in card and action not in card
+    assert pipeline._unfinished(conn, (), 10) == (company_id,)
+    assert all(c.closed for c in opened)
+
+
+@pytest.mark.db
+def test_clear_only_contact_mark_from_letter_company(web_db):
+    conn, connect, _ = web_db
+    company_id, _, draft_id = full_company(conn)
+    conn.execute("UPDATE companies SET whatsapp_contacted_at = %s WHERE id = %s", (CONTACTED_AT, company_id))
+    client = make_client(connect)
+
+    card = client.get(f"/companies/{company_id}").text
+    assert "проверка из WhatsApp" not in card
+    assert 'data-confirm="Снять отметку «писал в WhatsApp» с «ТОО «Степь Склад»»? Предупреждение пропадёт."' in card
+    client.post(f"/companies/{company_id}/whatsapp-clear", data={"csrf_token": TOKEN})
+
+    assert "писал в WhatsApp" not in client.get(f"/letters/{draft_id}").text
+    assert conn.execute("SELECT review_status FROM drafts WHERE id = %s", (draft_id,)).fetchone()[0] == "pending"
+
+
+@pytest.mark.db
+def test_clear_whatsapp_needs_csrf_and_existing_company(web_db):
+    conn, connect, _ = web_db
+    company_id = seed_company(conn, 'Склад "А"><img src=x onerror=alert(1)>', status="qualified")
+    client = make_client(connect)
+    assert "/whatsapp-clear" not in client.get(f"/companies/{company_id}").text
+
+    conn.execute("UPDATE companies SET requested_via = 'whatsapp', whatsapp_contacted_at = now() WHERE id = %s",
+                 (company_id,))
+    card = client.get(f"/companies/{company_id}").text
+    # Название с сайта в тексте подтверждения экранировано и не выходит из атрибута.
+    assert 'data-confirm="Снять отметки WhatsApp с «Склад &#34;А&#34;&gt;&lt;img src=x onerror=alert(1)&gt;»?' in card
+    assert "<img src=x" not in card
+    path = f"/companies/{company_id}/whatsapp-clear"
+    assert client.post(path, data={}).status_code == 403
+    assert client.post(path, data={"csrf_token": "wrong"}).status_code == 403
+    assert client.post(path, data={"csrf_token": TOKEN}, headers={"Origin": "http://evil.example"}).status_code == 403
+    assert client.get(path).status_code == 405
+    assert conn.execute("SELECT requested_via IS NOT NULL AND whatsapp_contacted_at IS NOT NULL FROM companies"
+                        " WHERE id = %s", (company_id,)).fetchone()[0]
+    assert client.post("/companies/999999/whatsapp-clear", data={"csrf_token": TOKEN}).status_code == 404

@@ -56,6 +56,16 @@ def mark_whatsapp_contact(conn: psycopg.Connection, company_id: int) -> None:
                  (company_id,))
 
 
+def clear_whatsapp_marks(conn: psycopg.Connection, company_id: int) -> None:
+    """Кнопка в карточке компании, если собеседник бота назвал чужую компанию: снять обе пометки WhatsApp.
+
+    Пропадает и отметка «писал в WhatsApp», и requested_via («запрошено из WhatsApp»): компания становится
+    обычной, поиск может взять её в рассылку. Новый запрос справки снова поставит отметку.
+    """
+    conn.execute("UPDATE companies SET requested_via = NULL, whatsapp_contacted_at = NULL WHERE id = %s",
+                 (company_id,))
+
+
 def company_brief(conn: psycopg.Connection, company_id: int) -> dict | None:
     """Справка по контракту или None, если компании нет."""
     with conn.cursor(row_factory=dict_row) as cursor:

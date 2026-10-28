@@ -18,7 +18,23 @@
 </div>
 
 {% if done_message %}<p class="notice pos" role="status">{{ done_message }}</p>{% endif %}
+{% if company.requested_via %}
+<p class="notice warn" role="note"><b>Компанию добавила проверка из WhatsApp.</b> В рассылку она не попадает.</p>
+{% endif %}
 {{ lu.whatsapp_notice(company.whatsapp_contacted_at) }}
+{% if company.requested_via or company.whatsapp_contacted_at %}
+{# Ложная отметка: собеседник бота назвал чужую компанию. Снимаются обе пометки сразу. #}
+{% if company.requested_via %}
+{% set clear_confirm = "Снять отметки WhatsApp с «" ~ company.name ~ "»? Предупреждение пропадёт, и следующий поиск сможет взять компанию в рассылку." %}
+{% else %}
+{% set clear_confirm = "Снять отметку «писал в WhatsApp» с «" ~ company.name ~ "»? Предупреждение пропадёт." %}
+{% endif %}
+<form class="whatsapp-clear" method="post" action="/companies/{{ company.id }}/whatsapp-clear" data-confirm="{{ clear_confirm }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit" class="btn btn-small">Снять отметку WhatsApp</button>
+  <span class="hint">Если бот перепутал компанию: предупреждение пропадёт{% if company.requested_via %}, компания сможет попасть в рассылку{% endif %}.</span>
+</form>
+{% endif %}
 {% if company.last_error %}<p class="notice neg"><b>Ошибка на последнем шаге.</b> {{ company.last_error }}</p>{% endif %}
 
 <div class="detail">

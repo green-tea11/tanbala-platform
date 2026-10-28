@@ -33,7 +33,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from tanbala_leads import __version__, contact_policy, db, pipeline
-from tanbala_leads.internal import research
+from tanbala_leads.internal import brief, research
 from tanbala_leads.settings import load_settings
 from tanbala_leads.steps import approve as approve_step
 from tanbala_leads.steps import send as send_step
@@ -325,6 +325,16 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
             raise HTTPException(404, "Компания не найдена.")
         contact_policy.block_company(conn, company_id, note="кнопка «Больше не писать»")
         return _redirect(f"/companies/{company_id}?done=blocked")
+
+    @app.post("/companies/{company_id:int}/whatsapp-clear")
+    def clear_whatsapp(company_id: int, form: dict[str, Any] = Depends(csrf_form),
+                       conn: psycopg.Connection = Depends(get_conn)) -> Response:
+        """«Снять отметку WhatsApp»: собеседник бота назвал чужую компанию. Снимаются обе пометки."""
+        if q.fetch_company(conn, company_id) is None:
+            raise HTTPException(404, "Компания не найдена.")
+        brief.clear_whatsapp_marks(conn, company_id)
+        logger.info("Компания %s: отметки WhatsApp сняты кнопкой в карточке", company_id)
+        return _redirect(f"/companies/{company_id}?done=whatsapp_cleared")
 
     # ---------- кому писали ----------
 
