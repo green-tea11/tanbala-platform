@@ -78,7 +78,8 @@ TEMPLATES_DIR = WEB_DIR / "templates"
 STATIC_DIR = WEB_DIR / "static"
 
 BIND_HOST = "127.0.0.1"
-# Защита от DNS rebinding: чужое имя хоста в запросе получает 400.
+# Защита от DNS rebinding: чужое имя хоста в запросе получает 400. Порт не сравнивается:
+# «127.0.0.1:8000» и «localhost:8000» проходят (так их шлют браузер и HTTP-клиент бота).
 ALLOWED_HOSTS = ("127.0.0.1", "localhost")
 CSP = (
     "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "

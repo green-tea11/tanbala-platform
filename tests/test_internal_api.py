@@ -70,10 +70,24 @@ def test_database_down_is_503():
     assert (response.status_code, response.json()) == (503, {"error": "db_unavailable"})
 
 
-def test_foreign_host_is_refused():
-    response = make_client().get("/internal/lookup?domain=sklad.kz", headers={**AUTH, "Host": "evil.example"})
+@pytest.mark.parametrize("host", ["evil.example", "evil.example:8000", "127.0.0.1.evil.example:8000",
+                                  "host.docker.internal:8000", "127.0.0.1:", "127.0.0.1:port"])
+def test_foreign_host_is_refused(host):
+    response = make_client().get("/internal/lookup?domain=sklad.kz", headers={**AUTH, "Host": host})
 
-    assert response.status_code == 400
+    assert (response.status_code, response.text) == (400, "Invalid host header")
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1:8000", "localhost:8000", "127.0.0.1", "localhost", "LOCALHOST:8000"])
+def test_host_with_port_passes_to_token_check(host):
+    """Проект C шлёт Host с портом: такой запрос доходит до проверки токена, а не получает 400."""
+    client = make_client()
+
+    without_token = client.get("/internal/lookup?domain=sklad.kz", headers={"Host": host})
+    unknown_path = client.get("/internal/nope", headers={**AUTH, "Host": host})
+
+    assert (without_token.status_code, without_token.json()) == (401, {"error": "unauthorized"})
+    assert (unknown_path.status_code, unknown_path.json()) == (404, {"error": "not_found"})
 
 
 # ---------- с базой ----------
@@ -120,6 +134,19 @@ def test_lookup_by_site_domain_with_subdomains(api_db):
             "id": company_id, "name": "Платформа-А, склад", "city": "Алматы", "rubric": "Складские услуги",
             "match_by": "domain", "match_score": 1.0, "emailed": False, "emailed_at": None,
         }]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("base_url", ["http://127.0.0.1:8000", "http://localhost:8000"])
+def test_lookup_works_with_port_in_host(api_db, base_url):
+    conn, client = api_db
+    company_id = add_company(conn, "Платформа-А, склад", domain="platforma.kz")
+    client.base_url = base_url  # TestClient шлёт Host из base_url: «127.0.0.1:8000», как HTTP-клиент бота
+
+    response = client.get("/internal/lookup", params={"domain": "platforma.kz"}, headers=AUTH)
+
+    assert response.status_code == 200
+    assert [c["id"] for c in response.json()["candidates"]] == [company_id]
 
 
 @pytest.mark.db
