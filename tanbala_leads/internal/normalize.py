@@ -31,6 +31,10 @@ def _checked(value: str, limit: int) -> str:
         raise BadInput(f"длиннее {limit} символов")
     if "\x00" in text:  # Postgres не хранит NUL: без проверки ответ был бы 503, а не 400
         raise BadInput("символ NUL")
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError as exc:  # одиночный суррогат из JSON (\ud800): иначе 500
+        raise BadInput("не UTF-8") from exc
     return text
 
 

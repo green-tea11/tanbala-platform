@@ -135,10 +135,31 @@ def test_hung_browser_does_not_block_forever(urgent):
 
 
 def test_real_limits_wait_longer_than_parser_runs():
+    """Ждущий не падает раньше, чем отработает и будет убит parser-2gis того, кто держит место."""
     limits = browsers.limits_from_settings(load_settings({}))
 
-    assert limits.gis.max_wait_seconds > collect.PARSER_TIMEOUT_SECONDS
+    assert limits.gis.max_wait_seconds > collect.PARSER_TIMEOUT_SECONDS + collect.KILL_WAIT_SECONDS
+    assert limits.gis.max_wait_seconds > pipeline.RESEARCH_PARSER_TIMEOUT_SECONDS + collect.KILL_WAIT_SECONDS
     assert limits.sites.max_wait_seconds > sites.SITE_TIMEOUT_S
+
+
+def test_search_step_that_gives_up_does_not_hold_back_whatsapp():
+    """Шаг поиска не дождался места и упал: срочная проверка, которая ждёт, всё равно получает место."""
+    slots = browsers.Slots(1, max_wait_seconds=WAIT_SECONDS)
+    got: list[str] = []
+    with slots.hold():
+        thread = threading.Thread(target=slots.guard(lambda: got.append("WhatsApp"), urgent=True), daemon=True)
+        thread.start()
+        wait_until(lambda: slots.waiting == 1)
+        slots.max_wait_seconds = 0.05  # обычный шаг поиска ждёт недолго и сдаётся
+        with pytest.raises(browsers.BrowserBusy):
+            with slots.hold():
+                pass
+        slots.max_wait_seconds = WAIT_SECONDS
+        assert slots.waiting == 1
+    thread.join(WAIT_SECONDS)
+
+    assert got == ["WhatsApp"] and (slots.busy, slots.waiting) == (0, 0)
 
 
 @pytest.mark.parametrize(("env", "expected"), [({}, (1, 1)), ({"MAX_2GIS_BROWSERS": "2", "MAX_SITE_BROWSERS": " 4 "},

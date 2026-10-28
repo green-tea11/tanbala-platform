@@ -62,7 +62,7 @@ class Slots:
                 while self.busy >= self.limit or (not urgent and self._urgent_waiting):
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
-                        logger.warning("%s занят дольше %.0f с: шаг пропущен", self.kind, self.max_wait_seconds)
+                        logger.warning("%s занят дольше %.0f с: шаг не выполнен", self.kind, self.max_wait_seconds)
                         raise BrowserBusy(f"{self.kind} занят дольше {self.max_wait_seconds / 60:.0f} мин")
                     self._changed.wait(remaining)
             finally:

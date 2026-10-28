@@ -301,7 +301,8 @@ def _collect(conn: psycopg.Connection, run_id: int, run: dict, deps: Deps) -> tu
 
 
 # Ошибки, при которых следующие компании упадут так же: ключ, доступ, баланс. Запуск останавливается.
-FATAL_API_ERRORS = (anthropic.AuthenticationError, anthropic.PermissionDeniedError)
+# BrowserBusy: браузер завис; без остановки каждая компания ждала бы по 5 минут и считалась без сайта.
+FATAL_API_ERRORS = (anthropic.AuthenticationError, anthropic.PermissionDeniedError, browsers.BrowserBusy)
 
 
 def _each(conn, run_id, company_ids, action: Callable[[int], str | None]) -> None:
@@ -330,6 +331,8 @@ def _steps(conn: psycopg.Connection, run_id: int, company_ids: tuple[int, ...], 
     def do_crawl(cid: int) -> str:
         try:
             crawl.crawl_company(conn, cid, deps.crawl)
+        except browsers.BrowserBusy:
+            raise  # сайт не обходили: компания остаётся new, её дообработает следующий запуск
         except Exception as exc:  # noqa: BLE001  сайт не открылся: дальше по карточке 2ГИС и её почтам
             _company_failed(conn, run_id, cid, exc)
             conn.execute("UPDATE companies SET status = 'crawled' WHERE id = %s AND status = 'new'", (cid,))

@@ -16,6 +16,7 @@ from tanbala_leads import PROJECT_ROOT
 from tanbala_leads.sites import extract_emails, is_role_address, normalize_domain
 
 PARSER_TIMEOUT_SECONDS = 20 * 60
+KILL_WAIT_SECONDS = 30  # сколько ждать, пока убитый parser-2gis завершится
 IS_WINDOWS = os.name == "nt"
 # parser-2gis живёт в отдельном окружении со старыми зависимостями: ключа API и паролей он не видит.
 PASSED_ENV_KEYS = (
@@ -83,8 +84,11 @@ def run_parser(search_url: str, output_path: Path, max_records: int, parser_bin:
         stdout, stderr = process.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
         _kill_tree(process.pid)
-        process.wait(timeout=30)
         # from None: в TimeoutExpired вся команда со ссылкой, а в ней название компании от клиента бота.
+        try:
+            process.wait(timeout=KILL_WAIT_SECONDS)
+        except subprocess.TimeoutExpired:
+            raise ParserError(f"parser-2gis не уложился в {timeout_seconds} с и не остановился") from None
         raise ParserError(f"parser-2gis не уложился в {timeout_seconds} с") from None
     if process.returncode != 0 or not output_path.exists():
         tail = (stderr or stdout or "").strip()[-500:]

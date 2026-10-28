@@ -1,5 +1,6 @@
 """Проверка новой компании по запросу WhatsApp-бота: 2ГИС и сайт на моках, Claude подменён. 0 токенов."""
 
+import dataclasses
 import json
 import os
 import shutil
@@ -138,6 +139,7 @@ def make_client_without_db():
     '{"name": "Платформа-А", "phone": "123"}', '{"name": "Платформа-А", "domain": "com.kz"}',
     '{"name": "Платформа-А", "city": 5}', '{"name": "Платформа-А", "city": "' + "x" * 101 + '"}',
     '{"name": "' + "a" * 5000 + '"}', '{"name": "Рахат\\u0000"}', '{"name": "Рахат", "phone": "7700\\u00001234567"}',
+    '{"name": "Рахат\\ud800"}',
 ])
 def test_bad_research_request_is_400_before_database(body):
     response = make_client_without_db().post("/internal/research", content=body.encode(),
@@ -332,6 +334,27 @@ def test_parser_failure_is_failed_error(env, caplog):
     assert "Chrome упал" in env.conn.execute("SELECT error FROM research_jobs").fetchone()[0]
     # В лог сервера только номер задачи и вид ошибки: название компании от клиента бота туда не идёт.
     assert "ParserError" in caplog.text and "Аксенгер" not in caplog.text
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("step", ["2gis", "site"])
+def test_hung_browser_fails_job_and_keeps_company_new(env, step):
+    """Браузер занят зависшим шагом поиска дольше предела: задача failed / error, оценки «без сайта» нет."""
+    from tanbala_leads.browsers import BrowserBusy
+
+    def busy(*args):
+        raise BrowserBusy("Браузер занят дольше 22 мин")
+
+    deps = make_deps(env.tmp_path, parser=busy if step == "2gis" else None)
+    if step == "site":
+        deps = dataclasses.replace(deps, crawl=busy)
+    client, _, _ = env.client(deps=deps)
+
+    result = status(client, post(client, {"name": "Аксенгер"})["job_id"])
+
+    assert (result["status"], result["reason"]) == ("failed", "error")
+    assert deps.client.calls == []
+    assert [s for (s,) in env.conn.execute("SELECT status FROM companies")] == ([] if step == "2gis" else ["new"])
 
 
 @pytest.mark.db

@@ -169,6 +169,30 @@ def test_parser_on_linux_runs_in_own_group_and_timeout_hides_command(tmp_path, m
     assert error.value.__cause__ is None and error.value.__suppress_context__
 
 
+def test_parser_that_does_not_stop_after_kill_is_parser_error(tmp_path, monkeypatch):
+    class StuckProcess:
+        pid = 4242
+
+        def communicate(self, timeout=None):
+            raise collect.subprocess.TimeoutExpired(["parser-2gis", "-i", "https://2gis.kz/almaty/search/Иванов"],
+                                                    timeout)
+
+        def wait(self, timeout=None):
+            raise collect.subprocess.TimeoutExpired(["parser-2gis", "-i", "https://2gis.kz/almaty/search/Иванов"],
+                                                    timeout)
+
+    binary = tmp_path / "parser-2gis"
+    binary.write_text("")
+    monkeypatch.setattr(collect.subprocess, "Popen", lambda *a, **k: StuckProcess())
+    monkeypatch.setattr(collect, "_kill_tree", lambda pid: None)
+
+    with pytest.raises(collect.ParserError, match="не остановился") as error:
+        collect.run_parser("https://2gis.kz/almaty/search/x", tmp_path / "out.json", 5, str(binary))
+
+    assert error.value.__cause__ is None and error.value.__suppress_context__
+    assert "Иванов" not in str(error.value)
+
+
 def test_kill_of_finished_parser_on_linux_is_quiet(monkeypatch):
     def gone(pid, sig):
         raise ProcessLookupError(pid)

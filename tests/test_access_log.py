@@ -14,7 +14,7 @@ import uvicorn
 
 from tanbala_leads.web import app as web
 from tanbala_leads.web import create_app
-from tanbala_leads.web.internal import HideQuery
+from tanbala_leads.web.internal import INTERNAL_LOG_HIDDEN, HideQuery
 
 PHONE = "77001234567"
 ACCESS_FORMAT = '%s - "%s %s HTTP/%s" %d'  # как пишет uvicorn (protocols/http/h11_impl.py)
@@ -29,18 +29,23 @@ def access_record(path: str) -> logging.LogRecord:
     (f"/internal/lookup?phone={PHONE}", "/internal/lookup"),
     ("/internal/lookup?domain=ivan%40sklad.kz&name=%D0%B0", "/internal/lookup"),
     ("/internal?phone=1", "/internal"),
-    (f"//internal/lookup?phone={PHONE}", "//internal/lookup"),
     ("/internal/research/3f2c9e0a-0000-4000-8000-000000000000", "/internal/research/3f2c9e0a-0000-4000-8000-000000000000"),
+    ("/internal/research?x=1", "/internal/research"),
+    ("/internal/companies/48/brief", "/internal/companies/48/brief"),
     ("/companies/12?done=whatsapp_cleared", "/companies/12"),
     ("/static/app.css?v=1", "/static/app.css"),
-    # Клиент бота ошибся в адресе: данные в самом пути тоже не пишутся.
-    (f"/INTERNAL/lookup?phone={PHONE}", "/INTERNAL/lookup"),
-    (f"/./internal/lookup?phone={PHONE}", "/./internal/lookup"),
-    (f"http://127.0.0.1:8000/internal/lookup?phone={PHONE}", "http://127.0.0.1:8000/internal/lookup"),
-    (f"/internal/lookup%3Fphone%3D{PHONE}", "/internal/lookup"),
-    (f"/internal/lookup%253Fphone%253D{PHONE}", "/internal/lookup"),
-    (f"/internal/lookup;phone={PHONE}", "/internal/lookup"),
-    (f"/internal/lookup/{PHONE}", "/internal/lookup/[скрыто]"),
+    # Клиент бота ошибся в адресе: в лог идёт только «/internal/[скрыто]», данные из пути не пишутся.
+    (f"//internal/lookup?phone={PHONE}", INTERNAL_LOG_HIDDEN),
+    (f"/INTERNAL/lookup?phone={PHONE}", INTERNAL_LOG_HIDDEN),
+    (f"/./internal/lookup?phone={PHONE}", INTERNAL_LOG_HIDDEN),
+    (f"http://127.0.0.1:8000/internal/lookup?phone={PHONE}", INTERNAL_LOG_HIDDEN),
+    (f"/internal/lookup%3Fphone%3D{PHONE}", INTERNAL_LOG_HIDDEN),
+    (f"/internal/lookup%253Fphone%253D{PHONE}", INTERNAL_LOG_HIDDEN),
+    (f"/internal/lookup;phone={PHONE}", INTERNAL_LOG_HIDDEN),
+    (f"/internal/lookup/{PHONE}", INTERNAL_LOG_HIDDEN),
+    ("/internal/lookup/7-700-123-45-67", INTERNAL_LOG_HIDDEN),
+    ("/internal/research/Aksenger", INTERNAL_LOG_HIDDEN),
+    ("/internal/nope", INTERNAL_LOG_HIDDEN),
 ])
 def test_query_and_client_data_are_dropped(path, logged):
     record = access_record(path)
@@ -87,6 +92,9 @@ def live_server():
     thread.join(10)
     sock.close()
     logging.config.dictConfig(uvicorn.config.LOGGING_CONFIG)  # вернуть логи uvicorn на stdout для других тестов
+    app_logger = logging.getLogger("tanbala_leads")  # и логи приложения как до теста
+    app_logger.handlers.clear()
+    app_logger.propagate, app_logger.level = True, logging.NOTSET
 
 
 def get_status(url: str) -> int:

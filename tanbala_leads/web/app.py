@@ -527,7 +527,10 @@ def log_config() -> dict[str, Any]:
     config = copy.deepcopy(uvicorn.config.LOGGING_CONFIG)
     config["filters"] = {"hide_query": {"()": internal.HideQuery}}
     config["loggers"]["uvicorn.access"]["filters"] = ["hide_query"]
-    config["loggers"]["tanbala_leads"] = {"handlers": ["default"], "level": "INFO", "propagate": False}
+    config["formatters"]["app"] = {"()": "uvicorn.logging.DefaultFormatter",
+                                   "fmt": "%(asctime)s %(levelprefix)s %(message)s"}
+    config["handlers"]["app"] = {"formatter": "app", "class": "logging.StreamHandler", "stream": "ext://sys.stderr"}
+    config["loggers"]["tanbala_leads"] = {"handlers": ["app"], "level": "INFO", "propagate": False}
     return config
 
 

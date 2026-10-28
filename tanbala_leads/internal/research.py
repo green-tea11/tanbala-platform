@@ -18,7 +18,7 @@ from dataclasses import dataclass
 import psycopg
 from psycopg.rows import dict_row
 
-from tanbala_leads import pipeline
+from tanbala_leads import browsers, pipeline
 from tanbala_leads.internal import brief, lookup
 from tanbala_leads.internal import normalize as norm
 from tanbala_leads.settings import Settings
@@ -234,6 +234,8 @@ def _crawl_if_new(conn: psycopg.Connection, company_id: int, deps: pipeline.Deps
         return
     try:
         crawl.crawl_company(conn, company_id, deps.crawl)
+    except browsers.BrowserBusy:
+        raise  # сайт не обходили: задача failed / error, компания остаётся new
     except Exception as exc:  # noqa: BLE001  сайт не открылся: дальше по карточке 2ГИС
         logger.warning("Проверка из WhatsApp, компания %s: сайт не открылся", company_id)
         conn.execute("UPDATE companies SET status = 'crawled', last_error = %s WHERE id = %s AND status = 'new'",
@@ -318,8 +320,10 @@ class ResearchQueue:
                 self._pending = False
             try:
                 self.drain()
-            except Exception:  # noqa: BLE001  поток очереди не должен умирать молча
-                logger.exception("Очередь проверок из WhatsApp: сбой, новая попытка через %s с", RETRY_SECONDS)
+            except Exception as exc:  # noqa: BLE001  поток очереди не должен умирать молча
+                # Без traceback: в цепочке ошибок бывает текст parser-2gis с названием компании от клиента бота.
+                logger.error("Очередь проверок из WhatsApp: сбой %s, новая попытка через %s с",
+                             type(exc).__name__, RETRY_SECONDS)
                 with self._lock:
                     self._pending = True
                 time.sleep(RETRY_SECONDS)

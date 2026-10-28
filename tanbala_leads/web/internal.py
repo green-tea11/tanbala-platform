@@ -30,10 +30,10 @@ MAX_BODY_BYTES = 4096
 STATUS_CODES = {401: "unauthorized", 404: "not_found", 503: "db_unavailable"}
 # Строка access-лога uvicorn: '%s - "%s %s HTTP/%s" %d', путь третий.
 ACCESS_LOG_ARGS = 5
-# Путь, похожий на /internal (в любом регистре, с //, ./ или http://хост), пишется только до первого символа
-# не из этого набора: %3F, ;, пробел и прочее, чем клиент бота мог бы протащить данные в сам путь.
-LOG_SAFE_PATH_RE = re.compile(r"[A-Za-z0-9/_.:-]*")
-LOG_PHONE_RE = re.compile(r"(?<![\w-])\d{10,}(?!\w)")  # телефон прямо в пути, но не кусок job_id (UUID)
+# Путь, похожий на /internal (в любом регистре, с //, ./, http://хост, %3F вместо ?), пишется как есть только
+# для известных маршрутов. Иначе вместо него INTERNAL_LOG_HIDDEN: в самом пути могли быть данные клиента бота.
+INTERNAL_LOG_ROUTES_RE = re.compile(r"/internal(/lookup|/research(/[0-9a-fA-F-]{1,36})?|/companies/\d{1,19}/brief)?")
+INTERNAL_LOG_HIDDEN = "/internal/[скрыто]"
 LOG_QUERY_RE = re.compile(r"\?[^\s\"]*")
 
 
@@ -55,18 +55,18 @@ def is_internal(request: Request) -> bool:
 
 
 def log_path(path: str) -> str:
-    """Путь для access-лога: без строки запроса; похожий на /internal ещё и без подозрительного хвоста."""
+    """Путь для access-лога: без строки запроса; похожий на /internal только если это известный маршрут."""
     path = path.split("?", 1)[0]
-    if "internal" not in path.lower():
+    if "internal" not in path.lower() or INTERNAL_LOG_ROUTES_RE.fullmatch(path):
         return path
-    return LOG_PHONE_RE.sub("[скрыто]", LOG_SAFE_PATH_RE.match(path).group())
+    return INTERNAL_LOG_HIDDEN
 
 
 class HideQuery(logging.Filter):
     """Фильтр логгера uvicorn.access: строка запроса не пишется ни у одного пути (?phone=… → ничего).
 
     uvicorn пишет строку доступа с аргументами (адрес, метод, путь со строкой запроса, версия HTTP, статус).
-    Если новая версия uvicorn пишет иначе, из готового текста вырезается всё от «?» до пробела.
+    Если новая версия uvicorn пишет иначе, из каждого текстового аргумента вырезается всё от «?» до пробела.
     Запись не отбрасывается.
     """
 
@@ -74,8 +74,10 @@ class HideQuery(logging.Filter):
         args = record.args
         if isinstance(args, tuple) and len(args) == ACCESS_LOG_ARGS and isinstance(args[2], str):
             record.args = (*args[:2], log_path(args[2]), *args[3:])
-        else:
-            record.msg, record.args = LOG_QUERY_RE.sub("", record.getMessage()), ()
+        elif isinstance(args, tuple):  # форма та же, чтобы форматтер uvicorn не сломался
+            record.args = tuple(LOG_QUERY_RE.sub("", arg) if isinstance(arg, str) else arg for arg in args)
+        elif isinstance(record.msg, str):
+            record.msg = LOG_QUERY_RE.sub("", record.msg)
         return True
 
 

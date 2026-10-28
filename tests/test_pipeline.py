@@ -109,6 +109,24 @@ def test_one_broken_site_does_not_stop_the_run(db_conn, dsn, tmp_path):
     assert db_conn.execute("SELECT site_text FROM companies WHERE name LIKE 'Аксенгер%%'").fetchone()[0] is None
 
 
+def test_hung_site_browser_stops_run_and_leaves_companies_for_next_run(db_conn, dsn, tmp_path):
+    """Браузер для сайтов занят зависшим шагом: запуск останавливается, а не считает компании «без сайта»."""
+    from tanbala_leads.browsers import BrowserBusy
+
+    def busy_browser(url):
+        raise BrowserBusy("Браузер для сайтов занят дольше 5 мин")
+
+    run_id = pipeline.create_run(db_conn, "almaty", "склад", 3)
+
+    pipeline.execute_run(dsn, run_id, make_deps(tmp_path, crawl=busy_browser))
+
+    status, error = db_conn.execute("SELECT status, error FROM runs WHERE id = %s", (run_id,)).fetchone()
+    assert status == "failed" and "Браузер для сайтов занят" in error
+    statuses = {s for (s,) in db_conn.execute("SELECT status FROM companies WHERE run_id = %s", (run_id,))}
+    assert statuses == {"new"}
+    assert pipeline._unfinished(db_conn, (), 10) != ()
+
+
 def test_parser_failure_fails_the_run_with_message(db_conn, dsn, tmp_path):
     def broken_parser(url, out, max_records):
         raise collect.ParserError("Chrome не запустился")
