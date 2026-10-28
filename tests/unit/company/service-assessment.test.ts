@@ -290,7 +290,7 @@ describe('applyAssessment: слова клиента', () => {
     });
   });
 
-  it('клиент сам назвал другую компанию, а кандидат по номеру ещё не спрошен: кандидат снят без отклонения, ищем по словам клиента', async () => {
+  it('клиент сам назвал другую компанию, а кандидат по номеру ещё не спрошен: после ответа поиск по словам клиента нашёл её, кандидат заменён без отклонения', async () => {
     const h = createHarness({
       state: makeState({
         freeStepsAtMs: NOW - MINUTE_MS,
@@ -308,7 +308,7 @@ describe('applyAssessment: слова клиента', () => {
     const prompt = await h.service.applyAssessment(CHAT_ID, mention({ name: 'ТОО «Бета»' }));
     await h.service.identifyAfterReply(makeChat());
 
-    expect(prompt).toEqual({ kind: 'unknown', askName: false });
+    expect(prompt).toMatchObject({ kind: 'candidate', name: 'Платформа-А' });
     expect(h.directory.lookups()).toEqual([{ by: 'name', name: 'ТОО «Бета»' }]);
     expect(h.repo.current()).toMatchObject({
       rejectedIds: [],
@@ -326,12 +326,37 @@ describe('applyAssessment: слова клиента', () => {
     expect(h.repo.current().candidate).toEqual(candidate);
   });
 
-  it('клиент назвал другую компанию, а кандидата уже спросили: кандидат остаётся', async () => {
-    const h = createHarness({ state: waiting({ candidate: { ...ASKED, awaitingAnswer: false } }) });
+  it('клиент назвал другую компанию, а кандидата уже спросили без ответа: до поиска кандидат остаётся, после поиска заменён', async () => {
+    const h = createHarness({
+      state: waiting({ candidate: { ...ASKED, awaitingAnswer: false } }),
+      directory: {
+        lookup: lookupBy({
+          name: ok([
+            makeCandidate({ id: companyIdOf(9), name: 'Бета', matchBy: 'name', matchScore: 0.9 }),
+          ]),
+        }),
+      },
+    });
 
     const prompt = await h.service.applyAssessment(CHAT_ID, mention({ name: 'Бета' }));
+    await h.service.identifyAfterReply(makeChat());
 
     expect(prompt.kind).toBe('asked');
+    expect(h.repo.current()).toMatchObject({
+      rejectedIds: [],
+      candidate: { id: companyIdOf(9), source: 'message', askedAtMs: null },
+    });
+  });
+
+  it('клиент назвал другую компанию, пока ждём ответа на вопрос о кандидате: кандидат остаётся, поиска нет', async () => {
+    const h = createHarness({ state: waiting() });
+
+    const prompt = await h.service.applyAssessment(CHAT_ID, mention({ name: 'Бета' }));
+    await h.service.identifyAfterReply(makeChat());
+
+    expect(prompt).toMatchObject({ kind: 'asked', awaitingAnswer: true });
+    expect(h.directory.calls).toEqual([]);
+    expect(h.repo.current().candidate).toEqual(ASKED);
   });
 
   it('оценки нет (null): возвращается текущий промпт, в базу ничего не пишется', async () => {
@@ -397,6 +422,24 @@ describe('markAsked', () => {
     h.service.markAsked(CHAT_ID, 'none', 'Платформа-А, Алматы, верно?');
 
     expect(h.repo.current().candidate).toMatchObject({ askedAtMs: NOW, awaitingAnswer: true });
+  });
+
+  it('название кандидата только упомянуто не в вопросе: вопрос больше не задаётся, но «да» не засчитается', async () => {
+    const candidate = makeChatCandidate({ name: 'ТОО «Склад»' });
+    const h = createHarness({ state: makeState({ freeStepsAtMs: NOW - MINUTE_MS, candidate }) });
+
+    h.service.markAsked(CHAT_ID, 'none', 'Ридер стоит на входе в склад. Как у вас сейчас?');
+    const turn = await h.service.prepare(makeChat(), []);
+    await h.service.applyAssessment(CHAT_ID, mention({ answer: 'yes' }));
+
+    expect(turn).toEqual({
+      prompt: { kind: 'asked', name: 'ТОО «Склад»', city: 'Алматы', awaitingAnswer: false },
+      awaitingAnswer: false,
+    });
+    expect(h.repo.current()).toMatchObject({
+      candidate: { ...candidate, askedAtMs: NOW, awaitingAnswer: false },
+      confirmed: null,
+    });
   });
 
   it('кандидат не спрошен, в ответе его названия нет: ничего не пишется', () => {
@@ -488,6 +531,64 @@ describe('markAsked', () => {
 
     expect(() => {
       h.service.markAsked(CHAT_ID, 'confirm', QUESTION);
+    }).toThrow(failure);
+  });
+});
+
+describe('stopAwaiting', () => {
+  it('ожидание ответа снято, время вопроса и остальное состояние не меняются: чужое «да» не подтвердит компанию', async () => {
+    const h = createHarness({
+      state: waiting({ statedName: 'Бета', confirmedPains: ['Пересорт'] }),
+    });
+
+    h.service.stopAwaiting(CHAT_ID);
+    const prompt = await h.service.applyAssessment(CHAT_ID, mention({ answer: 'yes' }));
+
+    expect(h.repo.saves[0]).toEqual(
+      waiting({
+        statedName: 'Бета',
+        confirmedPains: ['Пересорт'],
+        candidate: { ...ASKED, awaitingAnswer: false },
+      }),
+    );
+    expect(prompt).toEqual({
+      kind: 'asked',
+      name: 'Платформа-А',
+      city: 'Алматы',
+      awaitingAnswer: false,
+    });
+    expect(h.repo.current().confirmed).toBeNull();
+  });
+
+  it.each([
+    ['кандидата нет', makeState()],
+    ['кандидат не спрошен', makeState({ candidate: makeChatCandidate() })],
+    ['ответа уже не ждём', waiting({ candidate: { ...ASKED, awaitingAnswer: false } })],
+    ['компания подтверждена', makeState({ confirmed: makeConfirmed() })],
+  ])('%s: ничего не пишется', (_label, state) => {
+    const h = createHarness({ state });
+
+    h.service.stopAwaiting(CHAT_ID);
+
+    expect(h.repo.saves).toEqual([]);
+  });
+
+  it('API и WhatsApp не вызываются', () => {
+    const h = createHarness({ state: waiting() });
+
+    h.service.stopAwaiting(CHAT_ID);
+
+    expect(h.directory.calls).toEqual([]);
+    expect(h.contacts.calls).toEqual([]);
+  });
+
+  it('сбой базы пробрасывается как есть', () => {
+    const h = createHarness({ state: waiting() });
+    const failure = new Error('база недоступна');
+    h.repo.failNext('save', failure);
+
+    expect(() => {
+      h.service.stopAwaiting(CHAT_ID);
     }).toThrow(failure);
   });
 });

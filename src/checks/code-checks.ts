@@ -71,8 +71,9 @@ export interface CheckOptions {
   readonly clientText: string;
   /**
    * Название компании клиента (кандидат или подтверждённая, из блока о компании): в нём тире, ссылка, капслок и
-   * прочий стиль, подмена букв и чужие цифры не нарушение, как термины клиента в проверке жаргона. Цены, стоп-слова,
-   * жаргон, скобки, разметка, контакты и длина проверяются по всему тексту. Нет поля или null: названия нет.
+   * прочий стиль, подмена букв и чужие цифры не нарушение, как термины клиента в проверке жаргона, если название стоит
+   * отдельно, а не внутри адреса, почты или другого слова (maskCompanyName). Цены, стоп-слова, жаргон, скобки,
+   * разметка, контакты и длина проверяются по всему тексту. Нет поля или null: названия нет.
    */
   readonly companyName?: string | null;
 }
@@ -82,6 +83,9 @@ const COMPANY_PLACEHOLDER = 'Компания';
 
 /** Знаки синтаксиса регулярных выражений: в названии экранируются, оно ищется как текст. */
 const REGEX_SYNTAX = /[\\^$.*+?()[\]{}|/]/gu;
+
+/** Что может стоять вплотную перед названием компании: открывающие кавычки и скобка. */
+const NAME_OPENERS = '«"\'(';
 
 /** Без флага g: только для test(). */
 const LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;
@@ -286,9 +290,25 @@ export function checkLength(text: string): readonly CheckFinding[] {
   return findings;
 }
 
+/** Знаки как класс регулярного выражения: знаки синтаксиса экранируются (с флагом u это допустимо). */
+function charClass(chars: string): string {
+  return `[${chars.replace(REGEX_SYNTAX, '\\$&')}]`;
+}
+
+/** Слева от названия начало текста или пробел, затем, может быть, открывающие кавычки или скобка. */
+const NAME_ALONE_BEFORE = String.raw`(?<=(?:^|\s)${charClass(NAME_OPENERS)}*)`;
+
+/** Справа от названия, может быть, знаки конца из LINK_TAIL, а за ними пробел или конец текста. */
+const NAME_ALONE_AFTER = String.raw`(?=${charClass(LINK_TAIL)}*(?:\s|$))`;
+
 /**
- * Название компании клиента в тексте заменяется словом-заглушкой: только отдельно стоящее (не часть другого слова),
- * без учёта регистра, пробелы между словами названия любые (до пяти). Название готовится как ответ (normalizeDraft).
+ * Название компании клиента в тексте заменяется словом-заглушкой: без учёта регистра, пробелы между словами названия
+ * любые (до пяти), название готовится как ответ (normalizeDraft). Маскируется только название, которое стоит
+ * отдельно: вплотную слева от него ничего, кроме открывающих кавычек и скобки «"'(, а справа до пробела или конца
+ * текста только знаки .,;:!?)»"' (NAME_ALONE_BEFORE, NAME_ALONE_AFTER). Поэтому «Вы из компании Kaspi.kz, правильно?»
+ * не нарушение ссылки, а название внутри адреса или почты не прячет их: «kaspi.kz/pay», «kaspi.kz?x=1»,
+ * «kaspi.kz:8080», «kaspi.kz.evil.com», «pay.kaspi.kz», «evil-shop.kz», «https://kaspi.kz», «pay@kaspi.kz» и
+ * «evil.shop» при названии «Shop» проверяются целиком. Название внутри другого слова тоже не маскируется.
  * Названия нет или в нём нет ни буквы, ни цифры (иначе отдельное тире стало бы «названием») => текст как есть.
  */
 function maskCompanyName(text: string, name: string | null | undefined): string {
@@ -297,7 +317,7 @@ function maskCompanyName(text: string, name: string | null | undefined): string 
     .filter((word) => word !== '');
   if (!words.some((word) => LETTER_OR_DIGIT.test(word))) return text;
   const source = words.map((word) => word.replace(REGEX_SYNTAX, '\\$&')).join(String.raw`\s{1,5}`);
-  const pattern = new RegExp(String.raw`(?<![\p{L}\p{N}_])${source}(?![\p{L}\p{N}_])`, 'giu');
+  const pattern = new RegExp(`${NAME_ALONE_BEFORE}${source}${NAME_ALONE_AFTER}`, 'giu');
   return text.replace(pattern, COMPANY_PLACEHOLDER);
 }
 

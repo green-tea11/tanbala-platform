@@ -17,7 +17,7 @@ import type { ChatId } from '../../domain/types.js';
 import { assertTimeMs } from '../time.js';
 
 /** То, что лежит в колонке state: состояние без ID чата (его хранит chat_id). */
-type StoredState = Omit<ChatCompanyState, 'chatId'>;
+export type StoredCompanyState = Omit<ChatCompanyState, 'chatId'>;
 
 const CANDIDATE_SOURCES = [
   'profile_domain',
@@ -120,7 +120,7 @@ const researchSchema: z.ZodType<ResearchState> = z.discriminatedUnion('status', 
   }),
 ]);
 
-const storedSchema: z.ZodType<StoredState> = z.object({
+const storedSchema: z.ZodType<StoredCompanyState> = z.object({
   profileKind: z.enum(['business', 'personal', 'unknown']).nullable(),
   profileRequests: counter,
   profileDomain: nullableText,
@@ -200,7 +200,7 @@ export function createChatCompaniesRepo(db: Database.Database, logger: Logger): 
     get(chatId: ChatId): ChatCompanyState {
       const text = selectState.get(chatId);
       if (text === undefined) return emptyCompanyState(chatId);
-      const stored = parseStored(text);
+      const stored = parseStoredCompanyState(text);
       if (stored === null) {
         logger.warn({ chatId }, 'Состояние компании чата в базе испорчено: взято пустое');
         return emptyCompanyState(chatId);
@@ -210,7 +210,7 @@ export function createChatCompaniesRepo(db: Database.Database, logger: Logger): 
     save(state: ChatCompanyState, nowMs: number): void {
       assertTimeMs(nowMs, 'nowMs');
       const { chatId, ...stored } = state;
-      upsertState.run({ chatId, state: JSON.stringify(compactOf(stored)), nowMs });
+      upsertState.run({ chatId, state: serializeCompanyState(stored), nowMs });
     },
     countResearchStarts(sinceMs: number): number {
       assertTimeMs(sinceMs, 'sinceMs');
@@ -225,15 +225,18 @@ function storedBriefOf(brief: CompanyBrief): StoredBrief {
   return { id, name, city, rubric, pains, emailed };
 }
 
-/** Состояние для записи в колонку: справка подтверждённой компании без неиспользуемых полей. */
-function compactOf(stored: StoredState): unknown {
+/** Текст колонки state: JSON состояния, справка подтверждённой компании без неиспользуемых полей. */
+export function serializeCompanyState(stored: StoredCompanyState): string {
   const { confirmed } = stored;
-  if (confirmed === null || confirmed.brief === null) return stored;
-  return { ...stored, confirmed: { ...confirmed, brief: storedBriefOf(confirmed.brief) } };
+  if (confirmed === null || confirmed.brief === null) return JSON.stringify(stored);
+  return JSON.stringify({
+    ...stored,
+    confirmed: { ...confirmed, brief: storedBriefOf(confirmed.brief) },
+  });
 }
 
-/** Состояние из текста колонки; null, если текст не JSON или не подходит под схему. */
-function parseStored(text: string): StoredState | null {
+/** Состояние из текста колонки state; null, если текст не JSON или не подходит под схему. */
+export function parseStoredCompanyState(text: string): StoredCompanyState | null {
   let data: unknown;
   try {
     data = JSON.parse(text);

@@ -126,22 +126,6 @@ describe('prepare: порядок и остановка шагов', () => {
     expect(h.repo.current()).toMatchObject({ candidate: null, rejectedIds: [companyIdOf(8)] });
   });
 
-  it('клиент уже назвал другую компанию (API тогда не отвечало): найденный по номеру кандидат сразу снят, ищем по словам клиента', async () => {
-    const h = createHarness({
-      state: makeState({ statedName: 'Бета' }),
-      directory: { lookup: lookupBy({ phone: FOUND }) },
-    });
-
-    const turn = await h.service.prepare(makeChat(), NAMED);
-
-    expect(turn.prompt).toEqual({ kind: 'unknown', askName: false });
-    expect(h.repo.current()).toMatchObject({
-      candidate: null,
-      rejectedIds: [],
-      freeStepsAtMs: NOW,
-    });
-  });
-
   it('шаги проходятся один раз на чат: второй prepare ничего не запрашивает и не пишет', async () => {
     const h = createHarness({ contacts: { profile: SITE } });
     await h.service.prepare(makeChat(), NAMED);
@@ -340,27 +324,28 @@ describe('prepare: API недоступен и другие сбои', () => {
     expect(h.repo.current().freeStepsAtMs).toBe(NOW);
   });
 
-  it('сбой bad_request (повтор не поможет) считается пройденным шагом: повтора на следующей пачке нет', async () => {
-    const h = createHarness({ directory: { lookup: () => fail('bad_request') } });
+  it.each<CompanyApiFailure>(['bad_request', 'rate_limited', 'budget_exhausted'])(
+    'постоянный сбой %s (повтор не поможет) считается пройденным шагом: повтора на следующей пачке нет',
+    async (failure) => {
+      const h = createHarness({ directory: { lookup: () => fail(failure) } });
 
-    const turn = await h.service.prepare(makeChat(), NAMED);
-    const callsAfterFirst = h.directory.calls.length;
-    await h.service.prepare(makeChat(), NAMED);
+      const turn = await h.service.prepare(makeChat(), NAMED);
+      const callsAfterFirst = h.directory.calls.length;
+      await h.service.prepare(makeChat(), NAMED);
 
-    expect(turn.prompt).toEqual({ kind: 'unknown', askName: true });
-    expect(h.repo.current().freeStepsAtMs).toBe(NOW);
-    expect(h.directory.calls).toHaveLength(callsAfterFirst);
-  });
+      expect(turn.prompt).toEqual({ kind: 'unknown', askName: true });
+      expect(h.repo.current().freeStepsAtMs).toBe(NOW);
+      expect(h.directory.calls).toHaveLength(callsAfterFirst);
+    },
+  );
 
   it.each<CompanyApiFailure>([
     'unauthorized',
     'not_found',
-    'rate_limited',
-    'budget_exhausted',
     'invalid_response',
     'unavailable',
     'timeout',
-  ])('сбой %s: шаги не засчитаны, повтор на следующей пачке', async (failure) => {
+  ])('временный сбой %s: шаги не засчитаны, повтор на следующей пачке', async (failure) => {
     let failing = true;
     const h = createHarness({
       directory: {

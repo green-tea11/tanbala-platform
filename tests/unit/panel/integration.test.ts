@@ -55,7 +55,8 @@ function build(options: { readonly allowlist: ReadonlySet<PhoneDigits> | null })
   };
   const clock: Clock = { now: () => T0, sleep: () => Promise.resolve() };
   const logger = createLogger({ level: 'silent' });
-  const company = { summary: () => OFF_COMPANY };
+  // Передача и возврат боту снимают ожидание ответа о компании: здесь это ничего не меняет.
+  const company = { summary: () => OFF_COMPANY, stopAwaiting: () => undefined };
   const outbox = createOutbox({
     sender,
     chats,

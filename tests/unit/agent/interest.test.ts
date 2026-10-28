@@ -17,6 +17,7 @@ import {
   KNOWLEDGE,
   MODELS,
   onlyRequest,
+  SILENT_LOGGER,
 } from './fakes.js';
 
 const NOTHING_NEW: RawInterest = {
@@ -67,7 +68,7 @@ const NO_COMPANY = {
 
 async function assess(answer: LlmResult<unknown>, ctx = context()) {
   const { requests, llm } = fakeLlm(answer);
-  const agent = createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS });
+  const agent = createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS, logger: SILENT_LOGGER });
   const result = await agent.assessInterest(ctx);
   return { result, requests };
 }

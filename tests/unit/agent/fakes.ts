@@ -1,6 +1,6 @@
 import type { ConversationContext } from '../../../src/agent/agent.js';
 import type { Knowledge } from '../../../src/agent/knowledge.js';
-import type { LlmClient, StructuredRequest } from '../../../src/domain/ports.js';
+import type { LlmClient, Logger, StructuredRequest } from '../../../src/domain/ports.js';
 import type { ChatId, ClientProfile, LlmResult, StoredMessage } from '../../../src/domain/types.js';
 
 // Общие заглушки тестов агента: без сети, диска и реального LLM.
@@ -9,6 +9,21 @@ export const KNOWLEDGE: Knowledge = {
   owner: '# Tanbala: что должен знать агент\n',
   whatsapp: '# Tanbala в WhatsApp\n',
   version: 'v1',
+};
+
+const silent = (): void => undefined;
+
+/** Логгер без записи: агент пишет в лог только при создании (нет списка болей раздела 5), это проверено отдельно. */
+export const SILENT_LOGGER: Logger = {
+  level: 'silent',
+  trace: silent,
+  debug: silent,
+  info: silent,
+  warn: silent,
+  error: silent,
+  fatal: silent,
+  silent,
+  child: () => SILENT_LOGGER,
 };
 
 /** Разные модели у вызовов: видно, что каждый вызов берёт свою модель из конфига. */

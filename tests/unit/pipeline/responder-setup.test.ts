@@ -111,6 +111,7 @@ function companyOff(): CompanyFake {
       Promise.resolve(OFF_TURN.prompt),
     ),
     markAsked: vi.fn<CompanyService['markAsked']>(),
+    stopAwaiting: vi.fn<CompanyService['stopAwaiting']>(),
     identifyAfterReply: vi.fn<CompanyService['identifyAfterReply']>(() => Promise.resolve()),
     summary: vi.fn<CompanyService['summary']>(() => OFF_SUMMARY),
   };

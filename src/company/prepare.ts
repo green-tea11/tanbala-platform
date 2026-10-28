@@ -10,9 +10,10 @@ import { contactJid, type CompanyEnv } from './env.js';
 import { lookupCompany } from './lookup-step.js';
 import { buildPrompt } from './prompt.js';
 import { profileNameForSearch } from './profile-name.js';
+import { recheckCandidate } from './recheck.js';
 import { pollResearch } from './research.js';
 import { searchPhone } from './search-phone.js';
-import { candidateFromLookup, dropForeignCandidate, withProfile } from './transitions.js';
+import { candidateFromLookup, withProfile } from './transitions.js';
 
 /** Бизнес-профиль запрашивается не больше трёх раз на чат: первый запрос и два повтора после сбоя. */
 const MAX_PROFILE_REQUESTS = 3;
@@ -114,10 +115,10 @@ async function runFreeSteps(
 }
 
 /**
- * Что делать перед ответом на пачку клиента: бесплатные шаги определения компании (найденный кандидат сразу
- * снимается, если клиент уже назвал другую компанию), справка подтверждённой компании (если её ещё нет) и опрос
- * идущей проверки новой компании. Состояние пишется только если оно изменилось. Возвращает блок промпта и признак
- * «ждём ответ клиента на вопрос о кандидате».
+ * Что делать перед ответом на пачку клиента: бесплатные шаги определения компании, поиск по названию клиента, если
+ * он уже назвал компанию, а кандидат есть (recheckCandidate: другой ID заменяет кандидата до ответа), справка
+ * подтверждённой компании (если её ещё нет) и опрос идущей проверки новой компании. Состояние пишется только если оно
+ * изменилось. Возвращает блок промпта и признак «ждём ответ клиента на вопрос о кандидате».
  */
 export async function prepareTurn(
   env: CompanyEnv,
@@ -126,7 +127,7 @@ export async function prepareTurn(
 ): Promise<CompanyTurn> {
   const before = env.repo.get(chat.id);
   const found = await runFreeSteps(env, chat, messages, before);
-  const searched = dropForeignCandidate(found, env.clock.now());
+  const searched = await recheckCandidate(env, chat.id, found);
   const briefed = await ensureBrief(env, chat.id, searched);
   const state = await pollResearch(env, chat.id, briefed);
   if (state !== before) env.repo.save(state, env.clock.now());

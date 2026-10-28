@@ -70,6 +70,7 @@ interface Harness {
   readonly logs: { readonly level: string; readonly context: unknown }[];
   readonly chat: Chat;
   readonly summary: Mock<CompanyService['summary']>;
+  readonly stopAwaiting: Mock<CompanyService['stopAwaiting']>;
 }
 
 function createLogger(logs: Harness['logs']): Logger {
@@ -105,12 +106,13 @@ function setup(config: ServicesConfig = CONFIG): Harness {
   };
   const logs: Harness['logs'] = [];
   const summary = vi.fn<CompanyService['summary']>(() => CONFIRMED_SUMMARY);
+  const stopAwaiting = vi.fn<CompanyService['stopAwaiting']>();
   const services = assembleServices({
     config,
     logger: createLogger(logs),
     clock: CLOCK,
     storage,
-    company: { summary },
+    company: { summary, stopAwaiting },
   });
   onTestFinished(async () => {
     await services.stop();
@@ -127,7 +129,7 @@ function setup(config: ServicesConfig = CONFIG): Harness {
     'Клиент',
     T0,
   );
-  return { db, storage, services, sendText, connection, logs, chat, summary };
+  return { db, storage, services, sendText, connection, logs, chat, summary, stopAwaiting };
 }
 
 /** Передача, после которой менеджеру уходит уведомление (лимит: фразы клиенту нет). */
@@ -294,6 +296,17 @@ describe('pipeline/services: подключение появляется поз�
     const [jid, text] = h.sendText.mock.calls[0] ?? [];
     expect(jid).toBe(MANAGER_JID);
     expect(text).toContain('ТОО Склад');
+    expect(h.stopAwaiting).toHaveBeenCalledWith(h.chat.id);
+  });
+
+  it('передача и возврат боту снимают ожидание ответа на «Вы из компании X?» через тот же сервис компании', async () => {
+    const h = setup();
+
+    await limitHandoff(h);
+    await h.services.handoff.returnToBot(h.chat.id);
+
+    expect(h.stopAwaiting.mock.calls).toEqual([[h.chat.id], [h.chat.id]]);
+    expect(h.storage.chats.getById(h.chat.id)?.control).toEqual({ status: 'bot', by: 'panel' });
   });
 });
 

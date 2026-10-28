@@ -4,7 +4,7 @@ import { createAgent } from '../../../src/agent/agent.js';
 import type { TokenUsageEntry } from '../../../src/domain/types.js';
 import { createAnthropicLlm } from '../../../src/llm/anthropic.js';
 import { createFakeLogger, createMemoryTokenLog, fixedClock, openBudget } from '../llm/fakes.js';
-import { context, EMPTY_PROFILE, KNOWLEDGE } from './fakes.js';
+import { context, EMPTY_PROFILE, KNOWLEDGE, SILENT_LOGGER } from './fakes.js';
 
 // Агент с настоящим адаптером Anthropic и SDK, но с поддельным fetch: видно, что именно уйдёт по сети
 // (тела трёх вызовов), а сама сеть не трогается.
@@ -91,7 +91,11 @@ function setup() {
     tokenLog: createMemoryTokenLog(records),
     logger: createFakeLogger([]),
   });
-  return { sent, records, agent: createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS }) };
+  return {
+    sent,
+    records,
+    agent: createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS, logger: SILENT_LOGGER }),
+  };
 }
 
 describe('агент с настоящим адаптером Anthropic', () => {

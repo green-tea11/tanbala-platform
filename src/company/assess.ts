@@ -4,12 +4,7 @@ import type { ChatId } from '../domain/types.js';
 import { ensureBrief } from './brief.js';
 import type { CompanyEnv } from './env.js';
 import { mergeClientPains } from './pains.js';
-import {
-  confirmCandidate,
-  dropForeignCandidate,
-  rejectCandidate,
-  withStatedCompany,
-} from './transitions.js';
+import { confirmCandidate, rejectCandidate, withStatedCompany } from './transitions.js';
 
 /**
  * Ответ клиента на вопрос бота «Вы из компании X?», только пока его ждём (вопрос в последнем отправленном ответе):
@@ -34,9 +29,9 @@ async function applyAnswer(
 }
 
 /**
- * Итог оценки интереса: ответ на вопрос о кандидате, название и город со слов клиента (другая названная компания
- * снимает ещё не спрошенного кандидата не по его словам), боли клиента. Всё сохраняется одной записью; возвращается
- * новое состояние.
+ * Итог оценки интереса: ответ на вопрос о кандидате, название и город со слов клиента, боли клиента. Всё сохраняется
+ * одной записью; возвращается новое состояние. Кандидата другая названная компания здесь не снимает: это решает поиск
+ * по её названию (recheckCandidate), только если он найдёт другую компанию.
  */
 export async function applyMention(
   env: CompanyEnv,
@@ -46,7 +41,7 @@ export async function applyMention(
   const answered = await applyAnswer(env, chatId, env.repo.get(chatId), mention.answer);
   const nowMs = env.clock.now();
   const state: ChatCompanyState = {
-    ...dropForeignCandidate(withStatedCompany(answered, mention), nowMs),
+    ...withStatedCompany(answered, mention),
     confirmedPains: mergeClientPains(answered.confirmedPains, mention.pains),
   };
   env.repo.save(state, nowMs);

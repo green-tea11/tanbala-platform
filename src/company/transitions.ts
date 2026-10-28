@@ -10,8 +10,8 @@ import type {
 } from '../domain/company.js';
 import type { BusinessProfileResult } from '../domain/ports.js';
 import { clipText } from './clip-text.js';
-import { normalizeName } from './normalize-name.js';
 import { domainFromProfile } from './profile-domain.js';
+import { candidateInReply, type ReplyMention } from './reply-mention.js';
 
 /** Длина названия и города со слов клиента: как ограничивает их проект B. */
 const MAX_STATED_NAME_CHARS = 200;
@@ -26,14 +26,6 @@ export type RunningResearch = Extract<ResearchState, { readonly status: 'queued'
 export function isRunning(research: ResearchState | null): research is RunningResearch {
   return research?.status === 'queued' || research?.status === 'running';
 }
-
-/** Кандидат найден по шагам а, б, в или д, а не по словам клиента: если клиент назвал другую компанию, верят ему. */
-const NOT_FROM_CLIENT: ReadonlySet<CandidateSource> = new Set([
-  'profile_domain',
-  'phone',
-  'profile_name',
-  'logo',
-]);
 
 /**
  * Итог запроса бизнес-профиля (шаг а): вид аккаунта и домен компании из сайтов и почты, запрос засчитан. Запрос не
@@ -119,35 +111,35 @@ export function rejectCandidate(state: ChatCompanyState, nowMs: number): ChatCom
 }
 
 /**
- * Клиент сам назвал компанию, а кандидат найден не по его словам (профиль, номер, логотип), ещё не спрошен и
- * называется иначе (после нормализации): кандидат снимается без отклонения, поиск пойдёт по словам клиента.
- * Бесплатные шаги больше не идут, иначе они снова нашли бы того же кандидата.
+ * Бот спросил «Вы из компании X?» (awaitingAnswer true: ждём ответа) или только упомянул кандидата (false): время
+ * вопроса записывается, и вопрос больше не задаётся. Спрошенного кандидата не трогает.
  */
-export function dropForeignCandidate(state: ChatCompanyState, nowMs: number): ChatCompanyState {
-  const { candidate, statedName } = state;
-  if (candidate === null || statedName === null || candidate.askedAtMs !== null) return state;
-  if (!NOT_FROM_CLIENT.has(candidate.source)) return state;
-  if (normalizeName(statedName) === normalizeName(candidate.name)) return state;
-  return { ...state, candidate: null, freeStepsAtMs: state.freeStepsAtMs ?? nowMs };
-}
-
-/** Бот спросил «Вы из компании X?»: время вопроса и ожидание ответа. Спрошенного кандидата не трогает. */
-export function markCandidateAsked(state: ChatCompanyState, nowMs: number): ChatCompanyState {
+export function markCandidateAsked(
+  state: ChatCompanyState,
+  nowMs: number,
+  awaitingAnswer: boolean,
+): ChatCompanyState {
   const { candidate } = state;
   if (candidate === null || candidate.askedAtMs !== null) return state;
-  return { ...state, candidate: { ...candidate, askedAtMs: nowMs, awaitingAnswer: true } };
+  return { ...state, candidate: { ...candidate, askedAtMs: nowMs, awaitingAnswer } };
 }
 
-/** В тексте есть название кандидата целыми словами (без регистра, кавычек и форм собственности). */
-function mentionsName(text: string, name: string): boolean {
-  const wanted = normalizeName(name);
-  return wanted !== '' && ` ${normalizeName(text)} `.includes(` ${wanted} `);
+/** Как ушедший ответ говорит о ещё не спрошенном кандидате: confirm от модели считается вопросом. */
+function replyMention(
+  candidate: ChatCandidate | null,
+  question: CompanyQuestion,
+  sentText: string,
+): ReplyMention {
+  if (candidate === null || candidate.askedAtMs !== null) return 'none';
+  return question === 'confirm' ? 'asked' : candidateInReply(sentText, candidate.name);
 }
 
 /**
- * Ответ бота ушёл клиенту. Кандидат ещё не спрошен, а модель отметила вопрос confirm или в тексте его название:
- * вопрос задан, ждём ответа. Иначе ожидание прошлого вопроса снимается (ответ на пачку ушёл, «да» или «нет» в ней
- * не было), и вопрос больше не задаётся. name: время вопроса о названии (его по тексту не угадываем).
+ * Ответ бота ушёл клиенту. Кандидат ещё не спрошен, а модель отметила вопрос confirm или его название стоит в
+ * предложении-вопросе (см. candidateInReply): вопрос задан, ждём ответа. Название только упомянуто: время вопроса
+ * без ожидания (вопрос больше не задаётся, а «да» на другой вопрос компанию не подтвердит). Иначе ожидание прошлого
+ * вопроса снимается (ответ на пачку ушёл, «да» или «нет» в ней не было). name: время вопроса о названии (его по
+ * тексту не угадываем).
  */
 export function afterReplySent(
   state: ChatCompanyState,
@@ -155,12 +147,11 @@ export function afterReplySent(
   sentText: string,
   nowMs: number,
 ): ChatCompanyState {
-  const { candidate } = state;
-  const asks =
-    candidate !== null &&
-    candidate.askedAtMs === null &&
-    (question === 'confirm' || mentionsName(sentText, candidate.name));
-  const marked = asks ? markCandidateAsked(state, nowMs) : stopAwaiting(state);
+  const mention = replyMention(state.candidate, question, sentText);
+  const marked =
+    mention === 'none'
+      ? stopAwaiting(state)
+      : markCandidateAsked(state, nowMs, mention === 'asked');
   return question === 'name' ? markNameAsked(marked, nowMs) : marked;
 }
 

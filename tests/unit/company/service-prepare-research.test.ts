@@ -115,15 +115,8 @@ describe('prepare: справка подтверждённой компании'
     expect(h.repo.current().confirmed?.brief).not.toBeNull();
   });
 
-  it.each<CompanyApiFailure>([
-    'not_found',
-    'invalid_response',
-    'unauthorized',
-    'bad_request',
-    'rate_limited',
-    'budget_exhausted',
-  ])(
-    'сбой справки %s: без исключения, неудача считается, в лог только чат, шаг и код',
+  it.each<CompanyApiFailure>(['not_found', 'bad_request', 'rate_limited', 'budget_exhausted'])(
+    'постоянный сбой справки %s: без исключения, неудача считается, в лог только чат, шаг и код',
     async (failure) => {
       const h = createHarness({
         state: confirmedWithoutBrief,
@@ -141,8 +134,8 @@ describe('prepare: справка подтверждённой компании'
     },
   );
 
-  it.each<CompanyApiFailure>(['unavailable', 'timeout'])(
-    'сбой справки %s (временный) не считается: справку спросят снова',
+  it.each<CompanyApiFailure>(['unavailable', 'timeout', 'unauthorized', 'invalid_response'])(
+    'временный сбой справки %s не считается: справку спросят снова, в лог только чат, шаг и код',
     async (failure) => {
       const h = createHarness({
         state: makeState({ ...FREE_DONE, confirmed: makeConfirmed(), briefFailures: 2 }),
@@ -153,6 +146,7 @@ describe('prepare: справка подтверждённой компании'
 
       expect(h.directory.count('brief')).toBe(4);
       expect(h.repo.current().briefFailures).toBe(2);
+      expect(h.logs[0]?.context).toEqual({ chatId: 12, step: 'brief', failure });
     },
   );
 

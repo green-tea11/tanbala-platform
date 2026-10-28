@@ -103,6 +103,8 @@ interface SetupOptions {
   readonly openError?: Error;
   /** Сводка о компании клиента (по умолчанию функция выключена) или ошибка её чтения. */
   readonly company?: CompanySummary | Error;
+  /** Снятие ожидания ответа о компании падает этой ошибкой. */
+  readonly stopAwaitingError?: Error;
 }
 
 interface Harness {
@@ -118,6 +120,8 @@ interface Harness {
   readonly notifications: NotifyCall[];
   /** ID чатов, для которых читалась сводка о компании. */
   readonly summaries: ChatId[];
+  /** ID чатов, для которых снималось ожидание ответа на «Вы из компании X?». */
+  readonly stopped: ChatId[];
 }
 
 function setup(options: SetupOptions = {}): Harness {
@@ -130,6 +134,7 @@ function setup(options: SetupOptions = {}): Harness {
   const texts: TextCall[] = [];
   const notifications: NotifyCall[] = [];
   const summaries: ChatId[] = [];
+  const stopped: ChatId[] = [];
   let chat = options.chat === undefined ? makeChat() : options.chat;
   let isOpen = options.alreadyOpen === true;
   const unexpected = (): never => {
@@ -207,6 +212,11 @@ function setup(options: SetupOptions = {}): Harness {
       if (summary instanceof Error) throw summary;
       return summary;
     },
+    stopAwaiting: (chatId: ChatId): void => {
+      events.push('company.stopAwaiting');
+      stopped.push(chatId);
+      if (options.stopAwaitingError !== undefined) throw options.stopAwaitingError;
+    },
   };
   const service = createHandoffService({
     chats,
@@ -229,12 +239,16 @@ function setup(options: SetupOptions = {}): Harness {
     texts,
     notifications,
     summaries,
+    stopped,
   };
 }
 
+/** Снятие ожидания ответа на «Вы из компании X?»: последний шаг любой передачи, чат уже у менеджера. */
+const STOP_AWAITING = 'company.stopAwaiting';
+
 // Уведомление менеджеру идёт сразу после транзакции, до фразы клиенту: фраза может ждать повтор 5 с, и падение
 // процесса в этом окне не должно оставить горячего клиента без записи в manager_notifications.
-const FULL_FLOW = [
+const PHRASE_FLOW = [
   'tx:begin',
   'handoffs.open',
   'chats.setStatus',
@@ -242,6 +256,9 @@ const FULL_FLOW = [
   'notifier.notify',
   'outbox.sendHandoffNotice',
 ];
+
+/** Передача с фразой целиком: после фразы снимается ожидание ответа о компании. */
+const FULL_FLOW = [...PHRASE_FLOW, STOP_AWAITING];
 
 type PlainReason = 'hot' | 'no_answer' | 'check_failed' | 'asked_human' | 'llm_error';
 
@@ -397,7 +414,7 @@ describe('createHandoffService: handOff с фразой клиенту', () => {
 
     await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
 
-    expect(h.events).toEqual(['tx:begin', 'handoffs.open', 'tx:commit']);
+    expect(h.events).toEqual(['tx:begin', 'handoffs.open', 'tx:commit', STOP_AWAITING]);
     expect(h.statusChanges).toEqual([]);
     expect(h.notices).toEqual([]);
     expect(h.notifications).toEqual([]);
@@ -447,6 +464,7 @@ describe('createHandoffService: handOff с фразой клиенту', () => {
     expect(h.events).toEqual(['tx:begin', 'handoffs.open', 'chats.setStatus', 'tx:rollback']);
     expect(h.notices).toEqual([]);
     expect(h.notifications).toEqual([]);
+    expect(h.stopped).toEqual([]);
   });
 
   it('запись передачи не удалась: статус не меняется, фразы и уведомления нет', async () => {
@@ -474,6 +492,7 @@ describe('createHandoffService: handOff с фразой клиенту', () => {
       'outbox.sendHandoffNotice',
       'clock.sleep:5000',
       'outbox.sendHandoffNotice',
+      STOP_AWAITING,
     ]);
     expect(h.notices).toEqual([
       { chatId: CHAT_ID, notice: { reason: 'hot' }, replyToWaId: IN_1 },
@@ -594,7 +613,8 @@ describe('createHandoffService: handOff с фразой клиенту', () => {
       setImmediate(resolve);
     });
 
-    expect(h.events).toEqual(FULL_FLOW);
+    // Ожидание ответа о компании снимается после фразы; до того чат уже у менеджера, а бот молчит.
+    expect(h.events).toEqual(PHRASE_FLOW);
     expect(h.notifications).toEqual([
       expect.objectContaining({ kind: 'handoff', chatId: CHAT_ID, context: { reason: 'hot' } }),
     ]);
@@ -632,6 +652,7 @@ describe('createHandoffService: handOff с сообщением модели в�
     'tx:commit',
     'notifier.notify',
     'outbox.sendHandoffText',
+    STOP_AWAITING,
   ];
 
   it('горячий клиент: порядок прежний, уведомление менеджеру до сообщения клиенту; клиенту уходит этот текст, фиксированной фразы нет', async () => {
@@ -705,6 +726,7 @@ describe('createHandoffService: handOff с сообщением модели в�
       'outbox.sendHandoffText',
       'clock.sleep:5000',
       'outbox.sendHandoffText',
+      STOP_AWAITING,
     ]);
     expect(h.texts).toEqual([
       { chatId: CHAT_ID, text: MODEL_TEXT, replyToWaId: IN_1 },
@@ -757,7 +779,7 @@ describe('createHandoffService: handOff с сообщением модели в�
 
     await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1, text: MODEL_TEXT });
 
-    expect(h.events).toEqual(['tx:begin', 'handoffs.open', 'tx:commit']);
+    expect(h.events).toEqual(['tx:begin', 'handoffs.open', 'tx:commit', STOP_AWAITING]);
     expect(h.texts).toEqual([]);
     expect(h.notices).toEqual([]);
     expect(h.notifications).toEqual([]);
@@ -797,6 +819,7 @@ describe('createHandoffService: handOff без фразы клиенту', () =>
         'chats.setStatus',
         'tx:commit',
         'notifier.notify',
+        STOP_AWAITING,
       ]);
       expect(h.opened[0]).toMatchObject({ chatId: CHAT_ID, reason: 'limit' });
       expect(h.statusChanges).toEqual([
@@ -835,7 +858,13 @@ describe('createHandoffService: handOff без фразы клиенту', () =>
 
       await h.service.handOff(CHAT_ID, { reason: 'human_took_over', by });
 
-      expect(h.events).toEqual(['tx:begin', 'handoffs.open', 'chats.setStatus', 'tx:commit']);
+      expect(h.events).toEqual([
+        'tx:begin',
+        'handoffs.open',
+        'chats.setStatus',
+        'tx:commit',
+        STOP_AWAITING,
+      ]);
       expect(h.opened[0]).toMatchObject({ chatId: CHAT_ID, reason: 'human_took_over' });
       expect(h.statusChanges).toEqual([
         { id: CHAT_ID, change: { status: 'manager', by }, nowMs: T0 },
@@ -853,7 +882,13 @@ describe('createHandoffService: handOff без фразы клиенту', () =>
 
     await h.service.handOff(CHAT_ID, { reason: 'human_took_over', by: 'phone' });
 
-    expect(h.events).toEqual(['tx:begin', 'handoffs.open', 'chats.setStatus', 'tx:commit']);
+    expect(h.events).toEqual([
+      'tx:begin',
+      'handoffs.open',
+      'chats.setStatus',
+      'tx:commit',
+      STOP_AWAITING,
+    ]);
     expect(h.statusChanges).toEqual([
       { id: CHAT_ID, change: { status: 'manager', by: 'phone' }, nowMs: T0 },
     ]);
@@ -875,7 +910,7 @@ describe('createHandoffService: handOff без фразы клиенту', () =>
       await h.service.handOff(CHAT_ID, { reason: 'human_took_over', by });
 
       expect(h.statusChanges).toEqual([]);
-      expect(h.events).toEqual(['tx:begin', 'handoffs.open', 'tx:commit']);
+      expect(h.events).toEqual(['tx:begin', 'handoffs.open', 'tx:commit', STOP_AWAITING]);
     },
   );
 
@@ -969,7 +1004,14 @@ describe('createHandoffService: returnToBot', () => {
 
     await h.service.returnToBot(CHAT_ID);
 
-    expect(h.events).toEqual(['tx:begin', 'handoffs.resolve', 'chats.setStatus', 'tx:commit']);
+    expect(h.events).toEqual([
+      STOP_AWAITING,
+      'tx:begin',
+      'handoffs.resolve',
+      'chats.setStatus',
+      'tx:commit',
+    ]);
+    expect(h.stopped).toEqual([CHAT_ID]);
     expect(h.resolved).toEqual([{ chatId: CHAT_ID, nowMs: T0 }]);
     expect(h.statusChanges).toEqual([
       { id: CHAT_ID, change: { status: 'bot', by: 'panel' }, nowMs: T0 },
@@ -1009,6 +1051,86 @@ describe('createHandoffService: returnToBot', () => {
     });
 
     await expect(h.service.returnToBot(CHAT_ID)).rejects.toBe(failure);
-    expect(h.events).toEqual(['tx:begin', 'handoffs.resolve', 'chats.setStatus', 'tx:rollback']);
+    expect(h.events).toEqual([
+      STOP_AWAITING,
+      'tx:begin',
+      'handoffs.resolve',
+      'chats.setStatus',
+      'tx:rollback',
+    ]);
+  });
+});
+
+describe('createHandoffService: ожидание ответа на «Вы из компании X?»', () => {
+  it.each<[string, HandOffRequest]>([
+    ['фраза', { reason: 'hot', replyToWaId: IN_1 }],
+    ['сообщение модели', { reason: 'no_answer', replyToWaId: IN_1, text: MODEL_TEXT }],
+    ['жалоба', { reason: 'complaint', stopRequested: false, replyToWaId: IN_1 }],
+    ['лимит без фразы', { reason: 'limit', scope: 'chat' }],
+    ['перехват с телефона', { reason: 'human_took_over', by: 'phone' }],
+    ['перехват из панели', { reason: 'human_took_over', by: 'panel' }],
+  ])('%s: последним шагом передачи снимается ожидание этого чата', async (_case, request) => {
+    const h = setup();
+
+    await h.service.handOff(CHAT_ID, request);
+
+    expect(h.stopped).toEqual([CHAT_ID]);
+    expect(h.events.at(-1)).toBe(STOP_AWAITING);
+  });
+
+  it('фраза не ушла и после повтора: ожидание всё равно снимается', async () => {
+    const h = setup({ phrase: new Error('Connection Closed') });
+
+    await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
+
+    expect(h.stopped).toEqual([CHAT_ID]);
+  });
+
+  it('передача уже открыта: ожидание всё равно снимается, чат у менеджера', async () => {
+    const h = setup({
+      alreadyOpen: true,
+      chat: makeChat({ control: { status: 'manager', by: 'bot' } }),
+    });
+
+    await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
+
+    expect(h.stopped).toEqual([CHAT_ID]);
+  });
+
+  it('запись передачи не удалась: ожидание не снимается, чат остаётся у бота', async () => {
+    const h = setup({ openError: new Error('база недоступна') });
+
+    await expect(
+      h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 }),
+    ).rejects.toThrow();
+    expect(h.stopped).toEqual([]);
+  });
+
+  it('снять ожидание не удалось: передача уже записана, отказа нет, в лог ID чата и имя ошибки', async () => {
+    const h = setup({ stopAwaitingError: new TypeError('Альфа: база недоступна') });
+
+    await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
+
+    expect(h.events).toEqual(FULL_FLOW);
+    expect(h.notices).toHaveLength(1);
+    const warnings = h.logs.filter((entry) => entry.level === 'warn');
+    expect(warnings).toEqual([
+      expect.objectContaining({ context: { chatId: CHAT_ID, errorName: 'TypeError' } }),
+    ]);
+    expect(loggedText(h.logs)).not.toContain('Альфа');
+  });
+
+  it('возврат боту: ожидание снимается до транзакции; сбой => отказ, передача и статус не меняются', async () => {
+    const failure = new Error('база недоступна');
+    const h = setup({
+      alreadyOpen: true,
+      chat: makeChat({ control: { status: 'manager', by: 'bot' } }),
+      stopAwaitingError: failure,
+    });
+
+    await expect(h.service.returnToBot(CHAT_ID)).rejects.toBe(failure);
+    expect(h.events).toEqual([STOP_AWAITING]);
+    expect(h.resolved).toEqual([]);
+    expect(h.statusChanges).toEqual([]);
   });
 });

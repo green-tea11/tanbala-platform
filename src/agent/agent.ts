@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { ModelsConfig } from '../config/env.js';
 import type { CompanyPrompt, LogoReader } from '../domain/company.js';
-import type { ImageInput, LlmClient, SystemBlock } from '../domain/ports.js';
+import type { ImageInput, LlmClient, Logger, SystemBlock } from '../domain/ports.js';
 import type {
   ChatId,
   ClientProfile,
@@ -85,6 +85,8 @@ export interface AgentDeps {
   llm: LlmClient;
   knowledge: Knowledge;
   models: ModelsConfig;
+  /** Только предупреждение при создании: в документе владельца нет списка болей раздела 5. */
+  logger: Logger;
 }
 
 /** Сколько последних сообщений истории уходит в промпт: столько же конвейеру достаточно брать из базы. */
@@ -198,20 +200,82 @@ function replyCallData(
   return parts.length === 0 ? null : parts.join('\n\n');
 }
 
+/** Заголовок раздела 5 документа владельца: в нём список болей, с которыми приходят клиенты. */
+const PAINS_HEADING = '## 5. Какие задачи решаем';
+
+/** Начало абзаца после списка болей: его список «Что меняется» за боли не принимается. */
+const PAINS_END = 'Что меняется';
+
+const LIST_ITEM = '- ';
+
+/** Пробелы и знаки на конце боли, которые сравнение не учитывает. */
+const PAIN_TAIL = /[\s.;,]+$/u;
+
+const NO_PAINS_TEXT =
+  'Раздел 5 «Какие задачи решаем» со списком болей не найден в документе владельца: боли справки модели не передаются';
+
+/** Сравнимый вид боли: нижний регистр, «ё» как «е», одинарные пробелы, без пробелов по краям и «.;,» на конце. */
+function painKey(text: string): string {
+  return text
+    .toLowerCase()
+    .replaceAll('ё', 'е')
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .replace(PAIN_TAIL, '');
+}
+
 /**
- * Справку пишет почтовый проект: боль, которой нет в документе владельца (раздел 5 knowledge/tanbala-agent.md),
- * модели не передаётся. Боль остаётся, если её строка без пробелов по краям входит в документ без учёта регистра
- * (ownerLower: текст документа в нижнем регистре); пустая строка не остаётся. Не confirmed => блок как есть.
+ * Пункты списка болей: первый список после заголовка раздела 5 до первой строки не из списка (пустой строки перед
+ * «Что меняется»). Список ищется только до «Что меняется» или следующего заголовка. null: нет раздела или списка.
+ */
+function painItems(owner: string): readonly string[] | null {
+  const lines = owner.split(/\r?\n/u).map((line) => line.trim());
+  const heading = lines.indexOf(PAINS_HEADING);
+  if (heading === -1) return null;
+  const section = lines.slice(heading + 1);
+  const sectionEnd = section.findIndex(
+    (line) => line.startsWith('#') || line.startsWith(PAINS_END),
+  );
+  const body = sectionEnd === -1 ? section : section.slice(0, sectionEnd);
+  const first = body.findIndex((line) => line.startsWith(LIST_ITEM));
+  if (first === -1) return null;
+  const list = body.slice(first);
+  const listEnd = list.findIndex((line) => !line.startsWith(LIST_ITEM));
+  const items = listEnd === -1 ? list : list.slice(0, listEnd);
+  return items.map((line) => line.slice(LIST_ITEM.length));
+}
+
+/**
+ * Боли документа владельца в сравнимом виде (painKey), разбор один раз при создании агента: каждый пункт списка
+ * раздела 5 целиком, а пункт с пояснением в скобках ещё и началом до скобки («вещи теряются, и никто не знает, где
+ * они» при пункте «... где они (например, инструмент между сменами);»). Раздела или списка нет => пустой набор
+ * (боли модели не передаются) и одно предупреждение в лог.
+ */
+function ownerPains(owner: string, logger: Logger): ReadonlySet<string> {
+  const items = painItems(owner);
+  if (items === null) {
+    logger.warn({}, NO_PAINS_TEXT);
+    return new Set();
+  }
+  const keys = items.flatMap((item) => {
+    const open = item.indexOf('(');
+    return open === -1 ? [painKey(item)] : [painKey(item), painKey(item.slice(0, open))];
+  });
+  return new Set(keys.filter((key) => key !== ''));
+}
+
+/**
+ * Справку пишет почтовый проект: боль, которой нет в списке раздела 5 документа владельца, модели не передаётся.
+ * Боль остаётся, только если её сравнимый вид (painKey) совпадает с пунктом списка или с началом пункта до скобки
+ * (known, ownerPains); часть пункта, слово или строка из другого места документа не проходят. Не confirmed => блок
+ * как есть.
  */
 function withKnownPains(
   company: CompanyPrompt | undefined,
-  ownerLower: string,
+  known: ReadonlySet<string>,
 ): CompanyPrompt | undefined {
   if (company?.kind !== 'confirmed') return company;
-  const pains = company.pains.filter((pain) => {
-    const needle = pain.trim().toLowerCase();
-    return needle !== '' && ownerLower.includes(needle);
-  });
+  const pains = company.pains.filter((pain) => known.has(painKey(pain)));
   return { ...company, pains };
 }
 
@@ -255,7 +319,8 @@ function createAsk(deps: AgentDeps): Ask {
  * (feedback); схема replyDraftSchema, ответ нормализуется в ReplyDraft.
  * reviewDraft: модель models.review, данные вызова: что допустимо о компании клиента и текст черновика (не репликой
  * assistant); схема reviewSchema, противоречия снимает normalizeReview. Пустой черновик не проходит и LLM не вызывает.
- * В блоке о компании ответа и проверки боли справки только из документа владельца (withKnownPains).
+ * В блоке о компании ответа и проверки боли справки только из списка раздела 5 документа владельца (withKnownPains,
+ * список разбирается один раз здесь: ownerPains).
  * assessInterest: модель models.interest, данные вызова: текущий уровень, выжимка и вопрос «Вы из компании X?»;
  * схема interestSchema, normalizeInterest чистит поля и сохраняет известное раньше.
  * readLogo: модель models.logo, system только инструкция logo (без знаний и истории), одна реплика user с фото;
@@ -264,13 +329,13 @@ function createAsk(deps: AgentDeps): Ask {
 export function createAgent(deps: AgentDeps): Agent {
   const ask = createAsk(deps);
   const logoSystem = buildSystem(deps.knowledge, 'logo');
-  const ownerLower = deps.knowledge.owner.toLowerCase();
+  const knownPains = ownerPains(deps.knowledge.owner, deps.logger);
   return {
     async draftReply(
       context: ConversationContext,
       feedback: readonly string[] = [],
     ): Promise<LlmResult<ReplyDraft>> {
-      const company = withKnownPains(context.company, ownerLower);
+      const company = withKnownPains(context.company, knownPains);
       const callData = replyCallData(context.profile, company, feedback);
       const result = await ask('reply', replyDraftSchema, context, callData);
       return result.ok ? normalizeReplyDraft(result.value) : result;
@@ -283,7 +348,7 @@ export function createAgent(deps: AgentDeps): Agent {
       if (draftText.trim() === '') {
         return { ok: true, value: EMPTY_DRAFT_REVIEW };
       }
-      const company = withKnownPains(context.company, ownerLower);
+      const company = withKnownPains(context.company, knownPains);
       const callData = reviewCallData(draftText, kind, companyReviewData(company));
       const result = await ask('review', reviewSchema, context, callData);
       return result.ok ? { ok: true, value: normalizeReview(result.value) } : result;

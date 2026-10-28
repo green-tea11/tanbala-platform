@@ -14,6 +14,7 @@ import {
   KNOWLEDGE,
   MODELS,
   onlyRequest,
+  SILENT_LOGGER,
 } from './fakes.js';
 
 async function draft(
@@ -22,7 +23,7 @@ async function draft(
   feedback?: readonly string[],
 ) {
   const { requests, llm } = fakeLlm(answer);
-  const agent = createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS });
+  const agent = createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS, logger: SILENT_LOGGER });
   const result = await agent.draftReply(ctx, feedback);
   return { result, request: onlyRequest(requests) };
 }
@@ -271,7 +272,7 @@ describe('createAgent: draftReply, нормализация ответа мод�
 describe('createAgent: три вызова', () => {
   it('первый блок system (знания с кэшем) одинаков байт в байт у ответа, проверки и оценки интереса', async () => {
     const { requests, llm } = fakeLlm({ ok: false, failure: 'disabled' });
-    const agent = createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS });
+    const agent = createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS, logger: SILENT_LOGGER });
 
     await agent.draftReply(context());
     await agent.reviewDraft(context(), 'Какой у вас бизнес?');
@@ -288,7 +289,7 @@ describe('createAgent: три вызова', () => {
 
   it('после знаний у каждого вызова своя инструкция без кэша', async () => {
     const { requests, llm } = fakeLlm({ ok: false, failure: 'disabled' });
-    const agent = createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS });
+    const agent = createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS, logger: SILENT_LOGGER });
 
     await agent.draftReply(context());
     await agent.reviewDraft(context(), 'Какой у вас бизнес?');
@@ -313,7 +314,7 @@ describe('createAgent: модели из config/models.json', () => {
 
   it('каждый вызов берёт свою модель из конфига: ответ на Sonnet, проверка и оценка на Haiku', async () => {
     const { requests, llm } = fakeLlm({ ok: false, failure: 'disabled' });
-    const agent = createAgent({ llm, knowledge: KNOWLEDGE, models });
+    const agent = createAgent({ llm, knowledge: KNOWLEDGE, models, logger: SILENT_LOGGER });
 
     await agent.draftReply(context());
     await agent.reviewDraft(context(), 'Какой у вас бизнес?');

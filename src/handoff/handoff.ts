@@ -43,10 +43,14 @@ export interface HandoffService {
    * горячего клиента без записи в manager_notifications.
    * Исключение при отправке фразы повторяется один раз через PHRASE_RETRY_DELAY_MS внутри handOff, поэтому
    * вызывающему оборачивать передачу в свои повторы не нужно: достаточно поймать исключение записи.
-   * Открытая передача уже есть: повтор ничего не дублирует (ни фразы, ни уведомления).
+   * Открытая передача уже есть: повтор ничего не дублирует (ни фразы, ни уведомления). В конце любой записанной
+   * передачи снимается ожидание ответа на «Вы из компании X?» (CompanyService.stopAwaiting).
    */
   handOff(chatId: ChatId, request: HandOffRequest): Promise<void>;
-  /** Вернуть чат боту вручную из панели: закрыть передачу и поставить статус bot (by 'panel') одной транзакцией. */
+  /**
+   * Вернуть чат боту вручную из панели: снять ожидание ответа на «Вы из компании X?», затем закрыть передачу и
+   * поставить статус bot (by 'panel') одной транзакцией.
+   */
   returnToBot(chatId: ChatId): Promise<void>;
 }
 
@@ -60,8 +64,11 @@ export interface HandoffDeps {
   outbox: Pick<Outbox, 'sendHandoffNotice' | 'sendHandoffText'>;
   /** Запись уведомления в базу, отправка менеджеру и повтор при сбое (handoff/notifier.ts). */
   notifier: Pick<ManagerNotifier, 'notify'>;
-  /** Сводка о компании клиента: строки уведомления о передаче (kind handoff). Лимит её не получает. */
-  company: Pick<CompanyService, 'summary'>;
+  /**
+   * Компания клиента: сводка для строк уведомления о передаче (kind handoff, лимит её не получает) и снятие ожидания
+   * ответа на «Вы из компании X?» при передаче и возврате боту.
+   */
+  company: Pick<CompanyService, 'summary' | 'stopAwaiting'>;
   clock: Clock;
   logger: Logger;
 }
@@ -99,7 +106,10 @@ type ManagerChange = Extract<Parameters<ChatsRepo['setStatus']>[1], { readonly s
  * то этот текст через outbox.sendHandoffText вместо фразы (кроме human_took_over и limit; при исключении один повтор
  * через 5 с). Порядок такой, чтобы запись в manager_notifications не зависела от фразы: пока фраза ждёт повтор,
  * процесс может упасть. Пустой MANAGER_WHATSAPP и сбои отправки обрабатывает notifier: уведомление остаётся в
- * панели, отправка повторяется. Логи без имён, номеров и текста.
+ * панели, отправка повторяется. Последний шаг любой записанной передачи (после фразы или сообщения клиенту, у лимита
+ * после уведомления, у перехвата сразу, у повтора тоже): company.stopAwaiting, иначе «да» на фразу передачи или на
+ * вопрос менеджера подтвердило бы компанию; его сбой идёт в лог и наружу не бросается. returnToBot снимает ожидание
+ * до транзакции: сбой => отказ, чат остаётся у менеджера. Логи без имён, номеров и текста.
  */
 export function createHandoffService(deps: HandoffDeps): HandoffService {
   return {
@@ -114,16 +124,41 @@ export function createHandoffService(deps: HandoffDeps): HandoffService {
 
 async function handOff(deps: HandoffDeps, chatId: ChatId, request: HandOffRequest): Promise<void> {
   const chat = requireChat(deps.chats, chatId);
-  if (!recordHandoff(deps, chat, request)) {
+  if (recordHandoff(deps, chat, request)) {
+    deps.logger.info(
+      { chatId, reason: request.reason, level: chat.level },
+      'Чат передан менеджеру',
+    );
+    await deliver(deps, chat, request);
+  } else {
     deps.logger.info({ chatId, reason: request.reason }, 'Передача уже открыта: повтор пропущен');
-    return;
   }
-  deps.logger.info({ chatId, reason: request.reason, level: chat.level }, 'Чат передан менеджеру');
+  // Чат у менеджера: ответ клиента на фразу передачи или на вопрос менеджера не ответ на «Вы из компании X?».
+  stopAwaiting(deps, chat.id);
+}
+
+/** Уведомление менеджеру и фраза клиенту после записи передачи: при перехвате ни того, ни другого, у лимита без фразы. */
+async function deliver(deps: HandoffDeps, chat: Chat, request: HandOffRequest): Promise<void> {
   if (request.reason === 'human_took_over') return;
   // Менеджеру первым, сразу после транзакции: запись в manager_notifications появляется до фразы клиенту. Фраза
   // может ждать повтор 5 с, и падение процесса в этом окне оставило бы горячего клиента без уведомления и без повтора.
   await tellManager(deps, chat, request);
   if (request.reason !== 'limit') await sayToClient(deps, chat.id, request);
+}
+
+/**
+ * Снимает ожидание ответа о компании после записанной передачи. Сбой (база) передачу не отменяет: в лог ID чата и имя
+ * ошибки; ожидание снимет возврат чата боту (returnToBot), а пока чат у менеджера, бот не отвечает.
+ */
+function stopAwaiting(deps: HandoffDeps, chatId: ChatId): void {
+  try {
+    deps.company.stopAwaiting(chatId);
+  } catch (error: unknown) {
+    deps.logger.warn(
+      { chatId, errorName: errorNameOf(error) },
+      'Ожидание ответа о компании не снято: снимется при возврате чата боту',
+    );
+  }
 }
 
 /** Запись передачи и смена статуса одной транзакцией. false: открытая передача уже была. */
@@ -266,8 +301,13 @@ function phoneOf(chat: Chat): PhoneDigits | null {
   return pnJid === null ? null : jidToPhone(pnJid);
 }
 
+/**
+ * Возврат боту. Ожидание ответа на «Вы из компании X?» снимается до транзакции: иначе первое «да» клиента после
+ * возврата подтвердило бы компанию. Его сбой (база) идёт отказом, и чат остаётся у менеджера.
+ */
 function returnToBot(deps: HandoffDeps, chatId: ChatId): void {
   requireChat(deps.chats, chatId);
+  deps.company.stopAwaiting(chatId);
   const nowMs = deps.clock.now();
   deps.unitOfWork.run(() => {
     deps.handoffs.resolve(chatId, nowMs);

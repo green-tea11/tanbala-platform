@@ -5,6 +5,7 @@ import { contactJid, type CompanyEnv } from './env.js';
 import { logFailure } from './log.js';
 import { lookupCompany } from './lookup-step.js';
 import { normalizeName } from './normalize-name.js';
+import { recheckCandidate } from './recheck.js';
 import { startResearch } from './research.js';
 import { candidateFromLookup } from './transitions.js';
 
@@ -104,12 +105,16 @@ function identifyStep(
 }
 
 /**
- * После ответа клиенту: если компания ещё не определилась, шаг г (название со слов клиента, затем проверка новой
- * компании) или, когда клиент компанию не называл, шаг д (логотип). Состояние пишется только если оно изменилось.
+ * После ответа клиенту, пока компания не подтверждена. Кандидата нет: шаг г (название со слов клиента, затем проверка
+ * новой компании) или, когда клиент компанию не называл, шаг д (логотип). Кандидат есть: поиск по названию клиента
+ * может заменить его другой найденной компанией (recheckCandidate). Состояние пишется только если оно изменилось.
  */
 export async function identifyChat(env: CompanyEnv, chat: Chat): Promise<void> {
   const before = env.repo.get(chat.id);
-  if (before.confirmed !== null || before.candidate !== null) return;
-  const after = await identifyStep(env, chat, before);
+  if (before.confirmed !== null) return;
+  const after =
+    before.candidate === null
+      ? await identifyStep(env, chat, before)
+      : await recheckCandidate(env, chat.id, before);
   if (after !== before) env.repo.save(after, env.clock.now());
 }

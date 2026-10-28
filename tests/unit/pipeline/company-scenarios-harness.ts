@@ -210,6 +210,8 @@ export interface Scenario {
   readonly logs: readonly LogEntry[];
   readonly storage: Storage;
   readonly company: CompanySetup;
+  /** Общие службы: передача и возврат чата боту (как из панели). */
+  readonly services: Services;
   readonly chatId: () => ChatId;
   /** Состояние определения компании в базе. */
   readonly state: () => ChatCompanyState;
@@ -447,6 +449,7 @@ export function createScenario(options: ScenarioOptions = {}): Scenario {
     logs: rig.logs,
     storage: rig.storage,
     company: rig.company,
+    services: rig.services,
     chatId: currentChatId,
     state: () => rig.storage.chatCompanies.get(currentChatId()),
   };

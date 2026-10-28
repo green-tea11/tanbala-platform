@@ -19,7 +19,13 @@ import type {
   Jid,
   WaMessageId,
 } from '../../../../src/domain/types.js';
-import { makeChatCandidate, makeConfirmed, makeState } from '../../company/builders.js';
+import {
+  companyIdOf,
+  jobIdOf,
+  makeChatCandidate,
+  makeConfirmed,
+  makeState,
+} from '../../company/builders.js';
 import { createFakeLogger, type LogEntry } from '../../handoff/fakes.js';
 import { EMPTY_PROFILE, insertChat, LID_A, PN_A, profileOf, useMigratedDb } from '../fixture.js';
 
@@ -363,7 +369,7 @@ describe('слияние чатов: состояние определения �
     ]);
   });
 
-  it('запись есть у обоих, у оставшегося свежее: остаётся своя, запись слитого пропадает', () => {
+  it('запись есть у обоих, у оставшегося свежее: слова клиента из своей, подтверждённая компания из слитого не теряется', () => {
     const { db, chats, survivor, absorbed } = pair();
     const { repo } = companies(db);
     repo.save(confirmedState(absorbed.id), T0 + 10);
@@ -371,13 +377,15 @@ describe('слияние чатов: состояние определения �
 
     merge(chats);
 
-    expect(repo.get(survivor.id)).toEqual(makeState({ chatId: survivor.id, statedName: 'Своя' }));
+    expect(repo.get(survivor.id)).toEqual(
+      makeState({ chatId: survivor.id, statedName: 'Своя', confirmed: makeConfirmed() }),
+    );
     expect(db.prepare('SELECT chat_id, updated_at FROM chat_companies').all()).toEqual([
       { chat_id: survivor.id, updated_at: T0 + 20 },
     ]);
   });
 
-  it('запись есть у обоих с одним временем записи: остаётся своя запись оставшегося чата', () => {
+  it('запись есть у обоих с одним временем записи: свежей считается запись оставшегося чата', () => {
     const { db, chats, survivor, absorbed } = pair();
     const { repo } = companies(db);
     repo.save(makeState({ chatId: survivor.id, statedName: 'Своя' }), T0 + 10);
@@ -385,8 +393,105 @@ describe('слияние чатов: состояние определения �
 
     merge(chats);
 
-    expect(repo.get(survivor.id)).toEqual(makeState({ chatId: survivor.id, statedName: 'Своя' }));
+    expect(repo.get(survivor.id)).toEqual(
+      makeState({ chatId: survivor.id, statedName: 'Своя', confirmed: makeConfirmed() }),
+    );
     expect(db.prepare('SELECT count(*) FROM chat_companies').pluck().get()).toBe(1);
+  });
+
+  it('слияние по полям: отказы объединяются, проверка и отметка запуска не теряются, счётчики по максимуму', () => {
+    const { db, chats, survivor, absorbed } = pair();
+    const { repo } = companies(db);
+    const research = {
+      status: 'running',
+      jobId: jobIdOf('job-1'),
+      startedAtMs: T0,
+      checkedAtMs: T0 + 5,
+    } as const;
+    repo.save(
+      makeState({
+        chatId: survivor.id,
+        rejectedIds: [companyIdOf(3)],
+        research,
+        researchStartedAtMs: T0,
+        briefFailures: 2,
+        logoCheckedAtMs: T0 + 1,
+      }),
+      T0 + 10,
+    );
+    repo.save(
+      makeState({
+        chatId: absorbed.id,
+        rejectedIds: [companyIdOf(5)],
+        candidate: makeChatCandidate({ id: companyIdOf(3) }),
+        adoptFailures: 1,
+        statedName: 'Бета',
+      }),
+      T0 + 20,
+    );
+
+    merge(chats);
+
+    expect(repo.get(survivor.id)).toEqual(
+      makeState({
+        chatId: survivor.id,
+        rejectedIds: [companyIdOf(3), companyIdOf(5)],
+        research,
+        researchStartedAtMs: T0,
+        briefFailures: 2,
+        adoptFailures: 1,
+        logoCheckedAtMs: T0 + 1,
+        statedName: 'Бета',
+        candidate: null,
+      }),
+    );
+    expect(repo.countResearchStarts(T0 - 1)).toBe(1);
+  });
+
+  it('у слитого чата запись испорчена, у оставшегося цела: остаётся целая, без ошибок', () => {
+    const { db, chats, survivor, absorbed } = pair();
+    const { repo, logs } = companies(db);
+    repo.save(confirmedState(survivor.id), T0 + 10);
+    db.prepare(
+      "INSERT INTO chat_companies (chat_id, state, updated_at) VALUES (?, 'мусор', ?)",
+    ).run(absorbed.id, T0 + 20);
+
+    merge(chats);
+
+    expect(repo.get(survivor.id)).toEqual(confirmedState(survivor.id));
+    expect(db.prepare('SELECT chat_id, updated_at FROM chat_companies').all()).toEqual([
+      { chat_id: survivor.id, updated_at: T0 + 20 },
+    ]);
+    expect(logs).toEqual([]);
+  });
+
+  it('у оставшегося чата запись испорчена, у слитого цела: остаётся целая', () => {
+    const { db, chats, survivor, absorbed } = pair();
+    const { repo, logs } = companies(db);
+    db.prepare(
+      "INSERT INTO chat_companies (chat_id, state, updated_at) VALUES (?, 'мусор', ?)",
+    ).run(survivor.id, T0 + 20);
+    repo.save(confirmedState(absorbed.id), T0 + 10);
+
+    merge(chats);
+
+    expect(repo.get(survivor.id)).toEqual(confirmedState(survivor.id));
+    expect(logs).toEqual([]);
+  });
+
+  it('испорчены обе записи: остаётся запись оставшегося чата как есть', () => {
+    const { db, chats, survivor, absorbed } = pair();
+    const insert = db.prepare(
+      'INSERT INTO chat_companies (chat_id, state, updated_at) VALUES (?, ?, ?)',
+    );
+    insert.run(survivor.id, 'своя порча', T0 + 10);
+    insert.run(absorbed.id, 'чужая порча', T0 + 20);
+
+    merge(chats);
+
+    expect(db.prepare('SELECT chat_id, state FROM chat_companies').all()).toEqual([
+      { chat_id: survivor.id, state: 'своя порча' },
+    ]);
   });
 
   it('запись только у оставшегося чата не меняется', () => {

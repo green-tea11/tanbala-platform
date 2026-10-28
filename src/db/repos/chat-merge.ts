@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
 import type { ChatIdentity, InterestLevel } from '../../domain/types.js';
 import { LEVELS, oneOf } from '../values.js';
+import { createCompanyStateMerger } from './company-state-merge.js';
 
 /** Колонки чата без id: их пишет upsertByIdentity. */
 export interface ChatColumns {
@@ -90,19 +91,6 @@ const MERGE_USAGE = `INSERT INTO api_usage (day, chat_id, count)
   ON CONFLICT (day, chat_id) DO UPDATE SET count = api_usage.count + excluded.count`;
 
 /**
- * Состояние определения компании: остаётся запись с более поздним временем записи (в ней последний ответ клиента,
- * например подтверждённая компания), при равном времени запись оставшегося чата. Сначала удаляется более старая
- * запись оставшегося чата, затем запись слитого переходит к нему (OR IGNORE: если своя запись осталась, конфликт по
- * первичному ключу chat_id пропускает перенос, а запись слитого удаляется ниже). ID чата в самом JSON нет, поэтому
- * после переноса запись читается уже как запись оставшегося чата.
- */
-const DROP_OLDER_COMPANY_STATE = `DELETE FROM chat_companies WHERE chat_id = @survivor
-  AND updated_at < (SELECT updated_at FROM chat_companies WHERE chat_id = @absorbed)`;
-
-const MOVE_COMPANY_STATE =
-  'UPDATE OR IGNORE chat_companies SET chat_id = @survivor WHERE chat_id = @absorbed';
-
-/**
  * Что делать с каждой таблицей, где есть слитый чат, по порядку: слить или перенести строки, затем удалить остаток.
  * Сообщение с тем же wa_id уже есть в оставшемся чате: строка остаётся на месте и удаляется ниже (OR IGNORE).
  */
@@ -117,25 +105,25 @@ const ABSORB_STEPS: readonly string[] = [
   CLOSE_DUPLICATE_HANDOFF,
   'UPDATE handoffs SET chat_id = @survivor WHERE chat_id = @absorbed',
   'UPDATE manager_notifications SET chat_id = @survivor WHERE chat_id = @absorbed',
-  DROP_OLDER_COMPANY_STATE,
-  MOVE_COMPANY_STATE,
-  'DELETE FROM chat_companies WHERE chat_id = @absorbed',
   'UPDATE OR IGNORE messages SET chat_id = @survivor WHERE chat_id = @absorbed',
   'DELETE FROM messages WHERE chat_id = @absorbed',
   'DELETE FROM chats WHERE id = @absorbed',
 ];
 
 /**
- * Готовит слияние чатов: возвращает функцию, которая переносит в оставшийся чат отметку простоя, исходящие, счётчики
- * вызовов API, выжимку, передачи, уведомления менеджеру, состояние определения компании и историю слитого чата и
- * удаляет его строку. Вызывается внутри транзакции upsertByIdentity: иначе внешний ключ не даст удалить чат, а перенос
- * остался бы неполным. nowMs нужен, чтобы закрыть лишнюю открытую передачу.
+ * Готовит слияние чатов: возвращает функцию, которая переносит в оставшийся чат состояние определения компании (по
+ * полям, см. createCompanyStateMerger), отметку простоя, исходящие, счётчики вызовов API, выжимку, передачи,
+ * уведомления менеджеру и историю слитого чата и удаляет его строку. Вызывается внутри транзакции upsertByIdentity:
+ * иначе внешний ключ не даст удалить чат, а перенос остался бы неполным. nowMs нужен, чтобы закрыть лишнюю открытую
+ * передачу.
  */
 export function createChatAbsorber(
   db: Database.Database,
 ): (survivor: number, absorbed: number, nowMs: number) => void {
+  const mergeCompanyState = createCompanyStateMerger(db);
   const steps = ABSORB_STEPS.map((sql) => db.prepare<ChatPair & { readonly nowMs: number }>(sql));
   return (survivor, absorbed, nowMs) => {
+    mergeCompanyState(survivor, absorbed);
     for (const step of steps) step.run({ survivor, absorbed, nowMs });
   };
 }

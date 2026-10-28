@@ -13,6 +13,7 @@ import {
   KNOWLEDGE,
   MODELS,
   onlyRequest,
+  SILENT_LOGGER,
 } from './fakes.js';
 
 const DRAFT = 'Цена зависит от задачи. Какой у вас бизнес?';
@@ -24,7 +25,7 @@ const RIGHT_ANGLE = String.fromCharCode(0x203a);
 
 async function review(answer: LlmResult<unknown>, draftText: string = DRAFT) {
   const { requests, llm } = fakeLlm(answer);
-  const agent = createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS });
+  const agent = createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS, logger: SILENT_LOGGER });
   const result = await agent.reviewDraft(context(), draftText);
   return { result, requests };
 }
@@ -62,7 +63,7 @@ describe('createAgent: reviewDraft, запрос', () => {
 
   it('сообщение о передаче: в данных сказано, что после него чат уходит специалисту, текст в конце', async () => {
     const { requests, llm } = fakeLlm({ ok: true, value: PASSED });
-    const agent = createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS });
+    const agent = createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS, logger: SILENT_LOGGER });
 
     await agent.reviewDraft(context(), HANDOFF_DRAFT, 'handoff');
 
@@ -76,7 +77,12 @@ describe('createAgent: reviewDraft, запрос', () => {
   it('обычный ответ (по умолчанию и явно): в данных нет указания о передаче', async () => {
     for (const kind of [undefined, 'answer'] as const) {
       const { requests, llm } = fakeLlm({ ok: true, value: PASSED });
-      const agent = createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS });
+      const agent = createAgent({
+        llm,
+        knowledge: KNOWLEDGE,
+        models: MODELS,
+        logger: SILENT_LOGGER,
+      });
 
       await agent.reviewDraft(context(), DRAFT, kind);
 

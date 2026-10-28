@@ -29,7 +29,8 @@ const BEREKE_ID = 21;
 const BEREKE = 'ТОО Береке';
 const JOB_ID = '3f2b8c1e-7a4d-4c2e-9b1a-5d6e7f8a9b0c';
 
-const PAIN_INVENTORY = 'Инвентаризация занимает дни и отрывает людей';
+/** Пункт списка раздела 5 knowledge/tanbala-agent.md целиком: часть пункта модели не передаётся. */
+const PAIN_INVENTORY = 'Инвентаризация занимает дни и отрывает людей от работы';
 const PAIN_MIXUP = 'Пересорт при отгрузке';
 /** Цитаты и источники болей, оценка и тема письма из справки: модели их видеть нельзя, только менеджеру в панели. */
 const EVIDENCE_SITE = 'Пересчитываем склад вручную раз в квартал';
@@ -367,6 +368,26 @@ describe('сценарии владельца: ответ клиента на в
       'Компания клиента неизвестна. О компании сейчас не спрашивай.',
     );
     expect(s.state()).toMatchObject({ candidate: null, confirmed: null });
+  });
+
+  it('8. после «Вы из компании X?» клиент просит человека: передача снимает ожидание, после возврата боту «да» компанию не подтверждает', async () => {
+    const s = createScenario({ api: SKLAD_BY_PHONE });
+    await s.say(CLIENT_HELLO, reply(ASK_CONFIRM, 'confirm'));
+
+    const handed = await s.say('Позовите, пожалуйста, человека', {
+      replies: [{ outcome: 'asked_human' }],
+    });
+    const afterHandoff = s.state().candidate;
+    await s.services.handoff.returnToBot(s.chatId());
+    const yes = await s.say('Да', reply(PLAIN, 'none', { companyAnswer: 'yes' }));
+
+    expect(handed.outcome).toEqual({ kind: 'handed_off', reason: 'asked_human' });
+    expect(afterHandoff).toMatchObject({ id: SKLAD_ID, awaitingAnswer: false });
+    // Ответа о компании больше не ждут: оценка не идёт раньше черновика, «да» не засчитывается, справки нет.
+    expect(yes.llm.purposes()).not.toEqual(['interest', 'reply', 'review']);
+    expect(yes.outcome).toEqual({ kind: 'replied' });
+    expect(yes.api).toEqual([]);
+    expect(s.state()).toMatchObject({ confirmed: null, candidate: { awaitingAnswer: false } });
   });
 });
 

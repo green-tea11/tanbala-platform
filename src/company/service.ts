@@ -14,7 +14,7 @@ import { identifyChat } from './identify.js';
 import { prepareTurn } from './prepare.js';
 import { buildPrompt, OFF_PROMPT } from './prompt.js';
 import { buildOffSummary, buildSummary } from './summary.js';
-import { afterReplySent } from './transitions.js';
+import { afterReplySent, stopAwaiting } from './transitions.js';
 
 /** Зависимости сервиса определения компании. */
 export interface CompanyDeps {
@@ -52,6 +52,16 @@ function markAsked(
 }
 
 /**
+ * Чат ушёл менеджеру или вернулся боту: ожидание ответа на «Вы из компании X?» снимается, время вопроса и остальное
+ * состояние не меняются. Пишется, только если ответа ждали.
+ */
+function stopAwaitingAnswer(env: CompanyEnv, chatId: ChatId): void {
+  const before = env.repo.get(chatId);
+  const after = stopAwaiting(before);
+  if (after !== before) env.repo.save(after, env.clock.now());
+}
+
+/**
  * Определение компании клиента. Выключенный внутренний API (directory.enabled false): бот работает как раньше,
  * ничего не запрашивает ни у API, ни у WhatsApp; из оценки интереса сохраняются только боли клиента.
  * Сбои API, WhatsApp и модели приходят значениями и в лог идут только кодом (ID чата, шаг, код сбоя); сбои базы
@@ -71,6 +81,9 @@ export function createCompanyService(deps: CompanyDeps): CompanyService {
     markAsked: (chatId, question, sentText) => {
       markAsked(env, chatId, question, sentText);
     },
+    stopAwaiting: (chatId) => {
+      stopAwaitingAnswer(env, chatId);
+    },
     identifyAfterReply: (chat) => identifyChat(env, chat),
     summary: (chatId) => buildSummary(deps.repo.get(chatId), deps.emailUiUrl),
   };
@@ -85,6 +98,7 @@ function createOffService(deps: CompanyDeps): CompanyService {
         return OFF_PROMPT;
       }),
     markAsked: () => undefined,
+    stopAwaiting: () => undefined,
     identifyAfterReply: () => Promise.resolve(),
     summary: (chatId) => buildOffSummary(deps.repo.get(chatId)),
   };

@@ -67,7 +67,7 @@ async function run(script: LlmScript) {
   const saveAssessment = vi.fn<ReplyFlowDeps['chats']['saveAssessment']>();
   const deps: ReplyFlowDeps = {
     chats: { saveAssessment },
-    agent: createAgent({ llm: model.llm, knowledge: KNOWLEDGE, models: MODELS }),
+    agent: createAgent({ llm: model.llm, knowledge: KNOWLEDGE, models: MODELS, logger }),
     clock: { now: () => NOW },
     logger,
   };

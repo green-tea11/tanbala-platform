@@ -4,7 +4,6 @@ import {
   candidateFromBrief,
   candidateFromLookup,
   confirmCandidate,
-  dropForeignCandidate,
   isRunning,
   markCandidateAsked,
   markNameAsked,
@@ -144,60 +143,6 @@ describe('rejectCandidate', () => {
   });
 });
 
-describe('dropForeignCandidate: клиент сам назвал другую компанию', () => {
-  it.each(['profile_domain', 'phone', 'profile_name', 'logo'] as const)(
-    'кандидат из источника %s, ещё не спрошен, название другое: снят без отклонения, шаги закрыты',
-    (source) => {
-      const state = deepFreeze(
-        makeState({ statedName: 'Бета', candidate: makeChatCandidate({ source }) }),
-      );
-
-      expect(dropForeignCandidate(state, NOW)).toEqual({
-        ...state,
-        candidate: null,
-        freeStepsAtMs: NOW,
-      });
-    },
-  );
-
-  it('время пройденных шагов не перезаписывается', () => {
-    const state = makeState({
-      statedName: 'Бета',
-      freeStepsAtMs: NOW - 5,
-      candidate: makeChatCandidate({ source: 'phone' }),
-    });
-
-    expect(dropForeignCandidate(state, NOW)).toMatchObject({
-      candidate: null,
-      freeStepsAtMs: NOW - 5,
-      rejectedIds: [],
-    });
-  });
-
-  it.each([
-    [
-      'то же название без учёта регистра, кавычек и формы собственности',
-      { statedName: 'ТОО «платформа-а»' },
-    ],
-    ['клиент компанию не называл', { statedName: null }],
-    ['кандидат уже спрошен', { candidate: makeChatCandidate({ source: 'phone', askedAtMs: NOW }) }],
-    ['кандидат найден по словам клиента', { candidate: makeChatCandidate({ source: 'message' }) }],
-    [
-      'кандидат из проверки по словам клиента',
-      { candidate: makeChatCandidate({ source: 'research' }) },
-    ],
-    ['кандидата нет', { candidate: null }],
-  ] as const)('%s: состояние то же', (_label, overrides) => {
-    const state = makeState({
-      statedName: 'Бета',
-      candidate: makeChatCandidate({ source: 'phone' }),
-      ...overrides,
-    });
-
-    expect(dropForeignCandidate(state, NOW)).toBe(state);
-  });
-});
-
 describe('afterReplySent: ответ ушёл клиенту', () => {
   const UNASKED = makeChatCandidate({ name: 'ТОО «Платформа-А»' });
   const WAITING = makeChatCandidate({ askedAtMs: NOW - 10, awaitingAnswer: true });
@@ -216,7 +161,7 @@ describe('afterReplySent: ответ ушёл клиенту', () => {
     ['без формы собственности, с городом', 'Платформа А, Алматы, верно?'],
     ['название посреди фразы со знаками', 'Скажите, вы из Платформа-А? Всё верно?'],
   ])(
-    'модель не отметила вопрос, но в тексте название кандидата (%s): вопрос засчитан',
+    'модель не отметила вопрос, но название кандидата в вопросе (%s): вопрос засчитан, ждём ответа',
     (_label, text) => {
       const state = makeState({ candidate: UNASKED });
 
@@ -227,6 +172,36 @@ describe('afterReplySent: ответ ушёл клиенту', () => {
       });
     },
   );
+
+  it('название кандидата только упомянуто, вопрос о другом: время вопроса есть, ответа не ждём', () => {
+    const candidate = makeChatCandidate({ name: 'ТОО «Склад»' });
+    const state = deepFreeze(makeState({ candidate }));
+
+    const next = afterReplySent(
+      state,
+      'none',
+      'Ридер стоит на входе в склад. Как у вас сейчас?',
+      NOW,
+    );
+
+    expect(next).toEqual({ ...state, candidate: { ...candidate, askedAtMs: NOW } });
+  });
+
+  it('короткое название-слово в вопросе о другом: только время вопроса', () => {
+    const state = makeState({ candidate: makeChatCandidate({ name: 'RFID' }) });
+
+    expect(
+      afterReplySent(state, 'none', 'Как вы сейчас ведёте учёт без RFID?', NOW).candidate,
+    ).toMatchObject({ askedAtMs: NOW, awaitingAnswer: false });
+  });
+
+  it('модель отметила confirm: ждём ответа, даже если название только упомянуто', () => {
+    const state = makeState({ candidate: makeChatCandidate({ name: 'ТОО «Склад»' }) });
+
+    expect(
+      afterReplySent(state, 'confirm', 'Ридер стоит на входе в склад.', NOW).candidate,
+    ).toMatchObject({ askedAtMs: NOW, awaitingAnswer: true });
+  });
 
   it('название кандидата только частью слова: не вопрос', () => {
     const state = makeState({ candidate: makeChatCandidate({ name: 'Альфа' }) });
@@ -286,13 +261,23 @@ describe('afterReplySent: ответ ушёл клиенту', () => {
 });
 
 describe('markCandidateAsked', () => {
-  it('ещё не спрошенный кандидат: время вопроса и ожидание ответа', () => {
+  it('ещё не спрошенный кандидат, вопрос: время вопроса и ожидание ответа', () => {
     const state = deepFreeze(makeState({ candidate: makeChatCandidate() }));
 
-    expect(markCandidateAsked(state, NOW).candidate).toEqual({
+    expect(markCandidateAsked(state, NOW, true).candidate).toEqual({
       ...makeChatCandidate(),
       askedAtMs: NOW,
       awaitingAnswer: true,
+    });
+  });
+
+  it('ещё не спрошенный кандидат, только упоминание: время вопроса без ожидания', () => {
+    const state = deepFreeze(makeState({ candidate: makeChatCandidate() }));
+
+    expect(markCandidateAsked(state, NOW, false).candidate).toEqual({
+      ...makeChatCandidate(),
+      askedAtMs: NOW,
+      awaitingAnswer: false,
     });
   });
 
@@ -301,13 +286,13 @@ describe('markCandidateAsked', () => {
       candidate: makeChatCandidate({ askedAtMs: NOW - 10, awaitingAnswer: false }),
     });
 
-    expect(markCandidateAsked(state, NOW)).toBe(state);
+    expect(markCandidateAsked(state, NOW, true)).toBe(state);
   });
 
   it('кандидата нет: состояние то же', () => {
     const state = makeState();
 
-    expect(markCandidateAsked(state, NOW)).toBe(state);
+    expect(markCandidateAsked(state, NOW, true)).toBe(state);
   });
 });
 

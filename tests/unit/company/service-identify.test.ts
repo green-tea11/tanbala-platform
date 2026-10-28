@@ -163,30 +163,32 @@ describe('identifyAfterReply: шаг г, название со слов клие
     expect(h.repo.current().candidate).toMatchObject({ source: 'message' });
   });
 
-  it('сбой поиска bad_request (повтор не поможет) считается пройденным шагом: название запомнено, дальше проверка', async () => {
-    const h = createHarness({
-      state: named(),
-      directory: { lookup: () => fail('bad_request'), startResearch: () => QUEUED },
-    });
+  it.each<CompanyApiFailure>(['bad_request', 'rate_limited', 'budget_exhausted'])(
+    'постоянный сбой поиска %s (повтор не поможет) считается пройденным шагом: название запомнено, дальше проверка',
+    async (failure) => {
+      const h = createHarness({
+        state: named(),
+        directory: { lookup: () => fail(failure), startResearch: () => QUEUED },
+      });
 
-    await h.service.identifyAfterReply(makeChat());
+      await h.service.identifyAfterReply(makeChat());
 
-    expect(h.repo.current().lookedUpName).toBe('платформа а');
-    expect(h.directory.count('startResearch')).toBe(1);
-    expect(h.logs.filter((entry) => entry.level === 'warn').map((entry) => entry.context)).toEqual([
-      { chatId: 12, step: 'message', failure: 'bad_request' },
-    ]);
-  });
+      expect(h.repo.current().lookedUpName).toBe('платформа а');
+      expect(h.directory.count('startResearch')).toBe(1);
+      expect(
+        h.logs.filter((entry) => entry.level === 'warn').map((entry) => entry.context),
+      ).toEqual([{ chatId: 12, step: 'message', failure }]);
+    },
+  );
 
   it.each<CompanyApiFailure>([
     'unauthorized',
     'not_found',
     'invalid_response',
-    'rate_limited',
-    'budget_exhausted',
+    'unavailable',
     'timeout',
   ])(
-    'сбой поиска %s: название не запоминается, проверка не запускается, повтор позже',
+    'временный сбой поиска %s: название не запоминается, проверка не запускается, повтор позже',
     async (failure) => {
       const h = createHarness({
         state: named(),
@@ -325,14 +327,41 @@ describe('identifyAfterReply: проверка новой компании', () 
     });
   });
 
-  it('проект B вернул готовую компанию, справка недоступна: проверка не записывается, неудача считается, повтор позже', async () => {
+  it.each<CompanyApiFailure>(['unavailable', 'timeout', 'unauthorized', 'invalid_response'])(
+    'готовая компания, временный сбой справки %s: неудача не считается, запуск повторяется при каждом вызове',
+    async (failure) => {
+      const h = createHarness({
+        state: named({ adoptFailures: 2 }),
+        directory: {
+          startResearch: () => ok({ kind: 'done', companyId: companyIdOf(51) }),
+          brief: () => fail(failure),
+        },
+      });
+
+      for (let reply = 0; reply < 4; reply += 1) await h.service.identifyAfterReply(makeChat());
+
+      expect(h.directory.count('startResearch')).toBe(4);
+      expect(h.repo.current()).toMatchObject({
+        research: null,
+        candidate: null,
+        adoptFailures: 2,
+        researchStartedAtMs: null,
+      });
+      expect(h.logs.filter((entry) => entry.level === 'warn')[0]?.context).toEqual({
+        chatId: 12,
+        step: 'brief',
+        failure,
+      });
+    },
+  );
+
+  it('проект B вернул готовую компанию, справки нет (постоянный сбой): проверка не записывается, неудача считается, повтор позже', async () => {
     let briefAvailable = false;
     const h = createHarness({
       state: named(),
       directory: {
         startResearch: () => ok({ kind: 'done', companyId: companyIdOf(51) }),
-        brief: () =>
-          briefAvailable ? ok(makeBrief({ id: companyIdOf(51) })) : fail('unavailable'),
+        brief: () => (briefAvailable ? ok(makeBrief({ id: companyIdOf(51) })) : fail('not_found')),
       },
     });
 

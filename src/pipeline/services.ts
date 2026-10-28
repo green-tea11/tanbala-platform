@@ -46,8 +46,11 @@ export interface ServicesContext {
   readonly logger: Logger;
   readonly clock: Clock;
   readonly storage: ServicesStorage;
-  /** Сервис компании (pipeline/company-setup.ts): компания клиента в уведомлении менеджеру о передаче. */
-  readonly company: Pick<CompanyService, 'summary'>;
+  /**
+   * Сервис компании (pipeline/company-setup.ts): компания клиента в уведомлении менеджеру о передаче и снятие ожидания
+   * ответа на «Вы из компании X?» при передаче и возврате боту.
+   */
+  readonly company: Pick<CompanyService, 'summary' | 'stopAwaiting'>;
 }
 
 /**

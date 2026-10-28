@@ -11,6 +11,7 @@ import type {
   ResearchStatus,
 } from '../domain/company.js';
 import type { Chat, ChatId } from '../domain/types.js';
+import { isTransientBriefFailure } from './api-failures.js';
 import type { CompanyEnv } from './env.js';
 import { logFailure } from './log.js';
 import { searchPhone } from './search-phone.js';
@@ -164,9 +165,10 @@ function refuseResearch(
 
 /**
  * Проект B ответил на запуск «компания уже есть и оценена»: справка по company_id, кандидат с источником research.
- * Компанию, которую клиент уже отклонил, не предлагают и справку по ней не берут. Справка не получена: неудача
- * считается, проверка не записывается, запуск повторится при следующем вызове (повторный запрос той же компании
- * бесплатный); после трёх таких неудач проверка failed без причины и больше не повторяется.
+ * Компанию, которую клиент уже отклонил, не предлагают и справку по ней не берут. Справка не получена: проверка не
+ * записывается, запуск повторится при следующем вызове (повторный запрос той же компании бесплатный). Временный сбой
+ * справки (isTransientBriefFailure) неудачей не считается; после трёх постоянных проверка failed без причины и больше
+ * не повторяется.
  */
 async function adoptReadyCompany(
   env: CompanyEnv,
@@ -180,6 +182,7 @@ async function adoptReadyCompany(
   const result = await env.directory.brief(companyId);
   if (result.ok) return finishResearch(env, chatId, state, result.value);
   logFailure(env.logger, chatId, 'brief', result.failure);
+  if (isTransientBriefFailure(result.failure)) return state;
   const failed = { ...state, adoptFailures: state.adoptFailures + 1 };
   return failed.adoptFailures >= MAX_ADOPT_FAILURES
     ? failResearch(env, chatId, failed, null)

@@ -221,6 +221,50 @@ describe('runCodeChecks: название компании клиента', () =
     expect(codes(runWith('Вы из компании СУПЕРАЛЬФА?', 'АЛЬФА'))).toEqual(new Set(['caps']));
   });
 
+  it.each<[string, string, string]>([
+    ['зона домена', 'Shop', 'Посмотрите evil.shop'],
+    ['продолжение адреса путём', 'Kaspi.kz', 'Откройте kaspi.kz/pay/abc'],
+    ['зона домена на конце', 'Online', 'Зайдите на romashka.online'],
+    ['поддомен перед названием', 'Kaspi.kz', 'Откройте pay.kaspi.kz'],
+    ['другой домен после названия', 'Kaspi.kz', 'Откройте kaspi.kz.evil.com'],
+    ['метка домена через дефис', 'Shop.kz', 'Откройте evil-shop.kz'],
+    ['запрос после адреса', 'Kaspi.kz', 'Откройте kaspi.kz?pay=1'],
+    ['порт после адреса', 'Kaspi.kz', 'Откройте kaspi.kz:8080'],
+    ['схема перед названием', 'Kaspi.kz', 'Откройте https://kaspi.kz'],
+    ['слэш перед названием', 'Kaspi.kz', 'Откройте //kaspi.kz'],
+    ['двоеточие перед названием', 'Kaspi.kz', 'Откройте http:kaspi.kz'],
+    ['название как начало домена', 'Kaspi', 'Откройте kaspi.evil.com'],
+  ])('%s: название не маскируется, ссылка остаётся нарушением', (_case, name, text) => {
+    const findings = runWith(text, name);
+
+    expect(codes(findings).has('link')).toBe(true);
+  });
+
+  it('почта с названием не маскируется: остаётся нарушением контакта', () => {
+    expect(codes(runWith('Пишите на pay@kaspi.kz', 'Kaspi.kz')).has('contact')).toBe(true);
+    expect(codes(runWith('Пишите на kaspi.kz@evil.com', 'Kaspi.kz')).has('contact')).toBe(true);
+  });
+
+  it.each([
+    'Вы из компании Kaspi.kz, правильно?',
+    'Вы из компании Kaspi.kz?',
+    'Вы из компании «Kaspi.kz»?',
+    'Вы из компании (Kaspi.kz).',
+    'Kaspi.kz: это ваша компания?',
+    'Вы из компании Kaspi.kz.\nПравильно?',
+    'Вы из компании Kaspi.kz',
+  ])('название с точкой отдельно в вопросе не ссылка: «%s»', (text) => {
+    expect(runWith(text, 'Kaspi.kz')).toEqual([]);
+    expect(codes(runWith(text, null)).has('link')).toBe(true);
+  });
+
+  it('то же название отдельно маскируется, а в адресе рядом нет', () => {
+    const findings = runWith('Вы из компании Kaspi.kz? Оплата на kaspi.kz/pay', 'Kaspi.kz');
+
+    expect(codes(findings)).toEqual(new Set(['link']));
+    expect(details(findings)).toContain('kaspi.kz/pay');
+  });
+
   it.each<[string, string, string, CheckCode]>([
     ['стоп-слово', 'Скидка Плюс', 'Вы из компании Скидка Плюс, правильно?', 'stop_word'],
     ['цена', 'Склад 5000 тенге', 'Вы из компании Склад 5000 тенге?', 'price'],

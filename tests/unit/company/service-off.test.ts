@@ -126,6 +126,19 @@ describe('сервис компании: функция выключена', () 
     expect(h.repo.saves).toEqual([]);
   });
 
+  it('stopAwaiting ничего не пишет, даже если в базе остался ждущий ответа кандидат', () => {
+    const h = createHarness({
+      directory: 'off',
+      state: makeState({
+        candidate: makeChatCandidate({ askedAtMs: NOW - 1000, awaitingAnswer: true }),
+      }),
+    });
+
+    h.service.stopAwaiting(CHAT_ID);
+
+    expect(h.repo.saves).toEqual([]);
+  });
+
   it('summary: статус off, о компании ничего, боли клиента из базы', () => {
     const h = createHarness({
       directory: 'off',
