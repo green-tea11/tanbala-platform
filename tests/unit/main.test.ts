@@ -61,6 +61,7 @@ const TABLES = [
   'api_usage',
   'app_state',
   'backlog_chats',
+  'chat_companies',
   'chats',
   'client_profiles',
   'handoffs',
@@ -71,7 +72,7 @@ const TABLES = [
   'pairing_attempts',
 ];
 /** Последняя версия схемы на момент проверки: новые миграции версию только повышают. */
-const MIN_SCHEMA_VERSION = 5;
+const MIN_SCHEMA_VERSION = 6;
 const LOCK_BUSY_TEXT = 'Бот уже запущен: папка данных занята другим процессом';
 const STRANGER_PHONE = '77000000005';
 const STRANGER_JID = `${STRANGER_PHONE}@s.whatsapp.net` as Jid;

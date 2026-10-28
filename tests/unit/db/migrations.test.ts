@@ -42,6 +42,7 @@ const CURRENT_TABLES = [
   'api_usage',
   'app_state',
   'backlog_chats',
+  'chat_companies',
   'chats',
   'client_profiles',
   'handoffs',
@@ -52,11 +53,17 @@ const CURRENT_TABLES = [
   'pairing_attempts',
 ];
 
-/** Последняя версия схемы: этап 2 дал версию 1, этап 3 версию 2, этапы 4, 5 и 6 версии 3, 4 и 5. */
-const CURRENT_VERSION = 5;
+/** Таблицы до определения компании клиента: схема версии 5. */
+const VERSION_5_TABLES = CURRENT_TABLES.filter((name) => name !== 'chat_companies');
+
+/**
+ * Последняя версия схемы: этап 2 дал версию 1, этап 3 версию 2, этапы 4, 5 и 6 версии 3, 4 и 5, определение
+ * компании клиента версию 6.
+ */
+const CURRENT_VERSION = 6;
 
 describe('runMigrations', () => {
-  it('новая база получает последнюю версию и ровно таблицы этапов с 2 по 5', () => {
+  it('новая база получает последнюю версию и ровно таблицы текущей схемы', () => {
     const db = useMemoryDb();
 
     runMigrations(db);
@@ -110,9 +117,48 @@ describe('runMigrations', () => {
       { id: chatId, push_name: 'Айгерим', interest_level: 'cold' },
     ]);
     expect(db.prepare('SELECT count(*) FROM messages').pluck().get()).toBe(1);
-    for (const table of ['client_profiles', 'handoffs', 'manager_notifications']) {
+    for (const table of [
+      'client_profiles',
+      'handoffs',
+      'manager_notifications',
+      'chat_companies',
+    ]) {
       expect(db.prepare(`SELECT count(*) FROM ${table}`).pluck().get()).toBe(0);
     }
+  });
+
+  it('живая база версии 5 переходит на версию 6: чаты и переписка на месте, состояние компании пустое', () => {
+    const db = useMemoryDb();
+    runMigrations(db, 5);
+    expect(userVersion(db)).toBe(5);
+    expect(tableNames(db)).toEqual(VERSION_5_TABLES);
+    const chatId = insertChat(db, { replyJid: PN_A, pushName: 'Айгерим' });
+    db.prepare(
+      "INSERT INTO messages (chat_id, wa_id, author, kind, text, ts_ms) VALUES (?, 'W1', 'client', 'text', 'x', 1)",
+    ).run(chatId);
+
+    runMigrations(db);
+
+    expect(userVersion(db)).toBe(CURRENT_VERSION);
+    expect(tableNames(db)).toEqual(CURRENT_TABLES);
+    expect(db.prepare('SELECT id, push_name FROM chats').all()).toEqual([
+      { id: chatId, push_name: 'Айгерим' },
+    ]);
+    expect(db.prepare('SELECT count(*) FROM messages').pluck().get()).toBe(1);
+    expect(db.prepare('SELECT count(*) FROM chat_companies').pluck().get()).toBe(0);
+  });
+
+  it('сбой версии 6 откатывает только её: база остаётся на версии 5 с данными', () => {
+    const db = useMemoryDb();
+    runMigrations(db, 5);
+    insertChat(db, { replyJid: PN_A });
+    db.exec('CREATE TABLE chat_companies (x INTEGER)');
+
+    expect(() => {
+      runMigrations(db);
+    }).toThrow(/chat_companies/);
+    expect(userVersion(db)).toBe(5);
+    expect(db.prepare('SELECT count(*) FROM chats').pluck().get()).toBe(1);
   });
 
   it('сбой версии 2 откатывает только её: база остаётся на версии 1 с данными', () => {
@@ -158,7 +204,7 @@ describe('runMigrations', () => {
     },
   );
 
-  it('каждая промежуточная версия поднимается отдельно: 3, затем 4, затем 5', () => {
+  it('каждая промежуточная версия поднимается отдельно: 3, затем 4, 5 и 6', () => {
     const db = useMemoryDb();
 
     runMigrations(db, 3);
@@ -171,7 +217,12 @@ describe('runMigrations', () => {
     expect(userVersion(db)).toBe(4);
 
     runMigrations(db, 5);
+    expect(userVersion(db)).toBe(5);
+    expect(tableNames(db)).not.toContain('chat_companies');
+
+    runMigrations(db, 6);
     expect(userVersion(db)).toBe(CURRENT_VERSION);
+    expect(tableNames(db)).toContain('chat_companies');
   });
 
   it('схема новее кода: явная ошибка, база не меняется', () => {
@@ -232,6 +283,71 @@ describe('индексы этапов 5 и 6', () => {
         'messages_chat_ts',
       ]),
     );
+  });
+});
+
+describe('схема версии 6: chat_companies', () => {
+  const insertState = (
+    db: Database.Database,
+    chatId: number,
+    overrides: Readonly<Record<string, unknown>> = {},
+  ): void => {
+    db.prepare(
+      'INSERT INTO chat_companies (chat_id, state, updated_at) VALUES (@chatId, @state, @updatedAt)',
+    ).run({ chatId, state: '{}', updatedAt: 1, ...overrides });
+  };
+
+  it('состояние одно на чат: вторая строка того же чата отклоняется, у другого чата своя', () => {
+    const db = useMigratedDb();
+    const first = insertChat(db, { replyJid: PN_A });
+    const second = insertChat(db, { replyJid: LID_A });
+    insertState(db, first);
+
+    expect(errorOf(() => insertState(db, first))).toMatchObject({
+      code: 'SQLITE_CONSTRAINT_PRIMARYKEY',
+    });
+    expect(errorOf(() => insertState(db, second))).toBeUndefined();
+  });
+
+  it('состояние только для существующего чата', () => {
+    const db = useMigratedDb();
+
+    expect(errorOf(() => insertState(db, 404))).toMatchObject({
+      code: 'SQLITE_CONSTRAINT_FOREIGNKEY',
+    });
+  });
+
+  it.each([
+    ['состояние', { state: null }],
+    ['время записи', { updatedAt: null }],
+  ])('%s обязательно', (_label, overrides) => {
+    const db = useMigratedDb();
+    const chatId = insertChat(db, { replyJid: PN_A });
+
+    expect(errorOf(() => insertState(db, chatId, overrides))).toMatchObject({
+      code: 'SQLITE_CONSTRAINT_NOTNULL',
+    });
+  });
+
+  it('время записи строго число: текст отклоняется', () => {
+    const db = useMigratedDb();
+    const chatId = insertChat(db, { replyJid: PN_A });
+
+    expect(errorOf(() => insertState(db, chatId, { updatedAt: 'вчера' }))).toMatchObject({
+      code: 'SQLITE_CONSTRAINT_DATATYPE',
+    });
+  });
+
+  it('удаление чата удаляет его состояние, состояние других чатов остаётся', () => {
+    const db = useMigratedDb();
+    const removed = insertChat(db, { replyJid: PN_A });
+    const kept = insertChat(db, { replyJid: LID_A });
+    insertState(db, removed);
+    insertState(db, kept);
+
+    db.prepare('DELETE FROM chats WHERE id = ?').run(removed);
+
+    expect(db.prepare('SELECT chat_id FROM chat_companies').pluck().all()).toEqual([kept]);
   });
 });
 

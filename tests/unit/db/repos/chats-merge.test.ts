@@ -1,10 +1,12 @@
 import type Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { createBacklogRepo } from '../../../../src/db/repos/backlog.js';
+import { createChatCompaniesRepo } from '../../../../src/db/repos/chat-companies.js';
 import { createChatsRepo } from '../../../../src/db/repos/chats.js';
 import { createHandoffsRepo } from '../../../../src/db/repos/handoffs.js';
 import { createManagerNotificationsRepo } from '../../../../src/db/repos/manager-notifications.js';
 import { createMessagesRepo } from '../../../../src/db/repos/messages.js';
+import type { ChatCompaniesRepo } from '../../../../src/domain/company.js';
 import type {
   ChatsRepo,
   HandoffsRepo,
@@ -17,9 +19,12 @@ import type {
   Jid,
   WaMessageId,
 } from '../../../../src/domain/types.js';
+import { makeChatCandidate, makeConfirmed, makeState } from '../../company/builders.js';
+import { createFakeLogger, type LogEntry } from '../../handoff/fakes.js';
 import { EMPTY_PROFILE, insertChat, LID_A, PN_A, profileOf, useMigratedDb } from '../fixture.js';
 
-// Слияние чатов одного человека (адрес @lid и адрес с номером) переносит выжимку, передачи и уведомления менеджеру.
+// Слияние чатов одного человека (адрес @lid и адрес с номером) переносит выжимку, передачи, уведомления менеджеру
+// и состояние определения компании.
 // Общие правила слияния (история, статус, уровень, отметки простоя) проверяет chats.test.ts.
 
 const T0 = 1_761_400_000_000;
@@ -324,8 +329,107 @@ describe('слияние чатов: уведомления менеджеру',
   });
 });
 
+describe('слияние чатов: состояние определения компании', () => {
+  function companies(db: Database.Database): { repo: ChatCompaniesRepo; logs: LogEntry[] } {
+    const logs: LogEntry[] = [];
+    return { repo: createChatCompaniesRepo(db, createFakeLogger(logs)), logs };
+  }
+
+  const confirmedState = (chatId: Chat['id']) =>
+    makeState({ chatId, statedName: 'Платформа-А', confirmed: makeConfirmed() });
+
+  it('у оставшегося чата записи нет: запись слитого переходит к нему', () => {
+    const { db, chats, survivor, absorbed } = pair();
+    const { repo } = companies(db);
+    repo.save(confirmedState(absorbed.id), T0 + 10);
+
+    merge(chats);
+
+    expect(repo.get(survivor.id)).toEqual(confirmedState(survivor.id));
+    expect(db.prepare('SELECT chat_id FROM chat_companies').pluck().all()).toEqual([survivor.id]);
+  });
+
+  it('запись есть у обоих: остаётся своя запись оставшегося чата, запись слитого пропадает', () => {
+    const { db, chats, survivor, absorbed } = pair();
+    const { repo } = companies(db);
+    repo.save(makeState({ chatId: survivor.id, statedName: 'Своя' }), T0 + 10);
+    repo.save(confirmedState(absorbed.id), T0 + 20);
+
+    merge(chats);
+
+    expect(repo.get(survivor.id)).toEqual(makeState({ chatId: survivor.id, statedName: 'Своя' }));
+    expect(db.prepare('SELECT chat_id, updated_at FROM chat_companies').all()).toEqual([
+      { chat_id: survivor.id, updated_at: T0 + 10 },
+    ]);
+  });
+
+  it('запись только у оставшегося чата не меняется', () => {
+    const { db, chats, survivor } = pair();
+    const { repo } = companies(db);
+    repo.save(confirmedState(survivor.id), T0 + 10);
+
+    merge(chats);
+
+    expect(repo.get(survivor.id)).toEqual(confirmedState(survivor.id));
+    expect(db.prepare('SELECT count(*) FROM chat_companies').pluck().get()).toBe(1);
+  });
+
+  it('записей нет ни у одного чата: после слияния их по-прежнему нет, без предупреждений', () => {
+    const { db, chats, survivor } = pair();
+    const { repo, logs } = companies(db);
+
+    merge(chats);
+
+    expect(db.prepare('SELECT count(*) FROM chat_companies').pluck().get()).toBe(0);
+    expect(repo.get(survivor.id)).toEqual(makeState({ chatId: survivor.id }));
+    expect(logs).toEqual([]);
+  });
+
+  it('три чата с записями у двух младших: остаётся запись более старшего из них', () => {
+    const db = useMigratedDb();
+    const chats = createChatsRepo(db);
+    const { repo } = companies(db);
+    const hosted = '77000000001@hosted' as Jid;
+    const oldest = insertChat(db, { replyJid: hosted });
+    const middle = insertChat(db, { replyJid: LID_A, lidJid: LID_A });
+    const newest = insertChat(db, { replyJid: PN_A, pnJid: PN_A });
+    repo.save(makeState({ chatId: middle, statedName: 'Из среднего' }), T0 + 10);
+    repo.save(makeState({ chatId: newest, statedName: 'Из младшего' }), T0 + 20);
+
+    chats.upsertByIdentity({ replyJid: hosted, lidJid: LID_A, pnJid: PN_A }, null, MERGE_AT);
+
+    expect(repo.get(oldest).statedName).toBe('Из среднего');
+    expect(db.prepare('SELECT count(*) FROM chat_companies').pluck().get()).toBe(1);
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+  });
+
+  it('испорченная запись слитого чата тоже переходит как есть: чтение даёт пустое состояние с предупреждением', () => {
+    const { db, chats, survivor, absorbed } = pair();
+    const { repo, logs } = companies(db);
+    db.prepare(
+      "INSERT INTO chat_companies (chat_id, state, updated_at) VALUES (?, 'мусор', 1)",
+    ).run(absorbed.id);
+
+    merge(chats);
+
+    expect(repo.get(survivor.id)).toEqual(makeState({ chatId: survivor.id }));
+    expect(logs).toHaveLength(1);
+  });
+
+  it('кандидат в записи не привязан к старому чату: после слияния чтение возвращает ID оставшегося', () => {
+    const { db, chats, survivor, absorbed } = pair();
+    const { repo } = companies(db);
+    repo.save(makeState({ chatId: absorbed.id, candidate: makeChatCandidate() }), T0 + 10);
+
+    merge(chats);
+
+    expect(repo.get(survivor.id).chatId).toBe(survivor.id);
+    expect(repo.get(survivor.id).candidate).toEqual(makeChatCandidate());
+  });
+});
+
 describe('слияние чатов: всё сразу', () => {
-  it('у слитого чата есть и история, и выжимка, и передача, и уведомления: чат удаляется без ошибок', () => {
+  it('у слитого чата есть и история, и выжимка, и передача, и уведомления, и компания: чат удаляется без ошибок', () => {
     const { db, chats, handoffs, notifications, survivor, absorbed } = pair();
     createMessagesRepo(db).insertIfNew({
       chatId: absorbed.id,
@@ -339,6 +443,10 @@ describe('слияние чатов: всё сразу', () => {
     save(chats, absorbed, profileOf(), T0 + 10);
     handoffs.open(absorbed.id, 'hot', 'hot', 'снимок', T0 + 11);
     notifications.add({ kind: 'handoff', chatId: absorbed.id, text: 'Передача', nowMs: T0 + 12 });
+    createChatCompaniesRepo(db, createFakeLogger([])).save(
+      makeState({ chatId: absorbed.id, statedName: 'Платформа-А' }),
+      T0 + 13,
+    );
 
     const merged = merge(chats);
 

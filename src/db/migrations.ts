@@ -177,10 +177,31 @@ CREATE INDEX messages_chat_ts ON messages (chat_id, ts_ms);
 `;
 
 /**
+ * Версия 6 (определение компании клиента). chat_companies: состояние определения компании, одна строка на чат.
+ * state: JSON без ID чата (его хранит chat_id, поэтому при слиянии чатов строка просто переходит к другому чату);
+ * форму JSON при чтении проверяет репозиторий (db/repos/chat-companies.ts), а не база. updated_at: время последней
+ * записи, мс UTC. Удаление чата удаляет и его состояние (ON DELETE CASCADE).
+ */
+const SCHEMA_V6 = `
+CREATE TABLE chat_companies (
+  chat_id INTEGER PRIMARY KEY REFERENCES chats (id) ON DELETE CASCADE,
+  state TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+`;
+
+/**
  * Миграции по порядку: элемент i переводит схему с версии i на i + 1.
  * Выпущенную миграцию не править: изменения схемы только новой версией в конце списка.
  */
-const MIGRATIONS: readonly string[] = [SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5];
+const MIGRATIONS: readonly string[] = [
+  SCHEMA_V1,
+  SCHEMA_V2,
+  SCHEMA_V3,
+  SCHEMA_V4,
+  SCHEMA_V5,
+  SCHEMA_V6,
+];
 
 /**
  * Применяет миграции схемы по номеру версии в PRAGMA user_version: идемпотентно, все недостающие версии
