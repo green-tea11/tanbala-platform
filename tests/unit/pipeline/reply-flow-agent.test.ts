@@ -84,7 +84,12 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
     expect(model.purposes()).toEqual(['reply', 'interest', 'review']);
     expect(saveAssessment).toHaveBeenCalledWith(
       CHAT_ID,
-      { level: 'cold', profile: EMPTY_PROFILE, reason: 'по разговору' },
+      {
+        level: 'cold',
+        profile: EMPTY_PROFILE,
+        reason: 'по разговору',
+        company: { name: null, city: null, answer: 'none', pains: [] },
+      },
       NOW,
     );
   });

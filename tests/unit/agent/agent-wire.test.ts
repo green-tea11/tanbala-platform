@@ -20,7 +20,7 @@ const MODELS = {
 } as const;
 
 const REPLIES = [
-  { outcome: 'answer', text: 'Какой у вас бизнес?', stopRequested: false },
+  { outcome: 'answer', text: 'Какой у вас бизнес?', stopRequested: false, companyQuestion: 'none' },
   { ok: false, problems: ['Назван срок внедрения'] },
   {
     level: 'warm',
@@ -32,6 +32,10 @@ const REPLIES = [
     problem: null,
     specifics: null,
     reason: 'Рассказал о бизнесе',
+    companyName: 'ТОО Альфа',
+    companyCity: null,
+    companyAnswer: 'none',
+    confirmedPains: ['пересчёт занимает дни'],
   },
 ];
 
@@ -105,7 +109,9 @@ describe('агент с настоящим адаптером Anthropic', () => 
     ]);
     expect(sent.map((body) => body.output_config.effort)).toEqual(['low', 'low', 'low']);
     expect(sent.map((body) => body.output_config.format.schema)).toEqual([
-      expect.objectContaining({ required: ['outcome', 'text', 'stopRequested'] }),
+      expect.objectContaining({
+        required: ['outcome', 'text', 'stopRequested', 'companyQuestion'],
+      }),
       expect.objectContaining({ required: ['ok', 'problems'] }),
       expect.objectContaining({
         required: [
@@ -118,6 +124,10 @@ describe('агент с настоящим адаптером Anthropic', () => 
           'problem',
           'specifics',
           'reason',
+          'companyName',
+          'companyCity',
+          'companyAnswer',
+          'confirmedPains',
         ],
       }),
     ]);
@@ -152,6 +162,12 @@ describe('агент с настоящим адаптером Anthropic', () => 
         level: 'warm',
         profile: { ...EMPTY_PROFILE, business: 'магазин одежды', area: '300 м2', has1C: true },
         reason: 'Рассказал о бизнесе',
+        company: {
+          name: 'ТОО Альфа',
+          city: null,
+          answer: 'none',
+          pains: ['пересчёт занимает дни'],
+        },
       },
     });
     expect(

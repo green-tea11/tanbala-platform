@@ -64,11 +64,17 @@ const HANDOFF_TITLE =
   'Черновик сообщения о передаче чата специалисту (после него чат уходит специалисту), его нужно проверить:';
 
 /**
- * Данные вызова проверки: текст черновика, который нужно проверить, и подпись, обычный ли это ответ или сообщение
+ * Данные вызова проверки: что известно о компании клиента (companyData, если есть: какие вопросы и данные о ней
+ * допустимы), затем текст черновика, который нужно проверить, с подписью, обычный ли это ответ или сообщение
  * о передаче (пункт 6 инструкции проверки опирается на эту подпись). Черновик последним, поэтому его конец
  * однозначен: дальше только закрытие блока. Угловые скобки в нём заменяет buildTurns.
  */
-export function reviewCallData(draftText: string, kind: DraftKind = 'answer'): string {
+export function reviewCallData(
+  draftText: string,
+  kind: DraftKind = 'answer',
+  companyData: string | null = null,
+): string {
   const title = kind === 'handoff' ? HANDOFF_TITLE : ANSWER_TITLE;
-  return `${title}\n${draftText.trim()}`;
+  const draft = `${title}\n${draftText.trim()}`;
+  return companyData === null ? draft : `${companyData}\n\n${draft}`;
 }

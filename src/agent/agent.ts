@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ModelsConfig } from '../config/env.js';
-import type { LlmClient, SystemBlock } from '../domain/ports.js';
+import type { CompanyPrompt, LogoReader } from '../domain/company.js';
+import type { ImageInput, LlmClient, SystemBlock } from '../domain/ports.js';
 import type {
   ChatId,
   ClientProfile,
@@ -12,6 +13,8 @@ import type {
   ReviewResult,
   StoredMessage,
 } from '../domain/types.js';
+import { cleanLine } from './clean-text.js';
+import { companyReplyData, companyReviewData } from './company-data.js';
 import { interestCallData, interestSchema, normalizeInterest } from './interest.js';
 import type { Knowledge } from './knowledge.js';
 import { profileText } from './profile.js';
@@ -37,15 +40,21 @@ export interface ConversationContext {
    * конвейер передаёт chat.level. Не передан => оценка идёт без текущего уровня.
    */
   readonly level?: InterestLevel;
+  /**
+   * Что известно о компании клиента (сервис компании, src/company). Её видят ответ, проверка и оценка интереса в
+   * данных вызова. Не передана или off => вызовы идут как раньше, без блока о компании.
+   */
+  readonly company?: CompanyPrompt;
 }
 
 /**
  * Три отдельных вызова LLM из плана: ответ, проверка черновика, оценка интереса.
  * Сбой любого вызова приходит как LlmResult с ok: false и ведёт к передаче специалисту.
  * Решение о передаче чата принимает вызов ответа (исходы hot, no_answer, asked_human, complaint); оценка
- * интереса только хранит уровень и выжимку.
+ * интереса только хранит уровень и выжимку. readLogo (шаг д определения компании): название компании с фото
+ * профиля бизнес-аккаунта.
  */
-export interface Agent {
+export interface Agent extends LogoReader {
   /**
    * Черновик ответа строго по файлам знаний. feedback: замечания проверки для повторной попытки. Исход answer
    * оставляет чат у бота; hot, no_answer, asked_human и complaint передают его специалисту, и у первых трёх text
@@ -105,9 +114,28 @@ const replyDraftSchema = z.object({
   stopRequested: z
     .boolean()
     .describe('true только при complaint, если клиент просит больше не писать; иначе false.'),
+  companyQuestion: z
+    .enum(['none', 'confirm', 'name'])
+    .describe(
+      'О чём из компании ты спросил в text: confirm, если спросил, из той ли компании клиент; name, если спросил, из какой он компании; иначе none.',
+    ),
 });
 
 type RawReplyDraft = z.infer<typeof replyDraftSchema>;
+
+/** Схема вызова logo: название компании с картинки или null. */
+const logoSchema = z.object({
+  companyName: z
+    .string()
+    .describe('Название компании, которое видно на картинке; null, если его нет.')
+    .nullable(),
+});
+
+/** Реплика user вызова logo: к ней прикладывается фото профиля. */
+const LOGO_TASK = 'Фото профиля клиента в WhatsApp. Какое название компании на нём видно?';
+
+/** Предел контракта API почтового проекта для названия компании. */
+const MAX_LOGO_NAME_CHARS = 200;
 
 /**
  * Противоречивый ответ модели нормализуется здесь один раз: text берётся у answer, hot, no_answer и asked_human,
@@ -118,7 +146,7 @@ function normalizeReplyDraft(raw: RawReplyDraft): LlmResult<ReplyDraft> {
   switch (raw.outcome) {
     case 'answer': {
       const text = raw.text.trim();
-      return text === '' ? INVALID_OUTPUT : { ok: true, value: { outcome: 'answer', text } };
+      return text === '' ? INVALID_OUTPUT : { ok: true, value: answerDraft(text, raw) };
     }
     case 'complaint':
       return { ok: true, value: { outcome: 'complaint', stopRequested: raw.stopRequested } };
@@ -129,15 +157,35 @@ function normalizeReplyDraft(raw: RawReplyDraft): LlmResult<ReplyDraft> {
   }
 }
 
-/** Данные вызова ответа: выясненное о клиенте и непустые замечания проверки; нет ни того, ни другого => null. */
-function replyCallData(profile: ClientProfile, feedback: readonly string[]): string | null {
+/**
+ * Ответ answer: вопрос о компании (confirm или name) сохраняется, чтобы система не задала его второй раз; none
+ * и отсутствие поля (подделки LLM в тестах его не пишут) не сохраняются.
+ */
+function answerDraft(text: string, raw: RawReplyDraft): ReplyDraft {
+  const question = (raw as Partial<RawReplyDraft>).companyQuestion;
+  return question === 'confirm' || question === 'name'
+    ? { outcome: 'answer', text, companyQuestion: question }
+    : { outcome: 'answer', text };
+}
+
+/**
+ * Данные вызова ответа: выясненное о клиенте, что известно о его компании (companyReplyData) и непустые замечания
+ * проверки; нет ничего => null.
+ */
+function replyCallData(
+  profile: ClientProfile,
+  company: CompanyPrompt | undefined,
+  feedback: readonly string[],
+): string | null {
   const problems = feedback.map((item) => item.trim()).filter((item) => item !== '');
   const numbered = problems.map((item, index) => `${index + 1}. ${item}`);
   const remarks =
     problems.length === 0
       ? null
       : ['Замечания проверки к прошлому черновику, исправь их:', ...numbered].join('\n');
-  const parts = [profileText(profile), remarks].filter((part) => part !== null);
+  const parts = [profileText(profile), companyReplyData(company), remarks].filter(
+    (part) => part !== null,
+  );
   return parts.length === 0 ? null : parts.join('\n\n');
 }
 
@@ -177,21 +225,24 @@ function createAsk(deps: AgentDeps): Ask {
  * Все вызовы: system = buildSystem(knowledge, purpose) (знания с кэшем, затем инструкция вызова без кэша; блок
  * знаний у трёх вызовов один и тот же, поэтому кэш общий); turns = buildTurns(history, HISTORY_MESSAGES, данные
  * вызова): данные в последней реплике user в блоке «данные». Сбой LLM возвращается как есть, значением.
- * draftReply: модель models.reply, данные вызова: текущая выжимка и замечания проверки (feedback); схема
- * replyDraftSchema, ответ нормализуется в ReplyDraft.
- * reviewDraft: модель models.review, данные вызова: текст черновика (не репликой assistant); схема reviewSchema,
- * противоречия снимает normalizeReview. Пустой черновик не проходит и LLM не вызывает.
- * assessInterest: модель models.interest, данные вызова: текущий уровень и выжимка; схема interestSchema,
- * normalizeInterest чистит поля и сохраняет известное раньше.
+ * draftReply: модель models.reply, данные вызова: текущая выжимка, блок о компании и замечания проверки
+ * (feedback); схема replyDraftSchema, ответ нормализуется в ReplyDraft.
+ * reviewDraft: модель models.review, данные вызова: что допустимо о компании клиента и текст черновика (не репликой
+ * assistant); схема reviewSchema, противоречия снимает normalizeReview. Пустой черновик не проходит и LLM не вызывает.
+ * assessInterest: модель models.interest, данные вызова: текущий уровень, выжимка и вопрос «Вы из компании X?»;
+ * схема interestSchema, normalizeInterest чистит поля и сохраняет известное раньше.
+ * readLogo: модель models.logo, system только инструкция logo (без знаний и истории), одна реплика user с фото;
+ * название после cleanLine, пустое => null.
  */
 export function createAgent(deps: AgentDeps): Agent {
   const ask = createAsk(deps);
+  const logoSystem = buildSystem(deps.knowledge, 'logo');
   return {
     async draftReply(
       context: ConversationContext,
       feedback: readonly string[] = [],
     ): Promise<LlmResult<ReplyDraft>> {
-      const callData = replyCallData(context.profile, feedback);
+      const callData = replyCallData(context.profile, context.company, feedback);
       const result = await ask('reply', replyDraftSchema, context, callData);
       return result.ok ? normalizeReplyDraft(result.value) : result;
     },
@@ -203,15 +254,31 @@ export function createAgent(deps: AgentDeps): Agent {
       if (draftText.trim() === '') {
         return { ok: true, value: EMPTY_DRAFT_REVIEW };
       }
-      const result = await ask('review', reviewSchema, context, reviewCallData(draftText, kind));
+      const callData = reviewCallData(draftText, kind, companyReviewData(context.company));
+      const result = await ask('review', reviewSchema, context, callData);
       return result.ok ? { ok: true, value: normalizeReview(result.value) } : result;
     },
     async assessInterest(context: ConversationContext): Promise<LlmResult<InterestAssessment>> {
-      const callData = interestCallData(context.profile, context.level);
+      const callData = interestCallData(context.profile, context.level, context.company);
       const result = await ask('interest', interestSchema, context, callData);
       return result.ok
         ? { ok: true, value: normalizeInterest(result.value, context.profile) }
         : result;
+    },
+    async readLogo(chatId: ChatId, photo: ImageInput): Promise<LlmResult<string | null>> {
+      const result = await deps.llm.structured({
+        purpose: 'logo',
+        model: deps.models.logo,
+        system: logoSystem,
+        turns: [{ role: 'user', text: LOGO_TASK }],
+        image: photo,
+        schema: logoSchema,
+        maxTokens: MAX_TOKENS,
+        chatId,
+      });
+      if (!result.ok) return result;
+      const name = cleanLine(result.value.companyName ?? '', MAX_LOGO_NAME_CHARS);
+      return { ok: true, value: name === '' ? null : name };
     },
   };
 }

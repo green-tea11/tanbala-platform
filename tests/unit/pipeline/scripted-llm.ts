@@ -14,6 +14,8 @@ export type ReplyScript =
       readonly outcome: 'answer' | 'hot' | 'no_answer' | 'asked_human' | 'complaint';
       readonly text?: string;
       readonly stopRequested?: boolean;
+      /** О чём из компании спросил ответ; по умолчанию none. */
+      readonly companyQuestion?: 'none' | 'confirm' | 'name';
     };
 
 /** Что отвечает поддельная модель. */
@@ -51,17 +53,22 @@ function rawInterest(level: InterestLevel): unknown {
     problem: null,
     specifics: null,
     reason: 'по разговору',
+    companyName: null,
+    companyCity: null,
+    companyAnswer: 'none',
+    confirmedPains: [],
   };
 }
 
 function rawReply(script: ReplyScript): unknown {
   if (typeof script === 'string') {
-    return { outcome: 'answer', text: script, stopRequested: false };
+    return { outcome: 'answer', text: script, stopRequested: false, companyQuestion: 'none' };
   }
   return {
     outcome: script.outcome,
     text: script.text ?? '',
     stopRequested: script.stopRequested ?? false,
+    companyQuestion: script.companyQuestion ?? 'none',
   };
 }
 
@@ -82,6 +89,8 @@ export function scriptedLlm(script: LlmScript): ScriptedLlm {
       }
       case 'interest':
         return rawInterest(script.level ?? 'cold');
+      case 'logo':
+        return { companyName: null };
     }
   };
   const llm: LlmClient = {

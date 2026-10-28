@@ -51,7 +51,19 @@ const FIELD_NAMES = [
   'problem',
   'specifics',
   'reason',
+  'companyName',
+  'companyCity',
+  'companyAnswer',
+  'confirmedPains',
 ];
+
+/** Поля о компании, которые настоящая схема требует всегда: клиент о компании ничего не сказал. */
+const NO_COMPANY = {
+  companyName: null,
+  companyCity: null,
+  companyAnswer: 'none',
+  confirmedPains: [],
+} as const;
 
 async function assess(answer: LlmResult<unknown>, ctx = context()) {
   const { requests, llm } = fakeLlm(answer);
@@ -99,21 +111,29 @@ describe('createAgent: assessInterest, запрос', () => {
     expect(last).not.toMatch(/Уровень/);
   });
 
-  it('схема оценки: плоский объект из девяти полей, все обязательны', async () => {
+  it('схема оценки: плоский объект из тринадцати полей, все обязательны', async () => {
     const { requests } = await assess({ ok: true, value: NOTHING_NEW });
     const { schema } = onlyRequest(requests);
 
     const json = zodOutputFormat(schema).schema;
     expect(json).toMatchObject({ type: 'object', additionalProperties: false });
-    // Описание до nullable: поля идут в anyOf [тип, null] без $defs и $ref.
-    expect(JSON.stringify(json)).not.toContain('$ref');
+    // Описание до nullable: поля идут в anyOf [тип, null] без $ref. В $defs SDK выносит только строку элемента
+    // списка confirmedPains (так же у списка замечаний проверки).
+    const properties = json['properties'] as Record<string, Record<string, unknown>>;
+    expect(JSON.stringify(properties['business'])).not.toContain('$ref');
+    expect(JSON.stringify(properties['companyName'])).not.toContain('$ref');
+    expect(properties['companyName']).toHaveProperty('anyOf');
     expect([...(json['required'] as string[])].sort()).toEqual([...FIELD_NAMES].sort());
-    expect(schema.safeParse(NOTHING_NEW).success).toBe(true);
-    expect(schema.safeParse({ ...NOTHING_NEW, ...KNOWN, level: 'hot' }).success).toBe(true);
-    expect(schema.safeParse({ ...NOTHING_NEW, level: 'burning' }).success).toBe(false);
-    expect(schema.safeParse({ ...NOTHING_NEW, has1C: 'есть' }).success).toBe(false);
-    expect(schema.safeParse({ ...NOTHING_NEW, business: 5 }).success).toBe(false);
-    expect(schema.safeParse({ ...NOTHING_NEW, reason: undefined }).success).toBe(false);
+    const full = { ...NOTHING_NEW, ...NO_COMPANY };
+    expect(schema.safeParse(full).success).toBe(true);
+    expect(schema.safeParse(NOTHING_NEW).success).toBe(false);
+    expect(schema.safeParse({ ...full, ...KNOWN, level: 'hot' }).success).toBe(true);
+    expect(schema.safeParse({ ...full, level: 'burning' }).success).toBe(false);
+    expect(schema.safeParse({ ...full, has1C: 'есть' }).success).toBe(false);
+    expect(schema.safeParse({ ...full, business: 5 }).success).toBe(false);
+    expect(schema.safeParse({ ...full, reason: undefined }).success).toBe(false);
+    expect(schema.safeParse({ ...full, companyAnswer: 'maybe' }).success).toBe(false);
+    expect(schema.safeParse({ ...full, confirmedPains: 'теряются вещи' }).success).toBe(false);
   });
 });
 

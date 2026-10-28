@@ -115,9 +115,11 @@ describe('createAgent: draftReply, запрос', () => {
     expect(zodOutputFormat(request.schema).schema).toMatchObject({
       type: 'object',
       additionalProperties: false,
-      required: ['outcome', 'text', 'stopRequested'],
+      required: ['outcome', 'text', 'stopRequested', 'companyQuestion'],
     });
-    expect(request.schema.safeParse(ANSWER).success).toBe(true);
+    expect(request.schema.safeParse({ ...ANSWER, companyQuestion: 'none' }).success).toBe(true);
+    expect(request.schema.safeParse(ANSWER).success).toBe(false);
+    expect(request.schema.safeParse({ ...ANSWER, companyQuestion: 'phone' }).success).toBe(false);
     expect(
       request.schema.safeParse({ outcome: 'maybe', text: '', stopRequested: false }).success,
     ).toBe(false);
@@ -134,7 +136,12 @@ describe('createAgent: draftReply, запрос', () => {
     for (const outcome of outcomes) {
       expect(schema.properties.outcome.description).toContain(outcome);
       expect(
-        request.schema.safeParse({ outcome, text: 'Текст', stopRequested: false }).success,
+        request.schema.safeParse({
+          outcome,
+          text: 'Текст',
+          stopRequested: false,
+          companyQuestion: 'none',
+        }).success,
       ).toBe(true);
     }
     expect(schema.properties.text.description).toMatch(/hot, no_answer и asked_human/);
