@@ -269,6 +269,32 @@ def test_known_company_without_assessment_skips_2gis(env):
 
 
 @pytest.mark.db
+@pytest.mark.parametrize(("body", "searched_2gis"), [
+    ({"name": "Аксенгер", "phone": "+7 775 907 07 50"}, False),  # нашлась у нас по телефону: 2ГИС не нужен
+    ({"name": "Аксенгер"}, True),  # у нас под другим названием: 2ГИС дал её же карточку (тот же 2ГИС id)
+])
+def test_research_does_not_take_existing_company_out_of_mailing(env, body, searched_2gis):
+    """Пометку «запрошено из WhatsApp» ставит только компания, которую research сам добавил в базу."""
+    company_id = env.conn.execute(
+        "INSERT INTO companies (name, city, status, phones, source, source_id)"
+        " VALUES ('МФЦ «АТ»', 'Алматы', 'crawled', %s, '2gis', '70000001105705309') RETURNING id",
+        (["+77759070750"],)).fetchone()[0]
+    env.conn.execute("INSERT INTO contacts (company_id, email) VALUES (%s, 'info@aksengerterminal.kz')",
+                     (company_id,))
+    client, deps, _ = env.client()
+
+    result = status(client, post(client, body)["job_id"])
+
+    assert (result["status"], result["company_id"]) == ("done", company_id)
+    assert bool(deps.run_parser.urls) is searched_2gis
+    assert env.conn.execute("SELECT count(*) FROM companies").fetchone()[0] == 1
+    marks = env.conn.execute("SELECT requested_via, whatsapp_contacted_at, status FROM companies").fetchone()
+    assert marks == (None, None, "qualified")
+    # Следующий поиск возьмёт её проверить почту и написать письмо, как обычную компанию.
+    assert pipeline._unfinished(env.conn, (), 10) == (company_id,)
+
+
+@pytest.mark.db
 def test_daily_limit_is_429(env):
     client, _, _ = env.client(per_day=1)
     post(client, {"name": "Аксенгер"})
