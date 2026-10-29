@@ -48,7 +48,7 @@ const QUANTITY_AFTER = new RegExp(
 );
 
 /** Валюта или процент справа и слева от числа. */
-const CURRENCY_WORD = String.raw`(?:те[нң]ге|tenge|тг(?!\p{L})|тнг(?!\p{L})|₸|kzt|руб|rub|rur|₽|usd|\$|долл|eur|€|евро(?!\p{L})|%|процент|пайыз)`;
+const CURRENCY_WORD = String.raw`(?:те[нң]ге|tenge|тг(?!\p{L})|тнг(?!\p{L})|₸|kzt|руб|rub|rur|₽|usd|\$|долл|бакс|eur|€|евро(?!\p{L})|юан|cny|сом(?:а|ов)?(?!\p{L})|у\.\s?е|%|процент|пайыз)`;
 const CURRENCY_AFTER = new RegExp(String.raw`^\s{0,3}${CURRENCY_WORD}`, 'u');
 const CURRENCY_BEFORE = /(?:[$€₸₽]|usd|kzt|eur|rub)\s{0,2}$/u;
 
