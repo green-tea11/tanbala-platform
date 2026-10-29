@@ -205,3 +205,47 @@ describe('предел пять сообщений клиента (решени�
     expect(turns[4]?.toManager[0]).toContain('Для оценки цены собрано: ничего');
   });
 });
+
+describe('«вы нам писали на почту» (решение владельца 29.10.2026 вечером)', () => {
+  /** Черновик из теста владельца: фраза об ориентире без вопроса цены, письмо проигнорировано. */
+  const OLD_DRAFT =
+    'Здравствуйте! Ориентир коллега назовёт, когда поймём ваш объект. Подскажите, какие именно вещи нужно учитывать?';
+  const LETTER = 'Здравствуйте! Найду письмо, подскажите, из какой вы компании?';
+
+  it('бот здоровается, обещает найти письмо и спрашивает компанию; фраза об ориентире отклонена кодом', async () => {
+    const s = createScenario();
+
+    const first = await s.say('Здравствуйте вы нам писали на почту', {
+      replies: [OLD_DRAFT, { outcome: 'answer', text: LETTER, companyQuestion: 'name' }],
+      interests: [{ level: 'cold' }],
+    });
+
+    expect(first.outcome).toEqual({ kind: 'replied' });
+    expect(first.toClient).toEqual([LETTER]);
+    expect(first.toClient.join(' ')).not.toMatch(/Ориентир/);
+    expect(first.llm.purposes()).toEqual(['reply', 'interest', 'reply', 'review']);
+    const rejected = s.storage.rejectedDrafts.listForChat(s.chatId(), 10);
+    expect(rejected.map(({ source, draft }) => ({ source, draft }))).toEqual([
+      { source: 'code', draft: OLD_DRAFT },
+    ]);
+    expect(rejected[0]?.remarks.join(' ')).toMatch(/только когда клиент спрашивает цену/);
+    // Вопрос о компании запомнен: второй раз его не зададут.
+    expect(s.state().nameAskedAtMs).not.toBeNull();
+  });
+
+  it('правило о письме есть в инструкции ответа и в knowledge/whatsapp.md', async () => {
+    const s = createScenario();
+
+    const first = await s.say('Здравствуйте вы нам писали на почту', {
+      replies: [{ outcome: 'answer', text: LETTER, companyQuestion: 'name' }],
+    });
+
+    const system = first.llm.requests[0]?.system.map((block) => block.text).join('\n') ?? '';
+    expect(system).toContain(
+      'Клиент пишет, что мы писали ему на почту, что он получил наше письмо или что пришло письмо: поздоровайся, скажи, что найдёшь письмо, и спроси, из какой он компании (companyQuestion: name)',
+    );
+    expect(system).toContain(
+      'Клиент пишет «вы нам писали на почту», «получили ваше письмо» или «пришло письмо»: поздоровайся, скажи, что найдёшь письмо, и спроси, из какой он компании.',
+    );
+  });
+});
