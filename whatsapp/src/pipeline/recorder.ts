@@ -38,6 +38,11 @@ export interface InboundRecorderDeps {
    * рабочем номере до перехода в рабочий режим и начинает у менеджера. В закрытом режиме всегда false.
    */
   heldForManager: (identity: ChatIdentity) => boolean;
+  /**
+   * Этап 8 (pipeline/working-mode.createUnseenHold): в рабочем режиме добавляет отметку «у менеджера» адресам, переписку
+   * на которых бот не видел (пропуск before_link). В закрытом режиме ничего не делает, false.
+   */
+  holdUnseen: (jids: readonly Jid[]) => boolean;
   logger: Logger;
   clock: Clock;
 }
@@ -65,6 +70,7 @@ export interface RecordedInbound {
 }
 
 type IgnoreEvent = Extract<WaEvent, { readonly type: 'ignore' }>;
+type TracedIgnoreEvent = Extract<IgnoreEvent, { readonly chatJid: Jid }>;
 
 /**
  * Все причины с нуля; порядок ключей задаёт порядок в сводке main: сначала редкие, потом частые.
@@ -110,7 +116,8 @@ const LID_SUFFIX = '@lid';
  * первым, не нашёл бы чата). ignore: счётчик по причине (ignoreStats); редкие причины
  * (manager, self, before_link, undecryptable) ещё и строкой в лог, частые только счётчиком. ignore с адресом
  * (not_allowlisted, before_link и undecryptable: сообщение не расшифровалось, но чат с перепиской) запоминает чат
- * в known_chats. Этап 8: чат, которого ещё не было в базе (ни по одному адресу), после записи проверяется правилом
+ * в known_chats; before_link в рабочем режиме ещё и отмечает адрес «у менеджера» (holdUnseen) в той же транзакции:
+ * переписку до перехода бот не видел, следующее сообщение этого чата начнёт у менеджера. Этап 8: чат, которого ещё не было в базе (ни по одному адресу), после записи проверяется правилом
  * heldForManager в той же транзакции; был на номере до перехода в рабочий режим => статус manager (by 'phone'), бот
  * в нём молчит до «Вернуть боту», строка в лог после транзакции. Логи без текста, имён, номеров и адресов: только ID
  * чата, вид сообщения или причина пропуска.
@@ -126,7 +133,7 @@ export function createInboundRecorder(deps: InboundRecorderDeps): InboundRecorde
         `Сообщение пропущено: причина ${event.reason}`,
       );
     }
-    if ('chatJid' in event) deps.knownChats.touch(event.chatJid, event.tsMs, 'message');
+    if ('chatJid' in event) recordTraced(deps, event);
   };
   const record = (event: WaEvent): RecordedInbound | null => {
     if (event.type === 'client' || event.type === 'stale') {
@@ -176,6 +183,15 @@ function recordInbound(
     : `Сохранено входящее: чат #${saved.chatId}, вид ${kind}`;
   logSaved(deps.logger, saved, kind, text);
   return saved;
+}
+
+/** Пропуск с адресом: known_chats; before_link ещё и отметка переписки без бота (рабочий режим), одной транзакцией. */
+function recordTraced(deps: InboundRecorderDeps, event: TracedIgnoreEvent): void {
+  const jids = [event.chatJid];
+  deps.unitOfWork.run(() => {
+    for (const jid of jids) deps.knownChats.touch(jid, event.tsMs, 'message');
+    if (event.reason === 'before_link') deps.holdUnseen(jids);
+  });
 }
 
 /** Своё сообщение: чат по адресу (или новый с этим адресом) и known_chats; сообщение пишет pipeline/takeover.ts. */

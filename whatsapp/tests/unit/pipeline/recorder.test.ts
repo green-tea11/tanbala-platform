@@ -81,12 +81,13 @@ interface Setup {
 }
 
 /**
- * Регистратор на свежей базе; knownChats можно подменить, чтобы проверить откат транзакции. heldForManager: правило
- * этапа 8 для нового чата, по умолчанию закрытый режим (никогда).
+ * Регистратор на свежей базе; knownChats можно подменить, чтобы проверить откат транзакции. heldForManager и
+ * holdUnseen: правила этапа 8 для нового чата и для переписки без бота, по умолчанию закрытый режим (никогда).
  */
 function setup(
   knownChatsOf?: (db: Database.Database) => KnownChatsRepo,
   heldForManager: (identity: ChatIdentity) => boolean = () => false,
+  holdUnseen: (jids: readonly Jid[]) => boolean = () => false,
 ): Setup {
   const db = useMigratedDb();
   const entries: LogEntry[] = [];
@@ -97,6 +98,7 @@ function setup(
     knownChats: knownChatsOf === undefined ? createKnownChatsRepo(db) : knownChatsOf(db),
     unitOfWork: createUnitOfWork(db),
     heldForManager,
+    holdUnseen,
     logger: createFakeLogger(entries),
     clock,
   });
@@ -422,6 +424,7 @@ describe('pipeline/recorder: чат, известный до перехода в
       knownChats: createKnownChatsRepo(db),
       unitOfWork: createUnitOfWork(db),
       heldForManager: rule,
+      holdUnseen: () => false,
       logger: createFakeLogger([]),
       clock,
     });
@@ -506,6 +509,38 @@ describe('pipeline/recorder: пропуски (ignore)', () => {
       expect(entries).toEqual(logged ? [skipped(reason), skipped(reason)] : []);
     },
   );
+
+  it.each<[TracedIgnoreReason, boolean]>([
+    ['before_link', true],
+    ['not_allowlisted', false],
+    ['undecryptable', false],
+  ])(
+    '%s: переписку без бота (рабочий режим) отмечает правило holdUnseen: %s',
+    async (reason, unseen) => {
+      const marked: (readonly Jid[])[] = [];
+      const { recorder } = setup(undefined, undefined, (jids) => {
+        marked.push(jids);
+        return true;
+      });
+
+      await recorder.onEvent({ type: 'ignore', reason, chatJid: STRANGER_PN, tsMs: NOW });
+
+      expect(marked).toEqual(unseen ? [[STRANGER_PN]] : []);
+    },
+  );
+
+  it('сбой отметки откатывает и known_chats: всё одной транзакцией', async () => {
+    const { db, recorder } = setup(undefined, undefined, () => {
+      throw new Error('база заблокирована');
+    });
+
+    await expect(
+      recorder.onEvent({ type: 'ignore', reason: 'before_link', chatJid: STRANGER_PN, tsMs: NOW }),
+    ).rejects.toThrow('база заблокирована');
+
+    expect(knownOf(db)).toEqual([]);
+    expect(recorder.ignoreStats().before_link).toBe(1);
+  });
 
   it.each<[Exclude<IgnoreReason, TracedIgnoreReason>, boolean]>([
     ['service', false],

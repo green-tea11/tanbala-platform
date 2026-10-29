@@ -16,6 +16,7 @@ import type {
 } from '../../../src/domain/types.js';
 import {
   createHeldForManagerCheck,
+  createUnseenHold,
   resumeFloorMs,
   settleWorkingMode,
   startsWithManager,
@@ -313,6 +314,35 @@ describe('pipeline/working-mode createHeldForManagerCheck: новый чат п�
 
   it('закрытый режим: правило не действует', () => {
     expect(checkOf(null)({ replyJid: STRANGER_PN, lidJid: null, pnJid: STRANGER_PN })).toBe(false);
+  });
+});
+
+describe('pipeline/working-mode createUnseenHold: переписка без бота в рабочем режиме', () => {
+  const MODE: WorkingMode = { sinceMs: NOW, allowlist: ALLOWLIST };
+
+  function holdOf(mode: WorkingMode | null) {
+    const db = useMigratedDb();
+    const known = createKnownChatsRepo(db);
+    for (const jid of [PN_A, PN_B, LID_B]) known.touch(jid, LINKED_AT, 'history');
+    const repo = createWorkingModeRepo(db);
+    repo.holdForManager([PN_A]);
+    return { db, hold: createUnseenHold(mode, repo) };
+  }
+
+  it('рабочий режим: адреса отмечены «у менеджера» в добавление к прежним, true', () => {
+    const { db, hold } = holdOf(MODE);
+
+    expect(hold([PN_B, LID_B])).toBe(true);
+
+    expect(heldOf(db)).toEqual([PN_A, PN_B, LID_B].toSorted());
+  });
+
+  it('закрытый режим: ничего не отмечается, false', () => {
+    const { db, hold } = holdOf(null);
+
+    expect(hold([PN_B, LID_B])).toBe(false);
+
+    expect(heldOf(db)).toEqual([PN_A]);
   });
 });
 

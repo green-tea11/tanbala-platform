@@ -24,7 +24,8 @@ const CHAT_STATUSES: readonly ChatStatus[] = ['bot', 'manager'];
 /**
  * Переход в рабочий режим в SQLite: known_chats.held_for_manager (схема версии 9) и чтение chats. Список адресов
  * уходит в запрос одним параметром JSON (json_each): переход отмечает тысячи адресов без лимита переменных SQLite и
- * без SQL из строк. Только подготовленные запросы. holdForManager звать внутри UnitOfWork.run вместе с границей.
+ * без SQL из строк. Только подготовленные запросы. holdForManager звать внутри UnitOfWork.run вместе с границей,
+ * addHeldForManager после touch этих адресов в той же транзакции.
  */
 export function createWorkingModeRepo(db: Database.Database): WorkingModeRepo {
   const known = db.prepare<[], KnownRow>(
@@ -38,6 +39,9 @@ export function createWorkingModeRepo(db: Database.Database): WorkingModeRepo {
   const hold = db.prepare<[string]>(
     'UPDATE known_chats SET held_for_manager = (jid IN (SELECT value FROM json_each(?)))',
   );
+  const addHold = db.prepare<[string]>(
+    'UPDATE known_chats SET held_for_manager = 1 WHERE jid IN (SELECT value FROM json_each(?))',
+  );
   const anyHeld = db
     .prepare<[string], number>(
       `SELECT 1 FROM known_chats
@@ -49,6 +53,9 @@ export function createWorkingModeRepo(db: Database.Database): WorkingModeRepo {
     listChats: () => chats.all().map(toSwitchChat),
     holdForManager(jids: readonly Jid[]): void {
       hold.run(JSON.stringify(jids));
+    },
+    addHeldForManager(jids: readonly Jid[]): void {
+      if (jids.length > 0) addHold.run(JSON.stringify(jids));
     },
     isHeldForManager(jids: readonly Jid[]): boolean {
       return jids.length > 0 && anyHeld.get(JSON.stringify(jids)) !== undefined;

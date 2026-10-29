@@ -84,6 +84,21 @@ describe('createWorkingModeRepo: отметка «у менеджера»', () =
     expect(repo.isHeldForManager([PN_B])).toBe(false);
   });
 
+  it('addHeldForManager добавляет отметки: прежние остаются, неизвестные адреса не добавляются', () => {
+    const db = useMigratedDb();
+    const known = createKnownChatsRepo(db);
+    for (const jid of [PN_A, LID_A, PN_B]) known.touch(jid, 1000, 'history');
+    const repo = createWorkingModeRepo(db);
+    repo.holdForManager([PN_A]);
+
+    repo.addHeldForManager([LID_A, LID_B]);
+    repo.addHeldForManager([]);
+
+    expect(heldOf(db)).toEqual([LID_A, PN_A].toSorted());
+    expect(repo.isHeldForManager([PN_B])).toBe(false);
+    expect(known.count()).toBe(3);
+  });
+
   it('много адресов разом: отметка одним запросом без лимита переменных SQLite', () => {
     const db = useMigratedDb();
     const known = createKnownChatsRepo(db);

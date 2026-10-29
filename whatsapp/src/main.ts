@@ -46,7 +46,11 @@ import { assemblePanel, type Panel, type PanelStarter } from './pipeline/panel-s
 import { assembleResponder, type Responder } from './pipeline/responder-setup.js';
 import { assembleServices, type Services } from './pipeline/services.js';
 import { handleOwnMessage, type TakeoverDeps, type TakeoverResult } from './pipeline/takeover.js';
-import { createHeldForManagerCheck, settleWorkingMode } from './pipeline/working-mode.js';
+import {
+  createHeldForManagerCheck,
+  createUnseenHold,
+  settleWorkingMode,
+} from './pipeline/working-mode.js';
 import { assertPanelStartAllowed } from './panel/guard.js';
 import { createSystemClock } from './shared/clock.js';
 import { createLogger, type LogDestination } from './shared/logger.js';
@@ -503,6 +507,7 @@ function assembleStorage(db: Database, config: AppConfig, logger: Logger, clock:
     knownChats: createKnownChatsRepo(db),
     unitOfWork,
     heldForManager: createHeldForManagerCheck(workingMode, switchRepo),
+    holdUnseen: createUnseenHold(workingMode, switchRepo),
     logger,
     clock,
   });

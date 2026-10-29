@@ -26,6 +26,7 @@ import {
 import { assembleServices, type Services } from '../../../src/pipeline/services.js';
 import {
   createHeldForManagerCheck,
+  createUnseenHold,
   settleWorkingMode,
 } from '../../../src/pipeline/working-mode.js';
 import { classifyUpsert, type WaEvent } from '../../../src/whatsapp/inbound.js';
@@ -148,15 +149,16 @@ function recorderOf(rig: Pick<Rig, 'storage' | 'workingMode'>, logger: Logger): 
   return createInboundRecorder({
     ...storage,
     heldForManager: createHeldForManagerCheck(rig.workingMode, storage.switchRepo),
+    holdUnseen: createUnseenHold(rig.workingMode, storage.switchRepo),
     logger,
     clock: { now: () => SWITCH_MS, sleep: () => Promise.resolve() },
   });
 }
 
-/** Синтетическое сообщение Baileys: текст клиента в личном чате. */
-function waMessage(jid: Jid, waId: string, text: string, tsMs: number): WAMessage {
+/** Синтетическое сообщение Baileys: текст клиента (или своё, fromMe) в личном чате. */
+function waMessage(jid: Jid, waId: string, text: string, tsMs: number, fromMe = false): WAMessage {
   const synthetic: unknown = {
-    key: { remoteJid: jid, fromMe: false, id: waId },
+    key: { remoteJid: jid, fromMe, id: waId },
     message: { conversation: text },
     messageTimestamp: tsMs / 1000,
   };
@@ -288,6 +290,8 @@ async function receive(
     readonly waId: string;
     readonly text: string;
     readonly tsMs: number;
+    /** Своё сообщение: менеджер ответил с телефона. */
+    readonly fromMe?: boolean;
   },
   script: LlmScript = { replies: [ASK] },
   upsertType: 'notify' | 'append' = 'notify',
@@ -295,7 +299,8 @@ async function receive(
   const mark = { sent: rig.sendText.mock.calls.length, logs: rig.logs.length };
   const llm = scriptedLlm(script);
   const responder = await responderOf(rig, llm);
-  const event = classifyUpsert(waMessage(message.jid, message.waId, message.text, message.tsMs), {
+  const { jid, waId, text, tsMs, fromMe } = message;
+  const event = classifyUpsert(waMessage(jid, waId, text, tsMs, fromMe), {
     managerJids: new Set([MANAGER_JID]),
     selfJids: new Set([BOT_JID]),
     linkedAtMs: LINKED_MS,
@@ -353,7 +358,7 @@ describe('сценарии этапа 8: переход в рабочий реж
     expect(controlOf(rig, NEW_JID)).toEqual({ status: 'bot', by: null });
   });
 
-  it('чужое сообщение, отправленное до перехода (офлайн-очередь): пропуск before_link, ни чата, ни ответа', async () => {
+  it('чужое сообщение, отправленное до перехода (офлайн-очередь): пропуск before_link, ни чата, ни ответа; следующее сообщение после перехода тоже без ответа, чат у менеджера', async () => {
     const rig = await switchedRig();
 
     const turn = await receive(
@@ -362,12 +367,50 @@ describe('сценарии этапа 8: переход в рабочий реж
       { replies: [ASK] },
       'append',
     );
+    const after = await receive(rig, {
+      jid: LATE_JID,
+      waId: 'L-2',
+      text: 'Вы тут?',
+      tsMs: rig.nowMs,
+    });
 
     expect(turn.event).toMatchObject({ type: 'ignore', reason: 'before_link', chatJid: LATE_JID });
     expect(turn.llm.requests).toEqual([]);
     expect(turn.toClient).toEqual([]);
-    expect(rig.storage.chats.findByJid(LATE_JID)).toBeNull();
     expect(rig.storage.switchRepo.listKnownChats().map((chat) => chat.jid)).toContain(LATE_JID);
+    expect(after.event.type).toBe('client');
+    expect(after.outcome).toEqual({ kind: 'silent', reason: 'manager_mode' });
+    expect(after.llm.requests).toEqual([]);
+    expect(after.toClient).toEqual([]);
+    expect(controlOf(rig, LATE_JID)).toEqual({ status: 'manager', by: 'phone' });
+  });
+
+  it('менеджер ответил с телефона до перехода (своё сообщение из офлайн-очереди): клиент пишет после перехода, бот молчит', async () => {
+    const rig = await switchedRig();
+
+    const reply = await receive(
+      rig,
+      {
+        jid: LATE_JID,
+        waId: 'L-M',
+        text: 'Добрый вечер, это менеджер',
+        tsMs: SWITCH_MS - 20 * 60_000,
+        fromMe: true,
+      },
+      { replies: [ASK] },
+      'append',
+    );
+    const after = await receive(rig, {
+      jid: LATE_JID,
+      waId: 'L-2',
+      text: 'Спасибо, а ещё вопрос',
+      tsMs: rig.nowMs,
+    });
+
+    expect(reply.event).toMatchObject({ type: 'ignore', reason: 'before_link', chatJid: LATE_JID });
+    expect(after.outcome).toEqual({ kind: 'silent', reason: 'manager_mode' });
+    expect(after.toClient).toEqual([]);
+    expect(controlOf(rig, LATE_JID)).toEqual({ status: 'manager', by: 'phone' });
   });
 
   it('старый клиент из первой синхронизации: чат у менеджера, бот молчит; «Вернуть боту» и бот отвечает', async () => {

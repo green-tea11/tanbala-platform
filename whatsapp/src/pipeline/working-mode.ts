@@ -174,6 +174,26 @@ export function createHeldForManagerCheck(
 }
 
 /**
+ * Отметка для переписки, которую бот не видел, уже в рабочем режиме (pipeline/recorder.ts): сообщение, пропущенное
+ * как before_link (до перехода, до привязки или из офлайн-очереди без времени), своё или клиента. Пример: клиент
+ * впервые написал, пока бот был остановлен перед переходом, менеджер ответил с телефона; сообщения доходят после
+ * запуска как before_link, а снимок перехода этого адреса ещё не знал. Отметка «у менеджера» добавляется к прежним
+ * (addHeldForManager), новый чат с таким адресом начнёт у менеджера (createHeldForManagerCheck; номера TEST_ALLOWLIST
+ * она не касается). Закрытый режим (mode null): ничего, false. Звать после KnownChatsRepo.touch этих адресов, в той же
+ * транзакции. true: адреса отмечены.
+ */
+export function createUnseenHold(
+  mode: WorkingMode | null,
+  repo: Pick<WorkingModeRepo, 'addHeldForManager'>,
+): (jids: readonly Jid[]) => boolean {
+  return (jids) => {
+    if (mode === null) return false;
+    repo.addHeldForManager(jids);
+    return true;
+  };
+}
+
+/**
  * Самое раннее время сообщения, на которое бот отвечает после возврата чата (pipeline/resume.ts): в рабочем режиме у
  * чата не из TEST_ALLOWLIST граница перехода, иначе 0 (как раньше).
  */

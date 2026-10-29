@@ -282,6 +282,11 @@ export interface WorkingModeRepo {
   listChats(): readonly SwitchChat[];
   /** Отмечает адреса, которые правило перехода отдало менеджеру; отметки остальных адресов снимаются. */
   holdForManager(jids: readonly Jid[]): void;
+  /**
+   * Добавляет отметку адресам, уже записанным в known_chats (после touch): прежние отметки остаются, неизвестные
+   * адреса не добавляются. Для переписки, которую бот не видел, уже в рабочем режиме.
+   */
+  addHeldForManager(jids: readonly Jid[]): void;
   /** Есть ли среди адресов отмеченный при переходе. */
   isHeldForManager(jids: readonly Jid[]): boolean;
 }
