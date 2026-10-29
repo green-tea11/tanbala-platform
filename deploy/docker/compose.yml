@@ -1,0 +1,62 @@
+# Postgres и Reacher проекта leads на сервере. Основа: leads/docker-compose.yml (ПК).
+# Запуск (root): docker compose -f /opt/tanbala/deploy/docker/compose.yml --env-file /opt/tanbala/leads/.env up -d
+# Порты только на 127.0.0.1: Docker обходит ufw, любой порт на 0.0.0.0 был бы открыт в интернет.
+# Имя проекта и тома как на ПК: tanbala-leads, том tanbala-leads_pgdata. Образы закреплены по digest: на сервере
+# те же, что проверены на ПК (29.10.2026). Новая версия — только осознанно, отдельным коммитом.
+name: tanbala-leads
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:eee6c6e1b0894fa4fe0075eb054af9fd1cf39a35321c2d4110626cfe506411fb
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-tanbala}
+      POSTGRES_USER: ${POSTGRES_USER:-tanbala}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?задайте POSTGRES_PASSWORD в .env}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # База 43 МБ, соединений мало: 512 МБ с запасом (VPS 4 ГБ).
+    mem_limit: 512m
+    shm_size: 128m
+    security_opt:
+      - "no-new-privileges:true"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    logging: *logging
+
+  reacher:
+    # Своего Postgres и RabbitMQ Reacher в этом режиме не требует.
+    image: reacherhq/backend:v0.11.10@sha256:e23e3909a00ad6b855815af2b8ff1e5d981f599a7a884cbc41b0edd0ba1d5dff
+    restart: unless-stopped
+    environment:
+      RCH__HELLO_NAME: ${REACHER_HELLO_NAME:-localhost}
+      RCH__FROM_EMAIL: ${REACHER_FROM_EMAIL:-hello@localhost}
+      RCH__HEADER_SECRET: ${REACHER_SECRET:?задайте REACHER_SECRET в .env}
+      RCH__SMTP_TIMEOUT: ${REACHER_SMTP_TIMEOUT:-45}
+      RCH__THROTTLE__MAX_REQUESTS_PER_MINUTE: ${REACHER_MAX_PER_MINUTE:-10}
+    ports:
+      - "127.0.0.1:${REACHER_PORT:-8080}:8080"
+    mem_limit: 256m
+    security_opt:
+      - "no-new-privileges:true"
+    healthcheck:
+      # /version не делает SMTP-проверок и не требует секрета.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/version"]
+      interval: 30s
+      timeout: 3s
+      retries: 5
+    logging: *logging
+
+volumes:
+  pgdata:

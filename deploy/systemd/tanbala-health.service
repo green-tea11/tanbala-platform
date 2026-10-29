@@ -1,0 +1,10 @@
+# Проверка «всё живо» (deploy/scripts/health.sh). Запускает таймер tanbala-health.timer раз в 5 минут.
+# Сбой: запуск помечается failed, подробности в journalctl -u tanbala-health. Вручную: /opt/tanbala/deploy/scripts/health.sh
+
+[Unit]
+Description=Tanbala: проверка, что службы, панели и копии живы
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/tanbala/deploy/scripts/health.sh

@@ -1,0 +1,24 @@
+# Журналы расхода Claude API обоих проектов (токены, без текстов). Копия: /etc/logrotate.d/tanbala.
+# Оба проекта открывают файл заново на каждую запись, поэтому create, а не copytruncate.
+
+/opt/tanbala/leads/logs/llm_calls.jsonl {
+    su tanbala-leads tanbala-leads
+    monthly
+    rotate 12
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0600 tanbala-leads tanbala-leads
+}
+
+/opt/tanbala/whatsapp/data/token-usage.jsonl {
+    su tanbala-wa tanbala-wa
+    monthly
+    rotate 12
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0600 tanbala-wa tanbala-wa
+}

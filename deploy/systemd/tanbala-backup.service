@@ -1,0 +1,14 @@
+# Резервная копия баз: Postgres почты и SQLite бота, хранение 7 дней (deploy/scripts/backup.sh).
+# Запускает таймер tanbala-backup.timer; вручную: systemctl start tanbala-backup, журнал: journalctl -u tanbala-backup.
+
+[Unit]
+Description=Tanbala: резервная копия баз (Postgres и SQLite бота)
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/tanbala/deploy/scripts/backup.sh
+UMask=0077
+PrivateTmp=true
+Nice=10
+IOSchedulingClass=idle

@@ -1,0 +1,11 @@
+# Раз в 5 минут, первый раз через 5 минут после загрузки (службы успевают подняться).
+
+[Unit]
+Description=Tanbala: проверка «всё живо» раз в 5 минут
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

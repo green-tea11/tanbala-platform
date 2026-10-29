@@ -1,0 +1,60 @@
+# Служба: WhatsApp-бот и его панель (проект whatsapp), панель только 127.0.0.1:3100. Копия: /etc/systemd/system/.
+# Основа: whatsapp/deploy/tanbala.service, пути и пользователь под общий сервер. Секретов здесь нет: бот сам читает
+# /opt/tanbala/whatsapp/.env. Комментарии только на отдельных строках.
+
+[Unit]
+Description=Tanbala WhatsApp: бот и панель (127.0.0.1:3100)
+# Без внутреннего API бот работает, только без данных о компании: зависимости нет, только порядок запуска.
+After=network-online.target tanbala-leads.service
+Wants=network-online.target
+# Не больше 4 запусков за 10 минут, дальше failed (start-limit-hit): читать журнал, затем
+# systemctl reset-failed tanbala-whatsapp && systemctl start tanbala-whatsapp.
+StartLimitIntervalSec=600
+StartLimitBurst=4
+
+[Service]
+Type=simple
+User=tanbala-wa
+Group=tanbala-wa
+WorkingDirectory=/opt/tanbala/whatsapp
+
+# Запуск только при привязанной сессии WhatsApp (в creds.json есть ключ "me"). Без неё бот сам начал бы привязку
+# по QR, которую под systemd никто не отсканирует, а каждая попытка тратит одну из двух за 24 часа.
+# Привязка — только вручную и только по команде владельца.
+ExecStartPre=/usr/bin/grep -qs '"me":' /opt/tanbala/whatsapp/data/whatsapp-session/creds.json
+ExecStart=/usr/local/bin/node /opt/tanbala/whatsapp/dist/cli.js
+
+# 0: штатная остановка (SIGTERM), без перезапуска. 1: любой сбой, перезапуск через минуту с пределом выше.
+Restart=on-failure
+RestartSec=60
+# При остановке бот доводит ответы в работе (один вызов модели до 60 секунд).
+TimeoutStopSec=120
+UMask=0077
+
+# Память: бот ≈ 0.15–0.3 ГБ. При общей нехватке памяти бот уходит последним (OOMScoreAdjust).
+MemoryHigh=600M
+MemoryMax=800M
+OOMScoreAdjust=-300
+
+# Песочница. Писать можно только в папку проекта: база и сессия в data/, счётчик привязок в корне проекта.
+# MemoryDenyWriteExecute не ставить: JIT V8 в Node не запустится.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/tanbala/whatsapp
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

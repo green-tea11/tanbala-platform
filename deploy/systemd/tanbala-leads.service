@@ -1,0 +1,60 @@
+# Служба: интерфейс почты и внутренний API (проект leads), только 127.0.0.1:8000. Копия: /etc/systemd/system/.
+# Секретов здесь нет: сервер сам читает /opt/tanbala/leads/.env. Комментарии только на отдельных строках:
+# после значения systemd счёл бы их частью значения.
+
+[Unit]
+Description=Tanbala leads: интерфейс почты и внутренний API (127.0.0.1:8000)
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+# Не больше 10 запусков за 10 минут, дальше failed (start-limit-hit): читать журнал, затем
+# systemctl reset-failed tanbala-leads && systemctl start tanbala-leads.
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=tanbala-leads
+Group=tanbala-leads
+WorkingDirectory=/opt/tanbala/leads
+Environment=PYTHONUTF8=1
+Environment=LANG=C.UTF-8
+Environment=HOME=/opt/tanbala/leads
+ExecStart=/opt/tanbala/leads/.venv/bin/python -m tanbala_leads web --port 8000
+
+# При старте применяются миграции. Если Postgres в Docker ещё не поднялся, выход 1 и повтор через 10 с.
+Restart=on-failure
+RestartSec=10
+# parser-2gis с Chrome живёт в своей группе процессов, но в той же cgroup службы: при остановке systemd убивает всех.
+KillMode=control-group
+TimeoutStopSec=30
+UMask=0077
+
+# Память (VPS 4 ГБ): сервер ≈ 0.26 ГБ, Chrome для 2ГИС ≈ 1 ГБ, Chromium для сайтов с драйвером ≈ 0.75 ГБ.
+# Выше MemoryHigh ядро притормаживает службу, на MemoryMax убивает самый большой процесс внутри неё (обычно Chrome),
+# а не бота или Postgres. При общей нехватке памяти эта служба идёт первой (OOMScoreAdjust).
+MemoryHigh=2300M
+MemoryMax=2700M
+OOMScoreAdjust=500
+
+# Песочница. Писать можно только в папку проекта (логи, data/tmp, браузер crawl4ai).
+# Chrome и Chromium запускаются с --no-sandbox (parser-2gis и Playwright), поэтому пространства имён им не нужны.
+# MemoryDenyWriteExecute не ставить: JIT V8 в Chrome не запустится.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/tanbala/leads
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

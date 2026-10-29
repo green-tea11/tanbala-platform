@@ -1,0 +1,12 @@
+# Каждую ночь в 03:30 по времени сервера (Asia/Almaty). Persistent: если сервер был выключен, копия после включения.
+
+[Unit]
+Description=Tanbala: ночная резервная копия баз
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

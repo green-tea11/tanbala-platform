@@ -1,0 +1,60 @@
+# Caddy для сервера Tanbala (PS.KZ, 91.201.215.210). Копия: /etc/caddy/Caddyfile.
+# HTTPS и сертификаты Caddy получает и продлевает сам (нужны DNS и открытые порты 80 и 443).
+# Пароли basic auth здесь не хранятся: строки «имя хэш» лежат в /etc/caddy/auth/wa.caddy и leads.caddy
+# (root:caddy, права 640), как их создать — deploy/env.md. Сам tanbala.kz здесь не упоминается: там будет сайт.
+{
+	# Почту для Let's Encrypt не указываем (решение владельца 29.10.2026).
+	# API управления Caddy слушает не TCP-порт 2019, а сокет: до него не дотянутся ни бот, ни браузеры сервера,
+	# которые открывают чужие сайты. systemctl reload caddy ходит через этот же сокет.
+	admin unix//var/lib/caddy/admin.sock
+}
+
+# Общее для обоих сайтов: сжатие, HSTS, без заголовка Server, журнал запросов без строки запроса.
+(common) {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 20MiB
+			roll_keep 5
+		}
+		# В строке запроса бывают названия компаний и номера (поиск в панелях): в журнал она не попадает.
+		# Пароль из заголовка Authorization Caddy в журнал не пишет и так.
+		format filter {
+			request>uri regexp "\?.*" ""
+			wrap json
+		}
+	}
+}
+
+# Панель WhatsApp-бота: пароль Caddy, затем свой вход панели (два слоя, решение владельца 29.10.2026).
+wa.tanbala.kz {
+	import common
+	basic_auth {
+		import /etc/caddy/auth/wa.caddy
+	}
+	# 127.0.0.1, а не localhost: панель слушает только IPv4. Пароль Caddy (Authorization) панели не передаём.
+	# Host, X-Forwarded-For и X-Forwarded-Proto Caddy передаёт сам; панель верит им только от 127.0.0.1.
+	reverse_proxy 127.0.0.1:3100 {
+		header_up -Authorization
+	}
+}
+
+# Интерфейс почты: пароль Caddy. Внутренний API бота снаружи не виден: 404 ещё до пароля и до приложения.
+# Само приложение тоже не пускает это имя к /internal (PUBLIC_UI_HOST), а API ещё и требует токен.
+leads.tanbala.kz {
+	import common
+	route {
+		@internal path_regexp internal (?i)(^|/)internal([/;]|$)
+		respond @internal 404
+		basic_auth {
+			import /etc/caddy/auth/leads.caddy
+		}
+		reverse_proxy 127.0.0.1:8000 {
+			header_up -Authorization
+		}
+	}
+}

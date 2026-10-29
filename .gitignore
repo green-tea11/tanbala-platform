@@ -10,5 +10,8 @@
 *.sql.gz
 /backups/
 
+# Архивы кода для сервера (deploy/scripts/build-release.sh)
+/release/
+
 # Локальные настройки Claude Code
 .claude/settings.local.json
