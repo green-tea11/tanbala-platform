@@ -15,15 +15,16 @@ import type {
   Transcriber,
   WhatsAppInbox,
 } from '../domain/ports.js';
-import type { ChatId, PhoneDigits } from '../domain/types.js';
+import type { ChatId, PhoneDigits, WorkingMode } from '../domain/types.js';
 import { createAnthropicLlm, type AnthropicLlmDeps } from '../llm/anthropic.js';
 import { createJsonlTokenLog } from '../llm/token-log.js';
 import { typingDelayMs } from '../messaging/typing.js';
 import { createDisabledTranscriber, createOpenRouterTranscriber } from '../voice/transcriber.js';
 import { createChatBatcher, type ChatBatcher } from './batcher.js';
 import { handleClientBatch, type PipelineDeps } from './handle-inbound.js';
-import { resumeAfterReturn } from './resume.js';
+import { resumeAfterReturn, type ResumeDeps } from './resume.js';
 import type { Services } from './services.js';
+import { resumeFloorMs } from './working-mode.js';
 
 /** Склейка сообщений чата: тишина после последнего сообщения и предел от первого (pipeline/batcher.ts). */
 export const BATCH_DEBOUNCE_MS = 4000;
@@ -61,6 +62,11 @@ export interface ResponderContext {
   readonly company: PipelineDeps['company'];
   /** Шов для тестов, в рабочем режиме не передаётся: клиент LLM (по умолчанию createAnthropicLlm). */
   readonly createLlm?: ((deps: AnthropicLlmDeps) => LlmClient) | undefined;
+  /**
+   * Рабочий режим (этап 8) с границей перехода: возврат боту не отвечает на сообщения чата не из TEST_ALLOWLIST,
+   * отправленные до неё (pipeline/working-mode.resumeFloorMs). null или нет: закрытый режим.
+   */
+  readonly workingMode?: WorkingMode | null;
 }
 
 /** Ответы клиентам: очередь склейки есть до WhatsApp, конвейер получает подключение после запуска. */
@@ -91,7 +97,8 @@ interface ResponderParts {
  * для приложения и приходят в context.services, сервис компании в context.company; агент отдаётся наружу как logo
  * (чтение логотипа для сервиса компании). Конвейер pipeline/handle-inbound.ts собирается на подключении WhatsApp
  * (connect); пачка до подключения не обрабатывается: ошибка в лог очереди. resume (возврат чата боту из панели)
- * отдаёт в ту же очередь неотвеченные сообщения клиента не старше BACKLOG_MAX_AGE_HOURS.
+ * отдаёт в ту же очередь неотвеченные сообщения клиента не старше BACKLOG_MAX_AGE_HOURS, а в рабочем режиме у чата не из
+ * TEST_ALLOWLIST и не раньше границы перехода (context.workingMode).
  */
 export async function assembleResponder(context: ResponderContext): Promise<Responder | null> {
   const { config, logger, clock } = context;
@@ -120,13 +127,15 @@ export async function assembleResponder(context: ResponderContext): Promise<Resp
       await handleClientBatch(current, batch);
     },
   });
-  const resumeDeps = {
+  const workingMode = context.workingMode ?? null;
+  const resumeDeps: ResumeDeps = {
     chats: context.storage.chats,
     messages: context.storage.messages,
     batcher,
     clock,
     logger,
     maxAgeMs: config.backlogMaxAgeHours * HOUR_MS,
+    notBeforeMs: (chat) => resumeFloorMs(workingMode, chat.identity),
   };
   return {
     batcher,

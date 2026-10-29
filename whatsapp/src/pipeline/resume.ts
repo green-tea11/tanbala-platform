@@ -20,6 +20,11 @@ export interface ResumeDeps {
   readonly logger: Logger;
   /** BACKLOG_MAX_AGE_HOURS в мс: на сообщения старше бот после возврата не отвечает. */
   readonly maxAgeMs: number;
+  /**
+   * Этап 8: раньше этого времени бот не отвечает (граница рабочего режима у чата не из TEST_ALLOWLIST,
+   * pipeline/working-mode.resumeFloorMs); нет => только порог maxAgeMs.
+   */
+  readonly notBeforeMs?: (chat: Chat) => number;
 }
 
 /**
@@ -91,7 +96,7 @@ function reopenForNote(
 export function resumeAfterReturn(deps: ResumeDeps, chatId: ChatId): number {
   const chat = deps.chats.getById(chatId);
   if (chat?.control.status !== 'bot') return 0;
-  const sinceMs = Math.max(0, deps.clock.now() - deps.maxAgeMs);
+  const sinceMs = Math.max(0, deps.clock.now() - deps.maxAgeMs, deps.notBeforeMs?.(chat) ?? 0);
   const unanswered = deps.messages.unansweredAfterLastOutbound(chat.id, sinceMs);
   const afterHandoffNotice = unanswered.length === 0;
   const pending = afterHandoffNotice ? reopenForNote(deps, chat.id, sinceMs) : unanswered;

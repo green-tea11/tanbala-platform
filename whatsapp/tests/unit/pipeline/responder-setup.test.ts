@@ -270,6 +270,28 @@ describe('pipeline/responder-setup', () => {
     expect(responder.resume(chat.id)).toBe(0);
   });
 
+  it('рабочий режим: возврат боту не берёт сообщения чата не из TEST_ALLOWLIST, отправленные до перехода', async () => {
+    const config = configWith({ VENMART_ANTHROPIC_KEY: 'sk-test-not-a-real-key' });
+    const logger = createLogger([]);
+    const storage = storageOf(config);
+    recorded(storage, 'WA-1');
+    const chat = storage.chats.findByJid(JID);
+    if (chat === null) throw new Error('чат не записан');
+    const responder = await assembleResponder({
+      config,
+      logger,
+      clock: CLOCK,
+      storage,
+      services: servicesOf(config, storage, logger),
+      company: companyOff(),
+      createLlm: () => ANSWERING_LLM,
+      workingMode: { sinceMs: Date.now() + 60_000, allowlist: new Set() },
+    });
+    if (responder === null) throw new Error('ответы не собраны');
+
+    expect(responder.resume(chat.id)).toBe(0);
+  });
+
   it('горячий клиент по решению вызова ответа: сообщение модели через подключение, передача и уведомление в базе (номера менеджера нет)', async () => {
     const config = configWith({ VENMART_ANTHROPIC_KEY: 'sk-test-not-a-real-key' });
     const logger = createLogger([]);

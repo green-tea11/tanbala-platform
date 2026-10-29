@@ -208,3 +208,28 @@ describe('pipeline/resume: ответ на неотвеченное после �
     expect(h.unanswered).toHaveBeenCalledWith(CHAT_ID, 0);
   });
 });
+
+// Этап 8: у чата не из TEST_ALLOWLIST бот не отвечает на сообщения, отправленные до перехода в рабочий режим
+// (pipeline/working-mode.resumeFloorMs), даже если они моложе BACKLOG_MAX_AGE_HOURS.
+describe('pipeline/resume: граница рабочего режима', () => {
+  it('граница позже порога простоя: неотвеченное и возврат с заметкой ищутся только после неё', () => {
+    const switchedAt = NOW - 2 * HOUR_MS;
+    const h = setup(chat(), [], { note: 'узнай число вещей' });
+    const notBeforeMs = vi.fn<NonNullable<ResumeDeps['notBeforeMs']>>(() => switchedAt);
+
+    resumeAfterReturn({ ...h.deps, notBeforeMs }, CHAT_ID);
+
+    expect(notBeforeMs).toHaveBeenCalledWith(chat());
+    expect(h.unanswered).toHaveBeenCalledWith(CHAT_ID, switchedAt);
+    expect(h.reopen).toHaveBeenCalledWith(CHAT_ID, switchedAt);
+  });
+
+  it('граница раньше порога простоя (или 0 у номера из списка): действует порог', () => {
+    const h = setup(chat(), [pending('C1')]);
+
+    resumeAfterReturn({ ...h.deps, notBeforeMs: () => NOW - 30 * HOUR_MS }, CHAT_ID);
+
+    expect(h.unanswered).toHaveBeenCalledWith(CHAT_ID, NOW - 12 * HOUR_MS);
+    expect(h.push).toHaveBeenCalledTimes(1);
+  });
+});
