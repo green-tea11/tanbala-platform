@@ -58,6 +58,25 @@ tar -xzf ~/tanbala-<sha>.tar.gz -C ~ && sudo bash ~/tanbala-<sha>/deploy/scripts
 sudo bash ~/tanbala-<sha>/deploy/scripts/install.sh db leads
 ```
 
+## Бот: whatsapp/docs/DEPLOY.md на этом сервере
+
+DEPLOY.md написан для отдельного сервера бота. Здесь имена и пути другие, а часть шагов уже сделана:
+
+| В DEPLOY.md | Здесь |
+| --- | --- |
+| служба `tanbala` | `tanbala-whatsapp` (`deploy/systemd/tanbala-whatsapp.service`) |
+| пользователь `tanbala`, вход `sudo -iu tanbala` | `tanbala-wa`, без входа и без домашней папки: `sudo -u tanbala-wa bash -c 'umask 077; cd /opt/tanbala/whatsapp && …'` |
+| `~/app`, `/home/tanbala/app` | `/opt/tanbala/whatsapp` |
+| шаги 1–4 (сервер, chrony, Node, код, сборка) | `install.sh system` и `install.sh whatsapp` |
+| шаг 6 (Caddy), шаг 9 (служба) | `deploy/Caddyfile`, `deploy/systemd/tanbala-whatsapp.service`, ставит `install.sh configs` |
+| шаг 11: ротация журнала токенов | уже в `/etc/logrotate.d/tanbala` вместе с журналом почты; файл из DEPLOY.md не ставить, он затёр бы этот |
+| шаг 11: копия базы в `/home/tanbala/backups` | `tanbala-backup.timer`, копии в `/var/backups/tanbala/whatsapp`, 7 дней |
+| шаг 11: обновление кода | `install.sh whatsapp` из нового архива (бот останавливается и запускается сам) |
+| шаг 8 (QR), шаг 13 (рабочий режим) | этап 4 и дальше, только по команде владельца; команды от `tanbala-wa` с `umask 077` |
+
+Права на личные данные бота (сессия 700, база и `-wal`/`-shm` 600) служба выставляет сама при каждом запуске, даже
+если файлы создала ручная привязка по QR; `health.sh` их проверяет.
+
 Открыто:
 
 - Chromium для crawl4ai лежит в `leads/.browsers` и сам не обновляется: шаг `leads` ставит ту версию, что требует
