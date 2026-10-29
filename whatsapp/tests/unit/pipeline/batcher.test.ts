@@ -278,3 +278,26 @@ describe('pipeline/batcher: остановка', () => {
     await expect(h.batcher.drain()).resolves.toBeUndefined();
   });
 });
+
+describe('pipeline/batcher: тот же waId дважды (возврат чата боту)', () => {
+  it('сообщение уже ждёт в следующей пачке: второй раз не добавляется', async () => {
+    const h = setup();
+
+    h.batcher.push(CHAT_A, message('m1'));
+    h.batcher.push(CHAT_A, message('m1'));
+    h.batcher.push(CHAT_A, message('m2', NOW + 1));
+    await h.time.advance(DEBOUNCE_MS);
+
+    expect(h.ids()).toEqual([['m1', 'm2']]);
+  });
+
+  it('тот же waId в другом чате не дубль', async () => {
+    const h = setup();
+
+    h.batcher.push(CHAT_A, message('m1'));
+    h.batcher.push(CHAT_B, message('m1'));
+    await h.time.advance(DEBOUNCE_MS);
+
+    expect(h.ids()).toEqual([['m1'], ['m1']]);
+  });
+});

@@ -411,6 +411,70 @@ describe('панель: возврат чата боту', () => {
     expect(s.h.rawLog()).not.toContain('Алия');
   });
 
+  it('после возврата бот отвечает на неотвеченное: сначала returnToBot, потом resume; пометка и число в аудите', async () => {
+    const s = await open();
+    s.h.resume.mockReturnValueOnce(2);
+
+    const response = await giveBack(s, 1);
+
+    expect(response.headers['location']).toBe('/chats/1?notice=returned_answering');
+    expect(s.h.actions()).toEqual(['returnToBot', 'resume']);
+    expect(s.h.resume).toHaveBeenCalledWith(chatIdOf(1));
+    expect(s.h.logs()).toContainEqual(
+      expect.objectContaining({ action: 'return_to_bot', chatId: 1, resumed: 2 }),
+    );
+  });
+
+  it('отвечать не на что: пометка returned, в аудите ноль', async () => {
+    const s = await open();
+
+    const response = await giveBack(s, 1);
+
+    expect(response.headers['location']).toBe('/chats/1?notice=returned');
+    expect(s.h.logs()).toContainEqual(
+      expect.objectContaining({ action: 'return_to_bot', chatId: 1, resumed: 0 }),
+    );
+  });
+
+  it('сбой ответа на неотвеченное: чат всё равно возвращён, ошибка в аудите без подробностей', async () => {
+    const s = await open();
+    s.h.resume.mockImplementationOnce(() => {
+      throw new Error('сбой базы 77001234567');
+    });
+
+    const response = await giveBack(s, 1);
+
+    expect(response.statusCode).toBe(303);
+    expect(response.headers['location']).toBe('/chats/1?notice=returned');
+    expect(s.h.logs()).toContainEqual(
+      expect.objectContaining({ action: 'resume_failed', chatId: 1, errorName: 'Error' }),
+    );
+    expect(s.h.rawLog()).not.toContain('77001234567');
+  });
+
+  it('сбой ответа на неотвеченное не ошибкой, а строкой: в аудите только тип значения', async () => {
+    const s = await open();
+    s.h.resume.mockImplementationOnce(() => {
+      throw 'номер 77001234567' as unknown as Error;
+    });
+
+    await giveBack(s, 1);
+
+    expect(s.h.logs()).toContainEqual(
+      expect.objectContaining({ action: 'resume_failed', errorName: 'string' }),
+    );
+    expect(s.h.rawLog()).not.toContain('77001234567');
+  });
+
+  it('возврат не удался: на неотвеченное бот не отвечает', async () => {
+    const s = await open();
+    s.h.handoff.returnToBot.mockRejectedValueOnce(new Error('сбой записи'));
+
+    await giveBack(s, 1);
+
+    expect(s.h.resume).not.toHaveBeenCalled();
+  });
+
   it('чат уже у бота (устаревшая страница): ничего не вызывается, пометка already_bot', async () => {
     const s = await open();
 

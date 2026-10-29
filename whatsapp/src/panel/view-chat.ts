@@ -50,6 +50,7 @@ const NOT_KNOWN = 'не выяснили';
 const NOTICE_TEXTS: Readonly<Record<NoticeKey, string>> = {
   sent: 'Сообщение отправлено клиенту',
   returned: 'Чат возвращён боту',
+  returned_answering: 'Чат возвращён боту: бот ответит на сообщения клиента без ответа',
   already_bot: 'Чат уже ведёт бот',
   duplicate: 'Это сообщение уже отправлено',
 };

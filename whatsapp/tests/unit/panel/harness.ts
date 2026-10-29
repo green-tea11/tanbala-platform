@@ -161,7 +161,9 @@ export interface Harness {
   readonly outbox: { [K in keyof Outbox]: Mock<Outbox[K]> };
   readonly handoff: { [K in keyof HandoffService]: Mock<HandoffService[K]> };
   readonly company: { summary: Mock<CompanyService['summary']> };
-  /** Действия над чатом в порядке вызова: handOff, sendFromPanel, returnToBot. */
+  /** Ответ бота на неотвеченное после возврата: по умолчанию отвечать не на что (0). */
+  readonly resume: Mock<NonNullable<PanelDeps['resume']>>;
+  /** Действия над чатом в порядке вызова: handOff, sendFromPanel, returnToBot, resume. */
   actions(): string[];
   advance(ms: number): void;
   request(options: RequestOptions): Promise<LightMyRequestResponse>;
@@ -220,6 +222,7 @@ function createMessagesRepo(data: PanelData): Harness['messages'] {
     isUnansweredInbound: unused('messages.isUnansweredInbound'),
     markAnswered: unused('messages.markAnswered'),
     setTranscript: unused('messages.setTranscript'),
+    unansweredAfterLastOutbound: unused('messages.unansweredAfterLastOutbound'),
     history: vi.fn((chat, query) => {
       const ordered = data.messages
         .filter((message) => message.chatId === chat)
@@ -330,6 +333,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
   const messages = createMessagesRepo(data);
   const handoffs = createHandoffsRepo(data);
   const notifications = createNotificationsRepo(data);
+  const resume = vi.fn<NonNullable<PanelDeps['resume']>>(() => 0);
   const deps: PanelDeps = {
     chats,
     messages,
@@ -338,6 +342,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     outbox,
     handoff,
     company,
+    resume,
     clock,
     logger,
     password,
@@ -378,11 +383,13 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     outbox,
     handoff,
     company,
+    resume,
     actions: () =>
       [
         ...orderedCalls('handOff', handoff.handOff),
         ...orderedCalls('sendFromPanel', outbox.sendFromPanel),
         ...orderedCalls('returnToBot', handoff.returnToBot),
+        ...orderedCalls('resume', resume),
       ]
         .sort((a, b) => a.order - b.order)
         .map((call) => call.name),

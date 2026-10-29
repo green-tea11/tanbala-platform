@@ -239,6 +239,37 @@ describe('pipeline/responder-setup', () => {
     );
   });
 
+  it('возврат боту: resume отдаёт неотвеченное в очередь, бот отвечает один раз; повтор ничего не добавляет', async () => {
+    const config = configWith({ VENMART_ANTHROPIC_KEY: 'sk-test-not-a-real-key' });
+    const logger = createLogger([]);
+    const storage = storageOf(config);
+    const services = servicesOf(config, storage, logger);
+    const responder = await assembleResponder({
+      config,
+      logger,
+      clock: CLOCK,
+      storage,
+      services,
+      company: companyOff(),
+      createLlm: () => ANSWERING_LLM,
+    });
+    if (responder === null) throw new Error('ответы не собраны');
+    const { link, sendText } = connection();
+    services.connect(link);
+    responder.connect(link);
+    recorded(storage, 'WA-1');
+    const chat = storage.chats.findByJid(JID);
+    if (chat === null) throw new Error('чат не записан');
+
+    expect(responder.resume(chat.id)).toBe(1);
+    expect(responder.resume(chat.id)).toBe(1);
+    await responder.batcher.drain();
+
+    expect(sendText.mock.calls).toEqual([[JID, REPLY, 'OUT-1']]);
+    // Ответ ушёл: после него отвечать не на что.
+    expect(responder.resume(chat.id)).toBe(0);
+  });
+
   it('горячий клиент по решению вызова ответа: сообщение модели через подключение, передача и уведомление в базе (номера менеджера нет)', async () => {
     const config = configWith({ VENMART_ANTHROPIC_KEY: 'sk-test-not-a-real-key' });
     const logger = createLogger([]);

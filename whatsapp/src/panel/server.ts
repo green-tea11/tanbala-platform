@@ -13,6 +13,7 @@ import type {
   ManagerNotificationsRepo,
   MessagesRepo,
 } from '../domain/ports.js';
+import type { ChatId } from '../domain/types.js';
 import type { HandoffService } from '../handoff/handoff.js';
 import type { Outbox } from '../messaging/outbox.js';
 import { createPanelContext, type PanelContext } from './context.js';
@@ -37,6 +38,11 @@ export interface PanelDeps {
   handoff: HandoffService;
   /** Сводка о компании клиента для раздела «Компания» карточки чата. */
   company: Pick<CompanyService, 'summary'>;
+  /**
+   * После возврата чата боту: бот отвечает на сообщения клиента без ответа не старше 12 часов (pipeline/resume.ts),
+   * возвращает их число. Нет поля: ответы клиентам не собраны (нет ключа Claude), отвечать некому.
+   */
+  resume?: (chatId: ChatId) => number;
   clock: Clock;
   logger: Logger;
   /** ADMIN_PASSWORD. Пустой пароль не пускает никого. */

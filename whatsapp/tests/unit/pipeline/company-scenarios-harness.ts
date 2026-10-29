@@ -203,6 +203,15 @@ type Storage = ResponderStorage & ServicesStorage & { readonly chatCompanies: Ch
 export interface Scenario {
   /** Клиент пишет сообщение; модель в этой реплике отвечает по script. */
   say(text: string, script: LlmScript): Promise<Turn>;
+  /**
+   * Менеджер возвращает чат боту, как кнопка панели: returnToBot, затем ответ бота на неотвеченное (Responder.resume);
+   * модель отвечает по script.
+   */
+  returnToBot(script: LlmScript): Promise<Turn>;
+  /** Менеджер пишет клиенту с телефона: сообщение в истории и перехват чата (как pipeline/takeover.ts). */
+  managerWrites(text: string): Promise<void>;
+  /** Сдвигает часы сценария (например, на 13 часов простоя). */
+  advance(ms: number): void;
   readonly contacts: FakeContacts;
   /** Все запросы к внутреннему API по порядку. */
   readonly api: readonly ApiCall[];
@@ -360,13 +369,8 @@ function rigOf(options: ScenarioOptions): Rig {
   };
 }
 
-/** Реплика клиента целиком: сообщение в базе (как после recorder.ts), очередь склейки, конвейер до конца. */
-async function handleText(
-  rig: Rig,
-  message: InboundMessage,
-  text: string,
-  llm: ScriptedLlm,
-): Promise<ChatId> {
+/** Ответы клиентам на модели этой реплики: собираются заново, база и службы общие (как после перезапуска). */
+async function responderOf(rig: Rig, llm: ScriptedLlm) {
   const responder = await assembleResponder({
     config: rig.config,
     logger: rig.logger,
@@ -379,6 +383,17 @@ async function handleText(
   if (responder === null) throw new Error('ответы не собраны');
   rig.company.useLogo(responder.logo);
   responder.connect(rig.link);
+  return responder;
+}
+
+/** Реплика клиента целиком: сообщение в базе (как после recorder.ts), очередь склейки, конвейер до конца. */
+async function handleText(
+  rig: Rig,
+  message: InboundMessage,
+  text: string,
+  llm: ScriptedLlm,
+): Promise<ChatId> {
+  const responder = await responderOf(rig, llm);
   const { chats, messages } = rig.storage;
   const chat = chats.upsertByIdentity(message.identity, message.pushName, message.tsMs);
   const { waId, tsMs } = message;
@@ -442,8 +457,44 @@ export function createScenario(options: ScenarioOptions = {}): Scenario {
     if (chatId === null) throw new Error('Клиент ещё не писал: чата нет');
     return chatId;
   };
+
+  const returnToBot = async (script: LlmScript): Promise<Turn> => {
+    const mark = {
+      sent: rig.sendText.mock.calls.length,
+      api: rig.apiCalls.length,
+      logs: rig.logs.length,
+    };
+    const atMs = rig.clock.now();
+    const llm = scriptedLlm(script);
+    const responder = await responderOf(rig, llm);
+    await rig.services.handoff.returnToBot(currentChatId());
+    responder.resume(currentChatId());
+    await responder.batcher.drain();
+    rig.clock.advance(TURN_GAP_MS);
+    return turnOf(rig, mark, atMs, llm, identity.replyJid);
+  };
+
+  const managerWrites = async (text: string): Promise<void> => {
+    count += 1;
+    rig.storage.messages.insertIfNew({
+      chatId: currentChatId(),
+      waId: `PHONE-${count}` as WaMessageId,
+      author: 'human_phone',
+      kind: 'text',
+      text,
+      tsMs: rig.clock.now(),
+    });
+    await rig.services.handoff.handOff(currentChatId(), { reason: 'human_took_over', by: 'phone' });
+    rig.clock.advance(TURN_GAP_MS);
+  };
+
   return {
     say,
+    returnToBot,
+    managerWrites,
+    advance: (ms) => {
+      rig.clock.advance(ms);
+    },
     contacts: rig.contacts,
     api: rig.apiCalls,
     logs: rig.logs,

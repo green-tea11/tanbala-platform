@@ -247,6 +247,17 @@ export interface NewMessage {
   readonly tsMs: number;
 }
 
+/**
+ * Входящее клиента без ответа после последнего исходящего (бота или человека): после возврата чата боту его снова
+ * отдают в очередь ответа (решение владельца 29.10.2026). У голосового без расшифровки text null.
+ */
+export interface UnansweredInbound {
+  readonly waId: WaMessageId;
+  readonly kind: MessageKind;
+  readonly text: string | null;
+  readonly tsMs: number;
+}
+
 /** Сообщение из истории чата в базе. */
 export interface StoredMessage {
   readonly id: number;

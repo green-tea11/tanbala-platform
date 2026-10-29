@@ -881,3 +881,22 @@ describe('pipeline/handle-inbound: минимум для передачи по �
     expect(levels(h, 'warn')).toContainEqual({ chatId: CHAT_ID, errorName: 'TypeError' });
   });
 });
+
+describe('pipeline/handle-inbound: пачка, на которую уже ответили (возврат чата боту)', () => {
+  it('все сообщения пачки уже отвечены: бот молчит без вызовов LLM и без прочтения', async () => {
+    const h = setup({ answered: ['A1', 'A2'] });
+
+    const outcome = await run(h, batchOf([text('A1'), text('A2')]));
+
+    expect(outcome).toEqual({ kind: 'silent', reason: 'duplicate' });
+    expect(h.calls).toEqual([]);
+  });
+
+  it('хотя бы одно не отвечено: ответ как обычно', async () => {
+    const h = setup({ answered: ['A1'] });
+
+    const outcome = await run(h, batchOf([text('A1'), text('A2')]));
+
+    expect(outcome).toEqual({ kind: 'replied' });
+  });
+});

@@ -129,3 +129,14 @@ describe('knowledge/whatsapp.md: вопрос цены', () => {
     expect(whatsapp).not.toMatch(/[\u2012-\u2015\u2212]/);
   });
 });
+
+describe('knowledge/whatsapp.md: возврат чата боту (решение владельца 29.10.2026)', () => {
+  const whatsapp = readFileSync(new URL('../../../knowledge/whatsapp.md', import.meta.url), 'utf8');
+
+  it('после возврата бот отвечает на неотвеченное не старше 12 часов, если менеджер не ответил', () => {
+    expect(whatsapp).toMatch(
+      /Когда чат вернули, ты отвечаешь и на сообщения клиента, которые пришли после последнего ответа твоего или менеджера, если им не больше 12 часов/,
+    );
+    expect(whatsapp).toMatch(/одним сообщением/);
+  });
+});

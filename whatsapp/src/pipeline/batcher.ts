@@ -59,7 +59,8 @@ interface ChatQueue {
  * склеиваются в одну пачку, а пока чат занят предыдущей пачкой, новые копятся в следующую целиком
  * (ответ один на чат, решение владельца). Сообщения, пришедшие во время обработки, конвейер может забрать
  * через ClientBatch.takeNewer и перегенерировать ответ один раз (pipeline/handle-inbound.ts).
- * Сломанный таймер (пауза упала не по отмене) не теряет пачку: она уходит сразу.
+ * Сломанный таймер (пауза упала не по отмене) не теряет пачку: она уходит сразу. Сообщение с waId, который уже ждёт
+ * в следующей пачке чата, второй раз не добавляется.
  */
 export function createChatBatcher(deps: ChatBatcherDeps): ChatBatcher {
   const queues = new Map<ChatId, ChatQueue>();
@@ -112,6 +113,8 @@ export function createChatBatcher(deps: ChatBatcherDeps): ChatBatcher {
       }
       const queue = queues.get(chatId) ?? newQueue(chatId);
       queues.set(chatId, queue);
+      // Тот же waId уже ждёт (возврат чата боту отдаёт неотвеченное ещё раз): отвечать на него дважды не нужно.
+      if (queue.pending.some((waiting) => waiting.waId === message.waId)) return;
       queue.pending = [...queue.pending, message];
       queue.firstAtMs ??= deps.clock.now();
       schedule(queue);

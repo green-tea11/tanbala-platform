@@ -29,6 +29,7 @@ import type {
   StoredMessage,
   TokenUsageEntry,
   TurnSignals,
+  UnansweredInbound,
   WaMessageId,
 } from './types.js';
 
@@ -297,6 +298,11 @@ export interface MessagesRepo {
    * Так следующие ответы видят в истории, что клиент сказал голосом. false: нет такого голосового без текста.
    */
   setTranscript(chatId: ChatId, waId: WaMessageId, text: string): boolean;
+  /**
+   * Неотвеченные входящие клиента после последнего исходящего (бота, менеджера из панели или с телефона) и не раньше
+   * sinceMs, по времени: на них бот отвечает после возврата чата. Ответил человек после них => пусто.
+   */
+  unansweredAfterLastOutbound(chatId: ChatId, sinceMs: number): readonly UnansweredInbound[];
   /**
    * Переписка для панели: до limit сообщений чата строго раньше сообщения beforeId (без него самые свежие),
    * по возрастанию времени.

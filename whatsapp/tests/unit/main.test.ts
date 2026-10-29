@@ -1205,6 +1205,56 @@ describe('main: ответы клиентам, службы этапа 5 и ве
       expect(logged).not.toContain('"admin"');
     });
 
+    it('возврат боту из панели: бот отвечает на сообщение, пришедшее, пока чат вёл менеджер', async () => {
+      const harness = useHarness();
+      writeKnowledge(harness.root);
+      const panel = recordingPanel();
+      const { connection, sendText } = sendingConnection();
+      const startWhatsApp = fakeStart(connection);
+      const answer = 'Расскажите, пожалуйста, что вы храните?';
+      const { llm } = scriptedLlm({ replies: [answer] });
+      await harness.run(
+        { ...KEY_ENV, PANEL_PORT: PORT },
+        {
+          startPanel: panel.startPanel,
+          startWhatsApp,
+          clock: IMMEDIATE_CLOCK,
+          createLlm: () => llm,
+        },
+      );
+      const deps = depsOf(startWhatsApp);
+      const clientEvent = (waId: string, text: string): WaEvent => ({
+        type: 'client',
+        message: {
+          ...CLIENT_EVENT.message,
+          waId: waId as WaMessageId,
+          content: { kind: 'text', text },
+          tsMs: Date.now(),
+        },
+      });
+      const app = panel.app();
+      const cookie = await signIn(app, 'admin');
+      await deps.onEvent(clientEvent('WA-1', 'Здравствуйте'));
+      await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(1));
+      const csrf = /name="csrf" value="([^"]+)"/.exec(
+        (await app.inject({ url: '/chats/1', headers: { host: HOST_HEADER, cookie } })).body,
+      )?.[1];
+      if (csrf === undefined) throw new Error('В странице нет токена CSRF');
+      await formPost(app, '/chats/1/reply', cookie, { csrf, text: 'Добрый день, это менеджер' });
+      await deps.onEvent(clientEvent('WA-2', 'А с 1С работаете?'));
+
+      const returned = await formPost(app, '/chats/1/return', cookie, { csrf });
+
+      expect(returned.headers['location']).toBe('/chats/1?notice=returned_answering');
+      await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(3));
+      expect(sendText.mock.calls.map(([jid, text]) => [jid, text])).toEqual([
+        [CLIENT_JID, answer],
+        [CLIENT_JID, 'Добрый день, это менеджер'],
+        [CLIENT_JID, answer],
+      ]);
+      expect(chatRow(harness.dbPath)).toEqual({ status: 'bot', statusBy: 'panel' });
+    });
+
     it('остановка закрывает панель первой: до остановки WhatsApp и до закрытия базы', async () => {
       const harness = useHarness();
       const events: string[] = [];

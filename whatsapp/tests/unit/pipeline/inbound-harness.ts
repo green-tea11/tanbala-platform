@@ -136,6 +136,8 @@ export interface Options {
   readonly progress?: ChatProgress;
   /** Сводка о компании (название для минимума); по умолчанию функция выключена. */
   readonly summary?: CompanySummary;
+  /** waId входящих, на которые бот уже ответил (повтор пачки после возврата чата боту); по умолчанию нет. */
+  readonly answered?: readonly string[];
 }
 
 /** Сводка выключенного определения компании. */
@@ -278,6 +280,7 @@ export function setup(options: Options = {}): Harness {
     },
     messages: {
       recent: () => HISTORY,
+      isUnansweredInbound: (_id, waId) => !(options.answered ?? []).includes(waId),
       markAnswered: (_id, upTo) => {
         calls.push(`answered:${upTo}`);
       },

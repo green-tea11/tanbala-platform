@@ -122,6 +122,7 @@ function setup(options: SetupOptions = {}): Harness {
     isUnansweredInbound: unexpected,
     markAnswered: unexpected,
     setTranscript: unexpected,
+    unansweredAfterLastOutbound: unexpected,
     history: unexpected,
   };
   const backlog: BacklogRepo = {

@@ -15,13 +15,14 @@ import type {
   Transcriber,
   WhatsAppInbox,
 } from '../domain/ports.js';
-import type { PhoneDigits } from '../domain/types.js';
+import type { ChatId, PhoneDigits } from '../domain/types.js';
 import { createAnthropicLlm, type AnthropicLlmDeps } from '../llm/anthropic.js';
 import { createJsonlTokenLog } from '../llm/token-log.js';
 import { typingDelayMs } from '../messaging/typing.js';
 import { createDisabledTranscriber, createOpenRouterTranscriber } from '../voice/transcriber.js';
 import { createChatBatcher, type ChatBatcher } from './batcher.js';
 import { handleClientBatch, type PipelineDeps } from './handle-inbound.js';
+import { resumeAfterReturn } from './resume.js';
 import type { Services } from './services.js';
 
 /** Склейка сообщений чата: тишина после последнего сообщения и предел от первого (pipeline/batcher.ts). */
@@ -31,6 +32,8 @@ export const BATCH_MAX_WAIT_MS = 15_000;
 /** Без ключа Claude бот работает как на этапе 2: принимает и сохраняет, но не отвечает. */
 export const NO_CLAUDE_KEY_WARNING =
   'Ключ Claude не задан (VENMART_ANTHROPIC_KEY): бот только принимает и сохраняет сообщения, ответов нет';
+
+const HOUR_MS = 60 * 60 * 1000;
 
 /** Файлы знаний в папке knowledge/: документ владельца и правила WhatsApp. */
 const KNOWLEDGE_FILES = { owner: 'tanbala-agent.md', whatsapp: 'whatsapp.md' } as const;
@@ -65,6 +68,11 @@ export interface Responder {
   readonly batcher: ChatBatcher;
   /** Агент как чтение названия с логотипа: его получает сервис компании (шаг д). */
   readonly logo: LogoReader;
+  /**
+   * Чат вернули боту из панели: сообщения клиента без ответа после последнего исходящего и не старше
+   * BACKLOG_MAX_AGE_HOURS уходят в очередь (pipeline/resume.ts). Возвращает их число.
+   */
+  resume(chatId: ChatId): number;
   /** WhatsApp подключён: «печатает», прочтение и голосовые идут через это подключение. */
   connect(connection: ResponderConnection): void;
 }
@@ -82,7 +90,8 @@ interface ResponderParts {
  * OpenRouter => выключена) и очередь склейки. Отправка (outbox) и передача менеджеру (handoff/handoff.ts) общие
  * для приложения и приходят в context.services, сервис компании в context.company; агент отдаётся наружу как logo
  * (чтение логотипа для сервиса компании). Конвейер pipeline/handle-inbound.ts собирается на подключении WhatsApp
- * (connect); пачка до подключения не обрабатывается: ошибка в лог очереди.
+ * (connect); пачка до подключения не обрабатывается: ошибка в лог очереди. resume (возврат чата боту из панели)
+ * отдаёт в ту же очередь неотвеченные сообщения клиента не старше BACKLOG_MAX_AGE_HOURS.
  */
 export async function assembleResponder(context: ResponderContext): Promise<Responder | null> {
   const { config, logger, clock } = context;
@@ -111,9 +120,18 @@ export async function assembleResponder(context: ResponderContext): Promise<Resp
       await handleClientBatch(current, batch);
     },
   });
+  const resumeDeps = {
+    chats: context.storage.chats,
+    messages: context.storage.messages,
+    batcher,
+    clock,
+    logger,
+    maxAgeMs: config.backlogMaxAgeHours * HOUR_MS,
+  };
   return {
     batcher,
     logo: parts.agent,
+    resume: (chatId) => resumeAfterReturn(resumeDeps, chatId),
     connect: (connection) => {
       pipeline = pipelineDeps(context, parts, connection);
     },

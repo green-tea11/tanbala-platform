@@ -352,7 +352,7 @@ describe('панель: защита изменяющих запросов', () 
     expect(without.statusCode).toBe(403);
     expect(foreign.statusCode).toBe(403);
     expect(own.statusCode).toBe(303);
-    expect(h.actions()).toEqual(['returnToBot']);
+    expect(h.actions()).toEqual(['returnToBot', 'resume']);
   });
 
   it('вход тоже проверяет Origin: чужой сайт не получает сессию', async () => {

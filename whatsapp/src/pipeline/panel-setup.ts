@@ -9,6 +9,7 @@ import type {
   MessagesRepo,
 } from '../domain/ports.js';
 import { buildPanel, startPanel, type PanelStartOptions } from '../panel/server.js';
+import type { ChatId } from '../domain/types.js';
 import type { Services } from './services.js';
 
 /** Собранная веб-панель. Тип выведен из buildPanel: fastify подключается только в src/panel. */
@@ -38,6 +39,11 @@ export interface PanelSetupContext {
   readonly services: Pick<Services, 'outbox' | 'handoff'>;
   /** Сервис компании (pipeline/company-setup.ts): раздел «Компания» в карточке чата. */
   readonly company: Pick<CompanyService, 'summary'>;
+  /**
+   * Ответ бота на неотвеченное после возврата чата (Responder.resume); нет (нет ключа Claude): после возврата бот
+   * отвечает только на новые сообщения.
+   */
+  readonly resume?: ((chatId: ChatId) => number) | undefined;
   /** Шов для тестов, в рабочем режиме не передаётся: запуск панели (по умолчанию panel/server.startPanel). */
   readonly startPanel?: PanelStarter | undefined;
 }
@@ -72,6 +78,7 @@ export function assemblePanel(context: PanelSetupContext): Panel {
     outbox: services.outbox,
     handoff: services.handoff,
     company: context.company,
+    ...(context.resume === undefined ? {} : { resume: context.resume }),
     clock: context.clock,
     logger,
     password: config.adminPassword,

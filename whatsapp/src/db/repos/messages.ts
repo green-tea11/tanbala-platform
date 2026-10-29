@@ -6,6 +6,7 @@ import type {
   MessageKind,
   NewMessage,
   StoredMessage,
+  UnansweredInbound,
   WaMessageId,
 } from '../../domain/types.js';
 import { assertTimeMs } from '../time.js';
@@ -32,6 +33,14 @@ interface Transcript extends MessageKey {
   readonly text: string;
 }
 
+/** Неотвеченное входящее: имена колонок уже как в UnansweredInbound. */
+interface UnansweredRow {
+  readonly waId: string;
+  readonly kind: string;
+  readonly text: string | null;
+  readonly tsMs: number;
+}
+
 /** Параметры страницы переписки: beforeId null значит «с самых свежих». */
 interface PageQuery {
   readonly chatId: ChatId;
@@ -55,6 +64,8 @@ const KINDS: readonly MessageKind[] = ['text', 'voice', 'other'];
  * записанные не позже upToWaId (по порядку записи: сообщения, пришедшие после пачки, ждут своего ответа);
  * неизвестный upToWaId ничего не отмечает. setTranscript пишет расшифровку только в голосовое без текста
  * (вид остаётся voice): уже записанный текст не перезаписывается.
+ * unansweredAfterLastOutbound: входящие клиента без отметки answered, записанные после последнего сообщения не клиента
+ * (по времени, при равном времени по порядку записи) и не раньше sinceMs; по времени.
  */
 export function createMessagesRepo(db: Database.Database): MessagesRepo {
   const statements = prepareStatements(db);
@@ -78,6 +89,10 @@ export function createMessagesRepo(db: Database.Database): MessagesRepo {
     },
     setTranscript(chatId: ChatId, waId: WaMessageId, text: string): boolean {
       return statements.updateTranscript.run({ chatId, waId, text }).changes === 1;
+    },
+    unansweredAfterLastOutbound(chatId: ChatId, sinceMs: number): readonly UnansweredInbound[] {
+      assertTimeMs(sinceMs, 'sinceMs');
+      return statements.selectUnansweredTail.all({ chatId, sinceMs }).map(toUnanswered);
     },
     history(
       chatId: ChatId,
@@ -117,6 +132,17 @@ function prepareStatements(db: Database.Database) {
        WHERE chat_id = @chatId AND author = 'client' AND answered = 0
          AND id <= (SELECT id FROM messages WHERE chat_id = @chatId AND wa_id = @waId)`,
     ),
+    selectUnansweredTail: db.prepare<{ chatId: ChatId; sinceMs: number }, UnansweredRow>(
+      `WITH last_out AS (
+         SELECT ts_ms, id FROM messages
+         WHERE chat_id = @chatId AND author <> 'client'
+         ORDER BY ts_ms DESC, id DESC LIMIT 1
+       )
+       SELECT m.wa_id AS waId, m.kind, m.text, m.ts_ms AS tsMs FROM messages AS m
+       WHERE m.chat_id = @chatId AND m.author = 'client' AND m.answered = 0 AND m.ts_ms >= @sinceMs
+         AND NOT EXISTS (SELECT 1 FROM last_out AS o WHERE (m.ts_ms, m.id) <= (o.ts_ms, o.id))
+       ORDER BY m.ts_ms, m.id`,
+    ),
     updateTranscript: db.prepare<Transcript>(
       `UPDATE messages SET text = @text
        WHERE chat_id = @chatId AND wa_id = @waId AND kind = 'voice' AND text IS NULL`,
@@ -129,6 +155,15 @@ function assertMessageId(value: number): void {
   if (!Number.isSafeInteger(value) || value < 1) {
     throw new RangeError('beforeId: ожидается ID сообщения, целое число больше нуля');
   }
+}
+
+function toUnanswered(row: UnansweredRow): UnansweredInbound {
+  return {
+    waId: row.waId as WaMessageId,
+    kind: oneOf(KINDS, row.kind, 'В messages неизвестный вид сообщения'),
+    text: row.text,
+    tsMs: row.tsMs,
+  };
 }
 
 function toStoredMessage(row: MessageRow): StoredMessage {

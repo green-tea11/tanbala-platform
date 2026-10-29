@@ -439,3 +439,102 @@ describe('createMessagesRepo: history', () => {
     expect(ids).toEqual([...ids].sort((left, right) => left - right));
   });
 });
+
+describe('createMessagesRepo: unansweredAfterLastOutbound (возврат чата боту)', () => {
+  const T = 1_761_400_000_000;
+
+  function add(
+    repo: ReturnType<typeof createMessagesRepo>,
+    chatId: ChatId,
+    waId: string,
+    author: NewMessage['author'],
+    tsMs: number,
+    overrides: Partial<NewMessage> = {},
+  ): void {
+    repo.insertIfNew({
+      chatId,
+      waId: waId as WaMessageId,
+      author,
+      kind: 'text',
+      text: `${author} ${waId}`,
+      tsMs,
+      ...overrides,
+    });
+  }
+
+  it('сообщения клиента после последнего исходящего бота или человека, по времени, с waId', () => {
+    const { db, chatId } = setup();
+    const repo = createMessagesRepo(db);
+    add(repo, chatId, 'C1', 'client', T);
+    add(repo, chatId, 'B1', 'bot', T + 1);
+    add(repo, chatId, 'C3', 'client', T + 3);
+    add(repo, chatId, 'C2', 'client', T + 2);
+
+    expect(repo.unansweredAfterLastOutbound(chatId, T)).toEqual([
+      { waId: 'C2', kind: 'text', text: 'client C2', tsMs: T + 2 },
+      { waId: 'C3', kind: 'text', text: 'client C3', tsMs: T + 3 },
+    ]);
+  });
+
+  it.each(['bot', 'human_phone', 'human_panel'] as const)(
+    'после сообщений клиента ответил %s: отвечать не на что',
+    (author) => {
+      const { db, chatId } = setup();
+      const repo = createMessagesRepo(db);
+      add(repo, chatId, 'C1', 'client', T);
+      add(repo, chatId, 'O1', author, T + 1);
+
+      expect(repo.unansweredAfterLastOutbound(chatId, T)).toEqual([]);
+    },
+  );
+
+  it('исходящих не было: все неотвеченные сообщения клиента', () => {
+    const { db, chatId } = setup();
+    const repo = createMessagesRepo(db);
+    add(repo, chatId, 'C1', 'client', T);
+    add(repo, chatId, 'C2', 'client', T + 1);
+
+    expect(repo.unansweredAfterLastOutbound(chatId, T).map((m) => m.waId)).toEqual(['C1', 'C2']);
+  });
+
+  it('старше sinceMs и уже отвеченные не берутся; голосовое без расшифровки идёт без текста', () => {
+    const { db, chatId } = setup();
+    const repo = createMessagesRepo(db);
+    add(repo, chatId, 'OLD', 'client', T - 1);
+    add(repo, chatId, 'DONE', 'client', T);
+    repo.markAnswered(chatId, 'DONE' as WaMessageId);
+    add(repo, chatId, 'V1', 'client', T + 1, { kind: 'voice', text: null });
+
+    expect(repo.unansweredAfterLastOutbound(chatId, T)).toEqual([
+      { waId: 'V1', kind: 'voice', text: null, tsMs: T + 1 },
+    ]);
+  });
+
+  it('при равном времени порядок записи: исходящее, записанное позже, закрывает раньше записанное', () => {
+    const { db, chatId } = setup();
+    const repo = createMessagesRepo(db);
+    add(repo, chatId, 'C1', 'client', T);
+    add(repo, chatId, 'B1', 'bot', T);
+    add(repo, chatId, 'C2', 'client', T);
+
+    expect(repo.unansweredAfterLastOutbound(chatId, T).map((m) => m.waId)).toEqual(['C2']);
+  });
+
+  it('другой чат не мешает и не попадает в ответ', () => {
+    const { db, chatId, otherChatId } = setup();
+    const repo = createMessagesRepo(db);
+    add(repo, chatId, 'C1', 'client', T);
+    add(repo, otherChatId, 'B1', 'bot', T + 1);
+    add(repo, otherChatId, 'C2', 'client', T + 2);
+
+    expect(repo.unansweredAfterLastOutbound(chatId, T).map((m) => m.waId)).toEqual(['C1']);
+  });
+
+  it('неверное время: RangeError', () => {
+    const { db, chatId } = setup();
+
+    expect(() => createMessagesRepo(db).unansweredAfterLastOutbound(chatId, -1)).toThrow(
+      RangeError,
+    );
+  });
+});

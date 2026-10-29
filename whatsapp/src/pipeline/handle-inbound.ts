@@ -41,7 +41,10 @@ export interface PipelineDeps {
     ChatsRepo,
     'getById' | 'findByJid' | 'saveAssessment' | 'getProgress' | 'recordTurn'
   >;
-  readonly messages: Pick<MessagesRepo, 'recent' | 'markAnswered' | 'setTranscript'>;
+  readonly messages: Pick<
+    MessagesRepo,
+    'recent' | 'markAnswered' | 'setTranscript' | 'isUnansweredInbound'
+  >;
   readonly agent: Pick<Agent, 'draftReply' | 'reviewDraft' | 'assessInterest'>;
   readonly outbox: Pick<Outbox, 'sendBotReply' | 'sendVoiceNotice'>;
   /**
@@ -123,7 +126,8 @@ interface Noticed {
  * из TEST_ALLOWLIST: остальные отсекает whatsapp/inbound.ts, а outbox и шлюз не отправят в них.
  * 1. Чат перечитывается (по ID, после слияния по адресу); статус manager => бот молчит и не отмечает прочитанным.
  *    Чат не проходит закрытый режим (messaging/allowlist.ts, то же правило, что у outbox) => отказ до расшифровки
- *    и LLM: иначе outbox отсёк бы ответ уже после оплаченных вызовов.
+ *    и LLM: иначе outbox отсёк бы ответ уже после оплаченных вызовов. Ни одно сообщение пачки не ждёт ответа (пачку
+ *    после возврата чата боту, pipeline/resume.ts, уже отработала прошлая) => молчание duplicate без вызовов.
  * 2. Голосовые: при включённой расшифровке скачиваются (inbox.downloadAudio, лимит MAX_AUDIO_BYTES) и расшифровываются;
  *    расшифровка сохраняется в базе (messages.setTranscript) и идёт в историю для LLM как обычный текст клиента,
  *    в том числе в следующих ответах. Сбой, пустая расшифровка или выключенная расшифровка
@@ -215,6 +219,8 @@ async function processTurn(
   if (!isChatAllowlisted(deps.testAllowlist, chat.identity)) {
     return { kind: 'blocked', reason: 'skipped_test_mode' };
   }
+  // Возврат чата боту отдаёт неотвеченное ещё раз: если ответ на всю пачку уже ушёл, вызовы LLM не нужны.
+  if (isAllAnswered(deps, chat.id, start.messages)) return { kind: 'silent', reason: 'duplicate' };
   const heard = await transcribeVoices(deps, chat.id, start);
   if ('scope' in heard) return goSilent(deps, chat.id, heard.scope);
   const transcribed: Turn = { ...start, ...heard };
@@ -248,6 +254,18 @@ function currentChat(
 ): Chat | null {
   const last = messages.at(-1);
   return deps.chats.getById(chatId) ?? (last ? deps.chats.findByJid(last.identity.replyJid) : null);
+}
+
+/** Пачка не пустая, и ни одно её сообщение не ждёт ответа. */
+function isAllAnswered(
+  deps: PipelineDeps,
+  chatId: ChatId,
+  messages: readonly InboundMessage[],
+): boolean {
+  return (
+    messages.length > 0 &&
+    messages.every((message) => !deps.messages.isUnansweredInbound(chatId, message.waId))
+  );
 }
 
 function isManagerNow(deps: PipelineDeps, chatId: ChatId): boolean {

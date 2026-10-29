@@ -160,8 +160,30 @@ function replyFailed(
 }
 
 /**
+ * Ответ бота на сообщения клиента без ответа после возврата (решение владельца 29.10.2026). Чат уже возвращён, поэтому
+ * сбой здесь возврат не отменяет: ошибка в аудит только именем, бот ответит на следующее сообщение клиента. Нет
+ * ответов клиентам (deps.resume не задан): 0.
+ */
+function resumeSafely(context: PanelContext, chat: Chat): number {
+  try {
+    return context.deps.resume?.(chat.id) ?? 0;
+  } catch (error: unknown) {
+    context.audit.error(
+      {
+        action: 'resume_failed',
+        chatId: chat.id,
+        errorName: error instanceof Error ? error.name : typeof error,
+      },
+      'Панель: бот не взял неотвеченные сообщения после возврата',
+    );
+    return 0;
+  }
+}
+
+/**
  * Возврат чата боту. Чат уже у бота (страница устарела): ничего не вызывается, пометка already_bot.
- * Вернуть чат боту можно только отсюда: сам бот себе чат не возвращает.
+ * Вернуть чат боту можно только отсюда: сам бот себе чат не возвращает. После возврата бот отвечает на сообщения
+ * клиента без ответа (resumeSafely); есть такие => пометка returned_answering.
  */
 async function handleReturn(
   context: PanelContext,
@@ -184,8 +206,13 @@ async function handleReturn(
       failurePage(context, chat, session, { error: RETURN_FAILED, draft: '' }),
     );
   }
-  context.audit.info({ action: 'return_to_bot', chatId: chat.id }, 'Панель: чат возвращён боту');
-  return redirectTo(reply, `/chats/${chat.id}?notice=returned`);
+  const resumed = resumeSafely(context, chat);
+  context.audit.info(
+    { action: 'return_to_bot', chatId: chat.id, resumed },
+    'Панель: чат возвращён боту',
+  );
+  const notice = resumed > 0 ? 'returned_answering' : 'returned';
+  return redirectTo(reply, `/chats/${chat.id}?notice=${notice}`);
 }
 
 /** Параметры маршрутов /chats/:id. */

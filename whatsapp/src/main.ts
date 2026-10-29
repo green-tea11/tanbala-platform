@@ -324,22 +324,14 @@ interface Launch {
 }
 
 /**
- * Определение компании, службы, ответы клиентам и панель собираются до WhatsApp; WhatsApp запускается, если он
- * включён; панель начинает слушать порт последней, после старта WhatsApp, а при WA_ENABLED=false сразу.
+ * Определение компании, службы, ответы клиентам и панель собираются до WhatsApp (панель после ответов: возврат чата
+ * боту отдаёт неотвеченное в их очередь); WhatsApp запускается, если он включён; панель начинает слушать порт
+ * последней, после старта WhatsApp, а при WA_ENABLED=false сразу.
  */
 async function launch(run: Launch): Promise<RunningApp> {
   const { config, options, logger, clock, storage } = run;
   const company = assembleCompany({ config, logger, clock, repo: storage.chatCompanies });
   const services = assembleServices({ config, logger, clock, storage, company: company.service });
-  const panel = assemblePanel({
-    config,
-    logger,
-    clock,
-    storage,
-    services,
-    company: company.service,
-    startPanel: options.startPanel,
-  });
   const responder = await assembleResponder({
     config,
     logger,
@@ -350,6 +342,17 @@ async function launch(run: Launch): Promise<RunningApp> {
     createLlm: options.createLlm,
   });
   if (responder !== null) company.useLogo(responder.logo);
+  const panel = assemblePanel({
+    config,
+    logger,
+    clock,
+    storage,
+    services,
+    company: company.service,
+    // Возврат чата боту из панели: бот отвечает на сообщения клиента без ответа (решение владельца 29.10.2026).
+    resume: responder === null ? undefined : (chatId) => responder.resume(chatId),
+    startPanel: options.startPanel,
+  });
   const batcher = responder?.batcher ?? null;
   const resources: Resources = {
     storage,
