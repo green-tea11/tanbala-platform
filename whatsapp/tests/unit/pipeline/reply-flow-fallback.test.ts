@@ -12,7 +12,7 @@ import type {
   TurnSignals,
 } from '../../../src/domain/types.js';
 import { decideReply, requestDraft, type ReplyFlowDeps } from '../../../src/pipeline/reply-flow.js';
-import { safeQuestion } from '../../../src/pipeline/safe-questions.js';
+import { groupQuestion } from '../../../src/pipeline/safe-questions.js';
 
 // Два провала проверок (пункт 2 задания 29.10.2026): чат не уходит менеджеру, клиенту уходит фиксированный безопасный
 // вопрос о следующем невыясненном, не тот, что бот задал прошлым сообщением. check_failed только когда спросить нечего.
@@ -151,30 +151,43 @@ function run(c: Case) {
 }
 
 describe('pipeline/reply-flow: два провала проверок дают безопасный вопрос, а не передачу', () => {
-  it('проверка кодом дважды: вопрос о первом невыясненном, чат у бота', async () => {
+  it('проверка кодом дважды: вопрос о первой группе с невыясненным, чат у бота', async () => {
     const r = await run({ drafts: [PRICED, PRICED] });
 
-    expect(r.verdict).toEqual({ kind: 'send', text: safeQuestion('items', false) });
+    expect(r.verdict).toEqual({ kind: 'send', text: groupQuestion(['business'], false) });
   });
 
   it('ревью дважды: тот же безопасный вопрос; сам вопрос второй раз не проверяется', async () => {
     const r = await run({ drafts: [CLEAN, CLEAN], problems: ['Утверждение не из документов'] });
 
-    expect(r.verdict).toEqual({ kind: 'send', text: safeQuestion('items', false) });
+    expect(r.verdict).toEqual({ kind: 'send', text: groupQuestion(['business'], false) });
     expect(r.reviews()).toBe(2);
   });
 
-  it('прошлым сообщением бот спросил о вещах: спрашивает о следующем', async () => {
-    const r = await run({ lastBot: 'Подскажите, какие вещи нужно учитывать?' });
+  it('прошлым сообщением бот спросил о вещах: спрашивает о следующей группе', async () => {
+    const r = await run({
+      lastBot: 'Подскажите, какие вещи нужно учитывать?',
+      profile: { ...EMPTY, business: 'склад' },
+    });
 
-    expect(r.verdict).toEqual({ kind: 'send', text: safeQuestion('material', false) });
+    expect(r.verdict).toEqual({
+      kind: 'send',
+      text: groupQuestion(['city', 'premises', 'itemCount'], false),
+    });
   });
 
   it('клиент спросил цену: перед вопросом фраза об ориентире, сигналы хода записываются', async () => {
     const signals = { priceAsked: true, refused: false };
-    const r = await run({ signals, profile: { ...EMPTY, itemCount: 'около 3000', has1C: true } });
+    const r = await run({
+      signals,
+      profile: { ...EMPTY, business: 'склад', itemCount: 'около 3000', has1C: true },
+    });
 
-    expect(r.verdict).toEqual({ kind: 'send', text: safeQuestion('items', true), signals });
+    expect(r.verdict).toEqual({
+      kind: 'send',
+      text: groupQuestion(['items', 'packaging', 'material'], true),
+      signals,
+    });
   });
 
   it('о компании: вопрос о названии отмечается как вопрос о компании', async () => {
@@ -185,7 +198,7 @@ describe('pipeline/reply-flow: два провала проверок дают �
 
     expect(r.verdict).toEqual({
       kind: 'send',
-      text: safeQuestion('company', false),
+      text: groupQuestion(['company'], false),
       companyQuestion: 'name',
     });
   });
@@ -206,11 +219,11 @@ describe('pipeline/reply-flow: два провала проверок дают �
     expect(r.verdict).toEqual({ kind: 'handoff', notice: { reason: 'hot', aboutPrice: true } });
   });
 
-  it('в лог поле вопроса и коды, без текста черновика и вопроса', async () => {
+  it('в лог поля вопроса и коды, без текста черновика и вопроса', async () => {
     const r = await run({});
 
     const dump = JSON.stringify(r.logs);
-    expect(dump).toContain('"field":"items"');
+    expect(dump).toContain('"fields":["business"]');
     expect(dump).not.toContain('500 000');
     expect(dump).not.toContain('Подскажите');
   });

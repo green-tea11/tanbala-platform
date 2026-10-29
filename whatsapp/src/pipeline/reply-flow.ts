@@ -27,7 +27,7 @@ import {
   type ForcedPriceHandoff,
   type PriceSituation,
 } from './price-gate.js';
-import { nextSafeField, safeQuestion } from './safe-questions.js';
+import { nextSafeQuestion } from './safe-questions.js';
 
 /** Что нужно ходу ответа от остальной системы: агент, запись оценки интереса, часы и лог. */
 export interface ReplyFlowDeps {
@@ -231,8 +231,8 @@ export async function decideReply(
 /**
  * Ответ дважды не прошёл проверки (пункт 2 задания 29.10.2026): чат не уходит менеджеру. Клиент спрашивает цену и
  * минимум собран => передача по цене с фразой о цене (так велит правило цены). Иначе фиксированный безопасный вопрос о
- * следующем невыясненном, не о том, что бот спросил прошлым сообщением (safe-questions.nextSafeField); при вопросе цены
- * перед ним фраза об ориентире. Спросить нечего => check_failed. В лог только ID чата и код поля.
+ * следующей группе с невыясненным, не о той, о которой бот спросил прошлым сообщением (safe-questions.nextSafeQuestion);
+ * при вопросе цены перед ним фраза об ориентире. Спросить нечего => check_failed. В лог только ID чата и коды полей.
  */
 function afterCheckFailed(flow: Flow): ReplyVerdict {
   const { context, price, deps } = flow;
@@ -244,26 +244,25 @@ function afterCheckFailed(flow: Flow): ReplyVerdict {
     );
     return FORCED_PRICE_HANDOFF;
   }
-  const field = nextSafeField({
-    profile: flow.retryContext.profile,
-    minimum: price.minimum,
-    lastBotText: lastBotTextOf(context.history),
-  });
-  if (field === null) {
+  const question = nextSafeQuestion(
+    { profile: price.profile, minimum: price.minimum, lastBotText: lastBotTextOf(context.history) },
+    price.signals.priceAsked,
+  );
+  if (question === null) {
     deps.logger.info(
       { chatId },
       `Черновик дважды не прошёл проверки, спросить нечего: чат #${chatId}`,
     );
     return CHECK_FAILED;
   }
+  const { fields, text, companyQuestion } = question;
   deps.logger.info(
-    { chatId, field, aboutPrice: price.signals.priceAsked },
+    { chatId, fields: [...fields], aboutPrice: price.signals.priceAsked },
     `Черновик дважды не прошёл проверки, клиенту уходит безопасный вопрос: чат #${chatId}`,
   );
-  const text = safeQuestion(field, price.signals.priceAsked);
-  return field === 'company'
-    ? { kind: 'send', text, companyQuestion: 'name' }
-    : { kind: 'send', text };
+  return companyQuestion === undefined
+    ? { kind: 'send', text }
+    : { kind: 'send', text, companyQuestion };
 }
 
 /** Последнее сообщение бота клиенту в окне истории; нет => null. */

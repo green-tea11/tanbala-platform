@@ -22,7 +22,7 @@ import {
   type ReplyFlowDeps,
   type ReplyVerdict,
 } from '../../../src/pipeline/reply-flow.js';
-import { safeQuestion } from '../../../src/pipeline/safe-questions.js';
+import { groupQuestion } from '../../../src/pipeline/safe-questions.js';
 
 // Агент и репозиторий поддельные; шаги пишутся в общий журнал calls, по нему видно порядок.
 
@@ -383,7 +383,7 @@ describe('pipeline/reply-flow: повтор с замечаниями', () => {
 
     const verdict = await flow(h);
 
-    expect(verdict).toEqual(sent(safeQuestion('items', false)));
+    expect(verdict).toEqual(sent(groupQuestion(['items', 'packaging', 'material'], false)));
     expect(h.calls).toEqual(['draft', 'assess', 'save', 'review', 'draft:retry', 'review']);
   });
 
@@ -393,7 +393,7 @@ describe('pipeline/reply-flow: повтор с замечаниями', () => {
 
     const verdict = await flow(h);
 
-    expect(verdict).toEqual(sent(safeQuestion('items', false)));
+    expect(verdict).toEqual(sent(groupQuestion(['items', 'packaging', 'material'], false)));
     expect(h.reviewDraft).not.toHaveBeenCalled();
   });
 
@@ -505,7 +505,9 @@ describe('pipeline/reply-flow: передачу решает вызов отве
       assessment: assessed('hot'),
     });
 
-    await expect(flow(h)).resolves.toEqual(sent(safeQuestion('items', false)));
+    await expect(flow(h)).resolves.toEqual(
+      sent(groupQuestion(['items', 'packaging', 'material'], false)),
+    );
   });
 
   it('клиент не горячий: ревью зовётся как обычно', async () => {

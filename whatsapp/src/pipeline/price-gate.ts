@@ -1,11 +1,11 @@
 import type { ConversationContext } from '../agent/agent.js';
 import { priceAmountsOf } from '../checks/amounts.js';
-import type { CompanyPrompt, CompanyQuestion } from '../domain/company.js';
+import type { CompanyPrompt } from '../domain/company.js';
 import type {
+  ClientProfile,
   InterestAssessment,
   LlmResult,
   ReplyDraft,
-  ReviewedText,
   TurnSignals,
 } from '../domain/types.js';
 import {
@@ -18,7 +18,7 @@ import {
   type HandoffMinimum,
   type MinimumField,
 } from '../handoff/minimum.js';
-import { askedFields, ESTIMATE_LATER, safeQuestion } from './safe-questions.js';
+import { ESTIMATE_LATER, minimumSafeQuestion, type SafeQuestion } from './safe-questions.js';
 
 /**
  * Что код знает о цене в этом ходе (решение владельца 29.10.2026): минимум для передачи по свежей выжимке, сколько
@@ -26,6 +26,8 @@ import { askedFields, ESTIMATE_LATER, safeQuestion } from './safe-questions.js';
  */
 export interface PriceSituation {
   readonly minimum: HandoffMinimum;
+  /** Выжимка, по которой посчитан минимум: из оценки этого хода, без неё прежняя. */
+  readonly profile: ClientProfile;
   /** Вопросов цены с последнего возврата чата боту, включая этот ход. */
   readonly priceAsks: number;
   /** Клиент отказывался отвечать раньше или отказывается сейчас. */
@@ -40,14 +42,6 @@ export interface PriceSituation {
    * ни при отказе отвечать, ни при четвёртом вопросе цены (ревью 29.10.2026, второй круг).
    */
   readonly notePrice: boolean;
-}
-
-/** Фиксированный ответ вместо ранней передачи: вопрос о первом недостающем поле минимума. */
-export interface MinimumFallback {
-  readonly field: MinimumField;
-  readonly text: ReviewedText;
-  /** Вопрос о названии компании: его надо запомнить, как вопрос модели. */
-  readonly companyQuestion?: CompanyQuestion;
 }
 
 function aboutPriceOf(draft: LlmResult<ReplyDraft>): boolean {
@@ -83,9 +77,11 @@ export function priceSituation(
   const priceAsked = priceAskedOf(assessment, draft);
   const refusedNow = assessment?.signals?.refused === true;
   const progress = context.progress ?? { priceAsks: 0, refused: false };
+  const profile = assessment?.profile ?? context.profile;
   return {
+    profile,
     minimum: handoffMinimum({
-      profile: assessment?.profile ?? context.profile,
+      profile,
       companyName: context.companyName ?? null,
       companyAskable: companyAskable(context.company),
     }),
@@ -159,17 +155,14 @@ export function minimumRemark(situation: PriceSituation): string {
 }
 
 /**
- * Фиксированный вопрос о первом недостающем поле с фразой об ориентире (клиент спросил цену); о чём бот спросил прошлым
- * сообщением (lastBotText), второй раз подряд не спрашивается, если есть другое недостающее. Вопрос о компании
- * отмечается как вопрос о названии.
+ * Фиксированный вопрос о первой группе с недостающим из минимума, с фразой об ориентире (клиент спросил цену); группу,
+ * о которой бот спросил прошлым сообщением (lastBotText), второй раз подряд не спрашивает, если есть другая.
+ * Вопрос о компании отмечается как вопрос о названии (safe-questions.minimumSafeQuestion).
  */
 export function minimumFallback(
   situation: PriceSituation,
   lastBotText: string | null = null,
-): MinimumFallback {
-  const asked = lastBotText === null ? new Set<string>() : askedFields(lastBotText);
-  const fresh = situation.minimum.missing.find((missing) => !asked.has(missing));
-  const field = fresh ?? firstMissing(situation);
-  const text = safeQuestion(field, true);
-  return field === 'company' ? { field, text, companyQuestion: 'name' } : { field, text };
+): SafeQuestion {
+  const { profile, minimum } = situation;
+  return minimumSafeQuestion({ profile, minimum, lastBotText }, true);
 }

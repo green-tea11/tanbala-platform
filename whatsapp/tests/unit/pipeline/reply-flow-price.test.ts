@@ -12,7 +12,7 @@ import type {
   ReviewedText,
   TurnSignals,
 } from '../../../src/domain/types.js';
-import { safeQuestion } from '../../../src/pipeline/safe-questions.js';
+import { groupQuestion } from '../../../src/pipeline/safe-questions.js';
 import { minimumFallback, priceSituation } from '../../../src/pipeline/price-gate.js';
 import {
   decideReply,
@@ -238,20 +238,26 @@ describe('pipeline/reply-flow: передача по цене без миним�
   it('повтор снова hot: уходит фиксированный вопрос о первом недостающем, чат у бота', async () => {
     const r = await run({ drafts: [hot(), hot()] });
 
-    expect(r.verdict).toEqual(sentWith(safeQuestion('items', true), { signals: PRICE_NOW }));
+    expect(r.verdict).toEqual(
+      sentWith(groupQuestion(['items', 'packaging', 'material'], true), { signals: PRICE_NOW }),
+    );
     expect(r.calls).toEqual(['draft', 'assess', 'save', 'draft:retry']);
   });
 
   it('повтор не получился (сбой LLM): тот же фиксированный вопрос, а не передача', async () => {
     const r = await run({ drafts: [hot(), { ok: false, failure: 'unavailable' }] });
 
-    expect(r.verdict).toEqual(sentWith(safeQuestion('items', true), { signals: PRICE_NOW }));
+    expect(r.verdict).toEqual(
+      sentWith(groupQuestion(['items', 'packaging', 'material'], true), { signals: PRICE_NOW }),
+    );
   });
 
   it('ответ повтора не прошёл проверку: фиксированный вопрос вместо check_failed', async () => {
     const r = await run({ drafts: [hot(), answer()], problems: ['Назван срок'] });
 
-    expect(r.verdict).toEqual(sentWith(safeQuestion('items', true), { signals: PRICE_NOW }));
+    expect(r.verdict).toEqual(
+      sentWith(groupQuestion(['items', 'packaging', 'material'], true), { signals: PRICE_NOW }),
+    );
   });
 
   it('не хватает только компании: фиксированный вопрос о названии отмечает вопрос о компании', async () => {
@@ -262,7 +268,7 @@ describe('pipeline/reply-flow: передача по цене без миним�
     });
 
     expect(r.verdict).toEqual(
-      sentWith(safeQuestion('company', true), { companyQuestion: 'name', signals: PRICE_NOW }),
+      sentWith(groupQuestion(['company'], true), { companyQuestion: 'name', signals: PRICE_NOW }),
     );
   });
 });
@@ -444,7 +450,7 @@ describe('pipeline/price-gate: защитные ветки', () => {
     );
 
     expect(situation.minimum.missing).toEqual([]);
-    expect(minimumFallback(situation).text).toBe(safeQuestion('items', true));
+    expect(minimumFallback(situation).text).toBe(groupQuestion(['items'], true));
   });
 });
 
@@ -544,11 +550,11 @@ describe('pipeline/reply-flow: ранняя передача при заметк
 });
 
 describe('pipeline/price-gate: фиксированный вопрос не повторяет прошлый вопрос бота', () => {
-  it('прошлым сообщением бот спросил о вещах: вопрос о следующем недостающем', () => {
+  it('прошлым сообщением бот спросил о вещах: вопрос о следующей группе недостающего', () => {
     const situation = priceSituation({ chatId: CHAT_ID, history: [], profile: EMPTY }, null, hot());
 
     expect(minimumFallback(situation, 'Подскажите, какие вещи нужно учитывать?').text).toBe(
-      safeQuestion('material', true),
+      groupQuestion(['city', 'premises', 'itemCount'], true),
     );
   });
 
@@ -559,8 +565,8 @@ describe('pipeline/price-gate: фиксированный вопрос не по
       hot(),
     );
 
-    expect(minimumFallback(situation, safeQuestion('city', true)).text).toBe(
-      safeQuestion('city', true),
+    expect(minimumFallback(situation, groupQuestion(['city'], true)).text).toBe(
+      groupQuestion(['city'], true),
     );
   });
 });

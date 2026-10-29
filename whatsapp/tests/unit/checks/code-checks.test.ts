@@ -19,7 +19,7 @@ import {
   type CheckFinding,
 } from '../../../src/checks/code-checks.js';
 import type { NormalizedText, PhoneDigits } from '../../../src/domain/types.js';
-import { QUESTION_FIELDS, safeQuestion } from '../../../src/pipeline/safe-questions.js';
+import { groupQuestion, QUESTION_GROUPS } from '../../../src/pipeline/safe-questions.js';
 
 // Перенос docs/reference/test_checks.py (B-web-email) на WhatsApp. Номера только фиктивные.
 const OWN_PHONE = '77000000001' as PhoneDigits;
@@ -1003,7 +1003,7 @@ describe('checkPrices: ориентир, суммы словами и валют
   });
 
   it.each([
-    ...QUESTION_FIELDS.map((field) => safeQuestion(field, true)),
+    ...QUESTION_GROUPS.map((group) => groupQuestion(group, true)),
     'Цена сильно зависит от объёма. Уточню у коллеги и вернусь к вам.',
     'Чтобы коллега сразу назвал ориентир, подскажите, сколько примерно вещей нужно учитывать?',
     'Tanbala проводит интеграцию с 1С 8.3.',
