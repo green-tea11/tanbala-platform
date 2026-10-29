@@ -28,7 +28,13 @@ if git -C "$SITE_DIR" rev-parse --git-dir >/dev/null 2>&1; then
 else
 	tar -C "$SITE_DIR" -cf - "${FILES[@]}" | tar -C "$work/src" -xf -
 fi
-(cd "$work/src" && npm ci --no-audit --no-fund --loglevel=error && npx astro build --outDir ../dist)
+echo "Сборка (npm ci и astro build)"
+(cd "$work/src" && npm ci --no-audit --no-fund --loglevel=error && npx astro build --outDir ../dist) \
+	>"$work/build.log" 2>&1 || {
+	tail -30 "$work/build.log" >&2
+	echo "Сборка не удалась, на сервер ничего не ушло" >&2
+	exit 1
+}
 [[ -f $work/dist/index.html ]] || {
 	echo "Сборка без index.html, на сервер ничего не ушло" >&2
 	exit 1
