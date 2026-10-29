@@ -1,0 +1,41 @@
+# Общее для deploy/Caddyfile и deploy/Caddyfile.closed: оба начинаются с import этого файла
+# (/opt/tanbala/deploy/caddy/common.caddy), поэтому глобальные опции здесь первым блоком.
+# После правки: sudo /opt/tanbala/deploy/scripts/install.sh caddy (проверка и reload).
+{
+	# Почту для Let's Encrypt не указываем (решение владельца 29.10.2026).
+	# API управления Caddy слушает не TCP-порт 2019, а сокет: до него не дотянутся ни бот, ни браузеры сервера,
+	# которые открывают чужие сайты. systemctl reload caddy ходит через этот же сокет.
+	admin unix//var/lib/caddy/admin.sock
+	# Без HTTP/3 (UDP 443): fail2ban блокирует только TCP, по QUIC подбор пароля шёл бы дальше.
+	servers {
+		protocols h1 h2
+	}
+}
+
+# Общее для сайтов: предел тела запроса, сжатие, HSTS, без заголовка Server, журнал без строк запроса.
+(common) {
+	# Самое большое у приложений: файл «Кому писали» до 1 МБ (у панели бота до 64 КБ).
+	request_body {
+		max_size 2MB
+	}
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	# Этот журнал читает fail2ban (ответы 401 на пароль Caddy).
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 20MiB
+			roll_keep 5
+		}
+		# В строке запроса бывают названия компаний и номера (поиск в панелях): в журнал она не попадает,
+		# в том числе в Referer (адрес прошлой страницы) и Location (редирект). Пароль Caddy не пишет и так.
+		format filter {
+			request>uri regexp "\?.*" ""
+			request>headers>Referer delete
+			resp_headers>Location delete
+			wrap json
+		}
+	}
+}

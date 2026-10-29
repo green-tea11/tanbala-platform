@@ -10,6 +10,8 @@ Before=tanbala-leads.service tanbala-whatsapp.service caddy.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/sbin/nft -f /opt/tanbala/deploy/nftables/tanbala-guard.nft
+# Новые правила без остановки: restart остановил бы и службы с Requires=tanbala-firewall (файл пересоздаёт таблицу).
+ExecReload=/usr/sbin/nft -f /opt/tanbala/deploy/nftables/tanbala-guard.nft
 ExecStop=/usr/sbin/nft delete table inet tanbala_guard
 
 [Install]

@@ -1,45 +1,10 @@
-# Caddy для сервера Tanbala (PS.KZ, 91.201.215.210). Копия: /etc/caddy/Caddyfile.
+# Caddy для сервера Tanbala (PS.KZ, 91.201.215.210), панели открыты. Копия: /etc/caddy/Caddyfile, ставит её
+# install.sh (шаг caddy), когда есть оба файла паролей; до этого там Caddyfile.closed.
 # HTTPS и сертификаты Caddy получает и продлевает сам (нужны DNS и открытые порты 80 и 443).
 # Пароли basic auth здесь не хранятся: строки «имя хэш» лежат в /etc/caddy/auth/wa.caddy и leads.caddy
-# (root:caddy, права 640), как их создать — deploy/env.md. Сам tanbala.kz здесь не упоминается: там будет сайт.
+# (root:caddy, права 640), как их создать — deploy/env.md. Глобальные опции и (common) — в caddy/common.caddy.
 # Не добавлять сайты «на всё» (:443, http://, *): запрос с чужим именем дошёл бы до приложений.
-{
-	# Почту для Let's Encrypt не указываем (решение владельца 29.10.2026).
-	# API управления Caddy слушает не TCP-порт 2019, а сокет: до него не дотянутся ни бот, ни браузеры сервера,
-	# которые открывают чужие сайты. systemctl reload caddy ходит через этот же сокет.
-	admin unix//var/lib/caddy/admin.sock
-	# Без HTTP/3 (UDP 443): fail2ban блокирует только TCP, по QUIC подбор пароля шёл бы дальше.
-	servers {
-		protocols h1 h2
-	}
-}
-
-# Общее для обоих сайтов: предел тела запроса, сжатие, HSTS, без заголовка Server, журнал без строк запроса.
-(common) {
-	# Самое большое у приложений: файл «Кому писали» до 1 МБ (у панели бота до 64 КБ).
-	request_body {
-		max_size 2MB
-	}
-	encode zstd gzip
-	header {
-		Strict-Transport-Security "max-age=31536000"
-		-Server
-	}
-	log {
-		output file /var/log/caddy/access.log {
-			roll_size 20MiB
-			roll_keep 5
-		}
-		# В строке запроса бывают названия компаний и номера (поиск в панелях): в журнал она не попадает,
-		# в том числе в Referer (адрес прошлой страницы) и Location (редирект). Пароль Caddy не пишет и так.
-		format filter {
-			request>uri regexp "\?.*" ""
-			request>headers>Referer delete
-			resp_headers>Location delete
-			wrap json
-		}
-	}
-}
+import /opt/tanbala/deploy/caddy/common.caddy
 
 # Панель WhatsApp-бота: пароль Caddy, затем свой вход панели (два слоя, решение владельца 29.10.2026).
 wa.tanbala.kz {

@@ -34,7 +34,9 @@ RestartSec=60
 TimeoutStopSec=120
 UMask=0077
 
-# Память: бот ≈ 0.15–0.3 ГБ. При общей нехватке памяти бот уходит последним (OOMScoreAdjust).
+# Память: бот ≈ 0.15–0.3 ГБ. При общей нехватке памяти бот уходит последним (OOMScoreAdjust), а первые 256 МБ
+# ядро у него не отнимает и не уводит в swap, пока браузеры почты ищут компании (MemoryLow).
+MemoryLow=256M
 MemoryHigh=600M
 MemoryMax=800M
 OOMScoreAdjust=-300
