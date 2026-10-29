@@ -126,8 +126,9 @@ describe('.env', () => {
     'содержит те же переменные, что шаблон, и может включить закрытый блок связи с почтовым проектом',
     () => {
       const local = [...parseEnvFile(LOCAL_ENV_PATH).keys()];
-      const required = local.filter((key) => !OPTIONAL_KEYS.includes(key));
-      expect(required.sort()).toEqual([...REQUIRED_KEYS].sort());
+      // Ключи .env без необязательного блока связи с почтовым проектом: они и должны совпасть с REQUIRED_KEYS.
+      const nonOptional = local.filter((key) => !OPTIONAL_KEYS.includes(key));
+      expect(nonOptional.sort()).toEqual([...REQUIRED_KEYS].sort());
     },
   );
 });
