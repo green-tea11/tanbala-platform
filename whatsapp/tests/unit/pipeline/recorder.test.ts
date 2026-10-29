@@ -639,6 +639,98 @@ describe('pipeline/recorder: чаты первой синхронизации (o
   });
 });
 
+describe('pipeline/recorder: синхронизация после новой привязки в рабочем режиме (этап 8)', () => {
+  interface Relinked extends Setup {
+    /** Адреса, которые запись отдала правилу holdUnseen. */
+    readonly marked: (readonly Jid[])[];
+    /** Чаты, о которых спросили правило heldForManager после перехода. */
+    readonly asked: ChatIdentity[];
+  }
+
+  /**
+   * Чат бота клиента (LID_WITH_PN, #1) и чат постороннего у менеджера (#2) записаны до перехода; затем правила этапа 8
+   * включаются: holdUnseen отвечает unseen (рабочий режим), heldForManager держит всех, кроме адресов из allowlisted.
+   */
+  async function relinked(unseen: boolean, allowlisted: readonly Jid[] = []): Promise<Relinked> {
+    let switched = false;
+    const marked: (readonly Jid[])[] = [];
+    const asked: ChatIdentity[] = [];
+    const rig = setup(
+      undefined,
+      (identity) => {
+        if (!switched) return false;
+        asked.push(identity);
+        return ![identity.replyJid, identity.lidJid, identity.pnJid].some(
+          (jid) => jid !== null && allowlisted.includes(jid),
+        );
+      },
+      (jids) => {
+        if (switched) marked.push(jids);
+        return switched && unseen;
+      },
+    );
+    await rig.recorder.onEvent(client({ identity: LID_WITH_PN }));
+    await rig.recorder.onEvent(
+      client({
+        waId: 'WA-2' as WaMessageId,
+        identity: { replyJid: STRANGER_PN, lidJid: null, pnJid: STRANGER_PN },
+      }),
+    );
+    createChatsRepo(rig.db).setStatus(2 as ChatId, { status: 'manager', by: 'panel' }, NOW);
+    rig.entries.length = 0;
+    switched = true;
+    return { ...rig, marked, asked };
+  }
+
+  function controlOf(db: Database.Database, chatId: number): unknown {
+    return createChatsRepo(db).getById(chatId as ChatId)?.control;
+  }
+
+  it('все адреса пачки отмечены; чат бота с таким адресом уходит менеджеру один раз, чат менеджера как был', async () => {
+    const { db, recorder, entries, marked } = await relinked(true);
+
+    recorder.onHistoryChats([
+      { jid: CLIENT_PN, lastMessageAtMs: NOW },
+      { jid: CLIENT_LID, lastMessageAtMs: NOW },
+      { jid: STRANGER_PN, lastMessageAtMs: NOW },
+      { jid: STRANGER_LID, lastMessageAtMs: null },
+    ]);
+
+    expect(marked).toEqual([[CLIENT_PN, CLIENT_LID, STRANGER_PN, STRANGER_LID]]);
+    expect(controlOf(db, 1)).toEqual({ status: 'manager', by: 'phone' });
+    expect(controlOf(db, 2)).toEqual({ status: 'manager', by: 'panel' });
+    expect(chatsOf(db)).toHaveLength(2);
+    expect(entries).toContainEqual({
+      level: 'info',
+      context: { movedChats: 1 },
+      message:
+        'Синхронизация в рабочем режиме: чатов бота переведено к менеджеру 1 (переписку без бота он не видел)',
+    });
+    expect(JSON.stringify(entries)).not.toMatch(/7700000000\d|@lid|@s\.whatsapp\.net/);
+  });
+
+  it('чат бота с номером из TEST_ALLOWLIST остаётся у бота, строки о переводе нет', async () => {
+    const { db, recorder, entries } = await relinked(true, [CLIENT_PN]);
+
+    recorder.onHistoryChats([{ jid: CLIENT_LID, lastMessageAtMs: NOW }]);
+
+    expect(controlOf(db, 1)).toEqual({ status: 'bot', by: null });
+    expect(entries.map((entry) => entry.message)).toEqual([
+      'Первая синхронизация: чатов записано в known_chats: 1',
+    ]);
+  });
+
+  it('закрытый режим: статусы чатов не меняются, правило нового чата не спрашивается', async () => {
+    const { db, recorder, asked, marked } = await relinked(false);
+
+    recorder.onHistoryChats([{ jid: CLIENT_PN, lastMessageAtMs: NOW }]);
+
+    expect(marked).toEqual([[CLIENT_PN]]);
+    expect(asked).toEqual([]);
+    expect(controlOf(db, 1)).toEqual({ status: 'bot', by: null });
+  });
+});
+
 describe('pipeline/recorder: логи', () => {
   it('без текста сообщений, имён, номеров и адресов', async () => {
     const { recorder, entries } = setup();

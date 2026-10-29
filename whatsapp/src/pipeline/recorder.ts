@@ -231,19 +231,49 @@ function logHeld(logger: Logger, chatId: ChatId): void {
   );
 }
 
-/** Чаты синхронизации без времени получают момент синхронизации: чат всё равно известен до переключения этапа 8. */
+/**
+ * Чаты синхронизации без времени получают момент синхронизации: чат всё равно известен до переключения этапа 8.
+ * Рабочий режим (синхронизация приходит после новой привязки по QR, граница прежняя): сообщений синхронизации бот
+ * не разбирает и не видит, кто говорил с клиентом в перерыве. Поэтому все адреса пачки отмечаются «у менеджера»
+ * (holdUnseen), а чат базы со статусом bot и таким адресом (не из TEST_ALLOWLIST, правило heldForManager) уходит
+ * менеджеру (by 'phone', без передачи и уведомления), как чаты бота при повторном переходе: бот никогда не отвечает
+ * поверх человека, а менеджер вернёт нужный чат кнопкой «Вернуть боту». Всё одной транзакцией.
+ */
 function recordHistory(deps: InboundRecorderDeps, chats: readonly HistoryChat[]): void {
   if (chats.length === 0) return;
   const nowMs = deps.clock.now();
-  deps.unitOfWork.run(() => {
+  const moved = deps.unitOfWork.run((): number => {
     for (const chat of chats) {
       deps.knownChats.touch(chat.jid, chat.lastMessageAtMs ?? nowMs, 'history');
     }
+    const jids = chats.map((chat) => chat.jid);
+    return deps.holdUnseen(jids) ? moveBotChats(deps, jids, nowMs) : 0;
   });
   deps.logger.info(
     { count: chats.length },
     `Первая синхронизация: чатов записано в known_chats: ${chats.length}`,
   );
+  if (moved > 0) {
+    deps.logger.info(
+      { movedChats: moved },
+      `Синхронизация в рабочем режиме: чатов бота переведено к менеджеру ${moved} (переписку без бота он не видел)`,
+    );
+  }
+}
+
+/** Чаты базы со статусом bot по адресам, которые правило этапа 8 держит у менеджера: статус manager; их число. */
+function moveBotChats(deps: InboundRecorderDeps, jids: readonly Jid[], nowMs: number): number {
+  let moved = 0;
+  for (const jid of jids) {
+    // Чат с двумя адресами в пачке найдётся дважды, но во второй раз он уже у менеджера.
+    const chat = deps.chats.findByJid(jid);
+    if (chat === null || chat.control.status !== 'bot' || !deps.heldForManager(chat.identity)) {
+      continue;
+    }
+    deps.chats.setStatus(chat.id, HELD_FOR_MANAGER, nowMs);
+    moved += 1;
+  }
+  return moved;
 }
 
 function toNewMessage(chatId: ChatId, author: Author, message: InboundMessage): NewMessage {

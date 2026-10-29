@@ -469,6 +469,48 @@ describe('сценарии этапа 8: переход в рабочий реж
     expect(controlOf(rig, FORMER_JID)).toEqual({ status: 'bot', by: 'panel' });
   });
 
+  it('новая привязка по QR в рабочем режиме: чаты новой синхронизации у менеджера, в том числе чат бота; номер из списка как был', async () => {
+    const rig = await switchedRig();
+    await receive(rig, { jid: NEW_JID, waId: 'N-1', text: 'Здравствуйте', tsMs: rig.nowMs });
+    await receive(rig, { jid: TESTER_JID, waId: 'T-1', text: 'Проверка', tsMs: rig.nowMs });
+    rig.nowMs += 24 * HOUR_MS;
+
+    // Сессия отозвана, номер привязан заново: в перерыве с клиентами говорили с телефона, бот этого не видел.
+    rig.recorder.onHistoryChats([
+      { jid: NEW_JID, lastMessageAtMs: rig.nowMs - HOUR_MS },
+      { jid: LATE_JID, lastMessageAtMs: rig.nowMs - HOUR_MS },
+      { jid: TESTER_JID, lastMessageAtMs: rig.nowMs - HOUR_MS },
+    ]);
+    const gapClient = await receive(rig, {
+      jid: LATE_JID,
+      waId: 'L-3',
+      text: 'Продолжим?',
+      tsMs: rig.nowMs,
+    });
+    const botClient = await receive(rig, {
+      jid: NEW_JID,
+      waId: 'N-2',
+      text: 'Так что по цене?',
+      tsMs: rig.nowMs,
+    });
+    const tester = await receive(rig, {
+      jid: TESTER_JID,
+      waId: 'T-2',
+      text: 'Ещё проверка',
+      tsMs: rig.nowMs,
+    });
+
+    expect(gapClient.outcome).toEqual({ kind: 'silent', reason: 'manager_mode' });
+    expect(gapClient.toClient).toEqual([]);
+    expect(controlOf(rig, LATE_JID)).toEqual({ status: 'manager', by: 'phone' });
+    expect(botClient.outcome).toEqual({ kind: 'silent', reason: 'manager_mode' });
+    expect(botClient.llm.requests).toEqual([]);
+    expect(botClient.toClient).toEqual([]);
+    expect(controlOf(rig, NEW_JID)).toEqual({ status: 'manager', by: 'phone' });
+    expect(tester.toClient).toEqual([ASK]);
+    expect(controlOf(rig, TESTER_JID)).toEqual({ status: 'bot', by: null });
+  });
+
   it('номер из TEST_ALLOWLIST работает как раньше: сообщение до перехода из офлайн-очереди получает ответ', async () => {
     const rig = await switchedRig();
 
