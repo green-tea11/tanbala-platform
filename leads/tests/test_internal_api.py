@@ -96,7 +96,7 @@ PUBLIC_HOST = "leads.tanbala.kz"
 
 @pytest.mark.parametrize("path", ["/internal/lookup?domain=sklad.kz", "/internal/nope", "/internal", "/internal/",
                                   "/INTERNAL/lookup", "/Internal/companies/1/brief", "/internal/research/x",
-                                  "/internal%2Flookup"])
+                                  "/internal%2Flookup", "/internal/lookup%0A"])
 @pytest.mark.parametrize("method", ["GET", "POST"])
 def test_public_host_never_reaches_internal_api(path, method):
     """Имя интерфейса за Caddy (PUBLIC_UI_HOST) годится только для интерфейса: /internal только с 127.0.0.1."""
@@ -127,6 +127,25 @@ def test_public_host_with_extra_slashes_is_refused(path):
 
     assert sent[0]["status"] == 400
     assert b"".join(m.get("body", b"") for m in sent[1:]) == b"Invalid host header"
+
+
+@pytest.mark.parametrize("host", ["LEADS.TANBALA.KZ:443", "leads.tanbala.kz:8000", "", "localhost:leads.tanbala.kz",
+                                  "localhost.", "[::1]:8000", "127.0.0.1:8000:1"])
+def test_only_exact_local_host_reaches_internal_api(host):
+    """К /internal только Host «127.0.0.1» или «localhost» с портом или без: остальное 400 до токена."""
+    response = make_client(public_host=PUBLIC_HOST).get("/internal/lookup?domain=sklad.kz",
+                                                        headers={**AUTH, "Host": host})
+
+    assert (response.status_code, response.text) == (400, "Invalid host header")
+
+
+@pytest.mark.parametrize("header", ["X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "Forwarded", "Via"])
+def test_proxied_request_never_reaches_internal_api(header):
+    """Бот ходит в /internal напрямую. Заголовок прокси значит, что запрос пришёл через Caddy, даже если Host местный."""
+    response = make_client(public_host=PUBLIC_HOST).get("/internal/lookup?domain=sklad.kz",
+                                                        headers={**AUTH, "Host": "127.0.0.1:8000", header: "1.2.3.4"})
+
+    assert (response.status_code, response.text) == (400, "Invalid host header")
 
 
 @pytest.mark.parametrize("host", ["127.0.0.1:8000", "localhost:8000", "127.0.0.1"])

@@ -10,6 +10,7 @@ import sys
 
 from tanbala_leads import db, pipeline
 from tanbala_leads.settings import SettingsError, load_settings
+from tanbala_leads.steps import collect
 from tanbala_leads.steps.collect import CITIES
 
 
@@ -55,6 +56,8 @@ def main(argv: list[str] | None = None) -> int:
                 applied = db.migrate(conn)
             print(f"Применены миграции: {applied}" if applied else "Схема актуальна, миграций нет.")
             return 0
+        # parser-2gis должен запуститься, иначе запуск создался бы и сразу упал (как проверка в serve()).
+        collect.check_parser_setup(settings.parser_2gis_bin, collect.parse_headless(settings.parser_2gis_headless))
         return _search(dsn, args.city, args.query, args.limit, pipeline.daily_budget(settings))
     except (SettingsError, ValueError, pipeline.RunAlreadyActive) as exc:
         print(exc, file=sys.stderr)

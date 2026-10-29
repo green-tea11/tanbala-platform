@@ -2,6 +2,7 @@
 
 import contextlib
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -235,7 +236,9 @@ def test_serve_gives_search_and_whatsapp_the_same_browsers(monkeypatch):
         def kick(self):
             pass
 
-    monkeypatch.setattr(web, "load_settings", lambda: load_settings({"DATABASE_URL": "postgresql://test"}))
+    # parser-2gis «есть» (любой существующий файл) и Chrome без окна: проверки запуска проходят и на Linux.
+    monkeypatch.setattr(web, "load_settings", lambda: load_settings({
+        "DATABASE_URL": "postgresql://test", "PARSER_2GIS_BIN": sys.executable, "PARSER_2GIS_HEADLESS": "true"}))
     monkeypatch.setattr(web.db, "connect", lambda dsn: contextlib.nullcontext(object()))
     monkeypatch.setattr(web.db, "migrate", lambda conn: [])
     monkeypatch.setattr(web.pipeline, "recover_stale_runs", lambda conn: 0)
@@ -256,6 +259,31 @@ def test_serve_gives_search_and_whatsapp_the_same_browsers(monkeypatch):
     assert isinstance(research_limits, browsers.BrowserLimits) and urgent is True
     assert calls["run"] is research_limits
     assert calls["uvicorn"]["host"] == "127.0.0.1"
+
+
+@pytest.mark.parametrize("value", ["", "false"])
+def test_real_deps_run_chrome_with_window_unless_asked(monkeypatch, value):
+    modes: list[bool] = []
+    monkeypatch.setattr(collect, "run_parser", lambda url, out, n, parser_bin, *, timeout_seconds, headless:
+                        modes.append(headless))
+    settings = load_settings({"VENMART_ANTHROPIC_KEY": "sk-ant-test", "REACHER_SECRET": "test",
+                              "PARSER_2GIS_HEADLESS": value})
+    limits = browsers.BrowserLimits(gis=browsers.Slots(1), sites=browsers.Slots(1))
+
+    pipeline.default_deps(settings, limits).run_parser("u", Path("a.json"), 1)
+    pipeline.default_deps(settings, limits, urgent=True).run_parser("u", Path("b.json"), 1)
+
+    assert modes == [False, False]
+
+
+def test_serve_stops_when_parser_cannot_start_before_database(monkeypatch):
+    """Путь Windows из .env ПК на Linux-сервере: сказать при запуске, а не на первом поиске."""
+    monkeypatch.setattr(web, "load_settings", lambda: load_settings({
+        "DATABASE_URL": "postgresql://test", "PARSER_2GIS_BIN": "no-such-dir/parser-2gis.exe"}))
+    monkeypatch.setattr(web.db, "connect", lambda dsn: pytest.fail("до базы дойти не должно"))
+
+    with pytest.raises(ValueError, match="PARSER_2GIS_BIN"):
+        web.serve()
 
 
 def test_serve_stops_on_bad_headless_setting_before_database(monkeypatch):

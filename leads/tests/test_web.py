@@ -180,6 +180,28 @@ def test_public_host_serves_interface_only_when_configured():
     assert client.get("/static/app.css", headers={"Host": "LEADS.TANBALA.KZ"}).status_code == 200
     assert client.get("/static/app.css", headers={"Host": "evil.example"}).status_code == 400
     assert client.get("/static/app.css", headers={"Host": "127.0.0.1:8000"}).status_code == 200
+    # Caddy ставит X-Forwarded-*: интерфейсу они не мешают.
+    assert client.get("/static/app.css", headers={"X-Forwarded-For": "1.2.3.4"}).status_code == 200
+
+
+@pytest.mark.parametrize("host", [f"{PUBLIC_HOST}:8000", f"{PUBLIC_HOST}:443", f"{PUBLIC_HOST.upper()}:8000"])
+def test_public_host_with_port_is_refused(host):
+    """Caddy шлёт имя без порта. С портом запрос пришёл мимо Caddy: например, чужой сайт подменил DNS имени
+    на 127.0.0.1 и открыл :8000 в браузере на сервере. Такой запрос не должен видеть интерфейс без пароля."""
+    client = make_client(base_url=f"http://{PUBLIC_HOST}", public_host=PUBLIC_HOST)
+
+    response = client.get("/static/app.css", headers={"Host": host})
+
+    assert (response.status_code, response.text) == (400, "Invalid host header")
+
+
+def test_public_www_name_does_not_redirect_bare_name():
+    """TrustedHostMiddleware по умолчанию перенаправил бы example.kz на http://www.example.kz (с HTTPS на HTTP)."""
+    client = make_client(public_host="www.example.kz")
+
+    response = client.get("/static/app.css", headers={"Host": "example.kz"}, follow_redirects=False)
+
+    assert response.status_code == 400
 
 
 @pytest.mark.parametrize(("origin", "status"), [(f"https://{PUBLIC_HOST}", 303), (f"http://{PUBLIC_HOST}", 403),

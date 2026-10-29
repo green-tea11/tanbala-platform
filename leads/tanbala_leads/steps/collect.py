@@ -19,13 +19,15 @@ PARSER_TIMEOUT_SECONDS = 20 * 60
 KILL_WAIT_SECONDS = 30  # сколько ждать, пока убитый parser-2gis завершится
 IS_WINDOWS = os.name == "nt"
 # parser-2gis живёт в отдельном окружении со старыми зависимостями: ключа API и паролей он не видит.
-# Последняя строка для Linux: Chrome на сервере нужны домашняя папка и язык, DISPLAY — только если он с окном (Xvfb).
+# Последняя строка для Linux: Chrome на сервере нужны домашняя папка и язык.
 PASSED_ENV_KEYS = (
     "SYSTEMROOT", "WINDIR", "PATH", "PATHEXT", "COMSPEC", "NUMBER_OF_PROCESSORS",
     "PROCESSOR_ARCHITECTURE", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432",
     "LOCALAPPDATA", "APPDATA", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "USERNAME",
-    "HOME", "LANG", "LC_ALL", "DISPLAY",
+    "HOME", "LANG", "LANGUAGE", "LC_ALL",
 )
+# Только для Chrome с окном: на сервере это Xvfb (xvfb-run пишет файл ключа в XAUTHORITY). Без окна экран не нужен.
+WINDOW_ENV_KEYS = ("DISPLAY", "XAUTHORITY")
 # PARSER_2GIS_HEADLESS: Chrome для 2ГИС без окна. Пусто: с окном, как на ПК.
 HEADLESS_VALUES = {"": False, "false": False, "no": False, "0": False, "true": True, "yes": True, "1": True}
 
@@ -55,9 +57,10 @@ def build_search_url(city: str, query: str) -> str:
     return f"https://2gis.kz/{city}/search/{quote(query.strip(), safe='')}"
 
 
-def parser_env(tmp_dir: Path) -> dict[str, str]:
+def parser_env(tmp_dir: Path, *, headless: bool = False) -> dict[str, str]:
     """Окружение для parser-2gis: только системные переменные, временные файлы Chrome в папке проекта."""
-    env = {key: os.environ[key] for key in PASSED_ENV_KEYS if key in os.environ}
+    keys = PASSED_ENV_KEYS if headless else PASSED_ENV_KEYS + WINDOW_ENV_KEYS
+    env = {key: os.environ[key] for key in keys if key in os.environ}
     env["TEMP"] = env["TMP"] = env["TMPDIR"] = str(tmp_dir)  # TEMP и TMP читает Windows, TMPDIR — Linux
     env["PYTHONUTF8"] = "1"
     return env
@@ -71,6 +74,24 @@ def parse_headless(value: str) -> bool:
     return HEADLESS_VALUES[key]
 
 
+def parser_binary(parser_bin: str) -> Path:
+    """Путь к parser-2gis из PARSER_2GIS_BIN; относительный считается от папки проекта."""
+    binary = Path(parser_bin)
+    return binary if binary.is_absolute() else PROJECT_ROOT / binary
+
+
+def check_parser_setup(parser_bin: str, headless: bool) -> None:
+    """До запуска сервера и поиска: parser-2gis на месте, а на Linux без экрана Chrome пойдёт без окна.
+
+    Иначе ошибка всплыла бы только на первом поиске (путь Windows из .env ПК, Chrome с окном без DISPLAY).
+    """
+    if not parser_binary(parser_bin).exists():
+        raise ValueError(f"PARSER_2GIS_BIN: не найден {parser_bin}. На Linux: .venv-2gis/bin/parser-2gis "
+                         "(docs/SETUP.md)")
+    if not IS_WINDOWS and not headless and not os.environ.get("DISPLAY"):
+        raise ValueError("На сервере без экрана нужен PARSER_2GIS_HEADLESS=true (или Xvfb и DISPLAY)")
+
+
 def run_parser(search_url: str, output_path: Path, max_records: int, parser_bin: str, *,
                timeout_seconds: int = PARSER_TIMEOUT_SECONDS, headless: bool = False) -> Path:
     """Выгрузить одну ссылку 2ГИС в JSON через CLI parser-2gis. Не уложился в timeout_seconds: ParserError.
@@ -79,9 +100,7 @@ def run_parser(search_url: str, output_path: Path, max_records: int, parser_bin:
     """
     if max_records < 1:
         raise ValueError("max_records должен быть больше нуля")
-    binary = Path(parser_bin)
-    if not binary.is_absolute():
-        binary = PROJECT_ROOT / binary
+    binary = parser_binary(parser_bin)
     if not binary.exists():
         raise ParserError(f"Не найден parser-2gis: {binary}. Установите окружение .venv-2gis (docs/SETUP.md).")
     tmp_dir = PROJECT_ROOT / "data" / "tmp"
@@ -93,7 +112,7 @@ def run_parser(search_url: str, output_path: Path, max_records: int, parser_bin:
         *(["--chrome.headless", "yes"] if headless else []),
     ]
     process = subprocess.Popen(
-        command, env=parser_env(tmp_dir), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        command, env=parser_env(tmp_dir, headless=headless), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         encoding="utf-8", errors="replace", start_new_session=not IS_WINDOWS,  # своя группа: убить и Chrome
     )
     try:

@@ -91,6 +91,10 @@ ALLOWED_HOSTS = ("127.0.0.1", "localhost")
 # Имя интерфейса за Caddy (PUBLIC_UI_HOST): части из латиницы, цифр и дефиса через точку, последняя с буквы
 # (так IP-адрес не пройдёт), без схемы, порта и пути.
 PUBLIC_HOST_RE = re.compile(r"(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?")
+# Host для /internal: ровно 127.0.0.1 или localhost, порт можно (так шлёт бот).
+LOCAL_HOST_RE = re.compile(r"(127\.0\.0\.1|localhost)(:\d{1,5})?", re.IGNORECASE)
+# Заголовки, которые ставит прокси (Caddy). Бот ходит в /internal напрямую и их не шлёт.
+PROXY_HEADERS = ("x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "forwarded", "via")
 CSP = (
     "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
     "form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
@@ -143,22 +147,36 @@ def parse_public_host(value: str) -> str | None:
     return host
 
 
-class LocalOnlyInternal:
-    """Внутренний API только по 127.0.0.1 и localhost: по имени из PUBLIC_UI_HOST (Caddy) на /internal ответ 400.
+def is_public_host(host: str, public_host: str | None) -> bool:
+    """Заголовок Host — имя интерфейса за Caddy (без порта: с портом HostRules запрос не пускает)."""
+    return public_host is not None and host.lower() == public_host
 
-    Путь сравнивается без учёта регистра и лишних «/» в начале. Ответ тот же, что у TrustedHostMiddleware для чужого
-    имени, и до проверки токена: снаружи не видно, есть ли такой путь.
+
+class HostRules:
+    """Проверки имени до приложения, вместе с TrustedHostMiddleware. Ответ 400 «Invalid host header», как у неё.
+
+    /internal (без учёта регистра и лишних «/» в начале): только Host 127.0.0.1 или localhost и без заголовков прокси.
+    Так внутренний API недоступен ни по имени из PUBLIC_UI_HOST, ни через Caddy, даже если Caddy когда-нибудь станет
+    передавать Host 127.0.0.1. Ответ до проверки токена: снаружи не видно, есть ли такой путь.
+    Имя из PUBLIC_UI_HOST — только без порта. Caddy шлёт его без порта; с портом (например :8000) запрос пришёл мимо
+    Caddy и его пароля: так было бы, если бы кто-то подменил DNS имени на 127.0.0.1 для браузера на сервере.
     """
 
-    def __init__(self, app: ASGIApp):
+    def __init__(self, app: ASGIApp, public_host: str | None = None):
         self.app = app
+        self.public_host = public_host
+
+    def refused(self, scope: Scope) -> bool:
+        headers = Headers(scope=scope)
+        host = headers.get("host", "")
+        if internal.looks_internal(scope["path"]):
+            return not LOCAL_HOST_RE.fullmatch(host) or any(name in headers for name in PROXY_HEADERS)
+        return self.public_host is not None and host.lower().startswith(self.public_host + ":")
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] in ("http", "websocket") and internal.looks_internal(scope["path"]):
-            host = Headers(scope=scope).get("host", "").split(":", 1)[0].lower()
-            if host not in ALLOWED_HOSTS:
-                await PlainTextResponse("Invalid host header", status_code=400)(scope, receive, send)
-                return
+        if scope["type"] in ("http", "websocket") and self.refused(scope):
+            await PlainTextResponse("Invalid host header", status_code=400)(scope, receive, send)
+            return
         await self.app(scope, receive, send)
 
 
@@ -184,8 +202,10 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
     # redirect_slashes: /internal/lookup/ иначе получил бы 307 до проверки токена.
     app = FastAPI(title="Tanbala", docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False)
     app.middleware("http")(_security_headers)
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=[*ALLOWED_HOSTS, *([public_host] if public_host else [])])
-    app.add_middleware(LocalOnlyInternal)
+    # www_redirect=False: иначе example.kz при имени www.example.kz получил бы редирект на http:// (без HTTPS).
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=[*ALLOWED_HOSTS, *([public_host] if public_host else [])],
+                       www_redirect=False)
+    app.add_middleware(HostRules, public_host=public_host)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @contextmanager
@@ -210,7 +230,7 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
             """
             origin = request.headers.get("origin")
             host = request.headers.get("host", "")
-            if public_host and host.split(":", 1)[0].lower() == public_host:
+            if is_public_host(host, public_host):
                 own_origin = f"https://{public_host}"
             else:
                 own_origin = f"{request.url.scheme}://{host}"
@@ -598,7 +618,7 @@ def serve(host: str = BIND_HOST, port: int = 8000) -> None:
     # Имя интерфейса за Caddy (PUBLIC_UI_HOST) и режим Chrome для 2ГИС (PARSER_2GIS_HEADLESS): неверное значение
     # тоже останавливает запуск до миграций, а не первый поиск.
     public_host = parse_public_host(settings.public_ui_host)
-    collect.parse_headless(settings.parser_2gis_headless)
+    collect.check_parser_setup(settings.parser_2gis_bin, collect.parse_headless(settings.parser_2gis_headless))
     try:
         test_address = send_step.test_recipient(settings)
     except send_step.SendBlocked:

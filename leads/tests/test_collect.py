@@ -32,16 +32,57 @@ def test_parser_env_hides_secrets_and_keeps_temp_in_project(tmp_path, monkeypatc
     assert env["TEMP"] == env["TMP"] == str(tmp_path)
 
 
+LINUX_ENV = {"HOME": "/opt/tanbala/leads/data/home", "LANG": "C.UTF-8", "LANGUAGE": "ru", "LC_ALL": "C.UTF-8",
+             "DISPLAY": ":99", "XAUTHORITY": "/opt/tanbala/leads/data/xauth"}
+
+
 def test_parser_env_has_what_chrome_needs_on_linux(tmp_path, monkeypatch):
-    """На сервере Chrome нужны домашняя папка, язык и TMPDIR; DISPLAY — только если Chrome всё же с окном (Xvfb)."""
-    for key, value in {"HOME": "/opt/tanbala/leads", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "DISPLAY": ":99"}.items():
+    """На сервере Chrome нужны домашняя папка, язык и TMPDIR."""
+    for key, value in LINUX_ENV.items():
+        monkeypatch.setenv(key, value)
+
+    env = collect.parser_env(tmp_path, headless=True)
+
+    for key in ("HOME", "LANG", "LANGUAGE", "LC_ALL"):
+        assert env[key] == LINUX_ENV[key]
+    assert env["TMPDIR"] == str(tmp_path)
+    # Без окна экран не нужен: DISPLAY и XAUTHORITY не передаются.
+    assert "DISPLAY" not in env and "XAUTHORITY" not in env
+
+
+def test_parser_env_passes_display_only_to_chrome_with_window(tmp_path, monkeypatch):
+    """Chrome с окном на сервере работает только с Xvfb: ему нужны DISPLAY и XAUTHORITY (xvfb-run пишет файл ключа)."""
+    for key, value in LINUX_ENV.items():
         monkeypatch.setenv(key, value)
 
     env = collect.parser_env(tmp_path)
 
-    assert (env["HOME"], env["LANG"], env["LC_ALL"], env["DISPLAY"]) == ("/opt/tanbala/leads", "C.UTF-8", "C.UTF-8",
-                                                                         ":99")
-    assert env["TMPDIR"] == str(tmp_path)
+    assert (env["DISPLAY"], env["XAUTHORITY"]) == (LINUX_ENV["DISPLAY"], LINUX_ENV["XAUTHORITY"])
+
+
+def test_parser_setup_is_checked_before_start(tmp_path, monkeypatch):
+    binary = tmp_path / "parser-2gis"
+    binary.write_text("")
+    monkeypatch.setattr(collect, "IS_WINDOWS", False)
+    monkeypatch.delenv("DISPLAY", raising=False)
+
+    with pytest.raises(ValueError, match="PARSER_2GIS_BIN"):
+        collect.check_parser_setup(str(tmp_path / "missing"), headless=True)
+    # Linux без экрана и без режима без окна: Chrome не запустится, сказать сразу, а не на первом поиске.
+    with pytest.raises(ValueError, match="PARSER_2GIS_HEADLESS"):
+        collect.check_parser_setup(str(binary), headless=False)
+    collect.check_parser_setup(str(binary), headless=True)
+    monkeypatch.setenv("DISPLAY", ":99")
+    collect.check_parser_setup(str(binary), headless=False)
+
+
+def test_parser_with_window_on_windows_needs_no_display(tmp_path, monkeypatch):
+    binary = tmp_path / "parser-2gis.exe"
+    binary.write_text("")
+    monkeypatch.setattr(collect, "IS_WINDOWS", True)
+    monkeypatch.delenv("DISPLAY", raising=False)
+
+    collect.check_parser_setup(str(binary), headless=False)
 
 
 @pytest.mark.parametrize(("headless", "tail"), [(True, ["--chrome.headless", "yes"]), (False, ["5"])])
