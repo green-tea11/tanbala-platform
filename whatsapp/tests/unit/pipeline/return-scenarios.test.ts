@@ -240,3 +240,48 @@ describe('возврат боту с заметкой после жалобы (�
     expect(back.llm.requests).toEqual([]);
   });
 });
+
+describe('возврат с заметкой с ценой, а клиент отказывается отвечать (ревью 29.10.2026, второй круг)', () => {
+  const PRICE_NOTE = 'Ориентир от 1 500 000 тенге, нужен выезд';
+  const PRICE_REPLY = 'Коллега подсказал: ориентир от 1 500 000 тенге, нужен выезд на склад.';
+  const REFUSED = { priceAsked: true, refused: true } as const;
+
+  it('клиент отказался, пока чат был у менеджера: бот отвечает суммой из заметки, чат и заметка у бота', async () => {
+    const s = createScenario({ api: null });
+    await s.say('Позовите менеджера', { replies: [{ outcome: 'asked_human' }] });
+    await s.say('Ладно, на вопросы отвечать не буду, просто назовите цену', { replies: [ASK] });
+
+    const back = await s.returnToBot({ replies: [PRICE_REPLY], interests: [REFUSED] }, PRICE_NOTE);
+
+    expect(back.outcome).toEqual({ kind: 'replied' });
+    expect(back.toClient).toEqual([PRICE_REPLY]);
+    expect(s.storage.chats.getById(s.chatId())?.control.status).toBe('bot');
+    expect(s.storage.chats.getNote(s.chatId())).toMatchObject({ text: PRICE_NOTE });
+  });
+
+  it('путь после фразы передачи: отказ снова не передаёт чат, бот отвечает суммой из заметки', async () => {
+    const s = createScenario({ api: null });
+    await s.say('Сколько стоит учёт на складе? Без подробностей, просто цену', {
+      replies: [{ outcome: 'hot', aboutPrice: true }],
+      interests: [REFUSED],
+    });
+
+    const back = await s.returnToBot({ replies: [PRICE_REPLY], interests: [REFUSED] }, PRICE_NOTE);
+
+    expect(back.outcome).toEqual({ kind: 'replied' });
+    expect(back.toClient).toEqual([PRICE_REPLY]);
+  });
+
+  it('заметка-задание без суммы: отказ передаёт чат, как без заметки', async () => {
+    const s = createScenario({ api: null });
+    await s.say('Позовите менеджера', { replies: [{ outcome: 'asked_human' }] });
+    await s.say('Ладно, на вопросы отвечать не буду, просто назовите цену', { replies: [ASK] });
+
+    const back = await s.returnToBot(
+      { replies: ['Понимаю. А сколько примерно вещей нужно учитывать?'], interests: [REFUSED] },
+      'Узнай число вещей и какая 1С',
+    );
+
+    expect(back.outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
+  });
+});

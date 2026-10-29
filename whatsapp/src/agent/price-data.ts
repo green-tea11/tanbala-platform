@@ -19,6 +19,11 @@ export interface PriceDataInput {
   readonly progress: ChatProgress;
   /** Есть заметка для бота (указание коллеги): ориентир цены из неё и есть ответ на вопрос цены. */
   readonly hasNote?: boolean;
+  /**
+   * В заметке есть сумма-цена (checks/amounts.priceAmountsOf): на вопрос цены бот отвечает ею, и строки не велят
+   * передавать чат ни при собранном минимуме, ни при отказе отвечать, ни при третьем вопросе (код тоже не передаёт).
+   */
+  readonly notePrice?: boolean;
 }
 
 const COLLECTED_ALL =
@@ -27,6 +32,9 @@ const ALWAYS_NOW =
   'Сразу, при любом минимуме, чат передаётся, если клиент прямо просит живого человека (asked_human) или жалуется (complaint).';
 const NOTE_PRICE =
   'Если в указании коллеги есть ориентир цены, на вопрос цены отвечай им, ровно как в указании, и чат не передавай; если ориентира в указании нет, действуй по строкам выше.';
+const COLLECTED_ALL_NOTE = 'Минимум для передачи по цене собран.';
+const NOTE_HAS_PRICE =
+  'В указании коллеги есть ориентир цены: на вопрос цены отвечай им, ровно как в указании, и чат не передавай, даже если минимум собран, клиент спрашивает цену третий раз или отказывается отвечать.';
 const REFUSED =
   'Клиент уже отказывался отвечать на вопросы: если он спрашивает цену, передай чат сразу (hot).';
 
@@ -41,10 +49,11 @@ function times(count: number): string {
   return last >= 2 && last <= 4 && (lastTwo < 12 || lastTwo > 14) ? 'раза' : 'раз';
 }
 
-function priceAsksLine(priceAsks: number): string {
+/** Сколько раз клиент спрашивал цену; без указания на передачу, если ответ коллеги уже в заметке (notePrice). */
+function priceAsksLine(priceAsks: number, notePrice: boolean): string {
   if (priceAsks === 0) return 'До этого сообщения клиент цену ещё не спрашивал.';
   const asked = `До этого сообщения клиент спрашивал цену ${priceAsks} ${times(priceAsks)}.`;
-  if (priceAsks < PRICE_ASKS_FOR_HANDOFF - 1) return asked;
+  if (notePrice || priceAsks < PRICE_ASKS_FOR_HANDOFF - 1) return asked;
   const third = priceAsks === PRICE_ASKS_FOR_HANDOFF - 1 ? 'это третий раз: передай' : 'передай';
   return `${asked} Если сейчас он спрашивает цену снова, ${third} чат сразу (hot).`;
 }
@@ -82,15 +91,17 @@ export function priceReplyData(input: PriceDataInput): string {
     companyName: input.companyName,
     companyAskable: companyAskable(input.company),
   });
+  const notePrice = input.notePrice === true;
   const minimumLines =
     minimum.missing.length === 0
-      ? [COLLECTED_ALL]
+      ? [notePrice ? COLLECTED_ALL_NOTE : COLLECTED_ALL]
       : missingLines(input, minimum.collected, minimum.missing);
+  const noteLines = notePrice ? [NOTE_HAS_PRICE] : input.hasNote === true ? [NOTE_PRICE] : [];
   return [
     ...minimumLines,
-    priceAsksLine(input.progress.priceAsks),
-    ...(input.progress.refused ? [REFUSED] : []),
-    ...(input.hasNote === true ? [NOTE_PRICE] : []),
+    priceAsksLine(input.progress.priceAsks, notePrice),
+    ...(input.progress.refused && !notePrice ? [REFUSED] : []),
+    ...noteLines,
     ALWAYS_NOW,
   ].join('\n');
 }

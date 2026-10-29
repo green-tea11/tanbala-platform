@@ -57,7 +57,9 @@ describe('сценарии владельца 29.10.2026: заметка для 
     expect(back.outcome).toEqual({ kind: 'replied' });
     expect(back.toClient).toEqual([PRICE_ANSWER]);
     expect(back.toClient.join(' ')).toContain('1 500 000 тенге');
-    expect(dataOf(back.llm.requests[0])).toMatch(/Если в указании коллеги есть ориентир цены/);
+    expect(dataOf(back.llm.requests[0])).toMatch(
+      /В указании коллеги есть ориентир цены: на вопрос цены отвечай им/,
+    );
   });
 
   it('заметка с ценой, а модель назвала другую сумму: клиенту она не уходит, повтор даёт сумму из заметки', async () => {

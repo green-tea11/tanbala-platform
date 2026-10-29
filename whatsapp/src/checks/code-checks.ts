@@ -1,5 +1,5 @@
 import type { NormalizedText, PhoneDigits } from '../domain/types.js';
-import { amountsOf, sameAmount } from './amounts.js';
+import { amountsOf, priceAmountsOf, sameAmount } from './amounts.js';
 import {
   AI_MENTION_PATTERNS,
   ALLOWED_CAPS,
@@ -186,9 +186,7 @@ interface NoteFacts {
 }
 
 function noteFacts(note: string): NoteFacts {
-  const lower = normalize(note.normalize('NFKC'));
-  const amounts = amountsOf(lower).flatMap((amount) => (amount.priced ? [amount.value] : []));
-  return { amounts, units: priceUnits(lower) };
+  return { amounts: priceAmountsOf(note), units: priceUnits(normalize(note.normalize('NFKC'))) };
 }
 
 /** Часть фразы вокруг найденного: от прошлой границы до следующей (bounds: все CLAUSE_BOUNDARY текста). */

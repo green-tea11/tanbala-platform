@@ -441,6 +441,38 @@ describe('pipeline/reply-flow: указание коллеги в проверк
     expect(r.draftReply.mock.calls[1]?.[1]?.join(' ')).toContain('цена не как в указании коллеги');
   });
 
+  it.each<[string, Partial<Case>]>([
+    ['отказ отвечать и вопрос цены', { signals: { priceAsked: true, refused: true } }],
+    ['третий вопрос цены', { progress: { priceAsks: 2, refused: false } }],
+  ])(
+    '%s при заметке с ценой: чат не передаётся, уходит ответ с суммой из заметки (ревью, второй круг)',
+    async (_name, extra) => {
+      const h = setup({ drafts: [answer(WITH_PRICE)], signals: PRICE_NOW, ...extra });
+      const context: ConversationContext = { ...h.context, note: { text: NOTE_TEXT, atMs: NOW } };
+      const drafted = await requestDraft(h.deps, context);
+
+      const verdict = await decideReply(h.deps, context, drafted);
+
+      expect(verdict).toMatchObject({ kind: 'send', text: WITH_PRICE });
+    },
+  );
+
+  it('отказ отвечать при заметке-задании без суммы: передача кодом, как без заметки', async () => {
+    const h = setup({
+      drafts: [answer('Понимаю. А сколько примерно вещей нужно учитывать?')],
+      signals: { priceAsked: true, refused: true },
+    });
+    const context: ConversationContext = {
+      ...h.context,
+      note: { text: 'Узнай число вещей и какая 1С', atMs: NOW },
+    };
+    const drafted = await requestDraft(h.deps, context);
+
+    const verdict = await decideReply(h.deps, context, drafted);
+
+    expect(verdict).toEqual({ kind: 'handoff', notice: { reason: 'hot', aboutPrice: true } });
+  });
+
   it('без заметки бот цену не называет: та же цена нарушение, повтор', async () => {
     const r = await runWith(null, [answer(WITH_PRICE), answer(MINIMUM_ANSWER)]);
 

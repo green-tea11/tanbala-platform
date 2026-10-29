@@ -156,6 +156,15 @@ export function amountsOf(text: string): readonly Amount[] {
   }));
 }
 
+/**
+ * Значения сумм-цен текста (заметки для бота): только с признаком цены (amountsOf priced). Текст любой: здесь он
+ * приводится к виду amountsOf (NFKC, нижний регистр, «ё» как «е»). Пусто: в тексте нет цены.
+ */
+export function priceAmountsOf(text: string): readonly number[] {
+  const lower = text.normalize('NFKC').toLowerCase().replaceAll('ё', 'е');
+  return amountsOf(lower).flatMap((amount) => (amount.priced ? [amount.value] : []));
+}
+
 /** Одно и то же значение: дробь «1,1 млн» не должна разойтись с 1 100 000 из-за двоичной записи. NaN не равно ничему. */
 export function sameAmount(a: number, b: number): boolean {
   return Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a), Math.abs(b));

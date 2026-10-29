@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { priceAmountsOf } from '../checks/amounts.js';
 import type { ModelsConfig } from '../config/env.js';
 import type { CompanyPrompt, LogoReader } from '../domain/company.js';
 import type { ImageInput, LlmClient, Logger, SystemBlock } from '../domain/ports.js';
@@ -224,6 +225,7 @@ function replyCallData(
     companyName: context.companyName ?? null,
     progress: context.progress ?? NO_PROGRESS,
     hasNote: context.note != null,
+    notePrice: context.note != null && priceAmountsOf(context.note.text).length > 0,
   });
   const parts = [price, companyReplyData(company), profileText(context.profile), remarks];
   return parts.filter((part) => part !== null).join('\n\n');

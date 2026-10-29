@@ -175,3 +175,39 @@ describe('agent/price-data: минимум собран и исключения'
     expect(data).not.toMatch(ANY_DASH);
   });
 });
+
+describe('agent/price-data: заметка с суммой (ревью 29.10.2026, второй круг)', () => {
+  it('в заметке есть сумма: строки не велят передавать чат при отказе и третьем вопросе, а велят назвать сумму', () => {
+    const data = priceReplyData({
+      profile: SKLAD_28_10,
+      company: { kind: 'off' },
+      companyName: null,
+      progress: { priceAsks: 2, refused: true },
+      hasNote: true,
+      notePrice: true,
+    });
+
+    expect(data).not.toMatch(/передай чат сразу/);
+    expect(data).toMatch(
+      /В указании коллеги есть ориентир цены: на вопрос цены отвечай им, ровно как в указании, и чат не передавай/,
+    );
+    expect(data).toMatch(/спрашивал цену 2 раза/);
+    expect(data).not.toMatch(ANY_DASH);
+  });
+
+  it('заметка без суммы: отказ и третий вопрос по-прежнему передают чат', () => {
+    const data = priceReplyData({
+      profile: SKLAD_28_10,
+      company: { kind: 'off' },
+      companyName: null,
+      progress: { priceAsks: 2, refused: true },
+      hasNote: true,
+      notePrice: false,
+    });
+
+    expect(data).toMatch(/это третий раз: передай чат сразу \(hot\)/);
+    expect(data).toMatch(
+      /отказывался отвечать на вопросы: если он спрашивает цену, передай чат сразу/,
+    );
+  });
+});

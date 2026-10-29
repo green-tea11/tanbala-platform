@@ -1,4 +1,5 @@
 import type { ConversationContext } from '../agent/agent.js';
+import { priceAmountsOf } from '../checks/amounts.js';
 import type { CompanyPrompt, CompanyQuestion } from '../domain/company.js';
 import type {
   InterestAssessment,
@@ -33,6 +34,11 @@ export interface PriceSituation {
   readonly company: CompanyPrompt | undefined;
   /** Есть заметка для бота (указание коллеги): в ней может быть ориентир цены. */
   readonly hasNote: boolean;
+  /**
+   * В заметке есть сумма-цена (checks/amounts.priceAmountsOf): на вопрос цены бот отвечает ею, и код не передаёт чат
+   * ни при отказе отвечать, ни при третьем вопросе цены (ревью 29.10.2026, второй круг).
+   */
+  readonly notePrice: boolean;
 }
 
 /** Фиксированный ответ вместо ранней передачи: вопрос о первом недостающем поле минимума. */
@@ -87,6 +93,7 @@ export function priceSituation(
     signals: { priceAsked, refused: refusedNow },
     company: context.company,
     hasNote: context.note != null,
+    notePrice: context.note != null && priceAmountsOf(context.note.text).length > 0,
   };
 }
 
@@ -111,13 +118,14 @@ export type ForcedPriceHandoff = 'third_price_ask' | 'refused';
 /**
  * Модель ответила answer, а чат по правилу владельца уходит коллеге с фразой о цене: клиент спросил цену третий раз
  * или в этом ходе отказывается отвечать на вопросы и спрашивает цену сейчас или спрашивал раньше (ревью 29.10.2026:
- * отказ передаёт чат кодом, как третий вопрос, а не только разрешает hot модели). Иначе null.
+ * отказ передаёт чат кодом, как третий вопрос, а не только разрешает hot модели). В заметке есть сумма-цена: ответ
+ * коллеги уже есть, бот называет его, и передачи нет (иначе передача сняла бы заметку). Иначе null.
  */
 export function forcedPriceHandoff(
   draft: ReplyDraft,
   situation: PriceSituation,
 ): ForcedPriceHandoff | null {
-  if (draft.outcome !== 'answer') return null;
+  if (draft.outcome !== 'answer' || situation.notePrice) return null;
   const { signals, priceAsks } = situation;
   if (signals.priceAsked && priceAsks >= PRICE_ASKS_FOR_HANDOFF) return 'third_price_ask';
   return signals.refused && priceAsks > 0 ? 'refused' : null;
