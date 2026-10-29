@@ -15,6 +15,7 @@ import { createManagerNotificationsRepo } from './db/repos/manager-notifications
 import { createMessagesRepo } from './db/repos/messages.js';
 import { createOutboundIdsRepo } from './db/repos/outbound-ids.js';
 import { createPairingGuard } from './db/repos/pairing-attempts.js';
+import { createWorkingModeRepo } from './db/repos/working-mode.js';
 import type { ChatCompaniesRepo } from './domain/company.js';
 import type {
   AppStateRepo,
@@ -32,7 +33,7 @@ import type {
   ProcessLock,
   UnitOfWork,
 } from './domain/ports.js';
-import type { Jid, PhoneDigits, WaMessageId } from './domain/types.js';
+import type { Jid, PhoneDigits, WaMessageId, WorkingMode } from './domain/types.js';
 import type { AnthropicLlmDeps } from './llm/anthropic.js';
 import type { ChatBatcher } from './pipeline/batcher.js';
 import { assembleCompany, type CompanySetup } from './pipeline/company-setup.js';
@@ -45,6 +46,7 @@ import { assemblePanel, type Panel, type PanelStarter } from './pipeline/panel-s
 import { assembleResponder, type Responder } from './pipeline/responder-setup.js';
 import { assembleServices, type Services } from './pipeline/services.js';
 import { handleOwnMessage, type TakeoverDeps, type TakeoverResult } from './pipeline/takeover.js';
+import { createHeldForManagerCheck, settleWorkingMode } from './pipeline/working-mode.js';
 import { assertPanelStartAllowed } from './panel/guard.js';
 import { createSystemClock } from './shared/clock.js';
 import { createLogger, type LogDestination } from './shared/logger.js';
@@ -171,6 +173,8 @@ interface Storage {
   readonly notifications: ManagerNotificationsRepo;
   /** Определение компании клиента по чатам. */
   readonly chatCompanies: ChatCompaniesRepo;
+  /** Рабочий режим с границей перехода (этап 8); null: закрытый режим. Решается при открытии базы. */
+  readonly workingMode: WorkingMode | null;
   isOpen(): boolean;
   /** Закрывает базу; повторный вызов ничего не делает. */
   close(): void;
@@ -241,8 +245,8 @@ class PairingLimitExplained extends PairingLimitError {
  * (не больше двух привязок по QR за 24 часа, копия счётчика .pairing-attempts.json в корне проекта), список
  * закрытого режима, порог простоя в мс и показ QR в терминал и в data/qr.png. WhatsApp остановился сам =>
  * понятный лог владельцу и та же остановка, что у stop(), а причина приходит в RunningApp.stopped.
- * Ошибка запуска: SafeError (ConfigError, ProcessLockBusyError, LinkBoundaryMissingError, PairingLimitError
- * со временем следующей попытки по Алматы) пишется в лог своим текстом, прочие без текста в сообщении; база
+ * Ошибка запуска: SafeError (ConfigError, ProcessLockBusyError, LinkBoundaryMissingError, WorkingModeRefusedError,
+ * PairingLimitError со временем следующей попытки по Алматы) пишется в лог своим текстом, прочие без текста; база
  * закрывается, замок снимается, ошибка всплывает в cli.ts.
  * Этап 3, после базы и до WhatsApp: ответы клиентам собирает pipeline/responder-setup.ts (только с ключом Claude,
  * иначе предупреждение: бот только принимает и сохраняет, как на этапе 2); подключение WhatsApp они получают после
@@ -263,7 +267,14 @@ class PairingLimitExplained extends PairingLimitError {
  * Определение компании клиента pipeline/company-setup.ts: один сервис до служб этапа 5 (уведомление о передаче),
  * панели и ответов (конвейер); агент ответов читает логотип, подключение WhatsApp даёт профиль собеседника.
  * Без INTERNAL_API_TOKEN сервис есть, но выключен. В лог одна строка, включено ли оно, без адреса и токена.
- * TODO(этап 8): переход TEST_MODE true => false: записать момент перехода в app_state как границу (сообщения чатов не из списка до неё не обрабатывать); до перехода предупредить менеджеров; как не ответить поверх менеджера в живых чатах рабочего номера: вопрос владельцу перед запуском.
+ * Этап 8, рабочий режим (TEST_MODE=false): сразу после миграций, до записи входящих и до WhatsApp,
+ * pipeline/working-mode.settleWorkingMode решает режим по TEST_MODE и app_state. Первый запуск с TEST_MODE=false
+ * записывает границу и отдаёт менеджеру чаты, которые были на номере до перехода, одной транзакцией; отказ (номер не
+ * привязан, флаг «список чатов неполный») останавливает запуск WorkingModeRefusedError, в базе ничего не записано.
+ * Граница уходит в разбор входящих (WhatsAppDeps.workingMode), в возврат боту (ResponderContext.workingMode) и в
+ * запись входящих: новый чат с адресом, отмеченным при переходе, начинает у менеджера. Закрытого списка в рабочем
+ * режиме нет: testAllowlist null у разбора, конвейера, outbox и шлюза WhatsApp. Запуск с TEST_MODE=true снимает
+ * границу: следующий TEST_MODE=false снова переход.
  */
 export async function main(options: MainOptions): Promise<RunningApp> {
   const logger = createLogger({ level: LOG_LEVEL, destination: options.logDestination });
@@ -340,6 +351,7 @@ async function launch(run: Launch): Promise<RunningApp> {
     services,
     company: company.service,
     createLlm: options.createLlm,
+    workingMode: storage.workingMode,
   });
   if (responder !== null) company.useLogo(responder.logo);
   const panel = assemblePanel({
@@ -433,8 +445,11 @@ function logStartup(config: AppConfig, logger: Logger): void {
   const allowlist = allowlistOf(config.testMode);
   const whatsapp = `Запуск: WhatsApp ${config.waEnabled ? 'включён' : 'выключен'}`;
   if (allowlist === null) {
-    // До этапа 8 сюда не попасть: loadConfig не пропускает TEST_MODE=false.
-    logger.warn({ waEnabled: config.waEnabled }, `${whatsapp}, закрытый режим выключен`);
+    const size = config.testMode.allowlist.size;
+    logger.info(
+      { waEnabled: config.waEnabled, allowlistSize: size },
+      `${whatsapp}, рабочий режим: бот отвечает новым чатам, номеров в TEST_ALLOWLIST: ${size}`,
+    );
     return;
   }
   logger.info(
@@ -470,23 +485,29 @@ function openStorage(config: AppConfig, logger: Logger, clock: Clock): Storage {
 }
 
 function assembleStorage(db: Database, config: AppConfig, logger: Logger, clock: Clock): Storage {
+  const appState = createAppStateRepo(db);
   const backlog = createBacklogRepo(db);
   const chats = createChatsRepo(db);
   const messages = createMessagesRepo(db);
   const unitOfWork = createUnitOfWork(db);
-  const knownChats = createKnownChatsRepo(db);
+  const switchRepo = createWorkingModeRepo(db);
+  // До записи входящих и до WhatsApp: отказ перехода останавливает запуск, в базе ничего не записано.
+  const workingMode = settleWorkingMode(
+    { appState, repo: switchRepo, chats, unitOfWork, clock, logger },
+    config.testMode,
+  );
   const recorder = createInboundRecorder({
     chats,
     messages,
     backlog,
-    knownChats,
+    knownChats: createKnownChatsRepo(db),
     unitOfWork,
-    heldForManager: () => false,
+    heldForManager: createHeldForManagerCheck(workingMode, switchRepo),
     logger,
     clock,
   });
   return {
-    appState: createAppStateRepo(db),
+    appState,
     pairingGuard: createPairingGuard(db, config.pairingMirrorPath),
     backlog,
     recorder,
@@ -498,6 +519,7 @@ function assembleStorage(db: Database, config: AppConfig, logger: Logger, clock:
     handoffs: createHandoffsRepo(db),
     notifications: createManagerNotificationsRepo(db),
     chatCompanies: createChatCompaniesRepo(db, logger),
+    workingMode,
     isOpen: () => db.open,
     // close в better-sqlite3 сам ничего не делает с уже закрытой базой.
     close: () => {
@@ -564,7 +586,7 @@ function whatsAppDeps(
     pairingGuard: storage.pairingGuard,
     managerPhone: config.managerPhone,
     testAllowlist: allowlistOf(config.testMode),
-    workingMode: null,
+    workingMode: storage.workingMode,
     backlogMaxAgeMs: config.backlogMaxAgeHours * MS_PER_HOUR,
     onEvent: (event) => whileOpen(storage, () => routeEvent(context, event)),
     onHistoryChats: (chats) =>

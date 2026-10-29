@@ -118,6 +118,17 @@ describe('shared/logger createLogger: redact', () => {
     expect(lines.join('')).not.toMatch(/internal-token-value|sklad\.kz|other\.kz/);
   });
 
+  it('скрывает номера TEST_ALLOWLIST и в рабочем режиме (workingMode.allowlist), граница видна', () => {
+    const { logger, records } = capture();
+
+    logger.info({ workingMode: { sinceMs: 5, allowlist: ['77011234567'] }, allowlist: ['7702'] });
+
+    expect(records()[0]).toMatchObject({
+      workingMode: { sinceMs: 5, allowlist: HIDDEN },
+      allowlist: HIDDEN,
+    });
+  });
+
   it('скрывает чувствительные ключи и глубже, в любом регистре', () => {
     const { logger, lines } = capture();
 

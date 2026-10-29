@@ -180,10 +180,18 @@ describe('config/env loadConfig: WA_ENABLED и TEST_MODE', () => {
     expect(load({}).config.testMode.enabled).toBe(true);
   });
 
-  it('TEST_MODE=false до этапа 8 отклоняется: выключение закрытого режима ещё не готово', () => {
-    const problems = problemsOf({ TEST_MODE: 'false', TEST_ALLOWLIST: PHONE_A });
+  it('TEST_MODE=false: рабочий режим (этап 8), номера TEST_ALLOWLIST сохраняются', () => {
+    const { config, warnings } = load({ TEST_MODE: 'false', TEST_ALLOWLIST: PHONE_A });
 
-    expect(problems).toEqual([expect.stringMatching(/^TEST_MODE: .*этап.* 8/)]);
+    expect(config.testMode).toEqual({ enabled: false, allowlist: new Set([PHONE_A]) });
+    expect(warnings).toEqual([]);
+  });
+
+  it('TEST_MODE=false с пустым TEST_ALLOWLIST: без предупреждения, в рабочем режиме список не нужен', () => {
+    const { config, warnings } = load({ TEST_MODE: 'false' });
+
+    expect(config.testMode).toEqual({ enabled: false, allowlist: new Set() });
+    expect(warnings).toEqual([]);
   });
 
   it.each([
@@ -223,13 +231,10 @@ describe('config/env loadConfig: TEST_ALLOWLIST', () => {
     ]);
   });
 
-  it('при TEST_MODE=false и неверном списке названы обе проблемы', () => {
+  it('при TEST_MODE=false неверный список отклоняется так же: одна проблема TEST_ALLOWLIST', () => {
     const problems = problemsOf({ TEST_MODE: 'false', TEST_ALLOWLIST: '123' });
 
-    expect(problems).toEqual([
-      expect.stringMatching(/^TEST_MODE: /),
-      expect.stringMatching(/^TEST_ALLOWLIST: /),
-    ]);
+    expect(problems).toEqual([expect.stringMatching(/^TEST_ALLOWLIST: /)]);
   });
 });
 

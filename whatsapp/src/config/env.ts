@@ -82,7 +82,7 @@ export interface AppConfig {
    * о более старых менеджеру уходит одно уведомление со списком чатов.
    */
   readonly backlogMaxAgeHours: number;
-  /** TEST_MODE и TEST_ALLOWLIST: закрытый режим на рабочем номере. */
+  /** TEST_MODE и TEST_ALLOWLIST: закрытый режим на рабочем номере или рабочий режим (этап 8). */
   readonly testMode: TestMode;
   /** INTERNAL_API_TOKEN и EMAIL_API_URL. null: токен не задан, определение компании выключено. */
   readonly companyApi: CompanyApiConfig | null;
@@ -137,7 +137,6 @@ const SDK_BASE_URL = 'ANTHROPIC_BASE_URL';
 const PROBLEMS = {
   managerPhone: 'только цифры с кодом страны, от 11 до 15 цифр, например 7XXXXXXXXXX',
   flag: 'только true или false',
-  testModeOff: 'выключение закрытого режима появится на этапе 8, пока только true',
   dataPath: 'путь должен вести внутрь папки data/ в корне проекта',
   positiveInteger: 'целое число больше нуля',
   backlogHours: `целое число часов от 1 до ${MAX_BACKLOG_HOURS}`,
@@ -287,12 +286,9 @@ function envSchema(root: string) {
       .optional(),
     ADMIN_PASSWORD: z.string().default(DEFAULTS.adminPassword),
     WA_ENABLED: booleanFlag(false),
-    // Нет переменной: закрытый режим, на рабочем номере так безопаснее. До этапа 8 его не выключить.
-    // TODO(этап 8): разрешить TEST_MODE=false вместе с переходом из main.ts (граница в app_state).
-    TEST_MODE: z
-      .enum(['true', 'false'], { error: PROBLEMS.flag })
-      .refine((value) => value === 'true', PROBLEMS.testModeOff)
-      .optional(),
+    // Нет переменной: закрытый режим, на рабочем номере так безопаснее. false: рабочий режим (этап 8), переход и
+    // граница в main (pipeline/working-mode.ts).
+    TEST_MODE: booleanFlag(true),
     TEST_ALLOWLIST: allowlist(),
     WHATSAPP_SESSION_DIR: dataPath(root, DEFAULTS.waSessionDir),
     DATABASE_PATH: dataPath(root, DEFAULTS.databasePath),
@@ -377,10 +373,11 @@ function describeIssues(issues: readonly z.core.$ZodIssue[], prefix: readonly st
   return issues.map((issue) => [...prefix, ...issue.path.map(String), issue.message].join(': '));
 }
 
-function collectWarnings(env: EnvVars, allowlist: ReadonlySet<PhoneDigits>): string[] {
+/** Пустой TEST_ALLOWLIST опасен только в закрытом режиме: там бот не отвечает никому. */
+function collectWarnings(env: EnvVars, testMode: TestMode): string[] {
   return [
     ...(isSetForSdk(env, SDK_BASE_URL) ? [WARNINGS.baseUrl] : []),
-    ...(allowlist.size === 0 ? [WARNINGS.emptyAllowlist] : []),
+    ...(testMode.enabled && testMode.allowlist.size === 0 ? [WARNINGS.emptyAllowlist] : []),
   ];
 }
 
@@ -407,8 +404,7 @@ function buildConfig(env: EnvValues, models: ModelsValues, root: string): AppCon
       apiCallsPerChatPerDay: env.API_DAILY_LIMIT_PER_CHAT,
     },
     backlogMaxAgeHours: env.BACKLOG_MAX_AGE_HOURS,
-    // Схема пропускает только TEST_MODE=true: закрытый режим включён всегда (до этапа 8).
-    testMode: { enabled: true, allowlist: env.TEST_ALLOWLIST },
+    testMode: { enabled: env.TEST_MODE, allowlist: env.TEST_ALLOWLIST },
     companyApi:
       env.INTERNAL_API_TOKEN === undefined
         ? null
@@ -423,8 +419,9 @@ function buildConfig(env: EnvValues, models: ModelsValues, root: string): AppCon
  * Пустое значение и значение из пробелов значат «переменная не задана», тогда берётся значение по умолчанию.
  * Ошибки всех переменных собираются сразу в ConfigError: имя переменной и причина, без значения (там секреты).
  * ANTHROPIC_CUSTOM_HEADERS в окружении => отказ в запуске: SDK подмешивает эти заголовки после ключа и может его подменить.
- * TEST_MODE=false => отказ в запуске: выключение закрытого режима появится на этапе 8.
- * Предупреждения (ANTHROPIC_BASE_URL в окружении; пустой TEST_ALLOWLIST: бот не отвечает никому)
+ * TEST_MODE: по умолчанию true (закрытый режим); false: рабочий режим этапа 8, номера TEST_ALLOWLIST сохраняются (их
+ * чаты правило перехода не трогает), сам переход и границу делает main (pipeline/working-mode.ts).
+ * Предупреждения (ANTHROPIC_BASE_URL в окружении; пустой TEST_ALLOWLIST в закрытом режиме: бот не отвечает никому)
  * возвращаются в warnings: логгера на этом шаге ещё нет, их пишет в лог вызывающий.
  * voice собирается при непустом OPENROUTER_API_KEY, модель из ключа transcribe в config/models.json
  * (обязателен всегда, как модели Claude); без ключа voice null и расшифровка выключена.
@@ -450,8 +447,6 @@ export function loadConfig(env: EnvVars, modelsJson: unknown, root: string): Loa
   if (!parsedEnv.success || !parsedModels.success || problems.length > 0) {
     throw new ConfigError([...new Set(problems)]);
   }
-  return {
-    config: buildConfig(parsedEnv.data, parsedModels.data, root),
-    warnings: collectWarnings(env, parsedEnv.data.TEST_ALLOWLIST),
-  };
+  const config = buildConfig(parsedEnv.data, parsedModels.data, root);
+  return { config, warnings: collectWarnings(env, config.testMode) };
 }

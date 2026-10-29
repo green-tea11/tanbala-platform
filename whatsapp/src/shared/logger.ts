@@ -70,6 +70,7 @@ const SENSITIVE_KEYS = [
   'managerPhone',
   'chatPhone',
   'testAllowlist',
+  'allowlist',
   'jid',
   'remoteJid',
   'remoteJidAlt',

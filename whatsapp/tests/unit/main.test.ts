@@ -16,6 +16,7 @@ import { acquireProcessLock, ProcessLockBusyError } from '../../src/db/process-l
 import type { Clock, ImageInput, LlmClient } from '../../src/domain/ports.js';
 import type { Jid, LlmResult, WaMessageId } from '../../src/domain/types.js';
 import { main, type MainOptions, type RunningApp } from '../../src/main.js';
+import { WorkingModeRefusedError } from '../../src/pipeline/working-mode.js';
 import type { PanelApp, PanelStarter } from '../../src/pipeline/panel-setup.js';
 import { SafeError } from '../../src/shared/safe-error.js';
 import {
@@ -462,7 +463,7 @@ describe('main: ошибки настроек', () => {
     expect(existsSync(harness.lockPath)).toBe(false);
   });
 
-  it('TEST_MODE=false до этапа 8: ConfigError, к WhatsApp не подключается', async () => {
+  it('TEST_MODE=false, а номер ещё не привязан: отказ до WhatsApp, граница не записана, база и замок свободны', async () => {
     const harness = useHarness();
     const startWhatsApp = fakeStart(fakeConnection().connection);
 
@@ -470,10 +471,18 @@ describe('main: ошибки настроек', () => {
       harness.run({ ...ENABLED_ENV, TEST_MODE: 'false' }, { startWhatsApp }),
     );
 
-    expect(error).toBeInstanceOf(ConfigError);
-    expect((error as ConfigError).problems).toEqual([expect.stringMatching(/^TEST_MODE: /)]);
+    expect(error).toBeInstanceOf(WorkingModeRefusedError);
+    expect(error).toBeInstanceOf(SafeError);
     expect(startWhatsApp).not.toHaveBeenCalled();
-    expect(existsSync(harness.dbPath)).toBe(false);
+    expect(harness.records()).toContainEqual(
+      expect.objectContaining({ level: ERROR, msg: (error as Error).message }),
+    );
+    expect(formatFatalError(error)).toContain('TEST_MODE=false');
+    expect(databaseOpen(harness.dbPath)).toBe(false);
+    expect(lockFree(harness.lockPath)).toBe(true);
+    expect(
+      rows(harness.dbPath, "SELECT key FROM app_state WHERE key = 'working_since_ms'"),
+    ).toEqual([]);
   });
 
   it('нет config/models.json: ConfigError с причиной', async () => {
@@ -1501,6 +1510,180 @@ describe('main: ответы клиентам, службы этапа 5 и ве
       ]);
       expect(JSON.stringify(lines)).not.toMatch(/127\.0\.0\.1|:8000/);
       expect(JSON.stringify(harness.records())).not.toContain(TOKEN);
+    });
+  });
+});
+
+// Этап 8: переход в рабочий режим при запуске. База готовится первым запуском в закрытом режиме, затем прямой записью:
+// привязка, известные чаты, бывший чат тестировщика не из списка.
+describe('main: рабочий режим (этап 8)', () => {
+  const LINKED_MS = Date.UTC(2026, 9, 20, 9, 0, 0);
+  const SWITCH_MS = Date.UTC(2026, 9, 29, 9, 0, 0);
+  const WORKING_ENV: EnvInput = { ...ENABLED_ENV, TEST_MODE: 'false' };
+  /** Рабочий режим без WhatsApp: только переход и панель. */
+  const WORKING_OFFLINE_ENV: EnvInput = { ...WORKING_ENV, WA_ENABLED: 'false' };
+  const OLD_PHONE = '77000000006';
+  const OLD_JID = `${OLD_PHONE}@s.whatsapp.net` as Jid;
+  const FORMER_PHONE = '77000000007';
+  const FORMER_JID = `${FORMER_PHONE}@s.whatsapp.net` as Jid;
+  const NEW_JID = '77000000008@s.whatsapp.net' as Jid;
+  const WORKING_START_TEXT =
+    'Запуск: WhatsApp включён, рабочий режим: бот отвечает новым чатам, номеров в TEST_ALLOWLIST: 1';
+
+  function clockAt(ms: number): Clock {
+    return { now: () => ms, sleep: () => Promise.resolve() };
+  }
+
+  /** Номер привязан, известны два чата, в базе чат тестировщика и бывший чат не из TEST_ALLOWLIST. */
+  async function seeded(options: { readonly historyIncomplete?: boolean } = {}): Promise<Harness> {
+    const harness = useHarness();
+    await (await harness.run(DISABLED_ENV)).stop();
+    readDb(harness.dbPath, (db) => {
+      const state = db.prepare('INSERT INTO app_state (key, value) VALUES (?, ?)');
+      state.run('linked_at_ms', String(LINKED_MS));
+      if (options.historyIncomplete === true) {
+        state.run('history_incomplete_at_ms', String(LINKED_MS + 1000));
+      }
+      const known = db.prepare(
+        'INSERT INTO known_chats (jid, last_activity_ms, source) VALUES (?, ?, ?)',
+      );
+      known.run(OLD_JID, LINKED_MS - 30 * 24 * HOUR_MS, 'history');
+      known.run(CLIENT_JID, LINKED_MS + HOUR_MS, 'message');
+      known.run(FORMER_JID, LINKED_MS + HOUR_MS, 'message');
+      const chat = db.prepare(
+        'INSERT INTO chats (reply_jid, pn_jid, phone, created_at) VALUES (?, ?, ?, ?)',
+      );
+      chat.run(CLIENT_JID, CLIENT_JID, CLIENT_PHONE, LINKED_MS);
+      chat.run(FORMER_JID, FORMER_JID, FORMER_PHONE, LINKED_MS);
+    });
+    return harness;
+  }
+
+  function statuses(dbPath: string): unknown[] {
+    return rows(
+      dbPath,
+      'SELECT reply_jid AS jid, status, status_by AS statusBy FROM chats ORDER BY id',
+    );
+  }
+
+  function boundary(dbPath: string): unknown[] {
+    return rows(dbPath, "SELECT value FROM app_state WHERE key = 'working_since_ms'");
+  }
+
+  function heldCount(dbPath: string): unknown {
+    return readDb(dbPath, (db) =>
+      db.prepare('SELECT count(*) FROM known_chats WHERE held_for_manager = 1').pluck().get(),
+    );
+  }
+
+  it('флаг «список чатов неполный»: отказ до WhatsApp, граница, отметки и статусы не меняются', async () => {
+    const harness = await seeded({ historyIncomplete: true });
+    const startWhatsApp = fakeStart(fakeConnection().connection);
+
+    const error = await errorOf(harness.run(WORKING_ENV, { startWhatsApp }));
+
+    expect(error).toBeInstanceOf(WorkingModeRefusedError);
+    expect((error as Error).message).toContain('список чатов неполный');
+    expect(startWhatsApp).not.toHaveBeenCalled();
+    expect(boundary(harness.dbPath)).toEqual([]);
+    expect(heldCount(harness.dbPath)).toBe(0);
+    expect(statuses(harness.dbPath)).toEqual([
+      { jid: CLIENT_JID, status: 'bot', statusBy: null },
+      { jid: FORMER_JID, status: 'bot', statusBy: null },
+    ]);
+    expect(lockFree(harness.lockPath)).toBe(true);
+  });
+
+  it('первый запуск: граница = сейчас, старые чаты у менеджера, тестировщик как был; WhatsApp получает рабочий режим', async () => {
+    const harness = await seeded();
+    const startWhatsApp = fakeStart(fakeConnection().connection);
+
+    await harness.run(WORKING_ENV, { startWhatsApp, clock: clockAt(SWITCH_MS) });
+
+    expect(boundary(harness.dbPath)).toEqual([{ value: String(SWITCH_MS) }]);
+    expect(heldCount(harness.dbPath)).toBe(3);
+    expect(statuses(harness.dbPath)).toEqual([
+      { jid: CLIENT_JID, status: 'bot', statusBy: null },
+      { jid: FORMER_JID, status: 'manager', statusBy: 'phone' },
+    ]);
+    const deps = depsOf(startWhatsApp);
+    expect(deps.testAllowlist).toBeNull();
+    expect(deps.workingMode).toEqual({ sinceMs: SWITCH_MS, allowlist: new Set([CLIENT_PHONE]) });
+    expect(harness.records()).toContainEqual(
+      expect.objectContaining({ level: INFO, allowlistSize: 1, msg: WORKING_START_TEXT }),
+    );
+    expect(harness.records()).toContainEqual(
+      expect.objectContaining({ level: INFO, heldAddresses: 3, movedChats: 1 }),
+    );
+    expect(JSON.stringify(harness.records())).not.toMatch(/7700000000\d/);
+  });
+
+  it('после перехода: старый чат с отмеченным адресом начинает у менеджера, новый чат у бота', async () => {
+    const harness = await seeded();
+    const startWhatsApp = fakeStart(fakeConnection().connection);
+    await harness.run(WORKING_ENV, { startWhatsApp, clock: clockAt(SWITCH_MS) });
+    const deps = depsOf(startWhatsApp);
+    const message = (waId: string, jid: Jid): WaEvent => ({
+      type: 'client',
+      message: {
+        ...CLIENT_EVENT.message,
+        waId: waId as WaMessageId,
+        identity: { replyJid: jid, lidJid: null, pnJid: jid },
+        tsMs: SWITCH_MS + HOUR_MS,
+      },
+    });
+
+    await deps.onEvent(message('WA-OLD', OLD_JID));
+    await deps.onEvent(message('WA-NEW', NEW_JID));
+
+    expect(statuses(harness.dbPath)).toEqual([
+      { jid: CLIENT_JID, status: 'bot', statusBy: null },
+      { jid: FORMER_JID, status: 'manager', statusBy: 'phone' },
+      { jid: OLD_JID, status: 'manager', statusBy: 'phone' },
+      { jid: NEW_JID, status: 'bot', statusBy: null },
+    ]);
+  });
+
+  it('второй запуск: граница прежняя, возвращённый боту чат остаётся у бота', async () => {
+    const harness = await seeded();
+    await (await harness.run(WORKING_OFFLINE_ENV, { clock: clockAt(SWITCH_MS) })).stop();
+    readDb(harness.dbPath, (db) =>
+      db
+        .prepare(
+          "UPDATE chats SET status = 'bot', status_by = 'panel', status_changed_at = ? WHERE reply_jid = ?",
+        )
+        .run(SWITCH_MS + 1, FORMER_JID),
+    );
+
+    await harness.run(WORKING_OFFLINE_ENV, { clock: clockAt(SWITCH_MS + HOUR_MS) });
+
+    expect(boundary(harness.dbPath)).toEqual([{ value: String(SWITCH_MS) }]);
+    expect(statuses(harness.dbPath)).toContainEqual({
+      jid: FORMER_JID,
+      status: 'bot',
+      statusBy: 'panel',
+    });
+    expect(harness.records()).toContainEqual(
+      expect.objectContaining({ level: INFO, workingSinceMs: SWITCH_MS }),
+    );
+  });
+
+  it('TEST_MODE=true после рабочего режима: закрытый режим, граница снята, статусы чатов на месте', async () => {
+    const harness = await seeded();
+    await (await harness.run(WORKING_OFFLINE_ENV, { clock: clockAt(SWITCH_MS) })).stop();
+    const startWhatsApp = fakeStart(fakeConnection().connection);
+
+    await harness.run(ENABLED_ENV, { startWhatsApp, clock: clockAt(SWITCH_MS + HOUR_MS) });
+
+    expect(boundary(harness.dbPath)).toEqual([]);
+    expect(depsOf(startWhatsApp)).toMatchObject({
+      testAllowlist: new Set([CLIENT_PHONE]),
+      workingMode: null,
+    });
+    expect(statuses(harness.dbPath)).toContainEqual({
+      jid: FORMER_JID,
+      status: 'manager',
+      statusBy: 'phone',
     });
   });
 });
