@@ -43,7 +43,7 @@ const AFTER_ONE_C = /(?<!\p{L})1\s{0,2}[сc]\s{0,3}$/u;
 
 /** Справа количество, единица длины или площади, срок или дата: не сумма. */
 const QUANTITY_AFTER = new RegExp(
-  String.raw`^\s{0,3}(?:${COUNT_NOUN}|${UNIT_NOUN}|${TIME_NOUN})`,
+  String.raw`^\.?\s{0,3}(?:${COUNT_NOUN}|${UNIT_NOUN}|${TIME_NOUN})`,
   'u',
 );
 
