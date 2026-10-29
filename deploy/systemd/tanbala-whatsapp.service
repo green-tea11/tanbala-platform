@@ -21,6 +21,9 @@ Group=tanbala-wa
 WorkingDirectory=/opt/tanbala/whatsapp
 Environment=HOME=/opt/tanbala/whatsapp
 
+# Права на личные данные: сессия WhatsApp 700 (её файлы 600), база и её -wal/-shm 600, даже если их создали вручную
+# без umask 077 (привязка по QR из консоли). От имени бота, не root; отсутствие файлов не ошибка.
+ExecStartPre=/bin/sh -c 'find data/whatsapp-session -type d -exec chmod 700 {} + ; find data/whatsapp-session -type f -exec chmod 600 {} + ; find data -maxdepth 1 -name "tanbala.db*" -type f -exec chmod 600 {} + ; exit 0'
 # Запуск только при привязанной сессии WhatsApp (в creds.json есть ключ "me"). Без неё бот сам начал бы привязку
 # по QR, которую под systemd никто не отсканирует, а каждая попытка тратит одну из двух за 24 часа.
 # Привязка — только вручную и только по команде владельца.

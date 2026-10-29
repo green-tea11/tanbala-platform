@@ -55,6 +55,10 @@ expect 200 "интерфейс почты отвечает и видит баз�
 expect 401 "внутренний API жив и без токена закрыт" "$LEADS/internal/lookup?domain=example.kz"
 if ((wa_linked)); then
 	expect 200 "панель бота отвечает" "$PANEL/login"
+	# Личные данные бота: сессия только у бота, база и -wal/-shm без доступа для группы и остальных.
+	open_files=$(find /opt/tanbala/whatsapp/data -maxdepth 1 \( -name whatsapp-session -o -name 'tanbala.db*' \) \
+		-perm /077 2>/dev/null | head -3)
+	if [[ -z $open_files ]]; then ok "права на сессию и базу бота"; else bad "открытые права: $open_files"; fi
 else
 	skip "бот не привязан по QR (этап 4): служба и панель бота не проверяются"
 fi
