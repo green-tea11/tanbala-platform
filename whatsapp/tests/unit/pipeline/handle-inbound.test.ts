@@ -846,10 +846,10 @@ describe('pipeline/handle-inbound: минимум для передачи по �
     expect(h.calls.filter((call) => call.startsWith('turn:'))).toEqual([]);
   });
 
-  it('третий вопрос цены по ходу разговора из базы: hot без минимума передаёт чат', async () => {
+  it('четвёртый вопрос цены по ходу разговора из базы: hot без минимума передаёт чат', async () => {
     const h = setup({
       drafts: [{ ok: true, value: { outcome: 'hot', text: '', aboutPrice: true } }],
-      progress: { priceAsks: 2, refused: false },
+      progress: { priceAsks: 3, refused: false },
     });
 
     const outcome = await run(h, batchOf([text('A1')]));

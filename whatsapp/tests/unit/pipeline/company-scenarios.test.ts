@@ -422,10 +422,18 @@ describe('сценарии владельца: вопрос цены', () => {
       replies: [{ outcome: 'hot', text: PRICE_PHRASE, aboutPrice: true }, ASK_COUNT],
     });
     const price = await s.say(
-      'Около 3000 позиций, 1С есть. Так сколько?',
+      'Около 3000 позиций, металлические запчасти на складе в Алматы, 1С есть. Так сколько?',
       priceHandoff({
         level: 'hot',
-        profile: { ...agreed, itemCount: 'около 3000', has1C: true },
+        profile: {
+          ...agreed,
+          items: 'запчасти',
+          material: 'металл',
+          premises: 'склад',
+          city: 'Алматы',
+          itemCount: 'около 3000',
+          has1C: true,
+        },
       }),
     );
 

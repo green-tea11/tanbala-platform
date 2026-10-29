@@ -30,28 +30,33 @@ const NOTHING_KNOWN = 'В выжимке пока ничего нет: клие�
  */
 export const interestSchema = z.object({
   level: z.enum(['cold', 'warm', 'hot']).describe('Уровень интереса клиента: cold, warm или hot.'),
-  business: z
+  business: z.string().describe('Чем занимается компания клиента; иначе null.').nullable(),
+  items: z.string().describe('Какие вещи клиент хочет учитывать; иначе null.').nullable(),
+  packaging: z
     .string()
-    .describe('Тип бизнеса со слов клиента; null, если клиент не говорил.')
+    .describe('В чём вещи: коробки, паллеты, поштучно; иначе null.')
     .nullable(),
-  area: z.string().describe('Площадь со слов клиента; null, если клиент не говорил.').nullable(),
+  material: z.string().describe('Материал вещей (металл, жидкости и другое); иначе null.').nullable(),
+  city: z.string().describe('Город объекта; иначе null.').nullable(),
+  premises: z
+    .string()
+    .describe('Тип помещения: склад, открытая площадка, магазин и другое; иначе null.')
+    .nullable(),
+  area: z.string().describe('Площадь; иначе null.').nullable(),
   scope: z
     .string()
-    .describe(
-      'Что учитывать, со слов клиента: только ввоз и вывоз или где лежит каждая вещь; иначе null.',
-    )
+    .describe('Что отмечать: только ввоз и вывоз или где лежит каждая вещь; иначе null.')
     .nullable(),
-  itemCount: z
-    .string()
-    .describe('Примерное число вещей со слов клиента; null, если клиент не говорил.')
-    .nullable(),
+  itemCount: z.string().describe('Примерное число вещей; иначе null.').nullable(),
+  turnover: z.string().describe('Как часто вещи приходят и уходят; иначе null.').nullable(),
+  currentTracking: z.string().describe('Как клиент ведёт учёт сейчас; иначе null.').nullable(),
   has1C: z
     .boolean()
     .describe('true или false, если клиент сказал, есть ли у него 1С; иначе null.')
     .nullable(),
   problem: z
     .string()
-    .describe('Какую проблему клиент хочет решить, со слов клиента; null, если не говорил.')
+    .describe('Что мешает в нынешнем учёте, какую проблему клиент хочет решить; иначе null.')
     .nullable(),
   specifics: z.string().describe('Особенности со слов клиента; null, если их нет.').nullable(),
   reason: z.string().describe('Одна короткая фраза: почему выбран этот уровень.'),
@@ -95,9 +100,16 @@ export const interestSchema = z.object({
 export interface RawInterest {
   readonly level: InterestLevel;
   readonly business: string | null;
+  readonly items?: string | null;
+  readonly packaging?: string | null;
+  readonly material?: string | null;
+  readonly city?: string | null;
+  readonly premises?: string | null;
   readonly area: string | null;
   readonly scope: string | null;
   readonly itemCount: string | null;
+  readonly turnover?: string | null;
+  readonly currentTracking?: string | null;
   readonly has1C: boolean | null;
   readonly problem: string | null;
   readonly specifics: string | null;
@@ -188,9 +200,16 @@ export function normalizeInterest(raw: RawInterest, previous: ClientProfile): In
     level: raw.level,
     profile: {
       business: textField(raw.business, previous.business),
+      items: textField(raw.items ?? null, previous.items),
+      packaging: textField(raw.packaging ?? null, previous.packaging),
+      material: textField(raw.material ?? null, previous.material),
+      city: textField(raw.city ?? null, previous.city),
+      premises: textField(raw.premises ?? null, previous.premises),
       area: textField(raw.area, previous.area),
       scope: textField(raw.scope, previous.scope),
       itemCount: textField(raw.itemCount, previous.itemCount),
+      turnover: textField(raw.turnover ?? null, previous.turnover),
+      currentTracking: textField(raw.currentTracking ?? null, previous.currentTracking),
       has1C: has1COf(raw, previous, oneCName),
       oneCName,
       problem: textField(raw.problem, previous.problem),

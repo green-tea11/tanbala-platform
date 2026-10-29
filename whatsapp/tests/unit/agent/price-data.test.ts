@@ -7,6 +7,7 @@ import { ANY_DASH, EMPTY_PROFILE } from './fakes.js';
 
 const FRESH: ChatProgress = { priceAsks: 0, refused: false };
 
+/** Живой тест 29.10: склад 5000 м², ввоз и вывоз, 1С; число позиций клиент назовёт в следующем сообщении. */
 const SKLAD_28_10: ClientProfile = {
   ...EMPTY_PROFILE,
   business: 'склад',
@@ -14,12 +15,25 @@ const SKLAD_28_10: ClientProfile = {
   scope: 'ввоз и вывоз',
   has1C: true,
   problemAgreed: true,
+  items: null,
+  packaging: null,
+  material: null,
+  city: null,
+  premises: 'склад',
+  turnover: null,
+  currentTracking: null,
 };
 
-const FULL: ClientProfile = { ...SKLAD_28_10, itemCount: 'около 3000' };
+const FULL: ClientProfile = {
+  ...SKLAD_28_10,
+  itemCount: 'около 3000',
+  items: 'запчасти',
+  material: 'металл',
+  city: 'Алматы',
+};
 
 describe('agent/price-data: минимум не собран', () => {
-  it('диалог 28.10: собрано и не хватает, один вопрос о числе вещей и зачем он нужен', () => {
+  it('живой тест 29.10: собрано и не хватает, один вопрос по порядку и фраза об ориентире', () => {
     const data = priceReplyData({
       profile: SKLAD_28_10,
       company: { kind: 'unknown', askName: true },
@@ -27,20 +41,22 @@ describe('agent/price-data: минимум не собран', () => {
       progress: FRESH,
     });
 
-    expect(data).toContain('Для передачи по цене собрано: что учитывать, есть ли 1С');
-    expect(data).toContain('не хватает: примерное число вещей, название компании');
+    expect(data).toContain('Для передачи по цене собрано: тип помещения, есть ли 1С');
+    expect(data).toContain(
+      'не хватает: какие вещи, материал, примерное число вещей, город, название компании',
+    );
     expect(data).toMatch(/не передавай чат \(answer\)/);
-    expect(data).toMatch(/цена сильно зависит от объёма/);
+    expect(data).toContain('напиши «Ориентир коллега назовёт, когда поймём ваш объект.»');
     expect(data).toContain('задай один вопрос о первом из недостающего');
     expect(data).toContain(
-      'Вопросы по порядку: сколько примерно вещей нужно учитывать; из какой клиент компании (companyQuestion: name).',
+      'Вопросы по порядку: какие вещи клиент хочет учитывать; из какого материала вещи: есть ли металл или жидкости; сколько примерно вещей нужно учитывать; в каком городе объект; из какой клиент компании (companyQuestion: name).',
     );
-    expect(data).toContain('чтобы коллега сразу назвал ориентир');
+    expect(data).not.toContain('чтобы коллега сразу назвал ориентир');
     // Вопрос о компании не второй вопрос того же сообщения.
     expect(data).toMatch(/О компании спрашивай, только если до неё дошла очередь/);
   });
 
-  it('ничего не собрано, компания выключена: первым спрашивается, что учитывать; о компании ни слова', () => {
+  it('ничего не собрано, компания выключена: первым спрашивается, какие вещи; о компании ни слова', () => {
     const data = priceReplyData({
       profile: EMPTY_PROFILE,
       company: { kind: 'off' },
@@ -50,7 +66,7 @@ describe('agent/price-data: минимум не собран', () => {
 
     expect(data).toContain('Для передачи по цене собрано: ничего');
     expect(data).toContain(
-      'Вопросы по порядку: что нужно учитывать: только ввоз и вывоз или где лежит каждая вещь; сколько примерно вещей',
+      'Вопросы по порядку: какие вещи клиент хочет учитывать; из какого материала вещи',
     );
     expect(data).not.toMatch(/компани/i);
   });
@@ -77,15 +93,16 @@ describe('agent/price-data: минимум не собран', () => {
     );
   });
 
-  it('не хватает только согласия: вопрос о задаче или о трудности похожих компаний', () => {
+  it('не хватает только города: один вопрос о городе; согласие с трудностью для минимума не нужно', () => {
     const data = priceReplyData({
-      profile: { ...FULL, problemAgreed: false },
+      profile: { ...FULL, problemAgreed: false, city: null },
       company: { kind: 'off' },
       companyName: null,
       progress: FRESH,
     });
 
-    expect(data).toMatch(/Вопросы по порядку: [^\n]*задач[^\n]*трудност/);
+    expect(data).toContain('не хватает: город.');
+    expect(data).toContain('Вопросы по порядку: в каком городе объект.');
   });
 
   it('сказанное в последнем сообщении считается выясненным: выжимка до него', () => {
@@ -127,7 +144,8 @@ describe('agent/price-data: минимум собран и исключения'
   it.each([
     [0, /цену ещё не спрашивал/],
     [1, /спрашивал цену 1 раз/],
-    [2, /спрашивал цену 2 раза[^\n]*третий раз: передай чат сразу \(hot\)/],
+    [2, /спрашивал цену 2 раза\./],
+    [3, /спрашивал цену 3 раза[^\n]*четвёртый раз: передай чат сразу \(hot\)/],
     [5, /спрашивал цену 5 раз[^\n]*передай чат сразу \(hot\)/],
     [12, /спрашивал цену 12 раз\./],
     [22, /спрашивал цену 22 раза\./],
@@ -177,12 +195,12 @@ describe('agent/price-data: минимум собран и исключения'
 });
 
 describe('agent/price-data: заметка с суммой (ревью 29.10.2026, второй круг)', () => {
-  it('в заметке есть сумма: строки не велят передавать чат при отказе и третьем вопросе, а велят назвать сумму', () => {
+  it('в заметке есть сумма: строки не велят передавать чат при отказе и четвёртом вопросе, а велят назвать сумму', () => {
     const data = priceReplyData({
       profile: SKLAD_28_10,
       company: { kind: 'off' },
       companyName: null,
-      progress: { priceAsks: 2, refused: true },
+      progress: { priceAsks: 3, refused: true },
       hasNote: true,
       notePrice: true,
     });
@@ -191,21 +209,21 @@ describe('agent/price-data: заметка с суммой (ревью 29.10.202
     expect(data).toMatch(
       /В указании коллеги есть ориентир цены: на вопрос цены отвечай им, ровно как в указании, и чат не передавай/,
     );
-    expect(data).toMatch(/спрашивал цену 2 раза/);
+    expect(data).toMatch(/спрашивал цену 3 раза/);
     expect(data).not.toMatch(ANY_DASH);
   });
 
-  it('заметка без суммы: отказ и третий вопрос по-прежнему передают чат', () => {
+  it('заметка без суммы: отказ и четвёртый вопрос по-прежнему передают чат', () => {
     const data = priceReplyData({
       profile: SKLAD_28_10,
       company: { kind: 'off' },
       companyName: null,
-      progress: { priceAsks: 2, refused: true },
+      progress: { priceAsks: 3, refused: true },
       hasNote: true,
       notePrice: false,
     });
 
-    expect(data).toMatch(/это третий раз: передай чат сразу \(hot\)/);
+    expect(data).toMatch(/это четвёртый раз: передай чат сразу \(hot\)/);
     expect(data).toMatch(
       /отказывался отвечать на вопросы: если он спрашивает цену, передай чат сразу/,
     );

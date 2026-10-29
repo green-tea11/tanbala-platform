@@ -35,6 +35,13 @@ function chat(status: 'bot' | 'manager' = 'bot'): Chat {
       problem: null,
       specifics: null,
       problemAgreed: false,
+      items: null,
+      packaging: null,
+      material: null,
+      city: null,
+      premises: null,
+      turnover: null,
+      currentTracking: null,
     },
   };
 }

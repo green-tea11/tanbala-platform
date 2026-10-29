@@ -55,6 +55,13 @@ export const EMPTY_PROFILE: ClientProfile = {
   problem: null,
   specifics: null,
   problemAgreed: false,
+  items: null,
+  packaging: null,
+  material: null,
+  city: null,
+  premises: null,
+  turnover: null,
+  currentTracking: null,
 };
 export const HISTORY: readonly StoredMessage[] = [
   { id: 1, chatId: CHAT_ID, author: 'client', kind: 'text', text: 'Сколько стоит?', tsMs: NOW },

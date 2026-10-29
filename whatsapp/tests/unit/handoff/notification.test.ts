@@ -29,6 +29,13 @@ const PROFILE: ClientProfile = {
   problem: 'путаница с остатками',
   specifics: 'два склада',
   problemAgreed: false,
+  items: 'одежда',
+  packaging: 'на вешалках',
+  material: 'ткань',
+  city: null,
+  premises: 'магазин',
+  turnover: null,
+  currentTracking: 'в 1С вручную',
 };
 
 const EMPTY_PROFILE: ClientProfile = {
@@ -41,6 +48,13 @@ const EMPTY_PROFILE: ClientProfile = {
   problem: null,
   specifics: null,
   problemAgreed: false,
+  items: null,
+  packaging: null,
+  material: null,
+  city: null,
+  premises: null,
+  turnover: null,
+  currentTracking: null,
 };
 
 const BASE: ManagerNotificationInput = {
@@ -53,10 +67,10 @@ const BASE: ManagerNotificationInput = {
 };
 
 /**
- * Строк в обычном уведомлении: заголовок, имя, номер, чат, уровень, пустая, шапка выжимки, семь полей, пустая и две
- * строки о минимуме для оценки цены.
+ * Строк в обычном уведомлении: заголовок, имя, номер, чат, уровень, пустая, шапка выжимки, четырнадцать полей, пустая
+ * и две строки о минимуме для оценки цены.
  */
-const NORMAL_LINE_COUNT = 17;
+const NORMAL_LINE_COUNT = 24;
 
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
@@ -90,15 +104,22 @@ describe('formatManagerNotification', () => {
         '',
         'Выжимка (всё со слов клиента, не проверено):',
         'Бизнес: магазин одежды',
+        'Вещи: одежда',
+        'В чём лежат: на вешалках',
+        'Материал: ткань',
+        'Город: не выяснено',
+        'Помещение: магазин',
         'Площадь: 300 кв. м',
-        'Что учитывать: где лежит каждая вещь',
         'Число вещей: около 5000',
+        'Как часто движутся: не выяснено',
+        'Что отмечать: где лежит каждая вещь',
+        'Учёт сейчас: в 1С вручную',
+        'Что мешает: путаница с остатками',
         '1С: есть',
-        'Задача: путаница с остатками',
         'Особенности: два склада',
         '',
-        'Для оценки цены собрано: что учитывать, примерное число вещей, есть ли 1С',
-        'Не удалось выяснить: название компании, согласие клиента, что трудность есть',
+        'Для оценки цены собрано: какие вещи, материал, примерное число вещей, тип помещения, есть ли 1С',
+        'Не удалось выяснить: город, название компании',
       ].join('\n'),
     );
   });
@@ -109,9 +130,9 @@ describe('formatManagerNotification', () => {
     expect(valueOf(text, '1С')).toBe('есть, 1С:Управление торговлей');
   });
 
-  it('минимум собран: компания подтверждена, согласие есть; не выяснено «всё выяснено»', () => {
+  it('минимум собран: компания подтверждена, город есть; не выяснено «всё выяснено»', () => {
     const text = formatManagerNotification({
-      ...withProfile({ problemAgreed: true }),
+      ...withProfile({ city: 'Алматы' }),
       company: {
         status: 'confirmed',
         companyId: null,
@@ -129,7 +150,7 @@ describe('formatManagerNotification', () => {
     });
 
     expect(valueOf(text, 'Для оценки цены собрано')).toBe(
-      'что учитывать, примерное число вещей, есть ли 1С, название компании, согласие клиента, что трудность есть',
+      'какие вещи, материал, примерное число вещей, тип помещения, город, есть ли 1С, название компании',
     );
     expect(valueOf(text, 'Не удалось выяснить')).toBe('всё выяснено');
   });
@@ -194,13 +215,20 @@ describe('formatManagerNotification', () => {
     const unknown = formatManagerNotification({ ...BASE, profile: EMPTY_PROFILE });
     const withoutOneC = formatManagerNotification(withProfile({ has1C: false }));
 
-    expect(lines(unknown).slice(7, 14)).toEqual([
+    expect(lines(unknown).slice(7, 21)).toEqual([
       'Бизнес: не выяснено',
+      'Вещи: не выяснено',
+      'В чём лежат: не выяснено',
+      'Материал: не выяснено',
+      'Город: не выяснено',
+      'Помещение: не выяснено',
       'Площадь: не выяснено',
-      'Что учитывать: не выяснено',
       'Число вещей: не выяснено',
+      'Как часто движутся: не выяснено',
+      'Что отмечать: не выяснено',
+      'Учёт сейчас: не выяснено',
+      'Что мешает: не выяснено',
       '1С: не выяснено',
-      'Задача: не выяснено',
       'Особенности: не выяснено',
     ]);
     expect(withoutOneC).toContain('1С: нет');
@@ -241,6 +269,13 @@ describe('formatManagerNotification', () => {
           problem: attack,
           specifics: attack,
           problemAgreed: false,
+          items: null,
+          packaging: null,
+          material: null,
+          city: null,
+          premises: null,
+          turnover: null,
+          currentTracking: null,
         },
       });
 
@@ -269,7 +304,7 @@ describe('formatManagerNotification', () => {
       );
 
       expect(text).toContain('Бизнес: Пишите на [ссылка скрыта] срочно');
-      expect(text).toContain('Задача: [ссылка скрыта]');
+      expect(text).toContain('Что мешает: [ссылка скрыта]');
       // «пример» без точки есть в подписи «примерное число вещей»: ищется сам адрес.
       expect(text).not.toMatch(/evil|wa\.me|t\.me|http|пример\.рф/i);
     });
@@ -286,7 +321,7 @@ describe('formatManagerNotification', () => {
       );
 
       expect(text).toContain('Площадь: около 1.5 тыс. кв. м, версия 2.0');
-      expect(text).toContain('Задача: учёт.Склад большой');
+      expect(text).toContain('Что мешает: учёт.Склад большой');
     });
 
     it('управляющие и невидимые символы убираются, переносы и табуляция становятся пробелом', () => {

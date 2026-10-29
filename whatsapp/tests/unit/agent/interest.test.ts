@@ -23,9 +23,16 @@ import {
 const NOTHING_NEW: RawInterest = {
   level: 'cold',
   business: null,
+  items: null,
+  packaging: null,
+  material: null,
+  city: null,
+  premises: null,
   area: null,
   scope: null,
   itemCount: null,
+  turnover: null,
+  currentTracking: null,
   has1C: null,
   problem: null,
   specifics: null,
@@ -42,14 +49,28 @@ const KNOWN: ClientProfile = {
   problem: 'пересчёт занимает дни',
   specifics: 'два входа',
   problemAgreed: true,
+  items: null,
+  packaging: null,
+  material: null,
+  city: null,
+  premises: null,
+  turnover: null,
+  currentTracking: null,
 };
 
 const FIELD_NAMES = [
   'level',
   'business',
+  'items',
+  'packaging',
+  'material',
+  'city',
+  'premises',
   'area',
   'scope',
   'itemCount',
+  'turnover',
+  'currentTracking',
   'has1C',
   'problem',
   'specifics',
@@ -76,6 +97,13 @@ const NO_COMPANY = {
 const NO_SIGNALS = {
   oneCName: null,
   problemAgreed: false,
+  items: null,
+  packaging: null,
+  material: null,
+  city: null,
+  premises: null,
+  turnover: null,
+  currentTracking: null,
   priceAsked: false,
   refused: false,
 } as const;
@@ -126,7 +154,7 @@ describe('createAgent: assessInterest, запрос', () => {
     expect(last).not.toMatch(/Уровень/);
   });
 
-  it('схема оценки: плоский объект из семнадцати полей, все обязательны', async () => {
+  it('схема оценки: плоский объект из двадцати четырёх полей, все обязательны', async () => {
     const { requests } = await assess({ ok: true, value: NOTHING_NEW });
     const { schema } = onlyRequest(requests);
 

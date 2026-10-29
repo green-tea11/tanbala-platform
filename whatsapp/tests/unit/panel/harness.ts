@@ -44,6 +44,13 @@ export const EMPTY_PROFILE: ClientProfile = {
   problem: null,
   specifics: null,
   problemAgreed: false,
+  items: null,
+  packaging: null,
+  material: null,
+  city: null,
+  premises: null,
+  turnover: null,
+  currentTracking: null,
 };
 
 /** Сводка выключенной функции определения компании: так панель работает по умолчанию в тестах. */

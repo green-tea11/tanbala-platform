@@ -30,6 +30,13 @@ const EMPTY_PROFILE: ClientProfile = {
   problem: null,
   specifics: null,
   problemAgreed: false,
+  items: null,
+  packaging: null,
+  material: null,
+  city: null,
+  premises: null,
+  turnover: null,
+  currentTracking: null,
 };
 const CONTEXT: ConversationContext = {
   chatId: CHAT_ID,

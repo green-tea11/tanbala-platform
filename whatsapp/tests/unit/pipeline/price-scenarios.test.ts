@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ClientProfile } from '../../../src/domain/types.js';
+import { safeQuestion } from '../../../src/pipeline/safe-questions.js';
 import { createScenario, dataOf } from './company-scenarios-harness.js';
 import type { LlmScript } from './scripted-llm.js';
 
@@ -18,15 +19,16 @@ const CLIENT_28_10 =
 /** Что оценка интереса узнала из этого сообщения. */
 const PROFILE_28_10: Partial<ClientProfile> = {
   business: 'склад',
+  premises: 'склад',
   area: '5000 м²',
   scope: 'ввоз и вывоз',
   has1C: true,
   problemAgreed: true,
 };
 
-/** Ответ по новому правилу: из знаний про 1С, цена зависит от объёма, один вопрос и зачем он. */
+/** Ответ по новому правилу: из знаний про 1С, ориентир назовёт коллега, один вопрос. */
 const ANSWER_28_10 =
-  'Да, мы проводим интеграцию с вашей 1С, детали зависят от конфигурации. Цена сильно зависит от объёма: сколько примерно вещей нужно учитывать? Это нужно, чтобы коллега сразу назвал ориентир.';
+  'Да, мы проводим интеграцию с вашей 1С, детали зависят от конфигурации. Ориентир коллега назовёт, когда поймём ваш объект. Какие вещи нужно учитывать?';
 
 /** Так ответил старый бот: сразу передача с фразой о цене. */
 const OLD_HOT =
@@ -34,11 +36,14 @@ const OLD_HOT =
 
 const PRICE_PHRASE = 'Цена сильно зависит от объёма. Уточню у коллеги и вернусь к вам.';
 
-const ASK_SCOPE =
-  'Цена сильно зависит от объёма. Что нужно учитывать: только ввоз и вывоз или где лежит каждая вещь? Это нужно, чтобы коллега сразу назвал ориентир.';
+const ASK_ITEMS =
+  'Ориентир коллега назовёт, когда поймём ваш объект. Подскажите, какие вещи нужно учитывать?';
 
 const FULL: Partial<ClientProfile> = {
   ...PROFILE_28_10,
+  items: 'запчасти',
+  material: 'металл',
+  city: 'Алматы',
   itemCount: 'около 3000',
   oneCName: 'УТ 11',
 };
@@ -52,7 +57,7 @@ function hotPrice(text = PRICE_PHRASE): LlmScript['replies'][number] {
 }
 
 describe('сценарии владельца 29.10.2026: минимум перед передачей по цене', () => {
-  it('диалог 28.10 (чат ID 1): вместо передачи вопрос о числе вещей; данные модели говорят, чего не хватает', async () => {
+  it('диалог 28.10 (чат ID 1): вместо передачи вопрос о вещах; данные модели говорят, чего не хватает', async () => {
     const s = createScenario();
 
     const turn = await s.say(CLIENT_28_10, priceTurn({ replies: [ANSWER_28_10] }));
@@ -67,7 +72,7 @@ describe('сценарии владельца 29.10.2026: минимум пер�
     const data = turn.data('reply');
     expect(data).toContain('Для передачи по цене собрано: ничего');
     expect(data).toContain('о чём клиент не сказал в последнем сообщении');
-    expect(data).toMatch(/Вопросы по порядку: [^\n]*сколько примерно вещей нужно учитывать/);
+    expect(data).toMatch(/Вопросы по порядку: какие вещи клиент хочет учитывать/);
     expect(data).toContain('О компании спрашивай, только если до неё дошла очередь');
     // Вопрос цены засчитан: ответ ушёл.
     expect(s.storage.chats.getProgress(s.chatId())).toEqual({ priceAsks: 1, refused: false });
@@ -87,20 +92,18 @@ describe('сценарии владельца 29.10.2026: минимум пер�
     expect(turn.llm.purposes()).toEqual(['reply', 'interest', 'reply', 'review']);
     const retry = dataOf(turn.llm.requests.filter((request) => request.purpose === 'reply')[1]);
     expect(retry).toContain(
-      'Передавать чат рано: для передачи по цене не хватает: примерное число вещей',
+      'Передавать чат рано: для передачи по цене не хватает: какие вещи, материал, примерное число вещей, город',
     );
     expect(s.storage.handoffs.findOpen(s.chatId())).toBeNull();
   });
 
-  it('диалог 28.10, модель дважды хочет передать: уходит фиксированный вопрос о числе вещей', async () => {
+  it('диалог 28.10, модель дважды хочет передать: уходит фиксированный вопрос о вещах', async () => {
     const s = createScenario();
 
     const turn = await s.say(CLIENT_28_10, priceTurn({ replies: [hotPrice(OLD_HOT)] }));
 
     expect(turn.outcome).toEqual({ kind: 'replied' });
-    expect(turn.toClient).toEqual([
-      'Цена сильно зависит от объёма. Подскажите, сколько примерно вещей нужно учитывать? Это нужно, чтобы коллега сразу назвал ориентир.',
-    ]);
+    expect(turn.toClient).toEqual([safeQuestion('items', true)]);
     expect(turn.toManager).toEqual([]);
   });
 
@@ -108,7 +111,7 @@ describe('сценарии владельца 29.10.2026: минимум пер�
     const s = createScenario();
 
     const turn = await s.say(
-      'Склад 5000 квадратов, ввоз и вывоз, около 3000 позиций, 1С УТ 11. Мы ТОО Склад Алматы, теряем товар при отгрузке. Сколько стоит?',
+      'Склад металлических запчастей в Алматы, 5000 квадратов, ввоз и вывоз, около 3000 позиций, 1С УТ 11. Мы ТОО Склад Алматы, теряем товар при отгрузке. Сколько стоит?',
       {
         replies: [hotPrice()],
         interests: [
@@ -123,7 +126,7 @@ describe('сценарии владельца 29.10.2026: минимум пер�
     const notice = turn.toManager[0] ?? '';
     expect(notice).toContain('1С: есть, УТ 11');
     expect(notice).toContain(
-      'Для оценки цены собрано: что учитывать, примерное число вещей, есть ли 1С, название компании, согласие клиента, что трудность есть',
+      'Для оценки цены собрано: какие вещи, материал, примерное число вещей, тип помещения, город, есть ли 1С, название компании',
     );
     expect(notice).toContain('Не удалось выяснить: всё выяснено');
     expect(notice).toContain('Компания: не определена, клиент назвал «ТОО Склад Алматы»');
@@ -131,7 +134,7 @@ describe('сценарии владельца 29.10.2026: минимум пер�
 
   it('отказ отвечать: передача сразу, без минимума', async () => {
     const s = createScenario();
-    await s.say('Сколько стоит?', priceTurn({ replies: [ASK_SCOPE] }, {}));
+    await s.say('Сколько стоит?', priceTurn({ replies: [ASK_ITEMS] }, {}));
 
     const refused = await s.say('Не скажу, просто назовите цену', {
       replies: [hotPrice()],
@@ -141,13 +144,13 @@ describe('сценарии владельца 29.10.2026: минимум пер�
     expect(refused.outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
     expect(refused.toClient).toEqual([PRICE_PHRASE]);
     expect(refused.toManager[0]).toContain(
-      'Не удалось выяснить: что учитывать, примерное число вещей',
+      'Не удалось выяснить: какие вещи, материал, примерное число вещей, тип помещения, город, есть ли 1С',
     );
   });
 
   it('отказ отвечать, а модель ответила answer с новым вопросом: код всё равно передаёт чат (ревью 29.10.2026)', async () => {
     const s = createScenario();
-    await s.say('Сколько стоит?', priceTurn({ replies: [ASK_SCOPE] }, {}));
+    await s.say('Сколько стоит?', priceTurn({ replies: [ASK_ITEMS] }, {}));
 
     const refused = await s.say('Не скажу, просто назовите цену', {
       replies: ['Понимаю. А сколько примерно вещей нужно учитывать?'],
@@ -159,24 +162,29 @@ describe('сценарии владельца 29.10.2026: минимум пер�
     expect(refused.llm.purposes()).toEqual(['reply', 'interest']);
   });
 
-  it('третий вопрос цены: первые два без передачи, третий передаёт; модель видит счётчик', async () => {
+  it('четвёртый вопрос цены: первые три без передачи, четвёртый передаёт; модель видит счётчик', async () => {
     const s = createScenario();
 
-    const first = await s.say('Сколько стоит?', priceTurn({ replies: [ASK_SCOPE] }, {}));
+    const first = await s.say('Сколько стоит?', priceTurn({ replies: [ASK_ITEMS] }, {}));
     const second = await s.say(
       'Я спросил, сколько стоит?',
-      priceTurn({ replies: [hotPrice(), ASK_SCOPE] }, {}),
+      priceTurn({ replies: [hotPrice(), ASK_ITEMS] }, {}),
     );
-    const third = await s.say('Так сколько стоит?', priceTurn({ replies: [hotPrice()] }, {}));
+    const third = await s.say(
+      'Так сколько стоит?',
+      priceTurn({ replies: [hotPrice(), ASK_ITEMS] }, {}),
+    );
+    const fourth = await s.say('Цену скажите!', priceTurn({ replies: [hotPrice()] }, {}));
 
     expect(first.outcome).toEqual({ kind: 'replied' });
     expect(second.outcome).toEqual({ kind: 'replied' });
-    expect(second.toManager).toEqual([]);
-    expect(third.data('reply')).toMatch(
-      /спрашивал цену 2 раза[^\n]*третий раз: передай чат сразу \(hot\)/,
+    expect(third.outcome).toEqual({ kind: 'replied' });
+    expect([second.toManager, third.toManager]).toEqual([[], []]);
+    expect(fourth.data('reply')).toMatch(
+      /спрашивал цену 3 раза[^\n]*четвёртый раз: передай чат сразу \(hot\)/,
     );
-    expect(third.outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
-    expect(third.toClient).toEqual([PRICE_PHRASE]);
+    expect(fourth.outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
+    expect(fourth.toClient).toEqual([PRICE_PHRASE]);
   });
 
   it('просьба о живом человеке: передача сразу, о минимуме не спрашивает', async () => {
@@ -193,7 +201,7 @@ describe('сценарии владельца 29.10.2026: минимум пер�
 
   it('после возврата боту вопросы цены считаются заново', async () => {
     const s = createScenario();
-    await s.say('Сколько стоит?', priceTurn({ replies: [ASK_SCOPE] }, {}));
+    await s.say('Сколько стоит?', priceTurn({ replies: [ASK_ITEMS] }, {}));
     await s.say('Позовите человека', { replies: [{ outcome: 'asked_human' }] });
 
     await s.services.handoff.returnToBot(s.chatId());

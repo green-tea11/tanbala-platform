@@ -57,6 +57,13 @@ export const EMPTY_PROFILE: ClientProfile = {
   problem: null,
   specifics: null,
   problemAgreed: false,
+  items: null,
+  packaging: null,
+  material: null,
+  city: null,
+  premises: null,
+  turnover: null,
+  currentTracking: null,
 };
 
 export function history(count: number): StoredMessage[] {

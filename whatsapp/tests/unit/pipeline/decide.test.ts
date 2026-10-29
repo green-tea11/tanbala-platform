@@ -1,19 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import {
-  normalizeDraft,
-  runCodeChecks,
-  type CheckFinding,
-} from '../../../src/checks/code-checks.js';
+import type { CheckFinding } from '../../../src/checks/code-checks.js';
 import type {
-  PhoneDigits,
   ReplyDraft,
   ReplyHandoffOutcome,
   ReviewedText,
 } from '../../../src/domain/types.js';
 import {
   decideAction,
-  PRICE_QUESTION_TEXTS,
-  priceQuestion,
   type Decision,
   type DecisionInput,
   type DraftGate,
@@ -21,8 +14,6 @@ import {
 } from '../../../src/pipeline/decide.js';
 
 const TEXT = 'Учёт подбираем под задачу. Что вы храните?';
-/** Своего номера в ответах у бота нет (как в pipeline/reply-flow.ts). */
-const NO_PHONE = '' as PhoneDigits;
 const HANDOFF_TEXT = 'Да, мы проводим интеграцию с вашей 1С. Уточню у коллеги и вернусь к вам.';
 const DASH: CheckFinding = { code: 'dash', detail: 'тире: «—» в «…учёт — это…»' };
 const PRICE: CheckFinding = { code: 'price', detail: 'цена: «5 000 тг» в «…стоит 5 000 тг…»' };
@@ -269,31 +260,4 @@ describe('pipeline/decide: без проверки текст не уходит'
     expect(input).toEqual(before);
     expect(decision.kind === 'retry' && decision.feedback).not.toBe(findings);
   });
-});
-
-describe('pipeline/decide: фиксированные вопросы о минимуме для передачи по цене', () => {
-  const FIELDS = ['scope', 'itemCount', 'has1C', 'company', 'problem'] as const;
-
-  it.each(FIELDS)(
-    'вопрос о «%s» проходит проверки кодом: без цен, тире, ссылок, не длиннее трёх фраз',
-    (field) => {
-      const text = priceQuestion(field);
-
-      expect(text).toBe(PRICE_QUESTION_TEXTS[field]);
-      expect(runCodeChecks(normalizeDraft(text), { ownPhone: NO_PHONE, clientText: '' })).toEqual(
-        [],
-      );
-    },
-  );
-
-  it.each(FIELDS)(
-    'вопрос о «%s»: цена зависит от объёма, один вопрос и зачем он нужен',
-    (field) => {
-      const text = PRICE_QUESTION_TEXTS[field];
-
-      expect(text.startsWith('Цена сильно зависит от объёма. ')).toBe(true);
-      expect(text.split('?')).toHaveLength(2);
-      expect(text.endsWith('Это нужно, чтобы коллега сразу назвал ориентир.')).toBe(true);
-    },
-  );
 });

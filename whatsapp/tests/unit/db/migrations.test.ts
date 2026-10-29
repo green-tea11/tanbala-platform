@@ -62,9 +62,9 @@ const VERSION_5_TABLES = CURRENT_TABLES.filter(
 /**
  * Последняя версия схемы: этап 2 дал версию 1, этап 3 версию 2, этапы 4, 5 и 6 версии 3, 4 и 5, определение
  * компании клиента версию 6, минимум для передачи по цене версию 7, заметка для бота версию 8, отметка «у менеджера»
- * при переходе в рабочий режим (этап 8) версию 9, отклонённые черновики для панели версию 10.
+ * при переходе в рабочий режим (этап 8) версию 9, отклонённые черновики для панели версию 10, шире квалификация клиента версию 11.
  */
-const CURRENT_VERSION = 10;
+const CURRENT_VERSION = 11;
 
 function columnNames(db: Database.Database, table: string): unknown[] {
   return db.prepare('SELECT name FROM pragma_table_info(?) ORDER BY cid').pluck().all(table);
@@ -249,8 +249,49 @@ describe('runMigrations', () => {
     expect(tableNames(db)).not.toContain('rejected_drafts');
 
     runMigrations(db, 10);
-    expect(userVersion(db)).toBe(CURRENT_VERSION);
+    expect(userVersion(db)).toBe(10);
     expect(tableNames(db)).toContain('rejected_drafts');
+    expect(columnNames(db, 'client_profiles')).not.toContain('material');
+
+    runMigrations(db, 11);
+    expect(userVersion(db)).toBe(CURRENT_VERSION);
+    expect(columnNames(db, 'client_profiles')).toEqual(
+      expect.arrayContaining([
+        'items',
+        'packaging',
+        'material',
+        'city',
+        'premises',
+        'turnover',
+        'current_tracking',
+      ]),
+    );
+  });
+
+  it('живая база версии 9 переходит на 11: выжимка на месте, новые поля пустые', () => {
+    const db = useMemoryDb();
+    runMigrations(db, 9);
+    const chatId = insertChat(db, { replyJid: PN_A });
+    db.prepare(
+      "INSERT INTO client_profiles (chat_id, business, has_1c, reason, updated_at_ms) VALUES (?, 'склад', 1, 'r', 1)",
+    ).run(chatId);
+
+    runMigrations(db);
+
+    expect(
+      db
+        .prepare(
+          'SELECT business, has_1c, items, material, city, premises FROM client_profiles WHERE chat_id = ?',
+        )
+        .get(chatId),
+    ).toEqual({
+      business: 'склад',
+      has_1c: 1,
+      items: null,
+      material: null,
+      city: null,
+      premises: null,
+    });
   });
 
   it.each([8, 9])(

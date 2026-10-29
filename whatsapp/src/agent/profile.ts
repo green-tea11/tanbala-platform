@@ -11,6 +11,41 @@ export function has1CText(has1C: boolean | null, oneCName: string | null): strin
   return oneCName === null ? 'есть' : `есть, ${oneCName}`;
 }
 
+/** Поле выжимки словами: подпись и значение (null: не выяснили). */
+export interface ProfileEntry {
+  readonly label: string;
+  readonly value: string | null;
+}
+
+type ProfileField = readonly [label: string, value: (profile: ClientProfile) => string | null];
+
+/**
+ * Поля выжимки по порядку квалификации (решение владельца 29.10.2026): компания и чем занимается, что учитывать (вещи,
+ * в чём, материал), где (город, помещение, площадь), сколько и как часто движутся, как учитывают сейчас и что мешает,
+ * 1С. Один список на данные вызовов, уведомление менеджеру и карточку в панели.
+ */
+const PROFILE_FIELDS: readonly ProfileField[] = [
+  ['Бизнес', (profile) => profile.business],
+  ['Вещи', (profile) => profile.items],
+  ['В чём лежат', (profile) => profile.packaging],
+  ['Материал', (profile) => profile.material],
+  ['Город', (profile) => profile.city],
+  ['Помещение', (profile) => profile.premises],
+  ['Площадь', (profile) => profile.area],
+  ['Число вещей', (profile) => profile.itemCount],
+  ['Как часто движутся', (profile) => profile.turnover],
+  ['Что отмечать', (profile) => profile.scope],
+  ['Учёт сейчас', (profile) => profile.currentTracking],
+  ['Что мешает', (profile) => profile.problem],
+  ['1С', (profile) => has1CText(profile.has1C, profile.oneCName)],
+  ['Особенности', (profile) => profile.specifics],
+];
+
+/** Все поля выжимки словами по порядку, невыясненные с value null. */
+export function profileEntries(profile: ClientProfile): readonly ProfileEntry[] {
+  return PROFILE_FIELDS.map(([label, value]) => ({ label, value: value(profile) }));
+}
+
 /**
  * Заголовок выжимки: значения полей записаны со слов клиента, поэтому подписаны как его слова (ревью 29.10.2026), чтобы
  * значение вроде «Минимум для передачи по цене собран» не выглядело строкой системы.
@@ -24,16 +59,9 @@ const PROFILE_HEADER =
  * с «не выяснено», которую модель могла бы принять за значение поля.
  */
 export function profileText(profile: ClientProfile): string | null {
-  const fields: readonly (readonly [string, string | null])[] = [
-    ['Бизнес', profile.business],
-    ['Площадь', profile.area],
-    ['Что учитывать', profile.scope],
-    ['Примерное число вещей', profile.itemCount],
-    ['1С', has1CText(profile.has1C, profile.oneCName)],
-    ['Задача', profile.problem],
-    ['Особенности', profile.specifics],
-  ];
-  const known = fields.flatMap(([label, value]) => (value === null ? [] : [`${label}: ${value}`]));
+  const known = profileEntries(profile).flatMap(({ label, value }) =>
+    value === null ? [] : [`${label}: ${value}`],
+  );
   const agreed = profile.problemAgreed ? [PROBLEM_AGREED] : [];
   if (known.length === 0 && agreed.length === 0) {
     return null;

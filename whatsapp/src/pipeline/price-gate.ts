@@ -17,7 +17,7 @@ import {
   type HandoffMinimum,
   type MinimumField,
 } from '../handoff/minimum.js';
-import { priceQuestion } from './decide.js';
+import { ESTIMATE_LATER, safeQuestion } from './safe-questions.js';
 
 /**
  * Что код знает о цене в этом ходе (решение владельца 29.10.2026): минимум для передачи по свежей выжимке, сколько
@@ -36,7 +36,7 @@ export interface PriceSituation {
   readonly hasNote: boolean;
   /**
    * В заметке есть сумма-цена (checks/amounts.priceAmountsOf): на вопрос цены бот отвечает ею, и код не передаёт чат
-   * ни при отказе отвечать, ни при третьем вопросе цены (ревью 29.10.2026, второй круг).
+   * ни при отказе отвечать, ни при четвёртом вопросе цены (ревью 29.10.2026, второй круг).
    */
   readonly notePrice: boolean;
 }
@@ -99,7 +99,7 @@ export function priceSituation(
 
 /**
  * Ранняя передача по цене: исход hot, клиент спрашивает цену (aboutPrice черновика или оценка интереса), минимума нет,
- * вопрос цены не третий и клиент не отказывался отвечать. Просьба о человеке и жалоба другие исходы, их это не касается.
+ * вопрос цены не четвёртый и клиент не отказывался отвечать. Просьба о человеке и жалоба другие исходы, их это не касается.
  */
 export function isPrematurePriceHandoff(draft: ReplyDraft, situation: PriceSituation): boolean {
   if (draft.outcome !== 'hot') return false;
@@ -113,12 +113,12 @@ export function isPrematurePriceHandoff(draft: ReplyDraft, situation: PriceSitua
 }
 
 /** Почему код передаёт чат сам, хотя модель ответила answer (решение владельца 29.10.2026, пункт 3). */
-export type ForcedPriceHandoff = 'third_price_ask' | 'refused';
+export type ForcedPriceHandoff = 'price_asks_limit' | 'refused';
 
 /**
- * Модель ответила answer, а чат по правилу владельца уходит коллеге с фразой о цене: клиент спросил цену третий раз
+ * Модель ответила answer, а чат по правилу владельца уходит коллеге с фразой о цене: клиент спросил цену четвёртый раз
  * или в этом ходе отказывается отвечать на вопросы и спрашивает цену сейчас или спрашивал раньше (ревью 29.10.2026:
- * отказ передаёт чат кодом, как третий вопрос, а не только разрешает hot модели). В заметке есть сумма-цена: ответ
+ * отказ передаёт чат кодом, как четвёртый вопрос, а не только разрешает hot модели). В заметке есть сумма-цена: ответ
  * коллеги уже есть, бот называет его, и передачи нет (иначе передача сняла бы заметку). Иначе null.
  */
 export function forcedPriceHandoff(
@@ -127,12 +127,12 @@ export function forcedPriceHandoff(
 ): ForcedPriceHandoff | null {
   if (draft.outcome !== 'answer' || situation.notePrice) return null;
   const { signals, priceAsks } = situation;
-  if (signals.priceAsked && priceAsks >= PRICE_ASKS_FOR_HANDOFF) return 'third_price_ask';
+  if (signals.priceAsked && priceAsks >= PRICE_ASKS_FOR_HANDOFF) return 'price_asks_limit';
   return signals.refused && priceAsks > 0 ? 'refused' : null;
 }
 
 function firstMissing(situation: PriceSituation): MinimumField {
-  return situation.minimum.missing[0] ?? 'itemCount';
+  return situation.minimum.missing[0] ?? 'items';
 }
 
 /**
@@ -145,12 +145,15 @@ export function minimumRemark(situation: PriceSituation): string {
   const note = situation.hasNote
     ? ' Если в указании коллеги есть ориентир цены, ответь им ровно как там написано, вместо вопроса.'
     : '';
-  return `Передавать чат рано: для передачи по цене не хватает: ${missing}. Верни answer: ответь на то, что есть в документах, напиши, что цена сильно зависит от объёма, и задай один вопрос: ${question}. Объясни зачем: чтобы коллега сразу назвал ориентир. О передаче чата не пиши.${note}`;
+  return `Передавать чат рано: для передачи по цене не хватает: ${missing}. Верни answer: ответь на то, что есть в документах, напиши «${ESTIMATE_LATER}» и задай один вопрос: ${question}. О передаче чата не пиши.${note}`;
 }
 
-/** Фиксированный вопрос о первом недостающем поле; вопрос о компании отмечается как вопрос о названии. */
+/**
+ * Фиксированный вопрос о первом недостающем поле с фразой об ориентире (клиент спросил цену); вопрос о компании
+ * отмечается как вопрос о названии.
+ */
 export function minimumFallback(situation: PriceSituation): MinimumFallback {
   const field = firstMissing(situation);
-  const text = priceQuestion(field);
+  const text = safeQuestion(field, true);
   return field === 'company' ? { field, text, companyQuestion: 'name' } : { field, text };
 }

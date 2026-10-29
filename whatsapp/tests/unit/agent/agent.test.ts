@@ -86,6 +86,13 @@ describe('createAgent: draftReply, запрос', () => {
       itemCount: 'около 3000',
       has1C: true,
       problemAgreed: true,
+      items: 'запчасти',
+      packaging: null,
+      material: 'металл',
+      city: 'Алматы',
+      premises: 'склад',
+      turnover: null,
+      currentTracking: null,
     };
 
     const { request } = await draft(

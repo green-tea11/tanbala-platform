@@ -26,6 +26,13 @@ const BASE: ManagerNotificationInput = {
     problem: null,
     specifics: null,
     problemAgreed: false,
+    items: null,
+    packaging: null,
+    material: null,
+    city: null,
+    premises: null,
+    turnover: null,
+    currentTracking: null,
   },
   chatId: 12 as ChatId,
 };

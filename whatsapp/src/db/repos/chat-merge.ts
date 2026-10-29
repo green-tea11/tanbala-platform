@@ -35,9 +35,16 @@ const PN_JID = /^(\d+)(?::\d+)?@(?:s\.whatsapp\.net|hosted)$/;
 /** Поля выжимки в client_profiles, порядок как в ClientProfile; problem_agreed сливается отдельно (max). */
 const PROFILE_FIELDS = [
   'business',
+  'items',
+  'packaging',
+  'material',
+  'city',
+  'premises',
   'area',
   'scope',
   'item_count',
+  'turnover',
+  'current_tracking',
   'has_1c',
   'one_c_name',
   'problem',

@@ -192,6 +192,13 @@ describe('панель: страница чата', () => {
         problem: 'Теряются вещи',
         specifics: null,
         problemAgreed: false,
+        items: null,
+        packaging: null,
+        material: null,
+        city: null,
+        premises: null,
+        turnover: null,
+        currentTracking: null,
       },
     });
     const messages: StoredMessage[] = [
@@ -247,10 +254,10 @@ describe('панель: страница чата', () => {
     expect(text).toContain('Уровень интереса горячий');
     expect(text).toContain('Бизнес Склад одежды');
     expect(text).toContain('Площадь 500 кв. м');
-    expect(text).toContain('Что учитывать не выяснили');
+    expect(text).toContain('Что отмечать не выяснили');
     expect(text).toContain('Число вещей 10 тысяч');
     expect(text).toContain('1С есть');
-    expect(text).toContain('Задача Теряются вещи');
+    expect(text).toContain('Что мешает Теряются вещи');
     expect(text).toContain('Особенности не выяснили');
     expect(text).toContain('Согласие, что трудность есть не выяснили');
   });
@@ -270,6 +277,13 @@ describe('панель: страница чата', () => {
               problem: null,
               specifics: null,
               problemAgreed: true,
+              items: null,
+              packaging: null,
+              material: null,
+              city: null,
+              premises: null,
+              turnover: null,
+              currentTracking: null,
             },
           }),
         ],
@@ -297,6 +311,13 @@ describe('панель: страница чата', () => {
               problem: null,
               specifics: null,
               problemAgreed: false,
+              items: null,
+              packaging: null,
+              material: null,
+              city: null,
+              premises: null,
+              turnover: null,
+              currentTracking: null,
             },
           }),
           makeChat(2),
@@ -458,6 +479,13 @@ describe('панель: страница чата', () => {
               problem: attack,
               specifics: attack,
               problemAgreed: false,
+              items: null,
+              packaging: null,
+              material: null,
+              city: null,
+              premises: null,
+              turnover: null,
+              currentTracking: null,
             },
           }),
         ],

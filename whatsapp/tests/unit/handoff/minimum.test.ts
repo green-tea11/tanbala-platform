@@ -7,17 +7,25 @@ import {
   handoffMinimum,
   MINIMUM_LABELS,
   minimumReport,
+  PRICE_ASKS_FOR_HANDOFF,
 } from '../../../src/handoff/minimum.js';
 import { OFF_SUMMARY } from './fakes.js';
 
-// Минимум для передачи по цене (решение владельца 29.10.2026): что учитывать, примерное число вещей, есть ли 1С,
-// название компании и согласие клиента, что трудность есть.
+// Минимум для передачи по цене (решение владельца 29.10.2026, второй круг): компания; что учитывать (какие вещи и
+// материал); примерное число вещей; город и тип помещения; есть ли 1С.
 
 const EMPTY: ClientProfile = {
   business: null,
+  items: null,
+  packaging: null,
+  material: null,
+  city: null,
+  premises: null,
   area: null,
   scope: null,
   itemCount: null,
+  turnover: null,
+  currentTracking: null,
   has1C: null,
   oneCName: null,
   problem: null,
@@ -27,10 +35,12 @@ const EMPTY: ClientProfile = {
 
 const FULL: ClientProfile = {
   ...EMPTY,
-  scope: 'ввоз и вывоз',
-  itemCount: 'около 2000',
+  items: 'запчасти',
+  material: 'металл',
+  itemCount: 'около 3000',
+  city: 'Алматы',
+  premises: 'склад',
   has1C: true,
-  problemAgreed: true,
 };
 
 describe('handoff/minimum: handoffMinimum', () => {
@@ -39,7 +49,7 @@ describe('handoff/minimum: handoffMinimum', () => {
 
     expect(minimum).toEqual({
       collected: [],
-      missing: ['scope', 'itemCount', 'has1C', 'company', 'problem'],
+      missing: ['items', 'material', 'itemCount', 'premises', 'city', 'has1C', 'company'],
       unknown: [],
     });
   });
@@ -52,10 +62,28 @@ describe('handoff/minimum: handoffMinimum', () => {
     });
 
     expect(minimum).toEqual({
-      collected: ['scope', 'itemCount', 'has1C', 'company', 'problem'],
+      collected: ['items', 'material', 'itemCount', 'premises', 'city', 'has1C', 'company'],
       missing: [],
       unknown: [],
     });
+  });
+
+  it('прежний минимум (что отмечать, согласие с трудностью) больше не нужен, а без города и материала нельзя', () => {
+    const minimum = handoffMinimum({
+      profile: {
+        ...EMPTY,
+        scope: 'ввоз и вывоз',
+        itemCount: 'около 2000',
+        has1C: true,
+        problemAgreed: true,
+        items: 'одежда',
+        premises: 'магазин',
+      },
+      companyName: 'Береке',
+      companyAskable: true,
+    });
+
+    expect(minimum.missing).toEqual(['material', 'city']);
   });
 
   it('1С: «нет» тоже ответ, какая 1С для минимума не обязательна', () => {
@@ -72,31 +100,40 @@ describe('handoff/minimum: handoffMinimum', () => {
     const minimum = handoffMinimum({ profile: FULL, companyName: null, companyAskable: false });
 
     expect(minimum).toEqual({
-      collected: ['scope', 'itemCount', 'has1C', 'problem'],
+      collected: ['items', 'material', 'itemCount', 'premises', 'city', 'has1C'],
       missing: [],
       unknown: ['company'],
     });
   });
 
-  it('диалог 28.10: склад, ввоз и вывоз, 1С есть, число вещей и компания не выяснены', () => {
+  it('живой тест 29.10: склад 5000 м², ввоз и вывоз, 1С, 3000 позиций: не хватает вещей, материала, города, компании', () => {
     const profile: ClientProfile = {
       ...EMPTY,
       business: 'склад',
+      premises: 'склад',
       area: '5000 м²',
       scope: 'ввоз и вывоз',
+      itemCount: 'около 3000 позиций',
       has1C: true,
-      problemAgreed: true,
     };
 
     const minimum = handoffMinimum({ profile, companyName: null, companyAskable: true });
 
-    expect(minimum.missing).toEqual(['itemCount', 'company']);
+    expect(minimum.missing).toEqual(['items', 'material', 'city', 'company']);
   });
 
-  it('пустое название компании не считается', () => {
-    const minimum = handoffMinimum({ profile: FULL, companyName: '  ', companyAskable: true });
+  it('пустые строки не считаются', () => {
+    const minimum = handoffMinimum({
+      profile: { ...FULL, material: '  ', city: '' },
+      companyName: '  ',
+      companyAskable: true,
+    });
 
-    expect(minimum.missing).toEqual(['company']);
+    expect(minimum.missing).toEqual(['material', 'city', 'company']);
+  });
+
+  it('четвёртый вопрос цены даёт передачу без минимума (решение владельца 29.10.2026, второй круг)', () => {
+    expect(PRICE_ASKS_FOR_HANDOFF).toBe(4);
   });
 });
 
@@ -140,11 +177,11 @@ describe('handoff/minimum: компания для минимума', () => {
 
 describe('handoff/minimum: отчёт для менеджера', () => {
   it('что собрано и что не удалось выяснить, словами', () => {
-    const report = minimumReport({ profile: FULL, companyName: null });
+    const report = minimumReport({ profile: { ...FULL, city: null }, companyName: null });
 
     expect(report).toEqual({
-      collected: `${MINIMUM_LABELS.scope}, ${MINIMUM_LABELS.itemCount}, ${MINIMUM_LABELS.has1C}, ${MINIMUM_LABELS.problem}`,
-      missing: MINIMUM_LABELS.company,
+      collected: 'какие вещи, материал, примерное число вещей, тип помещения, есть ли 1С',
+      missing: 'город, название компании',
     });
   });
 

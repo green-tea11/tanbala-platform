@@ -159,6 +159,13 @@ describe('слияние чатов: выжимка клиента', () => {
 
     expect(merge(chats).profile).toMatchObject({
       problemAgreed: true,
+      items: null,
+      packaging: null,
+      material: null,
+      city: null,
+      premises: null,
+      turnover: null,
+      currentTracking: null,
       has1C: true,
       oneCName: 'УТ 11',
     });
@@ -200,6 +207,13 @@ describe('слияние чатов: выжимка клиента', () => {
       problem: 'старая задача',
       specifics: 'новое',
       problemAgreed: false,
+      items: null,
+      packaging: null,
+      material: null,
+      city: null,
+      premises: null,
+      turnover: null,
+      currentTracking: null,
     });
     expect(db.prepare('SELECT reason, updated_at_ms FROM client_profiles').all()).toEqual([
       { reason: 'новая причина', updated_at_ms: T0 + 20 },

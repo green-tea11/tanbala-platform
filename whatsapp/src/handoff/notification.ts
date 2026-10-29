@@ -1,3 +1,4 @@
+import { profileEntries } from '../agent/profile.js';
 import type { CompanySummary } from '../domain/company.js';
 import type {
   BacklogChat,
@@ -102,23 +103,11 @@ const LIMIT_PHRASES: Readonly<Record<BudgetScope, string>> = {
   global: 'исчерпан общий лимит бота на сутки (API_DAILY_LIMIT)',
 };
 
-type ProfileField = readonly [label: string, value: (profile: ClientProfile) => string | null];
-
-/** Поля выжимки по порядку плана: бизнес, площадь, что учитывать, число вещей, 1С, задача, особенности. */
-const PROFILE_FIELDS: readonly ProfileField[] = [
-  ['Бизнес', (profile) => profile.business],
-  ['Площадь', (profile) => profile.area],
-  ['Что учитывать', (profile) => profile.scope],
-  ['Число вещей', (profile) => profile.itemCount],
-  ['1С', (profile) => oneCWord(profile.has1C, profile.oneCName)],
-  ['Задача', (profile) => profile.problem],
-  ['Особенности', (profile) => profile.specifics],
-];
-
 /**
  * Текст уведомления на номер менеджера: имя и номер клиента, уровень интереса, выжимка и причина передачи.
  * Чистая функция, без LLM. Фиксированный шаблон: первая строка с причиной, затем имя, номер, ID чата в панели,
- * уровень и семь полей выжимки с пометкой «всё со слов клиента». Нет номера: «номер скрыт» и ID чата, по которому
+ * уровень и все поля выжимки (agent/profile.profileEntries: компания, вещи, материал, город, помещение, число вещей,
+ * 1С и остальное) с пометкой «всё со слов клиента». Нет номера: «номер скрыт» и ID чата, по которому
  * чат ищут в панели. Лимит (reason 'limit'): «бот замолчал в этом чате» с названием настройки, ID чата и номер те же.
  * При передаче (не лимит) после выжимки и пустой строки идут две строки о минимуме для оценки цены (решение владельца
  * 29.10.2026): что собрано и что выяснить не удалось (minimumLines), затем с данными о компании блок о компании
@@ -137,9 +126,8 @@ export function formatManagerNotification(input: ManagerNotificationInput): stri
     `Уровень интереса: ${LEVEL_WORDS[input.level]}`,
     '',
     'Выжимка (всё со слов клиента, не проверено):',
-    ...PROFILE_FIELDS.map(
-      ([label, value]) =>
-        `${label}: ${knownOr(value(input.profile), PROFILE_FIELD_MAX_LENGTH, NOT_KNOWN)}`,
+    ...profileEntries(input.profile).map(
+      ({ label, value }) => `${label}: ${knownOr(value, PROFILE_FIELD_MAX_LENGTH, NOT_KNOWN)}`,
     ),
     ...(input.reason === 'limit' ? [] : ['', ...minimumLines(input.profile, company)]),
     ...(company === null ? [] : ['', ...companyLines(company)]),
@@ -235,13 +223,6 @@ function phoneLine(phone: PhoneDigits | null, chatId: ChatId): string {
 
 function phoneDigits(phone: PhoneDigits | null): string {
   return phone === null ? '' : phone.replace(/\D/g, '');
-}
-
-/** Есть ли 1С словами; какая 1С (недоверенный текст) после «есть», чистка и предел длины у knownOr. */
-function oneCWord(has1C: boolean | null, oneCName: string | null): string | null {
-  if (has1C === null) return oneCName;
-  if (!has1C) return 'нет';
-  return oneCName === null ? 'есть' : `есть, ${oneCName}`;
 }
 
 function backlogLine(

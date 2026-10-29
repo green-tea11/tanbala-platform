@@ -1,4 +1,4 @@
-import { has1CText } from '../agent/profile.js';
+import { profileEntries } from '../agent/profile.js';
 import type { CompanySummary } from '../domain/company.js';
 import { BOT_NOTE_MAX_LENGTH } from '../handoff/bot-note.js';
 import { PANEL_TEXT_MAX_LENGTH } from '../messaging/outbox.js';
@@ -72,29 +72,22 @@ const PLACEHOLDERS: Readonly<Record<MessageKind, string>> = {
   other: '[сообщение другого вида]',
 };
 
-interface ProfileField {
+interface ProfileRow {
   readonly label: string;
-  readonly value: (profile: ClientProfile) => string | null;
+  readonly value: string | null;
 }
 
-const PROFILE_FIELDS: readonly ProfileField[] = [
-  { label: 'Бизнес', value: (profile) => profile.business },
-  { label: 'Площадь', value: (profile) => profile.area },
-  { label: 'Что учитывать', value: (profile) => profile.scope },
-  { label: 'Число вещей', value: (profile) => profile.itemCount },
-  { label: '1С', value: (profile) => has1CText(profile.has1C, profile.oneCName) },
-  { label: 'Задача', value: (profile) => profile.problem },
-  { label: 'Особенности', value: (profile) => profile.specifics },
-  {
-    label: 'Согласие, что трудность есть',
-    value: (profile) => (profile.problemAgreed ? 'да' : null),
-  },
-];
+/** Поля выжимки (agent/profile.profileEntries) и согласие, что трудность есть. */
+function profileRows(profile: ClientProfile): readonly ProfileRow[] {
+  return [
+    ...profileEntries(profile),
+    { label: 'Согласие, что трудность есть', value: profile.problemAgreed ? 'да' : null },
+  ];
+}
 
-function profileRow(field: ProfileField, profile: ClientProfile): SafeHtml {
-  const value = field.value(profile);
+function profileRow({ label, value }: ProfileRow): SafeHtml {
   const text = value === null ? '' : cleanText(value).trim();
-  return markup`<dt>${field.label}</dt><dd>${text === '' ? NOT_KNOWN : text}</dd>`;
+  return markup`<dt>${label}</dt><dd>${text === '' ? NOT_KNOWN : text}</dd>`;
 }
 
 function renderHandoff(handoff: OpenHandoff | null): SafeHtml {
@@ -154,7 +147,7 @@ function renderCard(model: ChatPageModel): SafeHtml {
 <dl class="facts">
 <dt>Статус</dt><dd>${controlLabel(chat.control)}</dd>
 <dt>Уровень интереса</dt><dd><span class="badge level-${chat.level}">${LEVEL_LABELS[chat.level]}</span></dd>
-${PROFILE_FIELDS.map((field) => profileRow(field, chat.profile))}
+${profileRows(chat.profile).map(profileRow)}
 <dt>Заметка для бота</dt><dd>${renderNote(model.note)}</dd>
 <dt>Открытая передача</dt><dd>${renderHandoff(model.openHandoff)}</dd>
 <dt>Последнее уведомление менеджеру</dt><dd>${renderLastNotification(model.lastNotification)}</dd>

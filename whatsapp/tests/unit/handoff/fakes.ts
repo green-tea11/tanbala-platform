@@ -235,6 +235,13 @@ export const FULL_PROFILE: ClientProfile = {
   problem: 'путаница с остатками',
   specifics: 'два склада',
   problemAgreed: false,
+  items: null,
+  packaging: null,
+  material: null,
+  city: null,
+  premises: null,
+  turnover: null,
+  currentTracking: null,
 };
 
 /** Чат клиента: по умолчанию бот ведёт, интерес тёплый, выжимка заполнена. */

@@ -12,7 +12,7 @@ import type {
   ReviewedText,
   TurnSignals,
 } from '../../../src/domain/types.js';
-import { PRICE_QUESTION_TEXTS } from '../../../src/pipeline/decide.js';
+import { safeQuestion } from '../../../src/pipeline/safe-questions.js';
 import { minimumFallback, priceSituation } from '../../../src/pipeline/price-gate.js';
 import {
   decideReply,
@@ -22,7 +22,7 @@ import {
 } from '../../../src/pipeline/reply-flow.js';
 
 // Правило минимума перед передачей по цене (решение владельца 29.10.2026) в коде: исход hot из-за вопроса цены, пока
-// минимума нет, чат не передаёт. Исключения: третий вопрос цены, отказ отвечать; просьба о человеке и жалоба это
+// минимума нет, чат не передаёт. Исключения: четвёртый вопрос цены, отказ отвечать; просьба о человеке и жалоба это
 // другие исходы. Агент поддельный, проверки кодом настоящие.
 
 const NOW = Date.UTC(2026, 9, 28, 9, 0, 0);
@@ -32,7 +32,7 @@ const CLIENT_28_10 =
 const HOT_PRICE_TEXT =
   'Да, мы проводим интеграцию с вашей 1С. Цена сильно зависит от объёма. Уточню у коллеги и вернусь к вам.';
 const MINIMUM_ANSWER =
-  'Да, мы проводим интеграцию с вашей 1С. Цена сильно зависит от объёма, сколько примерно вещей нужно учитывать? Это нужно, чтобы коллега сразу назвал ориентир.';
+  'Да, мы проводим интеграцию с вашей 1С. Ориентир коллега назовёт, когда поймём ваш объект. Какие вещи нужно учитывать?';
 
 const EMPTY: ClientProfile = {
   business: null,
@@ -44,9 +44,19 @@ const EMPTY: ClientProfile = {
   problem: null,
   specifics: null,
   problemAgreed: false,
+  items: null,
+  packaging: null,
+  material: null,
+  city: null,
+  premises: null,
+  turnover: null,
+  currentTracking: null,
 };
 
-/** Что оценка интереса узнала из сообщения 28.10: склад, ввоз и вывоз, 1С есть; числа вещей и компании нет. */
+/**
+ * Что оценка интереса узнала из сообщения 28.10: склад, ввоз и вывоз, 1С есть; вещей, материала, числа вещей, города
+ * и компании нет.
+ */
 const PROFILE_28_10: ClientProfile = {
   ...EMPTY,
   business: 'склад',
@@ -54,9 +64,22 @@ const PROFILE_28_10: ClientProfile = {
   scope: 'ввоз и вывоз',
   has1C: true,
   problemAgreed: true,
+  items: null,
+  packaging: null,
+  material: null,
+  city: null,
+  premises: 'склад',
+  turnover: null,
+  currentTracking: null,
 };
 
-const FULL: ClientProfile = { ...PROFILE_28_10, itemCount: 'около 3000' };
+const FULL: ClientProfile = {
+  ...PROFILE_28_10,
+  items: 'запчасти',
+  material: 'металл',
+  itemCount: 'около 3000',
+  city: 'Алматы',
+};
 
 const PRICE_NOW: TurnSignals = { priceAsked: true, refused: false };
 
@@ -175,9 +198,10 @@ describe('pipeline/reply-flow: передача по цене без миним�
     const feedback = r.draftReply.mock.calls[1]?.[1] ?? [];
     expect(feedback).toHaveLength(1);
     expect(feedback[0]).toMatch(/Передавать чат рано/);
-    expect(feedback[0]).toMatch(/не хватает: примерное число вещей/);
-    expect(feedback[0]).toMatch(/задай один вопрос: сколько примерно вещей нужно учитывать/);
-    expect(feedback[0]).toMatch(/чтобы коллега сразу назвал ориентир/);
+    expect(feedback[0]).toMatch(/не хватает: какие вещи, материал, примерное число вещей, город\./);
+    expect(feedback[0]).toMatch(/задай один вопрос: какие вещи клиент хочет учитывать/);
+    expect(feedback[0]).toContain('напиши «Ориентир коллега назовёт, когда поймём ваш объект.»');
+    expect(feedback[0]).not.toMatch(/чтобы коллега сразу назвал ориентир/);
   });
 
   it('в лог только ID чата, попытка, коды недостающего и число вопросов цены', async () => {
@@ -185,7 +209,12 @@ describe('pipeline/reply-flow: передача по цене без миним�
 
     expect(r.logs).toContainEqual({
       level: 'info',
-      context: { chatId: CHAT_ID, attempt: 1, missing: ['itemCount'], priceAsks: 1 },
+      context: {
+        chatId: CHAT_ID,
+        attempt: 1,
+        missing: ['items', 'material', 'itemCount', 'city'],
+        priceAsks: 1,
+      },
     });
     expect(JSON.stringify(r.logs)).not.toContain('склад');
   });
@@ -205,20 +234,20 @@ describe('pipeline/reply-flow: передача по цене без миним�
   it('повтор снова hot: уходит фиксированный вопрос о первом недостающем, чат у бота', async () => {
     const r = await run({ drafts: [hot(), hot()] });
 
-    expect(r.verdict).toEqual(sentWith(PRICE_QUESTION_TEXTS.itemCount, { signals: PRICE_NOW }));
+    expect(r.verdict).toEqual(sentWith(safeQuestion('items', true), { signals: PRICE_NOW }));
     expect(r.calls).toEqual(['draft', 'assess', 'save', 'draft:retry']);
   });
 
   it('повтор не получился (сбой LLM): тот же фиксированный вопрос, а не передача', async () => {
     const r = await run({ drafts: [hot(), { ok: false, failure: 'unavailable' }] });
 
-    expect(r.verdict).toEqual(sentWith(PRICE_QUESTION_TEXTS.itemCount, { signals: PRICE_NOW }));
+    expect(r.verdict).toEqual(sentWith(safeQuestion('items', true), { signals: PRICE_NOW }));
   });
 
   it('ответ повтора не прошёл проверку: фиксированный вопрос вместо check_failed', async () => {
     const r = await run({ drafts: [hot(), answer()], problems: ['Назван срок'] });
 
-    expect(r.verdict).toEqual(sentWith(PRICE_QUESTION_TEXTS.itemCount, { signals: PRICE_NOW }));
+    expect(r.verdict).toEqual(sentWith(safeQuestion('items', true), { signals: PRICE_NOW }));
   });
 
   it('не хватает только компании: фиксированный вопрос о названии отмечает вопрос о компании', async () => {
@@ -229,7 +258,7 @@ describe('pipeline/reply-flow: передача по цене без миним�
     });
 
     expect(r.verdict).toEqual(
-      sentWith(PRICE_QUESTION_TEXTS.company, { companyQuestion: 'name', signals: PRICE_NOW }),
+      sentWith(safeQuestion('company', true), { companyQuestion: 'name', signals: PRICE_NOW }),
     );
   });
 });
@@ -253,8 +282,14 @@ describe('pipeline/reply-flow: когда передача по цене раз�
     expect(r.verdict).toMatchObject({ kind: 'handoff', notice: { reason: 'hot' } });
   });
 
-  it('третий вопрос цены: hot передаёт без минимума', async () => {
-    const r = await run({ drafts: [hot()], progress: { priceAsks: 2, refused: false } });
+  it('третий вопрос цены без минимума: ещё рано (решение 29.10.2026, второй круг)', async () => {
+    const r = await run({ drafts: [hot(), answer()], progress: { priceAsks: 2, refused: false } });
+
+    expect(r.verdict).toEqual(sentWith(MINIMUM_ANSWER, { signals: PRICE_NOW }));
+  });
+
+  it('четвёртый вопрос цены: hot передаёт без минимума', async () => {
+    const r = await run({ drafts: [hot()], progress: { priceAsks: 3, refused: false } });
 
     expect(r.verdict).toMatchObject({ kind: 'handoff', notice: { reason: 'hot' } });
   });
@@ -265,8 +300,8 @@ describe('pipeline/reply-flow: когда передача по цене раз�
     expect(r.verdict).toEqual(sentWith(MINIMUM_ANSWER, { signals: PRICE_NOW }));
   });
 
-  it('третий вопрос цены, а модель ответила answer: передача hot с фразой о цене, без проверки текста', async () => {
-    const r = await run({ drafts: [answer()], progress: { priceAsks: 2, refused: false } });
+  it('четвёртый вопрос цены, а модель ответила answer: передача hot с фразой о цене, без проверки текста', async () => {
+    const r = await run({ drafts: [answer()], progress: { priceAsks: 3, refused: false } });
 
     expect(r.verdict).toEqual({ kind: 'handoff', notice: { reason: 'hot', aboutPrice: true } });
     expect(r.calls).toEqual(['draft', 'assess', 'save', 'save']);
@@ -351,11 +386,11 @@ describe('pipeline/reply-flow: aboutPrice у answer как запасной си
     expect(r.verdict).toEqual(sentWith(MINIMUM_ANSWER, { signals: PRICE_NOW }));
   });
 
-  it('оценка не получилась, два вопроса цены уже было, answer с aboutPrice: третий, передача', async () => {
+  it('оценка не получилась, три вопроса цены уже было, answer с aboutPrice: четвёртый, передача', async () => {
     const r = await run({
       drafts: [answer(MINIMUM_ANSWER, true)],
       assessmentFails: true,
-      progress: { priceAsks: 2, refused: false },
+      progress: { priceAsks: 3, refused: false },
     });
 
     expect(r.verdict).toEqual(HOT_PRICE_VERDICT);
@@ -397,7 +432,7 @@ describe('pipeline/reply-flow: что записать после ответа',
 });
 
 describe('pipeline/price-gate: защитные ветки', () => {
-  it('минимум собран, а фиксированный вопрос всё же нужен: вопрос о числе вещей', () => {
+  it('минимум собран, а фиксированный вопрос всё же нужен: вопрос о вещах', () => {
     const situation = priceSituation(
       { chatId: CHAT_ID, history: [], profile: FULL, companyName: 'ТОО Склад' },
       null,
@@ -405,7 +440,7 @@ describe('pipeline/price-gate: защитные ветки', () => {
     );
 
     expect(situation.minimum.missing).toEqual([]);
-    expect(minimumFallback(situation).text).toBe(PRICE_QUESTION_TEXTS.itemCount);
+    expect(minimumFallback(situation).text).toBe(safeQuestion('items', true));
   });
 });
 
@@ -443,7 +478,7 @@ describe('pipeline/reply-flow: указание коллеги в проверк
 
   it.each<[string, Partial<Case>]>([
     ['отказ отвечать и вопрос цены', { signals: { priceAsked: true, refused: true } }],
-    ['третий вопрос цены', { progress: { priceAsks: 2, refused: false } }],
+    ['четвёртый вопрос цены', { progress: { priceAsks: 3, refused: false } }],
   ])(
     '%s при заметке с ценой: чат не передаётся, уходит ответ с суммой из заметки (ревью, второй круг)',
     async (_name, extra) => {

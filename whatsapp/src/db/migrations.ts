@@ -250,6 +250,21 @@ CREATE INDEX rejected_drafts_at ON rejected_drafts (at_ms);
 `;
 
 /**
+ * Версия 11 (пункт 5 задания 29.10.2026, шире квалификация). client_profiles: какие вещи (items), в чём (packaging),
+ * материал (material), город (city), тип помещения (premises), как часто движутся (turnover), как учитывают сейчас
+ * (current_tracking). Только ADD COLUMN без значения по умолчанию: старые строки получают NULL («не выяснили»).
+ */
+const SCHEMA_V11 = `
+ALTER TABLE client_profiles ADD COLUMN items TEXT;
+ALTER TABLE client_profiles ADD COLUMN packaging TEXT;
+ALTER TABLE client_profiles ADD COLUMN material TEXT;
+ALTER TABLE client_profiles ADD COLUMN city TEXT;
+ALTER TABLE client_profiles ADD COLUMN premises TEXT;
+ALTER TABLE client_profiles ADD COLUMN turnover TEXT;
+ALTER TABLE client_profiles ADD COLUMN current_tracking TEXT;
+`;
+
+/**
  * Миграции по порядку: элемент i переводит схему с версии i на i + 1.
  * Выпущенную миграцию не править: изменения схемы только новой версией в конце списка.
  */
@@ -264,6 +279,7 @@ const MIGRATIONS: readonly string[] = [
   SCHEMA_V8,
   SCHEMA_V9,
   SCHEMA_V10,
+  SCHEMA_V11,
 ];
 
 /**

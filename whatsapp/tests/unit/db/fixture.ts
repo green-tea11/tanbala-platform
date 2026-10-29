@@ -24,6 +24,13 @@ export const EMPTY_PROFILE: ClientProfile = {
   problem: null,
   specifics: null,
   problemAgreed: false,
+  items: null,
+  packaging: null,
+  material: null,
+  city: null,
+  premises: null,
+  turnover: null,
+  currentTracking: null,
 };
 
 /** Заполненная выжимка; overrides меняют отдельные поля. */
@@ -38,6 +45,13 @@ export function profileOf(overrides: Partial<ClientProfile> = {}): ClientProfile
     problem: 'пересорт при приёмке',
     specifics: 'два склада',
     problemAgreed: true,
+    items: 'одежда',
+    packaging: 'поштучно',
+    material: 'ткань',
+    city: 'Алматы',
+    premises: 'магазин',
+    turnover: 'каждый день',
+    currentTracking: 'в 1С вручную',
     ...overrides,
   };
 }
