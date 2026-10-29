@@ -63,7 +63,8 @@ export type CheckCode =
   | 'empty'
   | 'homoglyph'
   | 'voice'
-  | 'estimate_phrase';
+  | 'estimate_phrase'
+  | 'filler';
 
 /** Одно нарушение: код и понятное описание с фрагментом текста. */
 export interface CheckFinding {
@@ -393,6 +394,20 @@ export function checkEstimatePhrase(text: string, priceTurn: boolean): readonly 
   return scan(normalize(text), [ESTIMATE_PATTERN], 'estimate_phrase', ESTIMATE_REASON);
 }
 
+/**
+ * Пустое вступление в начале ответа (решение владельца 29.10.2026 вечером): «Понятно», «Понятно, у вас…». Узко: только
+ * первое слово сообщения; «Понятно ли…» это вопрос, а «понятно» внутри фразы не вступление.
+ */
+const FILLER_START = /^\s*понятно(?!\p{L})(?!\s+ли(?!\p{L}))/iu;
+
+const FILLER_REASON =
+  'пустое вступление: не начинай ответ с «Понятно» и не пересказывай слова клиента, сразу полезная фраза или вопросы';
+
+/** Ответ не начинается с «Понятно». */
+export function checkFiller(text: string): readonly CheckFinding[] {
+  return FILLER_START.test(text) ? [{ code: 'filler', detail: FILLER_REASON }] : [];
+}
+
 /** Нет ссылок: в чате их не присылают совсем. Почта не ссылка. Белый список хостов пуст по умолчанию. */
 export function checkLinks(
   text: string,
@@ -565,6 +580,7 @@ export function runCodeChecks(
     ...checkContacts(text, options.ownPhone),
     ...checkHomoglyphs(form),
     ...checkLength(text),
+    ...checkFiller(text),
     ...(options.priceTurn === false ? checkEstimatePhrase(text, false) : []),
   ];
 }
