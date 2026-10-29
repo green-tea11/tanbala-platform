@@ -226,6 +226,7 @@ function replyCallData(
     progress: context.progress ?? NO_PROGRESS,
     hasNote: context.note != null,
     notePrice: context.note != null && priceAmountsOf(context.note.text).length > 0,
+    clientMessages: context.history.filter((message) => message.author === 'client').length,
   });
   const parts = [price, companyReplyData(company), profileText(context.profile), remarks];
   return parts.filter((part) => part !== null).join('\n\n');

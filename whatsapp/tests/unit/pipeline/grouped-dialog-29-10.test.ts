@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ClientProfile } from '../../../src/domain/types.js';
-import { MINIMUM_HANDOFF_TEXT } from '../../../src/handoff/minimum.js';
+import { CAP_HANDOFF_TEXT, MINIMUM_HANDOFF_TEXT } from '../../../src/handoff/minimum.js';
 import { runCodeChecks, normalizeDraft } from '../../../src/checks/code-checks.js';
 import type { PhoneDigits } from '../../../src/domain/types.js';
 import { createScenario, type Scenario } from './company-scenarios-harness.js';
@@ -141,5 +141,67 @@ describe('диалог 29.10.2026 вечером: вопросы группам�
     // Сообщение передачи проверено вторым вызовом с подписью «сообщение о передаче».
     expect(fifth.llm.purposes()).toEqual(['reply', 'interest', 'review']);
     expect(fifth.data('review')).toContain('Черновик сообщения о передаче чата коллеге');
+  });
+});
+
+describe('предел пять сообщений клиента (решение владельца 29.10.2026 вечером)', () => {
+  it('реплики клиента из теста владельца как есть: минимума нет и к пятому сообщению, передача hot на пятом', async () => {
+    const s = createScenario();
+    const material = 'Подскажите, есть ли в товаре металл или жидкости?';
+    const count =
+      'Подскажите, в каком городе склад и сколько примерно паллет и коробок проходит через него за месяц?';
+    const P3_ONLY: Partial<ClientProfile> = {
+      ...P2,
+      items: 'товар',
+      packaging: 'паллеты и коробки',
+    };
+    const P4_ONLY: Partial<ClientProfile> = { ...P3_ONLY, material: 'металл есть, жидкостей нет' };
+    const P5_ONLY: Partial<ClientProfile> = { ...P4_ONLY, itemCount: 'около 5000 в месяц' };
+
+    const first = [
+      await s.say(
+        'Здравствуйте',
+        turn({ outcome: 'answer', text: GREETING, companyQuestion: 'name' }, {}),
+      ),
+      await s.say(
+        'Компания tyri, занимаемся складами и отгрузками как работает ваше оборудование',
+        turn(HOW_IT_WORKS, { companyName: 'tyri', profile: P2 }),
+      ),
+      await s.say('У нас полета и коробки с товаром', turn(material, { profile: P3_ONLY })),
+      await s.say('Метал имеется жидкости нет', turn(count, { profile: P4_ONLY })),
+    ];
+    const fifth = await s.say(
+      'Около 5000 тысяч в месяц',
+      turn('Подскажите, в каком городе склад и есть ли у вас 1С?', { profile: P5_ONLY }),
+    );
+
+    expect(first.map((t) => t.outcome)).toEqual(Array(4).fill({ kind: 'replied' }));
+    expect(fifth.outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
+    expect(fifth.toClient).toEqual([CAP_HANDOFF_TEXT]);
+    expect(s.storage.chats.getById(s.chatId())?.level).toBe('hot');
+    const notice = fifth.toManager[0] ?? '';
+    for (const line of [
+      'клиент назвал «tyri»',
+      'Вещи: товар',
+      'Материал: металл есть, жидкостей нет',
+      'Число вещей: около 5000 в месяц',
+      'Не удалось выяснить: город, есть ли 1С',
+    ]) {
+      expect(notice).toContain(line);
+    }
+  });
+
+  it('пять коротких сообщений без минимума: передача на пятом, на четвёртом ещё нет', async () => {
+    const s = createScenario();
+    const ask = 'Подскажите, какие вещи нужно учитывать и в чём они лежат?';
+    const turns = [];
+    for (const text of ['Здравствуйте', 'Интересно', 'Ну', 'Пока не знаю', 'Расскажите']) {
+      turns.push(await s.say(text, turn(ask, {})));
+    }
+
+    expect(turns.slice(0, 4).map((t) => t.outcome)).toEqual(Array(4).fill({ kind: 'replied' }));
+    expect(turns[4]?.outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
+    expect(turns[4]?.toClient).toEqual([CAP_HANDOFF_TEXT]);
+    expect(turns[4]?.toManager[0]).toContain('Для оценки цены собрано: ничего');
   });
 });

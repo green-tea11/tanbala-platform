@@ -171,6 +171,24 @@ describe('agent/price-data: минимум собран и исключения'
     expect(returned).not.toMatch(/назвал всё, чего не хватает/);
   });
 
+  it('пятое сообщение клиента без минимума, передач не было: передать сейчас с фразой «Спасибо! Уточню...»', () => {
+    const input = { profile: EMPTY_PROFILE, company: { kind: 'off' } as const, companyName: null };
+    const fifth = priceReplyData({ ...input, progress: FRESH, clientMessages: 5 });
+    const fourth = priceReplyData({ ...input, progress: FRESH, clientMessages: 4 });
+    const returned = priceReplyData({
+      ...input,
+      progress: { ...FRESH, handedOff: true },
+      clientMessages: 6,
+    });
+
+    expect(fifth).toMatch(
+      /Клиент написал уже пять сообщений или больше, а минимума нет.*передай чат сейчас \(hot\)/,
+    );
+    expect(fifth).toContain('«Спасибо! Уточню у коллеги и вернусь к вам.»');
+    expect(fourth).not.toMatch(/пять сообщений/);
+    expect(returned).not.toMatch(/пять сообщений/);
+  });
+
   it('компанию спросить нельзя: она не мешает и не упоминается среди недостающего', () => {
     const data = priceReplyData({
       profile: FULL,

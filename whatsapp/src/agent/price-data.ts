@@ -1,6 +1,8 @@
 import type { CompanyPrompt } from '../domain/company.js';
 import type { ChatProgress, ClientProfile } from '../domain/types.js';
 import {
+  CAP_HANDOFF_TEXT,
+  CLIENT_MESSAGES_FOR_HANDOFF,
   companyAskable,
   ESTIMATE_LATER,
   handoffMinimum,
@@ -26,12 +28,15 @@ export interface PriceDataInput {
    * передавать чат ни при собранном минимуме, ни при отказе отвечать, ни при четвёртом вопросе (код тоже не передаёт).
    */
   readonly notePrice?: boolean;
+  /** Сколько сообщений клиента в переписке (вместе с последним); нет поля => не считается. */
+  readonly clientMessages?: number;
 }
 
 const COLLECTED_ALL =
   'Минимум для передачи по цене собран: если клиент спрашивает цену, сроки или договор, передай чат (hot).';
 /** Чат ещё не передавался (решение владельца 29.10.2026 вечером): собранный минимум передаёт чат сразу. */
 const COLLECTED_ALL_FIRST = `Минимум для передачи собран, и чат ещё не передавался коллеге: передай чат сейчас (hot), даже если клиент не спрашивает цену. Ответь на вопрос клиента, если он есть и ответ есть в документах, затем напиши «${MINIMUM_HANDOFF_TEXT}»; если клиент спрашивает цену, вместо этого «Цена сильно зависит от объёма. Уточню у коллеги и вернусь к вам.». Вопросов не задавай.`;
+const CAP_NOW = `Клиент написал уже пять сообщений или больше, а минимума нет, и чат ещё не передавался коллеге: передай чат сейчас (hot), даже если клиент не спрашивает цену. Ответь на вопрос клиента, если он есть и ответ есть в документах, затем напиши «${CAP_HANDOFF_TEXT}»; если клиент спрашивает цену, вместо этого «Цена сильно зависит от объёма. Уточню у коллеги и вернусь к вам.». Вопросов не задавай.`;
 const COMPLETES_NOW = `Если в последнем сообщении клиент назвал всё, чего не хватает, минимум собран: передай чат сейчас (hot) с фразой «${MINIMUM_HANDOFF_TEXT}», вопросов не задавай.`;
 const ALWAYS_NOW =
   'Сразу, при любом минимуме, чат передаётся, если клиент прямо просит живого человека (asked_human) или жалуется (complaint).';
@@ -82,6 +87,16 @@ function missingLines(
 }
 
 /**
+ * Минимума нет, а чат ещё не передавался: что делать, если клиент назвал недостающее сейчас, и передача по пределу
+ * сообщений клиента (CLIENT_MESSAGES_FOR_HANDOFF).
+ */
+function firstLines(input: PriceDataInput, first: boolean): string[] {
+  if (!first) return [];
+  const capped = (input.clientMessages ?? 0) >= CLIENT_MESSAGES_FOR_HANDOFF;
+  return capped ? [CAP_NOW] : [COMPLETES_NOW];
+}
+
+/**
  * Пока чат ни разу не передавался (progress.handedOff), собранный минимум велит передать чат сейчас, даже без вопроса
  * цены, а при недостающем строка говорит, что делать, если клиент назвал его в последнем сообщении (решение владельца
  * 29.10.2026 вечером; держит код: pipeline/auto-handoff.ts).
@@ -102,10 +117,7 @@ export function priceReplyData(input: PriceDataInput): string {
   const minimumLines =
     minimum.missing.length === 0
       ? [notePrice ? COLLECTED_ALL_NOTE : first ? COLLECTED_ALL_FIRST : COLLECTED_ALL]
-      : [
-          ...missingLines(input, minimum.collected, minimum.missing),
-          ...(first ? [COMPLETES_NOW] : []),
-        ];
+      : [...missingLines(input, minimum.collected, minimum.missing), ...firstLines(input, first)];
   const noteLines = notePrice ? [NOTE_HAS_PRICE] : input.hasNote === true ? [NOTE_PRICE] : [];
   return [
     ...minimumLines,

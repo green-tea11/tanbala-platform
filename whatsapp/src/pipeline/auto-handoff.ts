@@ -1,19 +1,30 @@
 import type { ConversationContext } from '../agent/agent.js';
 import type { StoredMessage } from '../domain/types.js';
-import { MINIMUM_HANDOFF_TEXT } from '../handoff/minimum.js';
+import {
+  CAP_HANDOFF_TEXT,
+  CLIENT_MESSAGES_FOR_HANDOFF,
+  MINIMUM_HANDOFF_TEXT,
+} from '../handoff/minimum.js';
 import { HOT_PRICE_HANDOFF_TEXT } from '../messaging/outbox.js';
 import type { PriceSituation } from './price-gate.js';
 
 /**
- * Почему ход кончается передачей hot, хотя клиент не спрашивал цену (решение владельца 29.10.2026 вечером): минимум для
- * передачи собран, а чат ещё ни разу не передавался менеджеру.
+ * Почему ход кончается передачей hot, хотя клиент не спрашивал цену (решение владельца 29.10.2026 вечером), пока чат
+ * ни разу не передавался менеджеру: minimum, если минимум для передачи собран; message_cap, если минимума нет, а клиент
+ * написал уже пятое сообщение (больше пяти сообщений до передачи клиент писать не должен).
  */
-export type AutoHandoff = 'minimum';
+export type AutoHandoff = 'minimum' | 'message_cap';
+
+/** Сколько сообщений клиента в переписке (окно истории): с начала чата, передач в нём ещё не было. */
+export function clientMessageCount(history: readonly StoredMessage[]): number {
+  return history.filter((message) => message.author === 'client').length;
+}
 
 /**
  * Передача без вопроса цены, если она положена в этом ходе: только пока чат ни разу не передавался (по любой причине,
  * ChatProgress.handedOff). После возврата боту, с заметкой или без, действуют прежние правила: передача по цене, просьба о
- * человеке, отказ отвечать, жалоба, четвёртый вопрос цены. Минимум по выжимке из оценки этого хода (PriceSituation).
+ * человеке, отказ отвечать, жалоба, четвёртый вопрос цены. Минимум по выжимке из оценки этого хода (PriceSituation);
+ * собранный минимум главнее предела сообщений. Сообщения клиента считаются в окне истории, в нём и текущая пачка.
  */
 export function autoHandoffOf(
   context: ConversationContext,
@@ -21,12 +32,17 @@ export function autoHandoffOf(
 ): AutoHandoff | null {
   // Заметка для бота бывает только после возврата чата: значит, чат уже передавался.
   if (context.progress?.handedOff === true || context.note != null) return null;
-  return price.minimum.missing.length === 0 ? 'minimum' : null;
+  if (price.minimum.missing.length === 0) return 'minimum';
+  return clientMessageCount(context.history) >= CLIENT_MESSAGES_FOR_HANDOFF ? 'message_cap' : null;
 }
 
-/** Фраза передачи: при вопросе цены фраза о цене, иначе «Спасибо, этого хватит, чтобы коллега назвал ориентир...». */
-export function autoHandoffPhrase(_kind: AutoHandoff, priceTurn: boolean): string {
-  return priceTurn ? HOT_PRICE_HANDOFF_TEXT : MINIMUM_HANDOFF_TEXT;
+/**
+ * Фраза передачи: при вопросе цены фраза о цене; по минимуму «Спасибо, этого хватит, чтобы коллега назвал ориентир...»;
+ * по пределу сообщений «Спасибо! Уточню у коллеги и вернусь к вам.».
+ */
+export function autoHandoffPhrase(kind: AutoHandoff, priceTurn: boolean): string {
+  if (priceTurn) return HOT_PRICE_HANDOFF_TEXT;
+  return kind === 'minimum' ? MINIMUM_HANDOFF_TEXT : CAP_HANDOFF_TEXT;
 }
 
 /** Признак вопроса в словах клиента: знак вопроса, вопросительное слово или просьба рассказать. */

@@ -7,13 +7,18 @@ import type {
   PhoneDigits,
   StoredMessage,
 } from '../../../src/domain/types.js';
-import { MINIMUM_HANDOFF_TEXT } from '../../../src/handoff/minimum.js';
+import {
+  CAP_HANDOFF_TEXT,
+  CLIENT_MESSAGES_FOR_HANDOFF,
+  MINIMUM_HANDOFF_TEXT,
+} from '../../../src/handoff/minimum.js';
 import { HOT_PRICE_HANDOFF_TEXT } from '../../../src/messaging/outbox.js';
 import {
   answerPartOf,
   autoHandoffOf,
   autoHandoffPhrase,
   clientAsksNow,
+  clientMessageCount,
 } from '../../../src/pipeline/auto-handoff.js';
 import { priceSituation } from '../../../src/pipeline/price-gate.js';
 
@@ -88,6 +93,49 @@ describe('pipeline/auto-handoff: когда ход кончается перед
     expect(
       due(context(FULL, { companyName: null, company: { kind: 'unknown', askName: true } })),
     ).toBeNull();
+  });
+});
+
+describe('pipeline/auto-handoff: пятое сообщение клиента без минимума (решение владельца 29.10.2026 вечером)', () => {
+  /** Переписка: n сообщений клиента, после каждого, кроме последнего, ответ бота. */
+  function dialog(clientMessages: number): StoredMessage[] {
+    return Array.from({ length: clientMessages }, (_, index) => [
+      message(index * 2 + 1, 'client', `сообщение ${index + 1}`),
+      ...(index + 1 < clientMessages ? [message(index * 2 + 2, 'bot', 'Подскажите?')] : []),
+    ]).flat();
+  }
+
+  it('предел пять сообщений клиента; считаются только сообщения клиента', () => {
+    expect(CLIENT_MESSAGES_FOR_HANDOFF).toBe(5);
+    expect(clientMessageCount(dialog(5))).toBe(5);
+    expect(clientMessageCount([message(1, 'bot', 'а'), message(2, 'human_phone', 'б')])).toBe(0);
+  });
+
+  it('пятое сообщение, минимума нет, передач не было: передача по пределу', () => {
+    expect(due(context(EMPTY, { history: dialog(5) }))).toBe('message_cap');
+    expect(due(context(EMPTY, { history: dialog(7) }))).toBe('message_cap');
+  });
+
+  it('четвёртое сообщение: ещё нет; минимум собран: передача по минимуму, а не по пределу', () => {
+    expect(due(context(EMPTY, { history: dialog(4) }))).toBeNull();
+    expect(due(context(FULL, { history: dialog(5) }))).toBe('minimum');
+  });
+
+  it('чат уже передавался: предел не действует', () => {
+    const progress = { priceAsks: 0, refused: false, handedOff: true };
+    expect(due(context(EMPTY, { history: dialog(6), progress }))).toBeNull();
+  });
+
+  it('фраза передачи по пределу «Спасибо! Уточню у коллеги и вернусь к вам.», при вопросе цены фраза о цене', () => {
+    expect(CAP_HANDOFF_TEXT).toBe('Спасибо! Уточню у коллеги и вернусь к вам.');
+    expect(autoHandoffPhrase('message_cap', false)).toBe(CAP_HANDOFF_TEXT);
+    expect(autoHandoffPhrase('message_cap', true)).toBe(HOT_PRICE_HANDOFF_TEXT);
+    expect(
+      runCodeChecks(normalizeDraft(CAP_HANDOFF_TEXT), {
+        ownPhone: '' as PhoneDigits,
+        clientText: '',
+      }),
+    ).toEqual([]);
   });
 });
 
