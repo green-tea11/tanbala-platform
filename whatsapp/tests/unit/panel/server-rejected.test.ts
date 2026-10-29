@@ -89,7 +89,10 @@ describe('панель: отклонённые черновики в карто�
 
   it('без входа страница чата не открывается и черновики не видны', async () => {
     const h = createHarness({
-      data: { chats: [makeChat(1)], rejectedDrafts: [rejected(1, { draft: 'Секретный черновик' })] },
+      data: {
+        chats: [makeChat(1)],
+        rejectedDrafts: [rejected(1, { draft: 'Секретный черновик' })],
+      },
     });
 
     const response = await h.request({ url: '/chats/1' });

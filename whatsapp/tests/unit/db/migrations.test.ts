@@ -483,7 +483,9 @@ describe('схема версии 10: отклонённые черновики'
     const db = useMigratedDb();
 
     const names = db
-      .prepare("SELECT name FROM sqlite_schema WHERE type = 'index' AND tbl_name = 'rejected_drafts'")
+      .prepare(
+        "SELECT name FROM sqlite_schema WHERE type = 'index' AND tbl_name = 'rejected_drafts'",
+      )
       .pluck()
       .all();
 

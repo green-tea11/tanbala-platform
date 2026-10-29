@@ -543,11 +543,7 @@ describe('pipeline/reply-flow: ранняя передача при заметк
 
 describe('pipeline/price-gate: фиксированный вопрос не повторяет прошлый вопрос бота', () => {
   it('прошлым сообщением бот спросил о вещах: вопрос о следующем недостающем', () => {
-    const situation = priceSituation(
-      { chatId: CHAT_ID, history: [], profile: EMPTY },
-      null,
-      hot(),
-    );
+    const situation = priceSituation({ chatId: CHAT_ID, history: [], profile: EMPTY }, null, hot());
 
     expect(minimumFallback(situation, 'Подскажите, какие вещи нужно учитывать?').text).toBe(
       safeQuestion('material', true),

@@ -34,11 +34,11 @@ export const interestSchema = z.object({
   level: z.enum(['cold', 'warm', 'hot']).describe('Уровень интереса клиента: cold, warm или hot.'),
   business: z.string().describe('Чем занимается компания клиента; иначе null.').nullable(),
   items: z.string().describe('Какие вещи клиент хочет учитывать; иначе null.').nullable(),
-  packaging: z
+  packaging: z.string().describe('В чём вещи: коробки, паллеты, поштучно; иначе null.').nullable(),
+  material: z
     .string()
-    .describe('В чём вещи: коробки, паллеты, поштучно; иначе null.')
+    .describe('Материал вещей (металл, жидкости и другое); иначе null.')
     .nullable(),
-  material: z.string().describe('Материал вещей (металл, жидкости и другое); иначе null.').nullable(),
   city: z.string().describe('Город объекта; иначе null.').nullable(),
   premises: z
     .string()
@@ -156,7 +156,8 @@ function cleaned(fresh: string | null | undefined): string | null {
  * пометкой: прямые слова клиента снимают «вероятно», опровержение заменяет вывод.
  */
 function mergeFact<T>(fresh: T | null, freshInferred: boolean, previous: Fact<T>): Fact<T> {
-  if (fresh === null) return { value: previous.value, inferred: previous.value !== null && previous.inferred };
+  if (fresh === null)
+    return { value: previous.value, inferred: previous.value !== null && previous.inferred };
   if (freshInferred && previous.value !== null && !previous.inferred) return previous;
   return { value: fresh, inferred: freshInferred };
 }
@@ -217,7 +218,10 @@ function has1COf(
 }
 
 /** Поля выжимки с пометками: что модель вывела (marked) против прежнего (previous.inferred). */
-function profileFacts(raw: RawInterest, previous: ClientProfile): Omit<ClientProfile, 'problemAgreed'> {
+function profileFacts(
+  raw: RawInterest,
+  previous: ClientProfile,
+): Omit<ClientProfile, 'problemAgreed'> {
   const marked = new Set(raw.inferred ?? []);
   const was = new Set(previous.inferred);
   const fact = <T>(field: ProfileFact, value: T | null): Fact<T> => ({
@@ -230,8 +234,7 @@ function profileFacts(raw: RawInterest, previous: ClientProfile): Omit<ClientPro
       mergeFact(cleaned(raw[field]), marked.has(field), fact(field, previous[field])),
     ]),
   );
-  const textOf = (field: TextFact): Fact<string> =>
-    texts.get(field) ?? fact<string>(field, null);
+  const textOf = (field: TextFact): Fact<string> => texts.get(field) ?? fact<string>(field, null);
   const has1C = has1COf(
     { value: raw.has1C, inferred: marked.has('has1C') },
     fact('has1C', previous.has1C),
