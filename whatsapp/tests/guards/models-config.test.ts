@@ -23,10 +23,10 @@ describe('config/models.json', () => {
     },
   );
 
-  it('ответ и решение о передаче на Sonnet, проверка, оценка интереса и логотип на Haiku (решение владельца)', () => {
+  it('ответ, проверка и оценка интереса на Sonnet, логотип на Haiku (решение 29.10.2026)', () => {
     expect(config.reply).toBe('claude-sonnet-5-5');
-    expect(config.review).toBe('claude-haiku-5-5');
-    expect(config.interest).toBe('claude-haiku-5-5');
+    expect(config.review).toBe('claude-sonnet-5-5');
+    expect(config.interest).toBe('claude-sonnet-5-5');
     expect(config.logo).toBe('claude-haiku-5-5');
   });
 

@@ -115,8 +115,8 @@ export interface AgentDeps {
 export const HISTORY_MESSAGES = 30;
 
 /**
- * Ответ, проверка и оценка короткие (две или три фразы, несколько полей), но размышления Haiku 5.5 и Sonnet 5.5
- * входят в max_tokens: запас, чтобы не получить truncated.
+ * Ответ, проверка и оценка короткие (две или три фразы, несколько полей), но размышления Sonnet 5.5 (и Haiku 5.5 у
+ * logo) входят в max_tokens: запас, чтобы не получить truncated.
  */
 const MAX_TOKENS = 4096;
 
@@ -353,7 +353,8 @@ function createAsk(deps: AgentDeps): Ask {
 }
 
 /**
- * Создаёт агента поверх LlmClient. Модели из config/models.json: ответ на Sonnet, проверка и оценка интереса на Haiku.
+ * Создаёт агента поверх LlmClient. Модели из config/models.json: ответ, проверка и оценка интереса на Sonnet, logo на
+ * Haiku.
  * Все вызовы: system = buildSystem(knowledge, purpose) (знания с кэшем, затем инструкция вызова без кэша; блок
  * знаний у трёх вызовов один и тот же, поэтому кэш общий); turns = buildTurns(history, HISTORY_MESSAGES, данные
  * вызова): данные в последней реплике user в блоке «данные». Сбой LLM возвращается как есть, значением.

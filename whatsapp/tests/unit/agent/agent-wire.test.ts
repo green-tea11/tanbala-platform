@@ -9,14 +9,15 @@ import { context, EMPTY_PROFILE, KNOWLEDGE, SILENT_LOGGER } from './fakes.js';
 // Агент с настоящим адаптером Anthropic и SDK, но с поддельным fetch: видно, что именно уйдёт по сети
 // (тела трёх вызовов), а сама сеть не трогается.
 
-// Модели как в config/models.json: ответ на Sonnet 5.5, проверка и оценка интереса на Haiku 5.5.
+// Модели как в config/models.json: ответ, проверка и оценка интереса на Sonnet 5.5, логотип на Haiku 5.5.
 const REPLY_MODEL = 'claude-sonnet-5-5';
-const CHECK_MODEL = 'claude-haiku-5-5';
+const CHECK_MODEL = 'claude-sonnet-5-5';
+const LOGO_MODEL = 'claude-haiku-5-5';
 const MODELS = {
   reply: REPLY_MODEL,
   review: CHECK_MODEL,
   interest: CHECK_MODEL,
-  logo: CHECK_MODEL,
+  logo: LOGO_MODEL,
 } as const;
 
 const REPLIES = [

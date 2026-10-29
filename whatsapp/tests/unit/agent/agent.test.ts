@@ -371,7 +371,7 @@ describe('createAgent: модели из config/models.json', () => {
     logo: file['logo'] ?? '',
   };
 
-  it('каждый вызов берёт свою модель из конфига: ответ на Sonnet, проверка и оценка на Haiku', async () => {
+  it('каждый вызов берёт свою модель из конфига: ответ, проверка и оценка на Sonnet', async () => {
     const { requests, llm } = fakeLlm({ ok: false, failure: 'disabled' });
     const agent = createAgent({ llm, knowledge: KNOWLEDGE, models, logger: SILENT_LOGGER });
 
@@ -381,8 +381,8 @@ describe('createAgent: модели из config/models.json', () => {
 
     expect(requests.map(({ purpose, model }) => [purpose, model])).toEqual([
       ['reply', 'claude-sonnet-5-5'],
-      ['review', 'claude-haiku-5-5'],
-      ['interest', 'claude-haiku-5-5'],
+      ['review', 'claude-sonnet-5-5'],
+      ['interest', 'claude-sonnet-5-5'],
     ]);
   });
 });

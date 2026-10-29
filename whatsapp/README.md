@@ -6,7 +6,7 @@ WhatsApp-консультант Tanbala. Отвечает клиентам на 
 
 ## Стек
 
-Node.js 22, TypeScript 6, Baileys 7, Anthropic SDK (Claude Haiku), SQLite через better-sqlite3, Fastify, pino, zod, Vitest. Почему так: [ADR-0001](docs/adr/0001-stack.md).
+Node.js 22, TypeScript 6, Baileys 7, Anthropic SDK (Claude Sonnet и Haiku), SQLite через better-sqlite3, Fastify, pino, zod, Vitest. Почему так: [ADR-0001](docs/adr/0001-stack.md).
 
 ## Как поставить на ПК
 

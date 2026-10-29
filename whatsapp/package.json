@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
-  "description": "WhatsApp-консультант Tanbala: Baileys + Claude Haiku",
+  "description": "WhatsApp-консультант Tanbala: Baileys + Claude",
   "type": "module",
   "engines": {
     "node": ">=22.12"

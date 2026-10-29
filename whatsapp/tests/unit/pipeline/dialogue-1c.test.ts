@@ -243,7 +243,7 @@ describe('диалог про 1С и цену (живой случай): Sonnet 
     });
   });
 
-  it('вызовы: ответ на Sonnet, проверка и оценка на Haiku (модели из config/models.json), проверка знает, что это сообщение о передаче', async () => {
+  it('вызовы: ответ, проверка и оценка на Sonnet (модели из config/models.json), проверка знает, что это сообщение о передаче', async () => {
     const d = await runDialogue({
       replies: [HOT_REPLY],
       level: 'warm',
@@ -253,8 +253,8 @@ describe('диалог про 1С и цену (живой случай): Sonnet 
     expect(d.llm.purposes()).toEqual(['reply', 'interest', 'review']);
     expect(d.llm.requests.map((request) => request.model)).toEqual([
       'claude-sonnet-5-5',
-      'claude-haiku-5-5',
-      'claude-haiku-5-5',
+      'claude-sonnet-5-5',
+      'claude-sonnet-5-5',
     ]);
     const review = d.llm.requests[2]?.turns.at(-1)?.text ?? '';
     expect(review).toContain(MODEL_TEXT);

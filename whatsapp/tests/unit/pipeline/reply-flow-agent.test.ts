@@ -22,7 +22,7 @@ const HOT_TEXT =
 const FIRST = 'Учёт подбираем под задачу. Что вы храните?';
 const SECOND = 'Решение подбирает коллега. Что вы хотите учитывать?';
 const KNOWLEDGE: Knowledge = { owner: 'Документ', whatsapp: 'Правила', version: 'v1' };
-// Модели из config/models.json: ответ на Sonnet, проверка и оценка интереса на Haiku.
+// Модели из config/models.json: ответ, проверка и оценка интереса на Sonnet.
 const MODELS_FILE = JSON.parse(
   readFileSync(new URL('../../../config/models.json', import.meta.url), 'utf8'),
 ) as Record<string, string>;
@@ -141,13 +141,13 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
     );
   });
 
-  it('модели вызовов из config/models.json: ответ на Sonnet, проверка и оценка интереса на Haiku', async () => {
+  it('модели вызовов из config/models.json: ответ, проверка и оценка интереса на Sonnet', async () => {
     const { model } = await run({ replies: [{ outcome: 'hot', text: HOT_TEXT }] });
 
     expect(model.requests.map(({ purpose, model: id }) => [purpose, id])).toEqual([
       ['reply', 'claude-sonnet-5-5'],
-      ['interest', 'claude-haiku-5-5'],
-      ['review', 'claude-haiku-5-5'],
+      ['interest', 'claude-sonnet-5-5'],
+      ['review', 'claude-sonnet-5-5'],
     ]);
   });
 
