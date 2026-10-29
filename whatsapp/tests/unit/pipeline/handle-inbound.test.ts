@@ -3,6 +3,7 @@ import type {
   AudioClip,
   Chat,
   ChatId,
+  InterestAssessment,
   LlmResult,
   PhoneDigits,
   ReplyDraft,
@@ -35,6 +36,7 @@ import {
   levels,
   MIME,
   NOW,
+  OFF_SUMMARY,
   picture,
   REPLY_STEPS,
   run,
@@ -125,6 +127,7 @@ describe('pipeline/handle-inbound: ответ', () => {
     expect(outcome).toEqual({ kind: 'replied' });
     expect(h.calls).toEqual(['read:A1,P2', ...REPLY_STEPS('P2')]);
     // Блок о компании из company.prepare: выключенное определение даёт off, агент тогда работает как раньше.
+    // Ход разговора о цене и название компании для минимума передачи по цене из базы и сводки.
     expect(h.contexts).toEqual([
       {
         chatId: CHAT_ID,
@@ -132,6 +135,8 @@ describe('pipeline/handle-inbound: ответ', () => {
         profile: EMPTY_PROFILE,
         level: 'cold',
         company: { kind: 'off' },
+        progress: { priceAsks: 0, refused: false },
+        companyName: null,
       },
     ]);
     expect(h.logs).toContainEqual({
@@ -268,11 +273,6 @@ describe('pipeline/handle-inbound: передача менеджеру (чере
       'горячий клиент, текста нет',
       { outcome: 'hot', text: '' },
       { reason: 'hot', replyToWaId: 'A2' as WaMessageId },
-    ],
-    [
-      'горячий клиент спросил цену, текста нет: фраза о цене',
-      { outcome: 'hot', text: '', aboutPrice: true },
-      { reason: 'hot', aboutPrice: true, replyToWaId: 'A2' as WaMessageId },
     ],
     [
       'жалоба с просьбой не писать',
@@ -793,5 +793,91 @@ describe('pipeline/handle-inbound: голосовые', () => {
     expect(voiceOnly.transcribe).toHaveBeenCalledTimes(1);
     expect(h.outbox.sendVoiceNotice).not.toHaveBeenCalled();
     expect(h.outbox.sendBotReply).toHaveBeenCalledWith(CHAT_ID, ANSWER, 'T2');
+  });
+});
+
+describe('pipeline/handle-inbound: минимум для передачи по цене', () => {
+  const PRICE_ANSWER =
+    'Цена сильно зависит от объёма. Подскажите, сколько примерно вещей нужно учитывать? Это нужно, чтобы коллега сразу назвал ориентир.';
+
+  function priceAssessed(refused = false): LlmResult<InterestAssessment> {
+    return {
+      ok: true,
+      value: {
+        level: 'warm',
+        profile: EMPTY_PROFILE,
+        reason: 'по разговору',
+        signals: { priceAsked: true, refused },
+      },
+    };
+  }
+
+  it('ответ на вопрос цены ушёл: вопрос засчитан после отправки и «отвечено»', async () => {
+    const h = setup({ drafts: [answer(PRICE_ANSWER)], assessment: priceAssessed() });
+
+    const outcome = await run(h, batchOf([text('A1')]));
+
+    expect(outcome).toEqual({ kind: 'replied' });
+    expect(h.calls.slice(-3)).toEqual([`reply:${PRICE_ANSWER}:A1`, 'answered:A1', 'turn:price:-']);
+  });
+
+  it('ответ не ушёл (чат у менеджера): вопрос цены не засчитан', async () => {
+    const h = setup({ drafts: [answer(PRICE_ANSWER)], assessment: priceAssessed() });
+    h.outbox.sendBotReply.mockResolvedValue('skipped_manager');
+
+    await run(h, batchOf([text('A1')]));
+
+    expect(h.calls).not.toContain('turn:price:-');
+  });
+
+  it('передача по цене: ход не записывается, его обнулит возврат боту', async () => {
+    const h = setup({
+      drafts: [{ ok: true, value: { outcome: 'hot', text: '', aboutPrice: true } }],
+      assessment: priceAssessed(true),
+    });
+
+    const outcome = await run(h, batchOf([text('A1'), text('A2')]));
+
+    expect(outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
+    expect(h.handOff.mock.calls).toStrictEqual([
+      [CHAT_ID, { reason: 'hot', aboutPrice: true, replyToWaId: 'A2' as WaMessageId }],
+    ]);
+    expect(h.calls.filter((call) => call.startsWith('turn:'))).toEqual([]);
+  });
+
+  it('третий вопрос цены по ходу разговора из базы: hot без минимума передаёт чат', async () => {
+    const h = setup({
+      drafts: [{ ok: true, value: { outcome: 'hot', text: '', aboutPrice: true } }],
+      progress: { priceAsks: 2, refused: false },
+    });
+
+    const outcome = await run(h, batchOf([text('A1')]));
+
+    expect(outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
+  });
+
+  it('название компании для решения читается после оценки интереса: свежая сводка', async () => {
+    const h = setup({ drafts: [answer()] });
+    h.company.summary
+      .mockReturnValueOnce(OFF_SUMMARY)
+      .mockReturnValueOnce({ ...OFF_SUMMARY, status: 'unknown', statedName: 'Береке' });
+
+    await run(h, batchOf([text('A1')]));
+
+    expect(h.contexts[0]?.companyName).toBeNull();
+    expect(h.reviewContexts[0]?.companyName).toBe('Береке');
+  });
+
+  it('сводка о компании не прочиталась: ответ идёт без названия, в лог только ID и имя ошибки', async () => {
+    const h = setup({ drafts: [answer()] });
+    h.company.summary.mockImplementation(() => {
+      throw new TypeError('база недоступна');
+    });
+
+    const outcome = await run(h, batchOf([text('A1')]));
+
+    expect(outcome).toEqual({ kind: 'replied' });
+    expect(h.contexts[0]?.companyName).toBeNull();
+    expect(levels(h, 'warn')).toContainEqual({ chatId: CHAT_ID, errorName: 'TypeError' });
   });
 });

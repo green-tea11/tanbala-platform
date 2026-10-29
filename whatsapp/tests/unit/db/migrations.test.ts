@@ -58,9 +58,13 @@ const VERSION_5_TABLES = CURRENT_TABLES.filter((name) => name !== 'chat_companie
 
 /**
  * Последняя версия схемы: этап 2 дал версию 1, этап 3 версию 2, этапы 4, 5 и 6 версии 3, 4 и 5, определение
- * компании клиента версию 6.
+ * компании клиента версию 6, минимум для передачи по цене версию 7.
  */
-const CURRENT_VERSION = 6;
+const CURRENT_VERSION = 7;
+
+function columnNames(db: Database.Database, table: string): unknown[] {
+  return db.prepare('SELECT name FROM pragma_table_info(?) ORDER BY cid').pluck().all(table);
+}
 
 describe('runMigrations', () => {
   it('новая база получает последнюю версию и ровно таблицы текущей схемы', () => {
@@ -221,8 +225,48 @@ describe('runMigrations', () => {
     expect(tableNames(db)).not.toContain('chat_companies');
 
     runMigrations(db, 6);
-    expect(userVersion(db)).toBe(CURRENT_VERSION);
+    expect(userVersion(db)).toBe(6);
     expect(tableNames(db)).toContain('chat_companies');
+    expect(columnNames(db, 'chats')).not.toContain('price_asks');
+
+    runMigrations(db, 7);
+    expect(userVersion(db)).toBe(CURRENT_VERSION);
+    expect(columnNames(db, 'chats')).toContain('price_asks');
+  });
+
+  it('живая база версии 6 переходит на версию 7: чат и выжимка на месте, счётчик цены и отказ по нулям', () => {
+    const db = useMemoryDb();
+    runMigrations(db, 6);
+    const chatId = insertChat(db, { replyJid: PN_A, pushName: 'Айгерим' });
+    db.prepare(
+      `INSERT INTO client_profiles (chat_id, business, has_1c, reason, updated_at_ms)
+       VALUES (?, 'склад', 1, 'причина', 5)`,
+    ).run(chatId);
+
+    runMigrations(db);
+
+    expect(userVersion(db)).toBe(CURRENT_VERSION);
+    expect(tableNames(db)).toEqual(CURRENT_TABLES);
+    expect(
+      db.prepare('SELECT id, push_name, price_asks, refused_answers FROM chats').all(),
+    ).toEqual([{ id: chatId, push_name: 'Айгерим', price_asks: 0, refused_answers: 0 }]);
+    expect(
+      db.prepare('SELECT business, has_1c, one_c_name, problem_agreed FROM client_profiles').all(),
+    ).toEqual([{ business: 'склад', has_1c: 1, one_c_name: null, problem_agreed: 0 }]);
+  });
+
+  it('сбой версии 7 откатывает только её: база остаётся на версии 6 с данными', () => {
+    const db = useMemoryDb();
+    runMigrations(db, 6);
+    insertChat(db, { replyJid: PN_A });
+    db.exec('ALTER TABLE chats ADD COLUMN refused_answers INTEGER');
+
+    expect(() => {
+      runMigrations(db);
+    }).toThrow(/refused_answers/);
+    expect(userVersion(db)).toBe(6);
+    expect(columnNames(db, 'client_profiles')).not.toContain('one_c_name');
+    expect(db.prepare('SELECT count(*) FROM chats').pluck().get()).toBe(1);
   });
 
   it('схема новее кода: явная ошибка, база не меняется', () => {
@@ -283,6 +327,43 @@ describe('индексы этапов 5 и 6', () => {
         'messages_chat_ts',
       ]),
     );
+  });
+});
+
+describe('схема версии 7: минимум для передачи по цене', () => {
+  it.each([
+    ['chats', 'price_asks', -1],
+    ['chats', 'refused_answers', 2],
+  ])('%s.%s = %s отклоняется', (table, column, value) => {
+    const db = useMigratedDb();
+    const chatId = insertChat(db, { replyJid: PN_A });
+
+    expect(
+      errorOf(() =>
+        db.prepare(`UPDATE ${table} SET ${column} = ? WHERE id = ?`).run(value, chatId),
+      ),
+    ).toMatchObject({ code: 'SQLITE_CONSTRAINT_CHECK' });
+  });
+
+  it.each<[unknown, string | undefined]>([
+    [0, undefined],
+    [1, undefined],
+    [2, 'SQLITE_CONSTRAINT_CHECK'],
+    [null, 'SQLITE_CONSTRAINT_NOTNULL'],
+  ])('client_profiles.problem_agreed = %s: ошибка %s', (value, code) => {
+    const db = useMigratedDb();
+    const chatId = insertChat(db, { replyJid: PN_A });
+
+    const error = errorOf(() =>
+      db
+        .prepare(
+          `INSERT INTO client_profiles (chat_id, reason, updated_at_ms, problem_agreed)
+           VALUES (?, 'причина', 1, ?)`,
+        )
+        .run(chatId, value),
+    );
+
+    expect(code === undefined ? error : (error as { code?: string } | undefined)?.code).toBe(code);
   });
 });
 

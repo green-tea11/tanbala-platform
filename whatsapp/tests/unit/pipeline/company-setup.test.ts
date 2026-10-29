@@ -45,8 +45,10 @@ const CHAT: Chat = {
     scope: null,
     itemCount: null,
     has1C: null,
+    oneCName: null,
     problem: null,
     specifics: null,
+    problemAgreed: false,
   },
 };
 

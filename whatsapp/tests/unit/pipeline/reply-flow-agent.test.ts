@@ -38,8 +38,10 @@ const EMPTY_PROFILE: ClientProfile = {
   scope: null,
   itemCount: null,
   has1C: null,
+  oneCName: null,
   problem: null,
   specifics: null,
+  problemAgreed: false,
 };
 const CONTEXT: ConversationContext = {
   chatId: CHAT_ID,
@@ -89,6 +91,7 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
         profile: EMPTY_PROFILE,
         reason: 'по разговору',
         company: { name: null, city: null, answer: 'none', pains: [] },
+        signals: { priceAsked: false, refused: false },
       },
       NOW,
     );
@@ -156,7 +159,21 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
   });
 
   it('исход hot без текста после вопроса цены: aboutPrice из ответа модели доходит до повода передачи', async () => {
-    const { verdict } = await run({ replies: [{ outcome: 'hot', aboutPrice: true }] });
+    // Минимум собран (оценка интереса этого хода): передача по цене разрешена.
+    const { verdict } = await run({
+      replies: [{ outcome: 'hot', aboutPrice: true }],
+      interests: [
+        {
+          profile: {
+            scope: 'ввоз и вывоз',
+            itemCount: 'около 3000',
+            has1C: true,
+            problemAgreed: true,
+          },
+          priceAsked: true,
+        },
+      ],
+    });
 
     expect(verdict).toStrictEqual({ kind: 'handoff', notice: { reason: 'hot', aboutPrice: true } });
   });

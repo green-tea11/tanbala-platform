@@ -48,8 +48,9 @@ export interface HandoffService {
    */
   handOff(chatId: ChatId, request: HandOffRequest): Promise<void>;
   /**
-   * Вернуть чат боту вручную из панели: снять ожидание ответа на «Вы из компании X?», затем закрыть передачу и
-   * поставить статус bot (by 'panel') одной транзакцией.
+   * Вернуть чат боту вручную из панели: снять ожидание ответа на «Вы из компании X?», затем закрыть передачу,
+   * поставить статус bot (by 'panel') и обнулить ход разговора о цене (вопросы цены и отказ отвечать считаются заново)
+   * одной транзакцией.
    */
   returnToBot(chatId: ChatId): Promise<void>;
 }
@@ -303,7 +304,8 @@ function phoneOf(chat: Chat): PhoneDigits | null {
 
 /**
  * Возврат боту. Ожидание ответа на «Вы из компании X?» снимается до транзакции: иначе первое «да» клиента после
- * возврата подтвердило бы компанию. Его сбой (база) идёт отказом, и чат остаётся у менеджера.
+ * возврата подтвердило бы компанию. Его сбой (база) идёт отказом, и чат остаётся у менеджера. Ход разговора о цене
+ * обнуляется в той же транзакции: третий вопрос цены считается с возврата (решение владельца 29.10.2026).
  */
 function returnToBot(deps: HandoffDeps, chatId: ChatId): void {
   requireChat(deps.chats, chatId);
@@ -312,6 +314,7 @@ function returnToBot(deps: HandoffDeps, chatId: ChatId): void {
   deps.unitOfWork.run(() => {
     deps.handoffs.resolve(chatId, nowMs);
     deps.chats.setStatus(chatId, { status: 'bot', by: 'panel' }, nowMs);
+    deps.chats.resetProgress(chatId);
   });
   deps.logger.info({ chatId }, 'Чат возвращён боту из панели');
 }

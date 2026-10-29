@@ -26,8 +26,10 @@ const EMPTY_PROFILE: ClientProfile = {
   scope: null,
   itemCount: null,
   has1C: null,
+  oneCName: null,
   problem: null,
   specifics: null,
+  problemAgreed: false,
 };
 const CONTEXT: ConversationContext = {
   chatId: CHAT_ID,

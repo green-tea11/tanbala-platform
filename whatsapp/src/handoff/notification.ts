@@ -9,6 +9,7 @@ import type {
   PhoneDigits,
 } from '../domain/types.js';
 import { companyCardHref } from './card-link.js';
+import { companyNameOf, minimumReport } from './minimum.js';
 
 /** Причина в уведомлении: для лимита обязательно указать, какой лимит исчерпан. */
 export type NotificationReason =
@@ -109,7 +110,7 @@ const PROFILE_FIELDS: readonly ProfileField[] = [
   ['Площадь', (profile) => profile.area],
   ['Что учитывать', (profile) => profile.scope],
   ['Число вещей', (profile) => profile.itemCount],
-  ['1С', (profile) => oneCWord(profile.has1C)],
+  ['1С', (profile) => oneCWord(profile.has1C, profile.oneCName)],
   ['Задача', (profile) => profile.problem],
   ['Особенности', (profile) => profile.specifics],
 ];
@@ -119,7 +120,9 @@ const PROFILE_FIELDS: readonly ProfileField[] = [
  * Чистая функция, без LLM. Фиксированный шаблон: первая строка с причиной, затем имя, номер, ID чата в панели,
  * уровень и семь полей выжимки с пометкой «всё со слов клиента». Нет номера: «номер скрыт» и ID чата, по которому
  * чат ищут в панели. Лимит (reason 'limit'): «бот замолчал в этом чате» с названием настройки, ID чата и номер те же.
- * При передаче (не лимит) с данными о компании после выжимки и пустой строки идёт блок о компании (companyLines).
+ * При передаче (не лимит) после выжимки и пустой строки идут две строки о минимуме для оценки цены (решение владельца
+ * 29.10.2026): что собрано и что выяснить не удалось (minimumLines), затем с данными о компании блок о компании
+ * (companyLines).
  * Имя, каждое поле выжимки и тексты о компании недоверенные (клиент, модель, сайты и 2ГИС): одной строкой (переводы
  * строк, управляющие и невидимые символы убираются), без ссылок, с лимитом длины, поэтому подделать строки шаблона
  * или доставить менеджеру чужую ссылку нельзя.
@@ -138,8 +141,18 @@ export function formatManagerNotification(input: ManagerNotificationInput): stri
       ([label, value]) =>
         `${label}: ${knownOr(value(input.profile), PROFILE_FIELD_MAX_LENGTH, NOT_KNOWN)}`,
     ),
+    ...(input.reason === 'limit' ? [] : ['', ...minimumLines(input.profile, company)]),
     ...(company === null ? [] : ['', ...companyLines(company)]),
   ].join('\n');
+}
+
+/**
+ * Что собрано из минимума для оценки цены и что выяснить не удалось. Подписи свои (handoff/minimum.ts), название
+ * компании в строки не попадает: только отметка, известно ли оно.
+ */
+function minimumLines(profile: ClientProfile, company: CompanySummary | null): readonly string[] {
+  const report = minimumReport({ profile, companyName: companyNameOf(company) });
+  return [`Для оценки цены собрано: ${report.collected}`, `Не удалось выяснить: ${report.missing}`];
 }
 
 /**
@@ -224,9 +237,11 @@ function phoneDigits(phone: PhoneDigits | null): string {
   return phone === null ? '' : phone.replace(/\D/g, '');
 }
 
-function oneCWord(has1C: boolean | null): string | null {
-  if (has1C === null) return null;
-  return has1C ? 'есть' : 'нет';
+/** Есть ли 1С словами; какая 1С (недоверенный текст) после «есть», чистка и предел длины у knownOr. */
+function oneCWord(has1C: boolean | null, oneCName: string | null): string | null {
+  if (has1C === null) return oneCName;
+  if (!has1C) return 'нет';
+  return oneCName === null ? 'есть' : `есть, ${oneCName}`;
 }
 
 function backlogLine(

@@ -231,8 +231,10 @@ export const FULL_PROFILE: ClientProfile = {
   scope: 'где лежит каждая вещь',
   itemCount: 'около 5000',
   has1C: true,
+  oneCName: null,
   problem: 'путаница с остатками',
   specifics: 'два склада',
+  problemAgreed: false,
 };
 
 /** Чат клиента: по умолчанию бот ведёт, интерес тёплый, выжимка заполнена. */

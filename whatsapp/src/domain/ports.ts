@@ -8,6 +8,7 @@ import type {
   Chat,
   ChatId,
   ChatIdentity,
+  ChatProgress,
   ChatStatus,
   HandoffReason,
   InterestAssessment,
@@ -27,6 +28,7 @@ import type {
   StatusChange,
   StoredMessage,
   TokenUsageEntry,
+  TurnSignals,
   WaMessageId,
 } from './types.js';
 
@@ -275,6 +277,12 @@ export interface ChatsRepo {
   }): readonly PanelChatRow[];
   /** Сколько чатов в списке панели с тем же фильтром: для страниц. */
   countForPanel(query: { readonly status?: ChatStatus }): number;
+  /** Ход разговора о цене: вопросы цены в отвеченных ходах и отказ отвечать с последнего возврата боту. */
+  getProgress(id: ChatId): ChatProgress;
+  /** Ответ бота ушёл: вопрос цены в этом ходе прибавляет один, отказ отвечать ставится и остаётся. */
+  recordTurn(id: ChatId, signals: TurnSignals): void;
+  /** Возврат чата боту: счётчик вопросов цены и отказ обнуляются. Можно звать внутри UnitOfWork.run. */
+  resetProgress(id: ChatId): void;
 }
 
 /** История сообщений чата. */

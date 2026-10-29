@@ -20,8 +20,10 @@ export const EMPTY_PROFILE: ClientProfile = {
   scope: null,
   itemCount: null,
   has1C: null,
+  oneCName: null,
   problem: null,
   specifics: null,
+  problemAgreed: false,
 };
 
 /** Заполненная выжимка; overrides меняют отдельные поля. */
@@ -32,8 +34,10 @@ export function profileOf(overrides: Partial<ClientProfile> = {}): ClientProfile
     scope: 'где лежит каждая вещь',
     itemCount: 'около 5000 вещей',
     has1C: true,
+    oneCName: '1С:Управление торговлей',
     problem: 'пересорт при приёмке',
     specifics: 'два склада',
+    problemAgreed: true,
     ...overrides,
   };
 }

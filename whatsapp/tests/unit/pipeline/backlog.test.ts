@@ -105,6 +105,9 @@ function setup(options: SetupOptions = {}): Harness {
     saveAssessment: unexpected,
     listForPanel: unexpected,
     countForPanel: unexpected,
+    getProgress: unexpected,
+    recordTurn: unexpected,
+    resetProgress: unexpected,
   };
   const messages: MessagesRepo = {
     insertIfNew: (message) => {

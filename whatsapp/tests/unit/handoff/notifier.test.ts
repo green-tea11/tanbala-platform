@@ -458,6 +458,9 @@ function setupWithRealOutbox(managerJid: Jid | null): RealOutboxHarness {
       saveAssessment: unexpected,
       listForPanel: unexpected,
       countForPanel: unexpected,
+      getProgress: unexpected,
+      recordTurn: unexpected,
+      resetProgress: unexpected,
     },
     messages: {
       insertIfNew: unexpected,

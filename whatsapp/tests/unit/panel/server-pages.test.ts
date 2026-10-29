@@ -188,8 +188,10 @@ describe('панель: страница чата', () => {
         scope: null,
         itemCount: '10 тысяч',
         has1C: true,
+        oneCName: null,
         problem: 'Теряются вещи',
         specifics: null,
+        problemAgreed: false,
       },
     });
     const messages: StoredMessage[] = [
@@ -250,6 +252,34 @@ describe('панель: страница чата', () => {
     expect(text).toContain('1С есть');
     expect(text).toContain('Задача Теряются вещи');
     expect(text).toContain('Особенности не выяснили');
+    expect(text).toContain('Согласие, что трудность есть не выяснили');
+  });
+
+  it('какая 1С и согласие, что трудность есть, видны в карточке', async () => {
+    const h = createHarness({
+      data: {
+        chats: [
+          makeChat(1, {
+            profile: {
+              business: null,
+              area: null,
+              scope: null,
+              itemCount: null,
+              has1C: true,
+              oneCName: '1С:Управление торговлей',
+              problem: null,
+              specifics: null,
+              problemAgreed: true,
+            },
+          }),
+        ],
+      },
+    });
+
+    const text = plain(await getPage(h, '/chats/1'));
+
+    expect(text).toContain('1С есть, 1С:Управление торговлей');
+    expect(text).toContain('Согласие, что трудность есть да');
   });
 
   it('1С: нет и не выяснили различаются', async () => {
@@ -263,8 +293,10 @@ describe('панель: страница чата', () => {
               scope: null,
               itemCount: null,
               has1C: false,
+              oneCName: null,
               problem: null,
               specifics: null,
+              problemAgreed: false,
             },
           }),
           makeChat(2),
@@ -421,8 +453,10 @@ describe('панель: страница чата', () => {
               scope: attack,
               itemCount: attack,
               has1C: null,
+              oneCName: null,
               problem: attack,
               specifics: attack,
+              problemAgreed: false,
             },
           }),
         ],

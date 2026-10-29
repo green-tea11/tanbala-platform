@@ -52,7 +52,8 @@ function assessment(
 function profileRows(db: Database.Database): unknown[] {
   return db
     .prepare(
-      `SELECT chat_id, business, area, scope, item_count, has_1c, problem, specifics, reason, updated_at_ms
+      `SELECT chat_id, business, area, scope, item_count, has_1c, one_c_name, problem, specifics,
+         problem_agreed, reason, updated_at_ms
        FROM client_profiles ORDER BY chat_id`,
     )
     .all();
@@ -91,8 +92,10 @@ describe('createChatsRepo: saveAssessment', () => {
         scope: 'где лежит каждая вещь',
         item_count: 'около 5000 вещей',
         has_1c: 1,
+        one_c_name: '1С:Управление торговлей',
         problem: 'пересорт при приёмке',
         specifics: 'два склада',
+        problem_agreed: 1,
         reason: 'рассказал о задаче',
         updated_at_ms: T0 + 42,
       },
@@ -111,6 +114,20 @@ describe('createChatsRepo: saveAssessment', () => {
     expect(db.prepare('SELECT has_1c FROM client_profiles').pluck().get()).toBe(stored);
     expect(repo.getById(chatId)?.profile.has1C).toBe(has1C);
   });
+
+  it.each([true, false])(
+    'согласие, что трудность есть: %s хранится числом и читается обратно',
+    (agreed) => {
+      const { db, repo, chatId } = setup();
+
+      repo.saveAssessment(chatId, assessment('warm', profileOf({ problemAgreed: agreed })), T0);
+
+      expect(db.prepare('SELECT problem_agreed FROM client_profiles').pluck().get()).toBe(
+        agreed ? 1 : 0,
+      );
+      expect(repo.getById(chatId)?.profile.problemAgreed).toBe(agreed);
+    },
+  );
 
   it('пустая выжимка сохраняется и читается пустой, уровень записан', () => {
     const { db, repo, chatId } = setup();

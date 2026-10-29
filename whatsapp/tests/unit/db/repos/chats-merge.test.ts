@@ -86,6 +86,26 @@ function handoffRows(db: Database.Database): unknown[] {
     .all();
 }
 
+describe('слияние чатов: ход разговора о цене', () => {
+  it('вопросов цены остаётся больше из двух, отказ отвечать сохраняется, если был у любого', () => {
+    const { chats, survivor, absorbed } = pair();
+    chats.recordTurn(survivor.id, { priceAsked: true, refused: false });
+    chats.recordTurn(absorbed.id, { priceAsked: true, refused: true });
+    chats.recordTurn(absorbed.id, { priceAsked: true, refused: false });
+
+    const merged = merge(chats);
+
+    expect(chats.getProgress(merged.id)).toEqual({ priceAsks: 2, refused: true });
+  });
+
+  it('у слитого чата ничего нет: ход оставшегося не меняется', () => {
+    const { chats, survivor } = pair();
+    chats.recordTurn(survivor.id, { priceAsked: true, refused: true });
+
+    expect(chats.getProgress(merge(chats).id)).toEqual({ priceAsks: 1, refused: true });
+  });
+});
+
 describe('слияние чатов: выжимка клиента', () => {
   it('выжимка слитого чата переезжает к оставшемуся, своей строки у слитого не остаётся', () => {
     const { db, chats, survivor, absorbed } = pair();
@@ -95,6 +115,18 @@ describe('слияние чатов: выжимка клиента', () => {
 
     expect(merged).toMatchObject({ id: survivor.id, profile: profileOf() });
     expect(db.prepare('SELECT chat_id FROM client_profiles').pluck().all()).toEqual([survivor.id]);
+  });
+
+  it('согласие, что трудность есть, не теряется, даже если свежее оценка без него; какая 1С берётся из любой', () => {
+    const { chats, survivor, absorbed } = pair();
+    save(chats, survivor, { ...EMPTY_PROFILE, problemAgreed: true }, T0 + 10);
+    save(chats, absorbed, { ...EMPTY_PROFILE, has1C: true, oneCName: 'УТ 11' }, T0 + 20);
+
+    expect(merge(chats).profile).toMatchObject({
+      problemAgreed: true,
+      has1C: true,
+      oneCName: 'УТ 11',
+    });
   });
 
   it('выжимка только у оставшегося чата не меняется', () => {
@@ -129,8 +161,10 @@ describe('слияние чатов: выжимка клиента', () => {
       scope: null,
       itemCount: null,
       has1C: true,
+      oneCName: null,
       problem: 'старая задача',
       specifics: 'новое',
+      problemAgreed: false,
     });
     expect(db.prepare('SELECT reason, updated_at_ms FROM client_profiles').all()).toEqual([
       { reason: 'новая причина', updated_at_ms: T0 + 20 },

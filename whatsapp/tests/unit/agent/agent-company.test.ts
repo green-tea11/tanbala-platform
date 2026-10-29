@@ -66,7 +66,7 @@ describe('draftReply: компания клиента', () => {
     expect(data).toContain('«Вы из компании Альфа, правильно?»');
   });
 
-  it('функция выключена: данных о компании нет, без выжимки и замечаний данных нет совсем', async () => {
+  it('функция выключена: данных о компании нет, без выжимки и замечаний в данных только строки о цене', async () => {
     const { requests, agent } = agentWith({
       ok: true,
       value: { outcome: 'answer', text: 'Добрый день.', stopRequested: false },
@@ -74,7 +74,8 @@ describe('draftReply: компания клиента', () => {
 
     await agent.draftReply(context({ company: { kind: 'off' } }));
 
-    expect(lastTurn(requests)).not.toContain('<данные>');
+    expect(lastTurn(requests)).toMatch(/Для передачи по цене собрано/);
+    expect(lastTurn(requests)).not.toMatch(/компани/i);
   });
 
   it.each(['confirm', 'name'] as const)(

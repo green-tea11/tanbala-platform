@@ -38,8 +38,10 @@ const EMPTY_PROFILE: ClientProfile = {
   scope: null,
   itemCount: null,
   has1C: null,
+  oneCName: null,
   problem: null,
   specifics: null,
+  problemAgreed: false,
 };
 
 function historyOf(...clientTexts: readonly string[]): readonly StoredMessage[] {
@@ -971,6 +973,12 @@ describe('pipeline/reply-flow: компания клиента', () => {
 });
 
 describe('pipeline/reply-flow: hot после вопроса цены (aboutPrice)', () => {
+  /** Третий вопрос цены: передача по цене разрешена и без минимума (решение владельца 29.10.2026). */
+  const THIRD_ASK: ConversationContext = {
+    ...contextOf(),
+    progress: { priceAsks: 2, refused: false },
+  };
+
   function priced(
     outcome: ReplyHandoffOutcome,
     text: string,
@@ -982,7 +990,9 @@ describe('pipeline/reply-flow: hot после вопроса цены (aboutPric
   it('hot без текста с aboutPrice: передача hot с фразой о цене', async () => {
     const h = setup({ drafts: [priced('hot', '', true)] });
 
-    await expect(flow(h)).resolves.toStrictEqual(handedOff({ reason: 'hot', aboutPrice: true }));
+    await expect(flow(h, THIRD_ASK)).resolves.toStrictEqual(
+      handedOff({ reason: 'hot', aboutPrice: true }),
+    );
     expect(h.reviewDraft).not.toHaveBeenCalled();
   });
 
@@ -990,13 +1000,17 @@ describe('pipeline/reply-flow: hot после вопроса цены (aboutPric
     const dashed = priced('hot', 'Интеграцию — проводим. Передал вопрос специалисту.', true);
     const h = setup({ drafts: [dashed, dashed] });
 
-    await expect(flow(h)).resolves.toStrictEqual(handedOff({ reason: 'hot', aboutPrice: true }));
+    await expect(flow(h, THIRD_ASK)).resolves.toStrictEqual(
+      handedOff({ reason: 'hot', aboutPrice: true }),
+    );
   });
 
   it('проверка текста hot с aboutPrice не получена: фраза о цене', async () => {
     const h = setup({ drafts: [priced('hot', HANDOFF_TEXT, true)], reviews: [UNAVAILABLE] });
 
-    await expect(flow(h)).resolves.toStrictEqual(handedOff({ reason: 'hot', aboutPrice: true }));
+    await expect(flow(h, THIRD_ASK)).resolves.toStrictEqual(
+      handedOff({ reason: 'hot', aboutPrice: true }),
+    );
   });
 
   it('повтор не получен после провала ревью hot с aboutPrice: фраза о цене', async () => {
@@ -1005,13 +1019,15 @@ describe('pipeline/reply-flow: hot после вопроса цены (aboutPric
       reviews: [reviewProblems('нет')],
     });
 
-    await expect(flow(h)).resolves.toStrictEqual(handedOff({ reason: 'hot', aboutPrice: true }));
+    await expect(flow(h, THIRD_ASK)).resolves.toStrictEqual(
+      handedOff({ reason: 'hot', aboutPrice: true }),
+    );
   });
 
   it('текст hot с aboutPrice прошёл проверки: уходит текст модели', async () => {
     const h = setup({ drafts: [priced('hot', HANDOFF_TEXT, true)] });
 
-    await expect(flow(h)).resolves.toStrictEqual(handedOffWithText('hot'));
+    await expect(flow(h, THIRD_ASK)).resolves.toStrictEqual(handedOffWithText('hot'));
   });
 
   it.each<[string, LlmResult<ReplyDraft>, ReplyHandoffOutcome]>([
@@ -1022,7 +1038,7 @@ describe('pipeline/reply-flow: hot после вопроса цены (aboutPric
   ])('%s: обычная фраза по причине', async (_case, draft, reason) => {
     const h = setup({ drafts: [draft] });
 
-    await expect(flow(h)).resolves.toStrictEqual(handedOff({ reason }));
+    await expect(flow(h, THIRD_ASK)).resolves.toStrictEqual(handedOff({ reason }));
   });
 });
 

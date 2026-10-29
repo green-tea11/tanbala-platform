@@ -32,21 +32,23 @@ interface ChatPair {
 /** Номер из адреса с номером: цифры до «@» без суффикса устройства «:N». В адресе @lid номера нет. */
 const PN_JID = /^(\d+)(?::\d+)?@(?:s\.whatsapp\.net|hosted)$/;
 
-/** Поля выжимки в client_profiles, порядок как в ClientProfile. */
+/** Поля выжимки в client_profiles, порядок как в ClientProfile; problem_agreed сливается отдельно (max). */
 const PROFILE_FIELDS = [
   'business',
   'area',
   'scope',
   'item_count',
   'has_1c',
+  'one_c_name',
   'problem',
   'specifics',
 ] as const;
 
 /**
  * Слияние выжимок. Берётся более свежая оценка, а поля, которых в ней нет (NULL), из другой; при равном времени
- * побеждает оставшийся чат. reason идёт от более свежей оценки, updated_at_ms остаётся самым поздним. Запрос
- * собирается из списка полей один раз при загрузке модуля, значения в него попадают только параметрами.
+ * побеждает оставшийся чат. Согласие, что трудность есть (problem_agreed), не теряется: 1 у любого даёт 1. reason
+ * идёт от более свежей оценки, updated_at_ms остаётся самым поздним. Запрос собирается из списка полей один раз при
+ * загрузке модуля, значения в него попадают только параметрами.
  */
 function mergeProfileSql(): string {
   const newer = 'excluded.updated_at_ms > client_profiles.updated_at_ms';
@@ -56,13 +58,24 @@ function mergeProfileSql(): string {
         THEN coalesce(excluded.${field}, client_profiles.${field})
         ELSE coalesce(client_profiles.${field}, excluded.${field}) END`,
   );
-  return `INSERT INTO client_profiles (chat_id, ${columns}, reason, updated_at_ms)
-    SELECT @survivor, ${columns}, reason, updated_at_ms FROM client_profiles WHERE chat_id = @absorbed
+  return `INSERT INTO client_profiles (chat_id, ${columns}, problem_agreed, reason, updated_at_ms)
+    SELECT @survivor, ${columns}, problem_agreed, reason, updated_at_ms
+    FROM client_profiles WHERE chat_id = @absorbed
     ON CONFLICT (chat_id) DO UPDATE SET
       ${fields.join(',\n      ')},
+      problem_agreed = max(client_profiles.problem_agreed, excluded.problem_agreed),
       reason = CASE WHEN ${newer} THEN excluded.reason ELSE client_profiles.reason END,
       updated_at_ms = max(client_profiles.updated_at_ms, excluded.updated_at_ms)`;
 }
+
+/**
+ * Ход разговора о цене: вопросов цены больше из двух, отказ отвечать остаётся, если был у любого чата. UPDATE в
+ * SQLite читает старые значения строки, поэтому подзапросы видят слитый чат до удаления.
+ */
+const MERGE_PROGRESS = `UPDATE chats SET
+    price_asks = max(price_asks, (SELECT price_asks FROM chats WHERE id = @absorbed)),
+    refused_answers = max(refused_answers, (SELECT refused_answers FROM chats WHERE id = @absorbed))
+  WHERE id = @survivor`;
 
 /**
  * Две открытые передачи не уживутся (частичный уникальный индекс): остаётся ранняя по времени открытия (при равном
@@ -107,13 +120,14 @@ const ABSORB_STEPS: readonly string[] = [
   'UPDATE manager_notifications SET chat_id = @survivor WHERE chat_id = @absorbed',
   'UPDATE OR IGNORE messages SET chat_id = @survivor WHERE chat_id = @absorbed',
   'DELETE FROM messages WHERE chat_id = @absorbed',
+  MERGE_PROGRESS,
   'DELETE FROM chats WHERE id = @absorbed',
 ];
 
 /**
  * Готовит слияние чатов: возвращает функцию, которая переносит в оставшийся чат состояние определения компании (по
  * полям, см. createCompanyStateMerger), отметку простоя, исходящие, счётчики вызовов API, выжимку, передачи,
- * уведомления менеджеру и историю слитого чата и удаляет его строку. Вызывается внутри транзакции upsertByIdentity:
+ * уведомления менеджеру, историю и ход разговора о цене слитого чата и удаляет его строку. Вызывается внутри транзакции upsertByIdentity:
  * иначе внешний ключ не даст удалить чат, а перенос остался бы неполным. nowMs нужен, чтобы закрыть лишнюю открытую
  * передачу.
  */

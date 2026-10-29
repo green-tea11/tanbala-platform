@@ -25,8 +25,10 @@ const PROFILE: ClientProfile = {
   scope: 'где лежит каждая вещь',
   itemCount: 'около 5000',
   has1C: true,
+  oneCName: null,
   problem: 'путаница с остатками',
   specifics: 'два склада',
+  problemAgreed: false,
 };
 
 const EMPTY_PROFILE: ClientProfile = {
@@ -35,8 +37,10 @@ const EMPTY_PROFILE: ClientProfile = {
   scope: null,
   itemCount: null,
   has1C: null,
+  oneCName: null,
   problem: null,
   specifics: null,
+  problemAgreed: false,
 };
 
 const BASE: ManagerNotificationInput = {
@@ -48,8 +52,11 @@ const BASE: ManagerNotificationInput = {
   chatId: 12 as ChatId,
 };
 
-/** Строк в обычном уведомлении: заголовок, имя, номер, чат, уровень, пустая, шапка выжимки и семь полей. */
-const NORMAL_LINE_COUNT = 14;
+/**
+ * Строк в обычном уведомлении: заголовок, имя, номер, чат, уровень, пустая, шапка выжимки, семь полей, пустая и две
+ * строки о минимуме для оценки цены.
+ */
+const NORMAL_LINE_COUNT = 17;
 
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
@@ -89,8 +96,48 @@ describe('formatManagerNotification', () => {
         '1С: есть',
         'Задача: путаница с остатками',
         'Особенности: два склада',
+        '',
+        'Для оценки цены собрано: что учитывать, примерное число вещей, есть ли 1С',
+        'Не удалось выяснить: название компании, согласие клиента, что трудность есть',
       ].join('\n'),
     );
+  });
+
+  it('какая 1С идёт в строке 1С после «есть»', () => {
+    const text = formatManagerNotification(withProfile({ oneCName: '1С:Управление торговлей' }));
+
+    expect(valueOf(text, '1С')).toBe('есть, 1С:Управление торговлей');
+  });
+
+  it('минимум собран: компания подтверждена, согласие есть; не выяснено «всё выяснено»', () => {
+    const text = formatManagerNotification({
+      ...withProfile({ problemAgreed: true }),
+      company: {
+        status: 'confirmed',
+        companyId: null,
+        name: 'ТОО Склад',
+        city: null,
+        rubric: null,
+        candidateSource: null,
+        cardUrl: null,
+        confirmedPains: [],
+        briefPains: [],
+        emailed: null,
+        research: null,
+        statedName: null,
+      },
+    });
+
+    expect(valueOf(text, 'Для оценки цены собрано')).toBe(
+      'что учитывать, примерное число вещей, есть ли 1С, название компании, согласие клиента, что трудность есть',
+    );
+    expect(valueOf(text, 'Не удалось выяснить')).toBe('всё выяснено');
+  });
+
+  it('уведомление о лимите без строк о минимуме: это не передача по цене', () => {
+    const text = formatManagerNotification({ ...BASE, reason: 'limit', scope: 'chat' });
+
+    expect(text).not.toMatch(/Для оценки цены|Не удалось выяснить/);
   });
 
   it('нет номера: «номер скрыт» и ID чата, по которому его найти в панели', () => {
@@ -147,7 +194,7 @@ describe('formatManagerNotification', () => {
     const unknown = formatManagerNotification({ ...BASE, profile: EMPTY_PROFILE });
     const withoutOneC = formatManagerNotification(withProfile({ has1C: false }));
 
-    expect(lines(unknown).slice(7)).toEqual([
+    expect(lines(unknown).slice(7, 14)).toEqual([
       'Бизнес: не выяснено',
       'Площадь: не выяснено',
       'Что учитывать: не выяснено',
@@ -190,8 +237,10 @@ describe('formatManagerNotification', () => {
           scope: attack,
           itemCount: attack,
           has1C: null,
+          oneCName: null,
           problem: attack,
           specifics: attack,
+          problemAgreed: false,
         },
       });
 
@@ -221,7 +270,8 @@ describe('formatManagerNotification', () => {
 
       expect(text).toContain('Бизнес: Пишите на [ссылка скрыта] срочно');
       expect(text).toContain('Задача: [ссылка скрыта]');
-      expect(text).not.toMatch(/evil|wa\.me|t\.me|http|пример/i);
+      // «пример» без точки есть в подписи «примерное число вещей»: ищется сам адрес.
+      expect(text).not.toMatch(/evil|wa\.me|t\.me|http|пример\.рф/i);
     });
 
     it('ссылка в имени тоже заменяется', () => {

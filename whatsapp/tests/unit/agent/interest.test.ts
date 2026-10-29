@@ -38,8 +38,10 @@ const KNOWN: ClientProfile = {
   scope: 'где лежит каждая вещь',
   itemCount: 'около 5000',
   has1C: true,
+  oneCName: '1С:Розница',
   problem: 'пересчёт занимает дни',
   specifics: 'два входа',
+  problemAgreed: true,
 };
 
 const FIELD_NAMES = [
@@ -56,6 +58,10 @@ const FIELD_NAMES = [
   'companyCity',
   'companyAnswer',
   'confirmedPains',
+  'oneCName',
+  'problemAgreed',
+  'priceAsked',
+  'refused',
 ];
 
 /** Поля о компании, которые настоящая схема требует всегда: клиент о компании ничего не сказал. */
@@ -64,6 +70,14 @@ const NO_COMPANY = {
   companyCity: null,
   companyAnswer: 'none',
   confirmedPains: [],
+} as const;
+
+/** Поля минимума и сигналы хода, которые настоящая схема требует всегда: ничего нового. */
+const NO_SIGNALS = {
+  oneCName: null,
+  problemAgreed: false,
+  priceAsked: false,
+  refused: false,
 } as const;
 
 async function assess(answer: LlmResult<unknown>, ctx = context()) {
@@ -112,7 +126,7 @@ describe('createAgent: assessInterest, запрос', () => {
     expect(last).not.toMatch(/Уровень/);
   });
 
-  it('схема оценки: плоский объект из тринадцати полей, все обязательны', async () => {
+  it('схема оценки: плоский объект из семнадцати полей, все обязательны', async () => {
     const { requests } = await assess({ ok: true, value: NOTHING_NEW });
     const { schema } = onlyRequest(requests);
 
@@ -125,10 +139,13 @@ describe('createAgent: assessInterest, запрос', () => {
     expect(JSON.stringify(properties['companyName'])).not.toContain('$ref');
     expect(properties['companyName']).toHaveProperty('anyOf');
     expect([...(json['required'] as string[])].sort()).toEqual([...FIELD_NAMES].sort());
-    const full = { ...NOTHING_NEW, ...NO_COMPANY };
+    const full = { ...NOTHING_NEW, ...NO_COMPANY, ...NO_SIGNALS };
     expect(schema.safeParse(full).success).toBe(true);
     expect(schema.safeParse(NOTHING_NEW).success).toBe(false);
+    expect(schema.safeParse({ ...NOTHING_NEW, ...NO_COMPANY }).success).toBe(false);
     expect(schema.safeParse({ ...full, ...KNOWN, level: 'hot' }).success).toBe(true);
+    expect(schema.safeParse({ ...full, priceAsked: 'да' }).success).toBe(false);
+    expect(schema.safeParse({ ...full, problemAgreed: null }).success).toBe(false);
     expect(schema.safeParse({ ...full, level: 'burning' }).success).toBe(false);
     expect(schema.safeParse({ ...full, has1C: 'есть' }).success).toBe(false);
     expect(schema.safeParse({ ...full, business: 5 }).success).toBe(false);
@@ -234,6 +251,48 @@ describe('normalizeInterest', () => {
     expect(Array.from(result.reason)).toHaveLength(300);
   });
 
+  it('какая 1С: чистится как текстовое поле и не стирается null; названная 1С значит, что 1С есть', () => {
+    const named = normalizeInterest(
+      { ...NOTHING_NEW, ...NO_SIGNALS, oneCName: '  1С:Управление\nторговлей ' },
+      EMPTY_PROFILE,
+    ).profile;
+    const kept = normalizeInterest({ ...NOTHING_NEW, ...NO_SIGNALS }, KNOWN).profile;
+    const denied = normalizeInterest(
+      { ...NOTHING_NEW, ...NO_SIGNALS, has1C: false, oneCName: 'УТ' },
+      EMPTY_PROFILE,
+    ).profile;
+
+    expect(named).toMatchObject({ oneCName: '1С:Управление торговлей', has1C: true });
+    expect(kept.oneCName).toBe('1С:Розница');
+    expect(denied.has1C).toBe(false);
+  });
+
+  it('согласие, что трудность есть: раз выяснено, не теряется; подделка без поля не меняет прежнее', () => {
+    const agreed = normalizeInterest(
+      { ...NOTHING_NEW, ...NO_SIGNALS, problemAgreed: true },
+      EMPTY_PROFILE,
+    );
+    const kept = normalizeInterest({ ...NOTHING_NEW, ...NO_SIGNALS }, KNOWN);
+
+    expect(agreed.profile.problemAgreed).toBe(true);
+    expect(kept.profile.problemAgreed).toBe(true);
+    expect(normalizeInterest(NOTHING_NEW, EMPTY_PROFILE).profile.problemAgreed).toBe(false);
+  });
+
+  it('сигналы хода: вопрос цены и отказ отвечать идут отдельно от выжимки; без полей их нет', () => {
+    const asked = normalizeInterest(
+      { ...NOTHING_NEW, ...NO_SIGNALS, priceAsked: true, refused: true },
+      EMPTY_PROFILE,
+    );
+
+    expect(asked.signals).toEqual({ priceAsked: true, refused: true });
+    expect(normalizeInterest({ ...NOTHING_NEW, ...NO_SIGNALS }, KNOWN).signals).toEqual({
+      priceAsked: false,
+      refused: false,
+    });
+    expect(normalizeInterest(NOTHING_NEW, KNOWN)).not.toHaveProperty('signals');
+  });
+
   it('пустая причина остаётся пустой строкой, оценка не теряется', () => {
     const result = normalizeInterest({ ...NOTHING_NEW, level: 'hot', reason: '  ' }, KNOWN);
 
@@ -249,6 +308,8 @@ describe('interestCallData', () => {
     expect(data).toMatch(/warm/);
     expect(data).toMatch(/Бизнес: магазин одежды/);
     expect(data).toMatch(/Особенности: два входа/);
+    expect(data).toMatch(/1С: есть, 1С:Розница/);
+    expect(data).toMatch(/Клиент согласился, что трудность есть/);
   });
 
   it('уровня нет: строки про уровень нет', () => {

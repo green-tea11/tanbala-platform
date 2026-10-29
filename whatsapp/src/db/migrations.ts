@@ -191,6 +191,22 @@ CREATE TABLE chat_companies (
 `;
 
 /**
+ * Версия 7 (минимум для передачи по цене, решение владельца 29.10.2026). client_profiles: one_c_name (какая 1С, если
+ * клиент назвал) и problem_agreed (клиент согласился, что трудность есть, или рассказал о задаче: 1 да, 0 ещё нет).
+ * chats: price_asks (сколько раз клиент спрашивал цену в ходах, на которые бот ответил, с последнего возврата чата боту)
+ * и refused_answers (отказывался отвечать на вопросы: 1 да). Только ADD COLUMN со значениями по умолчанию: живая база
+ * версии 6 переходит без переписывания строк, CHECK проверяется и на старых строках.
+ */
+const SCHEMA_V7 = `
+ALTER TABLE client_profiles ADD COLUMN one_c_name TEXT;
+ALTER TABLE client_profiles ADD COLUMN problem_agreed INTEGER NOT NULL DEFAULT 0
+  CHECK (problem_agreed IN (0, 1));
+ALTER TABLE chats ADD COLUMN price_asks INTEGER NOT NULL DEFAULT 0 CHECK (price_asks >= 0);
+ALTER TABLE chats ADD COLUMN refused_answers INTEGER NOT NULL DEFAULT 0
+  CHECK (refused_answers IN (0, 1));
+`;
+
+/**
  * Миграции по порядку: элемент i переводит схему с версии i на i + 1.
  * Выпущенную миграцию не править: изменения схемы только новой версией в конце списка.
  */
@@ -201,6 +217,7 @@ const MIGRATIONS: readonly string[] = [
   SCHEMA_V4,
   SCHEMA_V5,
   SCHEMA_V6,
+  SCHEMA_V7,
 ];
 
 /**

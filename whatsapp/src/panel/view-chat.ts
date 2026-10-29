@@ -1,3 +1,4 @@
+import { has1CText } from '../agent/profile.js';
 import type { CompanySummary } from '../domain/company.js';
 import { PANEL_TEXT_MAX_LENGTH } from '../messaging/outbox.js';
 import type {
@@ -70,12 +71,13 @@ const PROFILE_FIELDS: readonly ProfileField[] = [
   { label: 'Площадь', value: (profile) => profile.area },
   { label: 'Что учитывать', value: (profile) => profile.scope },
   { label: 'Число вещей', value: (profile) => profile.itemCount },
-  {
-    label: '1С',
-    value: (profile) => (profile.has1C === null ? null : profile.has1C ? 'есть' : 'нет'),
-  },
+  { label: '1С', value: (profile) => has1CText(profile.has1C, profile.oneCName) },
   { label: 'Задача', value: (profile) => profile.problem },
   { label: 'Особенности', value: (profile) => profile.specifics },
+  {
+    label: 'Согласие, что трудность есть',
+    value: (profile) => (profile.problemAgreed ? 'да' : null),
+  },
 ];
 
 function profileRow(field: ProfileField, profile: ClientProfile): SafeHtml {

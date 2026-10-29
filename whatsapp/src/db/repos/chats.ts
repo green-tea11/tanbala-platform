@@ -5,6 +5,7 @@ import type {
   ChatControl,
   ChatId,
   ChatIdentity,
+  ChatProgress,
   ChatStatus,
   ClientProfile,
   InterestAssessment,
@@ -13,6 +14,7 @@ import type {
   OpenHandoff,
   PanelChatRow,
   StatusChange,
+  TurnSignals,
 } from '../../domain/types.js';
 import { assertTimeMs } from '../time.js';
 import { assertCount, HANDOFF_REASONS, LEVELS, oneOf } from '../values.js';
@@ -25,8 +27,17 @@ interface ProfileColumns {
   readonly scope: string | null;
   readonly item_count: string | null;
   readonly has_1c: number | null;
+  readonly one_c_name: string | null;
   readonly problem: string | null;
   readonly specifics: string | null;
+  /** NULL у чата без оценки (LEFT JOIN): выжимки нет, согласие не выяснено. */
+  readonly problem_agreed: number | null;
+}
+
+/** Ход разговора о цене в chats. */
+interface ProgressRow {
+  readonly price_asks: number;
+  readonly refused_answers: number;
 }
 
 /** Чат вместе с выжимкой: то, что читают getById, findByJid и панель. */
@@ -48,8 +59,10 @@ interface AssessmentParams {
   readonly scope: string | null;
   readonly itemCount: string | null;
   readonly has1c: 0 | 1 | null;
+  readonly oneCName: string | null;
   readonly problem: string | null;
   readonly specifics: string | null;
+  readonly problemAgreed: 0 | 1;
   readonly reason: string;
   readonly nowMs: number;
 }
@@ -68,7 +81,8 @@ const MANAGER_AUTHORS = ['bot', 'phone', 'panel'] as const;
 
 const CHAT_COLUMNS = `c.id, c.reply_jid, c.lid_jid, c.pn_jid, c.phone, c.push_name, c.status,
     c.status_by, c.status_changed_at, c.interest_level, c.last_inbound_at, c.created_at,
-    p.business, p.area, p.scope, p.item_count, p.has_1c, p.problem, p.specifics`;
+    p.business, p.area, p.scope, p.item_count, p.has_1c, p.one_c_name, p.problem, p.specifics,
+    p.problem_agreed`;
 
 const FROM_CHAT = 'FROM chats AS c LEFT JOIN client_profiles AS p ON p.chat_id = c.id';
 
@@ -93,12 +107,16 @@ const SELECT_PANEL = `SELECT ${CHAT_COLUMNS},
  * заменяется, а не дополняется.
  */
 const UPSERT_PROFILE = `INSERT INTO client_profiles
-    (chat_id, business, area, scope, item_count, has_1c, problem, specifics, reason, updated_at_ms)
-  VALUES (@chatId, @business, @area, @scope, @itemCount, @has1c, @problem, @specifics, @reason, @nowMs)
+    (chat_id, business, area, scope, item_count, has_1c, one_c_name, problem, specifics, problem_agreed,
+     reason, updated_at_ms)
+  VALUES (@chatId, @business, @area, @scope, @itemCount, @has1c, @oneCName, @problem, @specifics,
+    @problemAgreed, @reason, @nowMs)
   ON CONFLICT (chat_id) DO UPDATE SET
     business = excluded.business, area = excluded.area, scope = excluded.scope,
-    item_count = excluded.item_count, has_1c = excluded.has_1c, problem = excluded.problem,
-    specifics = excluded.specifics, reason = excluded.reason, updated_at_ms = excluded.updated_at_ms`;
+    item_count = excluded.item_count, has_1c = excluded.has_1c, one_c_name = excluded.one_c_name,
+    problem = excluded.problem, specifics = excluded.specifics,
+    problem_agreed = excluded.problem_agreed, reason = excluded.reason,
+    updated_at_ms = excluded.updated_at_ms`;
 
 /**
  * Чаты и выжимки клиентов в SQLite. Здесь числовой id из базы приводится к ChatId.
@@ -117,6 +135,8 @@ const UPSERT_PROFILE = `INSERT INTO client_profiles
  * неизвестный чат => явная ошибка.
  * listForPanel и countForPanel: чаты для панели с фильтром по статусу и страницами; limit и offset проверяются
  * (отрицательный LIMIT в SQLite значит «без лимита»), статус только bot или manager.
+ * getProgress, recordTurn и resetProgress: ход разговора о цене в колонках chats (price_asks, refused_answers);
+ * неизвестный чат => явная ошибка.
  */
 export function createChatsRepo(db: Database.Database): ChatsRepo {
   const statements = prepareStatements(db);
@@ -155,7 +175,27 @@ export function createChatsRepo(db: Database.Database): ChatsRepo {
     countForPanel(query: { readonly status?: ChatStatus }): number {
       return statements.countPanel.get({ status: statusFilter(query.status) }) ?? 0;
     },
+    getProgress(id: ChatId): ChatProgress {
+      const row = statements.progress.get(id);
+      if (row === undefined) throw new Error(`Чат #${id} не найден: хода разговора нет`);
+      return toProgress(row);
+    },
+    recordTurn(id: ChatId, signals: TurnSignals): void {
+      const params = { id, priceAsked: flag(signals.priceAsked), refused: flag(signals.refused) };
+      if (statements.recordTurn.run(params).changes === 0) {
+        throw new Error(`Чат #${id} не найден: ход разговора не записан`);
+      }
+    },
+    resetProgress(id: ChatId): void {
+      if (statements.resetProgress.run(id).changes === 0) {
+        throw new Error(`Чат #${id} не найден: ход разговора не сброшен`);
+      }
+    },
   };
+}
+
+function flag(value: boolean): 0 | 1 {
+  return value ? 1 : 0;
 }
 
 /** Запись чата по адресам со слиянием найденных чатов в старший; ответ читается из базы после записи. */
@@ -229,6 +269,17 @@ function prepareStatements(db: Database.Database) {
         'SELECT count(*) FROM chats WHERE (@status IS NULL OR status = @status)',
       )
       .pluck(),
+    progress: db.prepare<[number], ProgressRow>(
+      'SELECT price_asks, refused_answers FROM chats WHERE id = ?',
+    ),
+    recordTurn: db.prepare<{ id: ChatId; priceAsked: 0 | 1; refused: 0 | 1 }>(
+      `UPDATE chats SET price_asks = price_asks + @priceAsked,
+         refused_answers = max(refused_answers, @refused)
+       WHERE id = @id`,
+    ),
+    resetProgress: db.prepare<[number]>(
+      'UPDATE chats SET price_asks = 0, refused_answers = 0 WHERE id = ?',
+    ),
   };
 }
 
@@ -260,8 +311,10 @@ function toAssessmentParams(
     scope: profile.scope,
     itemCount: profile.itemCount,
     has1c: profile.has1C === null ? null : profile.has1C ? 1 : 0,
+    oneCName: profile.oneCName,
     problem: profile.problem,
     specifics: profile.specifics,
+    problemAgreed: flag(profile.problemAgreed),
     reason,
     nowMs,
   };
@@ -308,9 +361,18 @@ function toProfile(row: ProfileColumns): ClientProfile {
     scope: row.scope,
     itemCount: row.item_count,
     has1C: toHas1C(row.has_1c),
+    oneCName: row.one_c_name,
     problem: row.problem,
     specifics: row.specifics,
+    problemAgreed: row.problem_agreed === 1,
   };
+}
+
+function toProgress(row: ProgressRow): ChatProgress {
+  if (row.refused_answers !== 0 && row.refused_answers !== 1) {
+    throw new Error('В chats недопустимое значение отказа отвечать: строка испорчена');
+  }
+  return { priceAsks: row.price_asks, refused: row.refused_answers === 1 };
 }
 
 function toHas1C(value: number | null): boolean | null {

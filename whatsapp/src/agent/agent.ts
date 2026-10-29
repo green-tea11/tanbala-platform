@@ -4,6 +4,7 @@ import type { CompanyPrompt, LogoReader } from '../domain/company.js';
 import type { ImageInput, LlmClient, Logger, SystemBlock } from '../domain/ports.js';
 import type {
   ChatId,
+  ChatProgress,
   ClientProfile,
   InterestAssessment,
   InterestLevel,
@@ -17,6 +18,7 @@ import { cleanLine } from './clean-text.js';
 import { companyReplyData, companyReviewData } from './company-data.js';
 import { interestCallData, interestSchema, normalizeInterest } from './interest.js';
 import type { Knowledge } from './knowledge.js';
+import { priceReplyData } from './price-data.js';
 import { profileText } from './profile.js';
 import { buildSystem, buildTurns } from './prompts.js';
 import {
@@ -45,7 +47,20 @@ export interface ConversationContext {
    * данных вызова. Не передана или off => вызовы идут как раньше, без блока о компании.
    */
   readonly company?: CompanyPrompt;
+  /**
+   * Ход разговора о цене (chats.getProgress): вопросы цены с последнего возврата боту и отказ отвечать. Его видит
+   * вызов ответа в строках о цене. Не передан => вопросов цены не было, отказа нет.
+   */
+  readonly progress?: ChatProgress;
+  /**
+   * Название компании клиента для минимума передачи по цене: подтверждённое или со слов клиента. Не передано или
+   * null => неизвестно.
+   */
+  readonly companyName?: string | null;
 }
+
+/** Ход разговора, когда конвейер его не передал: вопросов цены не было, отказа нет. */
+const NO_PROGRESS: ChatProgress = { priceAsks: 0, refused: false };
 
 /**
  * Три отдельных вызова LLM из плана: ответ, проверка черновика, оценка интереса.
@@ -180,24 +195,29 @@ function answerDraft(text: string, raw: RawReplyDraft): ReplyDraft {
 }
 
 /**
- * Данные вызова ответа: выясненное о клиенте, что известно о его компании (companyReplyData) и непустые замечания
- * проверки; нет ничего => null.
+ * Данные вызова ответа: выясненное о клиенте, что известно о его компании (companyReplyData), строки о цене
+ * (priceReplyData: минимум для передачи, вопросы цены, отказ отвечать; они есть всегда) и непустые замечания проверки.
+ * Блок о компании берёт боли справки после withKnownPains.
  */
 function replyCallData(
-  profile: ClientProfile,
+  context: ConversationContext,
   company: CompanyPrompt | undefined,
   feedback: readonly string[],
-): string | null {
+): string {
   const problems = feedback.map((item) => item.trim()).filter((item) => item !== '');
   const numbered = problems.map((item, index) => `${index + 1}. ${item}`);
   const remarks =
     problems.length === 0
       ? null
       : ['Замечания проверки к прошлому черновику, исправь их:', ...numbered].join('\n');
-  const parts = [profileText(profile), companyReplyData(company), remarks].filter(
-    (part) => part !== null,
-  );
-  return parts.length === 0 ? null : parts.join('\n\n');
+  const price = priceReplyData({
+    profile: context.profile,
+    company,
+    companyName: context.companyName ?? null,
+    progress: context.progress ?? NO_PROGRESS,
+  });
+  const parts = [profileText(context.profile), companyReplyData(company), price, remarks];
+  return parts.filter((part) => part !== null).join('\n\n');
 }
 
 /** Заголовок раздела 5 документа владельца: в нём список болей, с которыми приходят клиенты. */
@@ -315,8 +335,8 @@ function createAsk(deps: AgentDeps): Ask {
  * Все вызовы: system = buildSystem(knowledge, purpose) (знания с кэшем, затем инструкция вызова без кэша; блок
  * знаний у трёх вызовов один и тот же, поэтому кэш общий); turns = buildTurns(history, HISTORY_MESSAGES, данные
  * вызова): данные в последней реплике user в блоке «данные». Сбой LLM возвращается как есть, значением.
- * draftReply: модель models.reply, данные вызова: текущая выжимка, блок о компании и замечания проверки
- * (feedback); схема replyDraftSchema, ответ нормализуется в ReplyDraft.
+ * draftReply: модель models.reply, данные вызова: текущая выжимка, блок о компании, строки о цене (минимум для
+ * передачи и ход разговора) и замечания проверки (feedback); схема replyDraftSchema, ответ нормализуется в ReplyDraft.
  * reviewDraft: модель models.review, данные вызова: что допустимо о компании клиента и текст черновика (не репликой
  * assistant); схема reviewSchema, противоречия снимает normalizeReview. Пустой черновик не проходит и LLM не вызывает.
  * В блоке о компании ответа и проверки боли справки только из списка раздела 5 документа владельца (withKnownPains,
@@ -336,7 +356,7 @@ export function createAgent(deps: AgentDeps): Agent {
       feedback: readonly string[] = [],
     ): Promise<LlmResult<ReplyDraft>> {
       const company = withKnownPains(context.company, knownPains);
-      const callData = replyCallData(context.profile, company, feedback);
+      const callData = replyCallData(context, company, feedback);
       const result = await ask('reply', replyDraftSchema, context, callData);
       return result.ok ? normalizeReplyDraft(result.value) : result;
     },

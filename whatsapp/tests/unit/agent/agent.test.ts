@@ -69,21 +69,48 @@ describe('createAgent: draftReply, запрос', () => {
     expect(last?.text).toContain('В ответе названа цена');
   });
 
-  it('выжимка пустая и замечаний нет: блока данных нет, последняя реплика слова клиента', async () => {
+  it('выжимка пустая и замечаний нет: в данных только строки о цене (минимум для передачи)', async () => {
     const { request } = await draft({ ok: true, value: ANSWER });
 
-    expect(request.turns.at(-1)).toEqual({
-      role: 'user',
-      text: 'Здравствуйте, сколько стоит учёт?',
-    });
+    const last = request.turns.at(-1)?.text ?? '';
+    expect(last.startsWith('Здравствуйте, сколько стоит учёт?')).toBe(true);
+    expect(last).toMatch(/Для передачи по цене собрано: ничего/);
+    expect(last).toMatch(/цену ещё не спрашивал/);
+    expect(last).not.toMatch(/выжимка системы|Замечания/);
   });
 
-  it('выжимка пустая, есть замечания: в данных только замечания', async () => {
+  it('данные о цене: ход разговора и название компании из контекста', async () => {
+    const profile: ClientProfile = {
+      ...EMPTY_PROFILE,
+      scope: 'ввоз и вывоз',
+      itemCount: 'около 3000',
+      has1C: true,
+      problemAgreed: true,
+    };
+
+    const { request } = await draft(
+      { ok: true, value: ANSWER },
+      context({
+        profile,
+        companyName: 'ТОО Склад',
+        progress: { priceAsks: 2, refused: true },
+        company: { kind: 'unknown', askName: true },
+      }),
+    );
+
+    const last = request.turns.at(-1)?.text ?? '';
+    expect(last).toMatch(/Минимум для передачи по цене собран/);
+    expect(last).toMatch(/спрашивал цену 2 раза/);
+    expect(last).toMatch(/отказывался отвечать/);
+  });
+
+  it('выжимка пустая, есть замечания: в данных строки о цене и замечания, выжимки нет', async () => {
     const { request } = await draft({ ok: true, value: ANSWER }, context(), ['Слишком длинно']);
 
     const last = request.turns.at(-1)?.text ?? '';
     expect(last).toContain('Слишком длинно');
-    expect(last).not.toMatch(/выжимка|не выяснили/);
+    expect(last).not.toMatch(/выжимка системы|не выяснили/);
+    expect(last.indexOf('Для передачи по цене')).toBeLessThan(last.indexOf('Слишком длинно'));
   });
 
   it('без замечаний в данных только выжимка', async () => {

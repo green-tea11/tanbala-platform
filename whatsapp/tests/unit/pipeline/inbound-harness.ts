@@ -1,11 +1,12 @@
 import { vi, type Mock } from 'vitest';
 import type { ConversationContext, DraftKind } from '../../../src/agent/agent.js';
-import type { CompanyTurn } from '../../../src/domain/company.js';
+import type { CompanySummary, CompanyTurn } from '../../../src/domain/company.js';
 import type { Clock, Logger, Transcriber } from '../../../src/domain/ports.js';
 import type {
   AudioClip,
   Chat,
   ChatId,
+  ChatProgress,
   ClientProfile,
   InboundMessage,
   InterestAssessment,
@@ -50,8 +51,10 @@ export const EMPTY_PROFILE: ClientProfile = {
   scope: null,
   itemCount: null,
   has1C: null,
+  oneCName: null,
   problem: null,
   specifics: null,
+  problemAgreed: false,
 };
 export const HISTORY: readonly StoredMessage[] = [
   { id: 1, chatId: CHAT_ID, author: 'client', kind: 'text', text: 'Сколько стоит?', tsMs: NOW },
@@ -130,7 +133,27 @@ export interface Options {
   readonly handOffFails?: Error;
   /** Что вернёт company.prepare; по умолчанию блок off без ожидания ответа. */
   readonly companyTurn?: CompanyTurn;
+  /** Ход разговора о цене в базе; по умолчанию вопросов цены не было. */
+  readonly progress?: ChatProgress;
+  /** Сводка о компании (название для минимума); по умолчанию функция выключена. */
+  readonly summary?: CompanySummary;
 }
+
+/** Сводка выключенного определения компании. */
+export const OFF_SUMMARY: CompanySummary = {
+  status: 'off',
+  companyId: null,
+  name: null,
+  city: null,
+  rubric: null,
+  candidateSource: null,
+  cardUrl: null,
+  confirmedPains: [],
+  briefPains: [],
+  emailed: null,
+  research: null,
+  statedName: null,
+};
 
 /** Определение компании выключено: так сервис отвечает без INTERNAL_API_TOKEN. */
 export const OFF_TURN: CompanyTurn = { prompt: { kind: 'off' }, awaitingAnswer: false };
@@ -247,6 +270,12 @@ export function setup(options: Options = {}): Harness {
       saveAssessment: (_id, assessment) => {
         calls.push(`save:${assessment.level}`);
       },
+      getProgress: () => options.progress ?? { priceAsks: 0, refused: false },
+      recordTurn: (_id, signals) => {
+        calls.push(
+          `turn:${signals.priceAsked ? 'price' : '-'}:${signals.refused ? 'refused' : '-'}`,
+        );
+      },
     },
     messages: {
       recent: () => HISTORY,
@@ -325,6 +354,7 @@ function companyFake(options: Options, join: (step: JoinStep) => void): Mocked<'
     identifyAfterReply: vi.fn<PipelineDeps['company']['identifyAfterReply']>(() =>
       Promise.resolve(),
     ),
+    summary: vi.fn<PipelineDeps['company']['summary']>(() => options.summary ?? OFF_SUMMARY),
   };
 }
 

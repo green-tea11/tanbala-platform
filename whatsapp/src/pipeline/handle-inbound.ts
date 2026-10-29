@@ -19,6 +19,7 @@ import type {
   WaMessageId,
 } from '../domain/types.js';
 import type { HandOffRequest, HandoffService } from '../handoff/handoff.js';
+import { companyNameOf } from '../handoff/minimum.js';
 import { isChatAllowlisted } from '../messaging/allowlist.js';
 import type { Outbox, SendBlocked } from '../messaging/outbox.js';
 import type { ClientBatch } from './batcher.js';
@@ -36,7 +37,10 @@ export { SEND_RETRY_DELAY_MS } from './sending.js';
 
 /** Зависимости конвейера обработки сообщения. */
 export interface PipelineDeps {
-  readonly chats: Pick<ChatsRepo, 'getById' | 'findByJid' | 'saveAssessment'>;
+  readonly chats: Pick<
+    ChatsRepo,
+    'getById' | 'findByJid' | 'saveAssessment' | 'getProgress' | 'recordTurn'
+  >;
   readonly messages: Pick<MessagesRepo, 'recent' | 'markAnswered' | 'setTranscript'>;
   readonly agent: Pick<Agent, 'draftReply' | 'reviewDraft' | 'assessInterest'>;
   readonly outbox: Pick<Outbox, 'sendBotReply' | 'sendVoiceNotice'>;
@@ -47,11 +51,12 @@ export interface PipelineDeps {
   readonly handoff: Pick<HandoffService, 'handOff'>;
   /**
    * Определение компании клиента (src/company): блок о компании перед ответом, итог оценки интереса, заданный вопрос
-   * о компании и поиск после ответа. Ни один метод не бросает из-за API или WhatsApp.
+   * о компании, поиск после ответа и сводка (название компании для минимума передачи по цене). Ни один метод не
+   * бросает из-за API или WhatsApp.
    */
   readonly company: Pick<
     CompanyService,
-    'prepare' | 'applyAssessment' | 'markAsked' | 'identifyAfterReply'
+    'prepare' | 'applyAssessment' | 'markAsked' | 'identifyAfterReply' | 'summary'
   >;
   readonly transcriber: Transcriber;
   readonly inbox: Pick<WhatsAppInbox, 'markRead' | 'downloadAudio'>;
@@ -151,6 +156,11 @@ interface Noticed {
  *    статус чата перечитывается: человек мог подключиться, пока LLM писал ответ. handOff бросает, только если
  *    передачу не записать (чата нет, сбой базы): ошибка в лог без текста, итог handoff_failed, «отвечено» не
  *    ставится.
+ * Минимум для передачи по цене (решение владельца 29.10.2026): контекст черновика несёт ход разговора о цене
+ * (chats.getProgress) и название компании из сводки (подтверждённое или со слов клиента); перед решением название
+ * читается заново, после оценки интереса. Ответ ушёл (sent) и в этом ходе клиент спросил цену или отказался отвечать
+ * => chats.recordTurn: вопрос цены засчитывается, только когда бот на него ответил, поэтому перегенерация пачки его не
+ * удваивает.
  * 6. markAnswered один раз в конце пачки и только если что-то ушло (ответ, фраза про голосовое или записанная
  *    передача с фразой): иначе второй ответ пачки получил бы 'skipped_no_inbound'.
  * 7. Итог replied => company.identifyAfterReply (поиск по названию со слов клиента, проверка новой компании, логотип);
@@ -310,7 +320,9 @@ async function draftAndAnswer(
   const { context, drafted } = await draftWithCompany(deps, contextOf(deps, chat), company);
   const regenerated = regenerate(deps, batch, turn);
   if (regenerated !== null) return regenerated;
-  const verdict = await decideReply(deps, context, drafted);
+  // Оценка интереса могла записать название компании со слов клиента или подтверждение: минимум по свежей сводке.
+  const fresh: ConversationContext = { ...context, companyName: companyNameNow(deps, chat.id) };
+  const verdict = await decideReply(deps, fresh, drafted);
   return act(deps, batch, chat, turn, verdict);
 }
 
@@ -347,7 +359,30 @@ function regenerate(
 
 function contextOf(deps: PipelineDeps, chat: Chat): ConversationContext {
   const history = deps.messages.recent(chat.id, HISTORY_MESSAGES);
-  return { chatId: chat.id, history, profile: chat.profile, level: chat.level };
+  return {
+    chatId: chat.id,
+    history,
+    profile: chat.profile,
+    level: chat.level,
+    progress: deps.chats.getProgress(chat.id),
+    companyName: companyNameNow(deps, chat.id),
+  };
+}
+
+/**
+ * Название компании для минимума из сводки сервиса компании. Сбой чтения (база) ответ не останавливает: название
+ * неизвестно, в лог ID чата и имя ошибки.
+ */
+function companyNameNow(deps: PipelineDeps, chatId: ChatId): string | null {
+  try {
+    return companyNameOf(deps.company.summary(chatId));
+  } catch (error: unknown) {
+    deps.logger.warn(
+      { chatId, errorName: errorName(error) },
+      `Сводка о компании не прочитана: минимум без названия: чат #${chatId}`,
+    );
+    return null;
+  }
 }
 
 /**
@@ -377,6 +412,7 @@ async function sendAnswer(
   if (result === 'sent') {
     const replied = finish(deps, chatId, turn, { kind: 'replied' });
     deps.company.markAsked(chatId, verdict.companyQuestion ?? 'none', text);
+    if (verdict.signals !== undefined) deps.chats.recordTurn(chatId, verdict.signals);
     return replied;
   }
   if (result === 'skipped_manager') return SILENT_MANAGER;

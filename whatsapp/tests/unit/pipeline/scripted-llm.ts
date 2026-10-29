@@ -1,5 +1,5 @@
 import type { LlmClient, StructuredRequest } from '../../../src/domain/ports.js';
-import type { InterestLevel, LlmPurpose } from '../../../src/domain/types.js';
+import type { ClientProfile, InterestLevel, LlmPurpose } from '../../../src/domain/types.js';
 
 // Поддельный клиент LLM для тестов сборки: отвечает по назначению вызова в форме схем агента. Значение проходит
 // через ту же схему, что и настоящий ответ модели. Сети нет.
@@ -32,6 +32,12 @@ export interface InterestScript {
   readonly companyAnswer?: 'yes' | 'no' | 'none';
   /** Боли, с которыми клиент согласился; по умолчанию пусто. */
   readonly confirmedPains?: readonly string[];
+  /** Поля выжимки со слов клиента; по умолчанию null, согласие с трудностью false. */
+  readonly profile?: Partial<ClientProfile>;
+  /** Клиент спрашивает цену в последних сообщениях; по умолчанию false. */
+  readonly priceAsked?: boolean;
+  /** Клиент отказывается отвечать на вопросы бота; по умолчанию false. */
+  readonly refused?: boolean;
 }
 
 /** Что отвечает поддельная модель. */
@@ -71,13 +77,18 @@ function rawInterest(level: InterestLevel, interest: InterestScript = {}): unkno
     scope: null,
     itemCount: null,
     has1C: null,
+    oneCName: null,
     problem: null,
     specifics: null,
+    problemAgreed: false,
+    ...interest.profile,
     reason: 'по разговору',
     companyName: interest.companyName ?? null,
     companyCity: interest.companyCity ?? null,
     companyAnswer: interest.companyAnswer ?? 'none',
     confirmedPains: interest.confirmedPains ?? [],
+    priceAsked: interest.priceAsked ?? false,
+    refused: interest.refused ?? false,
   };
 }
 

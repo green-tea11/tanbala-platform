@@ -42,6 +42,10 @@ const REPLIES = [
     companyCity: null,
     companyAnswer: 'none',
     confirmedPains: ['пересчёт занимает дни'],
+    oneCName: null,
+    problemAgreed: true,
+    priceAsked: true,
+    refused: false,
   },
 ];
 
@@ -138,6 +142,10 @@ describe('агент с настоящим адаптером Anthropic', () => 
           'companyCity',
           'companyAnswer',
           'confirmedPains',
+          'oneCName',
+          'problemAgreed',
+          'priceAsked',
+          'refused',
         ],
       }),
     ]);
@@ -170,7 +178,13 @@ describe('агент с настоящим адаптером Anthropic', () => 
       ok: true,
       value: {
         level: 'warm',
-        profile: { ...EMPTY_PROFILE, business: 'магазин одежды', area: '300 м2', has1C: true },
+        profile: {
+          ...EMPTY_PROFILE,
+          business: 'магазин одежды',
+          area: '300 м2',
+          has1C: true,
+          problemAgreed: true,
+        },
         reason: 'Рассказал о бизнесе',
         company: {
           name: 'ТОО Альфа',
@@ -178,6 +192,7 @@ describe('агент с настоящим адаптером Anthropic', () => 
           answer: 'none',
           pains: ['пересчёт занимает дни'],
         },
+        signals: { priceAsked: true, refused: false },
       },
     });
     expect(

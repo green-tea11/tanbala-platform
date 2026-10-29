@@ -22,8 +22,10 @@ const BASE: ManagerNotificationInput = {
     scope: null,
     itemCount: null,
     has1C: null,
+    oneCName: null,
     problem: null,
     specifics: null,
+    problemAgreed: false,
   },
   chatId: 12 as ChatId,
 };
@@ -73,11 +75,20 @@ const ISOLATE = String.fromCodePoint(0x2066);
 /** Текст без компании: с ним сравнивается начало уведомления. */
 const WITHOUT_COMPANY = formatManagerNotification(BASE);
 
-/** Строки, которые блок о компании добавил после выжимки (без пустой строки-разделителя). */
+/** Начало уведомления до строк о минимуме для оценки цены: от компании оно не зависит. */
+const PROFILE_PART = WITHOUT_COMPANY.slice(0, WITHOUT_COMPANY.indexOf('\n\nДля оценки цены'));
+
+/**
+ * Строки, которые блок о компании добавил в конец (без пустой строки-разделителя). Выжимка та же, что без компании;
+ * строки о минимуме идут между ней и блоком о компании (название компании влияет только на них).
+ */
 function companyBlock(company: CompanySummary): string[] {
   const text = formatManagerNotification({ ...BASE, company });
-  expect(text.startsWith(`${WITHOUT_COMPANY}\n\n`)).toBe(true);
-  return text.slice(WITHOUT_COMPANY.length + 2).split('\n');
+  expect(text.startsWith(`${PROFILE_PART}\n\nДля оценки цены собрано: `)).toBe(true);
+  const lines = text.split('\n');
+  const start = lines.findIndex((line) => line.startsWith('Компания: '));
+  expect(lines[start - 1]).toBe('');
+  return lines.slice(start);
 }
 
 describe('formatManagerNotification: компания клиента', () => {

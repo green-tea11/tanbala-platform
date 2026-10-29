@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import type { CompanyMention, CompanyPrompt } from '../domain/company.js';
-import type { ClientProfile, InterestAssessment, InterestLevel } from '../domain/types.js';
+import type {
+  ClientProfile,
+  InterestAssessment,
+  InterestLevel,
+  TurnSignals,
+} from '../domain/types.js';
 import { cleanLine } from './clean-text.js';
 import { companyInterestData } from './company-data.js';
 import { profileText } from './profile.js';
@@ -65,6 +70,22 @@ export const interestSchema = z.object({
     .describe(
       'Трудности, с которыми клиент согласился или о которых рассказал сам, коротко; до трёх; иначе пустой список.',
     ),
+  oneCName: z.string().describe('Какая 1С у клиента, если он её назвал; иначе null.').nullable(),
+  problemAgreed: z
+    .boolean()
+    .describe(
+      'true, если клиент согласился, что трудность у него есть, или сам рассказал о своей задаче; иначе false.',
+    ),
+  priceAsked: z
+    .boolean()
+    .describe(
+      'true, если в последних сообщениях клиента (после последней реплики assistant) есть вопрос о цене или стоимости; иначе false.',
+    ),
+  refused: z
+    .boolean()
+    .describe(
+      'true, если в последних сообщениях клиент отказывается отвечать на вопросы бота; иначе false.',
+    ),
 });
 
 /**
@@ -85,6 +106,10 @@ export interface RawInterest {
   readonly companyCity?: string | null;
   readonly companyAnswer?: CompanyMention['answer'];
   readonly confirmedPains?: readonly string[];
+  readonly oneCName?: string | null;
+  readonly problemAgreed?: boolean;
+  readonly priceAsked?: boolean;
+  readonly refused?: boolean;
 }
 
 /** Новое значение поля после cleanLine; модель ничего не дала или остался пустой текст => прежнее значение. */
@@ -127,15 +152,38 @@ function companyMention(raw: RawInterest): CompanyMention | undefined {
 }
 
 /**
+ * Сигналы хода: спрашивает ли клиент цену и отказывается ли отвечать. Модель не прислала ни одного из полей => undefined
+ * (так отвечают подделки LLM); иначе отсутствующее поле значит false.
+ */
+function turnSignals(raw: RawInterest): TurnSignals | undefined {
+  if (raw.priceAsked === undefined && raw.refused === undefined) return undefined;
+  return { priceAsked: raw.priceAsked === true, refused: raw.refused === true };
+}
+
+/** Есть ли 1С: ответ клиента, иначе прежнее значение; названная 1С без ответа значит, что 1С есть. */
+function has1COf(
+  raw: RawInterest,
+  previous: ClientProfile,
+  oneCName: string | null,
+): boolean | null {
+  return raw.has1C ?? previous.has1C ?? (oneCName === null ? null : true);
+}
+
+/**
  * Нормализует оценку интереса. Поля выжимки: cleanLine (одна строка, до 200 знаков), пустое значение => прежнее.
  * Известное раньше сохраняется, даже если модель его потеряла (она переписывает выжимку целиком, а окно истории
  * короткое): null значит «клиент не говорил», стирать выясненное он не может. Исправление клиента модель
  * присылает новым значением, и оно заменяет прежнее; has1C false не считается пустым. reason до 300 знаков,
  * может остаться пустой: оценка из-за этого не теряется. company: что клиент сказал о своей компании
- * (companyMention); его хранит и применяет сервис компании, а не выжимка.
+ * (companyMention); его хранит и применяет сервис компании, а не выжимка. Какая 1С (oneCName) чистится как
+ * текстовое поле; названная 1С без ответа «есть ли 1С» значит, что 1С есть. Согласие, что трудность есть
+ * (problemAgreed), раз выяснено, не теряется. signals: вопрос цены и отказ отвечать в последних сообщениях клиента
+ * (turnSignals), они в выжимку не входят.
  */
 export function normalizeInterest(raw: RawInterest, previous: ClientProfile): InterestAssessment {
   const company = companyMention(raw);
+  const signals = turnSignals(raw);
+  const oneCName = textField(raw.oneCName ?? null, previous.oneCName);
   return {
     level: raw.level,
     profile: {
@@ -143,12 +191,15 @@ export function normalizeInterest(raw: RawInterest, previous: ClientProfile): In
       area: textField(raw.area, previous.area),
       scope: textField(raw.scope, previous.scope),
       itemCount: textField(raw.itemCount, previous.itemCount),
-      has1C: raw.has1C ?? previous.has1C,
+      has1C: has1COf(raw, previous, oneCName),
+      oneCName,
       problem: textField(raw.problem, previous.problem),
       specifics: textField(raw.specifics, previous.specifics),
+      problemAgreed: previous.problemAgreed || raw.problemAgreed === true,
     },
     reason: cleanLine(raw.reason, MAX_REASON_CHARS),
     ...(company === undefined ? {} : { company }),
+    ...(signals === undefined ? {} : { signals }),
   };
 }
 

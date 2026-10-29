@@ -134,10 +134,17 @@ function reply(
   return { replies: [{ outcome: 'answer', text, companyQuestion }], interests: [interest] };
 }
 
-/** Модель решает передать чат (hot) и пишет фразу владельца о цене. */
+/** Модель решает передать чат (hot) после вопроса цены и пишет фразу владельца о цене. */
 function priceHandoff(interest: InterestScript = {}): LlmScript {
-  return { replies: [{ outcome: 'hot', text: PRICE_PHRASE }], interests: [interest] };
+  return {
+    replies: [{ outcome: 'hot', text: PRICE_PHRASE, aboutPrice: true }],
+    interests: [{ ...interest, priceAsked: true }],
+  };
 }
+
+/** Вопрос о недостающем для передачи по цене (решение владельца 29.10.2026). */
+const ASK_COUNT =
+  'Цена сильно зависит от объёма. Сколько примерно вещей нужно учитывать? Это нужно, чтобы коллега сразу назвал ориентир.';
 
 describe('сценарии владельца: как находится компания клиента', () => {
   it('1. номер скрыт (только @lid), сайт в бизнес-профиле: найдена по домену, черновик спрашивает подтверждение, после отправки кандидат спрошен', async () => {
@@ -405,19 +412,30 @@ describe('сценарии владельца: вопрос цены', () => {
     expect(s.state().nameAskedAtMs).toBe(turn.atMs);
   });
 
-  it('9. цена после согласия с болью: передача hot с фразой владельца, в уведомлении компания, карточка и подтверждённые боли', async () => {
+  it('9. цена после согласия с болью, но без числа вещей и 1С: чат у бота; минимум собран: передача hot, в уведомлении компания, карточка, боли и минимум', async () => {
     const s = createScenario({ api: SKLAD_BY_PHONE });
     await s.say(CLIENT_HELLO, reply(ASK_CONFIRM, 'confirm'));
     const yes = await s.say('Да, это мы', reply(PAIN_QUESTION, 'none', { companyAnswer: 'yes' }));
+    const agreed = { problemAgreed: true, scope: 'ввоз и вывоз' };
 
+    const early = await s.say('Да, пересорт бывает. Сколько стоит?', {
+      ...priceHandoff({ level: 'hot', confirmedPains: [PAIN_MIXUP], profile: agreed }),
+      replies: [{ outcome: 'hot', text: PRICE_PHRASE, aboutPrice: true }, ASK_COUNT],
+    });
     const price = await s.say(
-      'Да, пересорт бывает. Сколько стоит?',
-      priceHandoff({ level: 'hot', confirmedPains: [PAIN_MIXUP] }),
+      'Около 3000 позиций, 1С есть. Так сколько?',
+      priceHandoff({
+        level: 'hot',
+        profile: { ...agreed, itemCount: 'около 3000', has1C: true },
+      }),
     );
 
     expect(yes.data('reply')).toContain(
       'Мы уже писали этой компании на почту: можно один раз сказать «мы писали вам на почту».',
     );
+    expect(early.outcome).toEqual({ kind: 'replied' });
+    expect(early.toClient).toEqual([ASK_COUNT]);
+    expect(early.toManager).toEqual([]);
     expect(price.outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
     expect(price.toClient).toEqual([PRICE_PHRASE]);
     expect(s.storage.handoffs.findOpen(s.chatId())).toMatchObject({ reason: 'hot', level: 'hot' });
@@ -427,21 +445,28 @@ describe('сценарии владельца: вопрос цены', () => {
     expect(notice).toContain(`Компания: «${SKLAD}», Алматы (клиент подтвердил)`);
     expect(notice).toContain(`Карточка: ${EMAIL_UI_URL}/companies/${SKLAD_ID}`);
     expect(notice).toContain(`Подтверждённые боли: ${PAIN_MIXUP}`);
+    expect(notice).toContain('Не удалось выяснить: всё выяснено');
   });
 
-  it('10. цена второй раз: модель отвечает hot, чат передаётся сразу с фразой владельца', async () => {
+  it('10. цена второй раз без минимума: модель отвечает hot, но чат остаётся у бота, уходит один вопрос', async () => {
     const s = createScenario();
-    const first = await s.say('Сколько стоит?', reply(ASK_NAME, 'name'));
+    const first = await s.say('Сколько стоит?', {
+      replies: [{ outcome: 'answer', text: ASK_NAME, companyQuestion: 'name' }],
+      interests: [{ priceAsked: true }],
+    });
 
-    const second = await s.say('Я же спросил, сколько стоит?', priceHandoff({ level: 'hot' }));
+    const second = await s.say('Я же спросил, сколько стоит?', {
+      ...priceHandoff({ level: 'hot' }),
+      replies: [{ outcome: 'hot', text: PRICE_PHRASE, aboutPrice: true }, ASK_COUNT],
+    });
 
     expect(first.outcome).toEqual({ kind: 'replied' });
-    expect(second.outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
-    expect(second.llm.purposes()).toEqual(['reply', 'interest', 'review']);
-    expect(second.toClient).toEqual([PRICE_PHRASE]);
-    expect(second.toManager).toHaveLength(1);
-    expect(second.toManager[0]).toContain('Компания: не определена');
-    expect(s.storage.chats.getById(s.chatId())?.control.status).toBe('manager');
+    expect(second.outcome).toEqual({ kind: 'replied' });
+    expect(second.llm.purposes()).toEqual(['reply', 'interest', 'reply', 'review']);
+    expect(second.toClient).toEqual([ASK_COUNT]);
+    expect(second.toManager).toEqual([]);
+    expect(s.storage.chats.getById(s.chatId())?.control.status).toBe('bot');
+    expect(s.storage.chats.getProgress(s.chatId())).toEqual({ priceAsks: 2, refused: false });
   });
 });
 

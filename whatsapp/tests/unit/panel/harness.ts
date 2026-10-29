@@ -37,8 +37,10 @@ export const EMPTY_PROFILE: ClientProfile = {
   scope: null,
   itemCount: null,
   has1C: null,
+  oneCName: null,
   problem: null,
   specifics: null,
+  problemAgreed: false,
 };
 
 /** Сводка выключенной функции определения компании: так панель работает по умолчанию в тестах. */
@@ -200,6 +202,9 @@ function createChatsRepo(data: PanelData): Harness['chats'] {
         .map(rowOf),
     ),
     countForPanel: vi.fn((query) => filtered(query.status).length),
+    getProgress: unused('chats.getProgress'),
+    recordTurn: unused('chats.recordTurn'),
+    resetProgress: unused('chats.resetProgress'),
   };
 }
 

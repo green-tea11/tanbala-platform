@@ -122,6 +122,8 @@ interface Harness {
   readonly summaries: ChatId[];
   /** ID чатов, для которых снималось ожидание ответа на «Вы из компании X?». */
   readonly stopped: ChatId[];
+  /** ID чатов, у которых возврат боту обнулил ход разговора о цене. */
+  readonly progressResets: ChatId[];
 }
 
 function setup(options: SetupOptions = {}): Harness {
@@ -135,6 +137,7 @@ function setup(options: SetupOptions = {}): Harness {
   const notifications: NotifyCall[] = [];
   const summaries: ChatId[] = [];
   const stopped: ChatId[] = [];
+  const progressResets: ChatId[] = [];
   let chat = options.chat === undefined ? makeChat() : options.chat;
   let isOpen = options.alreadyOpen === true;
   const unexpected = (): never => {
@@ -153,6 +156,12 @@ function setup(options: SetupOptions = {}): Harness {
     saveAssessment: unexpected,
     listForPanel: unexpected,
     countForPanel: unexpected,
+    getProgress: unexpected,
+    recordTurn: unexpected,
+    resetProgress: (id) => {
+      events.push('chats.resetProgress');
+      progressResets.push(id);
+    },
   };
   const handoffs: HandoffsRepo = {
     open: (chatId, reason, level, snapshot, nowMs) => {
@@ -240,6 +249,7 @@ function setup(options: SetupOptions = {}): Harness {
     notifications,
     summaries,
     stopped,
+    progressResets,
   };
 }
 
@@ -996,7 +1006,7 @@ describe('createHandoffService: компания клиента в уведом�
 });
 
 describe('createHandoffService: returnToBot', () => {
-  it('закрывает передачу и ставит статус bot (by panel) одной транзакцией', async () => {
+  it('закрывает передачу, ставит статус bot (by panel) и обнуляет ход разговора о цене одной транзакцией', async () => {
     const h = setup({
       alreadyOpen: true,
       chat: makeChat({ control: { status: 'manager', by: 'bot' } }),
@@ -1009,8 +1019,10 @@ describe('createHandoffService: returnToBot', () => {
       'tx:begin',
       'handoffs.resolve',
       'chats.setStatus',
+      'chats.resetProgress',
       'tx:commit',
     ]);
+    expect(h.progressResets).toEqual([CHAT_ID]);
     expect(h.stopped).toEqual([CHAT_ID]);
     expect(h.resolved).toEqual([{ chatId: CHAT_ID, nowMs: T0 }]);
     expect(h.statusChanges).toEqual([

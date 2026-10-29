@@ -14,8 +14,17 @@ import type {
   ReplyHandoffOutcome,
   ReviewedText,
   StoredMessage,
+  TurnSignals,
 } from '../domain/types.js';
 import { decideAction, type Decision, type DraftGate, type TextDraft } from './decide.js';
+import {
+  isPrematurePriceHandoff,
+  isThirdPriceAsk,
+  minimumFallback,
+  minimumRemark,
+  priceSituation,
+  type PriceSituation,
+} from './price-gate.js';
 
 /** Что нужно ходу ответа от остальной системы: агент, запись оценки интереса, часы и лог. */
 export interface ReplyFlowDeps {
@@ -46,12 +55,14 @@ export type HandoffVerdict =
 
 /**
  * Ответ клиенту: проверенный текст и вопрос о компании из того черновика answer, чей текст уходит (нет поля => ни о
- * чём). Вопрос запоминается только после отправки: каждый задаётся один раз.
+ * чём). Вопрос запоминается только после отправки: каждый задаётся один раз. signals: клиент в этом ходе спросил цену
+ * или отказался отвечать (нет поля => ни того ни другого); записывается тоже только после отправки (chats.recordTurn).
  */
 export interface SendVerdict {
   readonly kind: 'send';
   readonly text: ReviewedText;
   readonly companyQuestion?: CompanyQuestion;
+  readonly signals?: TurnSignals;
 }
 
 /**
@@ -76,6 +87,12 @@ const CHECK_FAILED: ReplyVerdict = { kind: 'handoff', notice: { reason: 'check_f
 /** Сбой LLM там, где причины передачи ещё нет: fail-closed, клиенту уходит нейтральная фраза. */
 const LLM_ERROR: ReplyVerdict = { kind: 'handoff', notice: { reason: 'llm_error' } };
 
+/** Третий вопрос цены, а модель ответила answer: передача с фиксированной фразой о цене (решение владельца 29.10.2026). */
+const THIRD_PRICE_HANDOFF: ReplyVerdict = {
+  kind: 'handoff',
+  notice: { reason: 'hot', aboutPrice: true },
+};
+
 /** Причина записи уровня hot, когда его назначила не оценка интереса, а вызов ответа. */
 const HOT_BY_REPLY =
   'Вызов ответа определил клиента как горячего: он спрашивает цену, сроки или договор.';
@@ -83,10 +100,15 @@ const HOT_BY_REPLY =
 type LlmFailed = Extract<LlmResult<unknown>, { readonly ok: false }>;
 type Attempt = 1 | 2;
 
-/** Всё, что нужно одной попытке: зависимости и разговор. */
+/**
+ * Всё, что нужно одной попытке: зависимости, разговор (с ним идут проверки), разговор для повтора черновика (с выжимкой
+ * из оценки этого хода, если она есть) и что код знает о цене (pipeline/price-gate.ts).
+ */
 interface Flow {
   readonly deps: ReplyFlowDeps;
   readonly context: ConversationContext;
+  readonly retryContext: ConversationContext;
+  readonly price: PriceSituation;
 }
 
 /**
@@ -100,6 +122,11 @@ type Judgement =
       readonly kind: 'retry';
       readonly feedback: readonly string[];
       readonly keep: ReplyVerdict | null;
+      /**
+       * Повтор после ранней передачи по цене: если и он не прошёл проверки, уходит этот фиксированный вопрос, а не
+       * передача check_failed.
+       */
+      readonly fallback?: SendVerdict;
     };
 
 /**
@@ -164,6 +191,12 @@ export async function requestAssessment(
  * (CheckCode), причина передачи и числа: фрагменты текста клиента и модели в нём недопустимы. context тот же, с которым
  * писался черновик: проверка судит с теми же данными о компании. Вердикт send несёт companyQuestion черновика answer,
  * чей текст уходит (после повтора: повторного черновика).
+ * Правило минимума перед передачей по цене (решение владельца 29.10.2026, pipeline/price-gate.ts): исход hot из-за
+ * вопроса цены, пока минимума нет (вопрос не третий, отказа отвечать не было), не передаёт чат: один повтор черновика с
+ * замечанием, чего не хватает и какой один вопрос задать; повтор снова hot, не получился или не прошёл проверки =>
+ * фиксированный вопрос о первом недостающем (pipeline/decide.priceQuestion), чат остаётся у бота. Третий вопрос цены,
+ * а модель ответила answer => передача hot с фразой о цене. Повтор черновика видит выжимку из оценки этого хода.
+ * Вердикт send несёт сигналы хода (вопрос цены, отказ отвечать), если они есть: конвейер записывает их после отправки.
  */
 export async function decideReply(
   deps: ReplyFlowDeps,
@@ -173,11 +206,19 @@ export async function decideReply(
   const assessment = keepAssessment(deps, context.chatId, drafted.assessment);
   const scope = budgetScopeOf([drafted.draft, drafted.assessment]);
   if (scope !== null) return { kind: 'limit', scope };
-  const flow: Flow = { deps, context };
+  const price = priceSituation(context, assessment, drafted.draft);
+  const retryContext = assessment === null ? context : { ...context, profile: assessment.profile };
+  const flow: Flow = { deps, context, retryContext, price };
   const first = await judgeResult(flow, drafted.draft, 1, null);
   const verdict = first.kind === 'verdict' ? first.verdict : await retryOnce(flow, first);
   if (isHotHandoff(verdict)) markHot(deps, context, assessment);
-  return verdict;
+  return withSignals(verdict, price.signals);
+}
+
+/** Ответ уходит: сигналы хода идут с ним, если клиент спросил цену или отказался отвечать. */
+function withSignals(verdict: ReplyVerdict, signals: TurnSignals): ReplyVerdict {
+  if (verdict.kind !== 'send' || (!signals.priceAsked && !signals.refused)) return verdict;
+  return { ...verdict, signals };
 }
 
 /** Вызов, упавший исключением сразу (заготовка, сбой до первого await), становится отказом промиса. */
@@ -262,9 +303,14 @@ async function retryOnce(
   flow: Flow,
   retry: Extract<Judgement, { readonly kind: 'retry' }>,
 ): Promise<ReplyVerdict> {
-  const retried = await call(() => flow.deps.agent.draftReply(flow.context, retry.feedback));
+  const retried = await call(() => flow.deps.agent.draftReply(flow.retryContext, retry.feedback));
   const second = await judgeResult(flow, retried, 2, retry.keep);
-  return second.kind === 'verdict' ? second.verdict : (second.keep ?? CHECK_FAILED);
+  const verdict = second.kind === 'verdict' ? second.verdict : (second.keep ?? CHECK_FAILED);
+  return retry.fallback !== undefined && isCheckFailed(verdict) ? retry.fallback : verdict;
+}
+
+function isCheckFailed(verdict: ReplyVerdict): boolean {
+  return verdict.kind === 'handoff' && verdict.notice.reason === 'check_failed';
 }
 
 /** Ответ вызова черновика: сбой LLM даёт решение сразу (keep или llm_error), иначе разбор черновика. */
@@ -288,6 +334,8 @@ async function judge(flow: Flow, draft: ReplyDraft, attempt: Attempt): Promise<J
   if (draft.outcome === 'complaint') {
     return judgementOf(decideAction({ kind: 'handoff_outcome', draft }), null);
   }
+  if (isPrematurePriceHandoff(draft, flow.price)) return premature(flow, attempt);
+  if (isThirdPriceAsk(draft, flow.price)) return thirdPriceAsk(flow);
   const text = normalizeDraft(draft.text);
   const keep = keepOf(draft);
   if (draft.outcome !== 'answer' && text.trim() === '') {
@@ -308,6 +356,39 @@ async function judge(flow: Flow, draft: ReplyDraft, attempt: Attempt): Promise<J
     keep,
     draft.outcome === 'answer' ? draft.companyQuestion : undefined,
   );
+}
+
+/**
+ * Ранняя передача по цене: попытка 1 => повтор с замечанием о минимуме (keep и fallback: фиксированный вопрос о первом
+ * недостающем), попытка 2 => сразу этот вопрос. Текст hot не проверяется: он не уйдёт. В лог только коды полей и числа.
+ */
+function premature(flow: Flow, attempt: Attempt): Judgement {
+  const { chatId } = flow.context;
+  const { minimum, priceAsks } = flow.price;
+  flow.deps.logger.info(
+    { chatId, attempt, missing: [...minimum.missing], priceAsks },
+    `Передача по цене рано: не хватает минимума, чат остаётся у бота: чат #${chatId}`,
+  );
+  const fallback = fallbackVerdict(flow.price);
+  if (attempt === 2) return verdictOf(fallback);
+  return { kind: 'retry', feedback: [minimumRemark(flow.price)], keep: fallback, fallback };
+}
+
+function fallbackVerdict(price: PriceSituation): SendVerdict {
+  const { text, companyQuestion } = minimumFallback(price);
+  return companyQuestion === undefined
+    ? { kind: 'send', text }
+    : { kind: 'send', text, companyQuestion };
+}
+
+/** Третий вопрос цены, а модель ответила answer: передача hot с фразой о цене, текст модели не нужен. */
+function thirdPriceAsk(flow: Flow): Judgement {
+  const { chatId } = flow.context;
+  flow.deps.logger.info(
+    { chatId, priceAsks: flow.price.priceAsks },
+    `Третий вопрос цены: чат передаётся менеджеру: чат #${chatId}`,
+  );
+  return verdictOf(THIRD_PRICE_HANDOFF);
 }
 
 /**

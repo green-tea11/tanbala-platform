@@ -28,6 +28,9 @@ import { scriptedLlm, type LlmScript, type ScriptedLlm } from './scripted-llm.js
 // Живой случай клиента с 1С целиком, на моках: сообщение клиента => Sonnet отвечает hot с текстом => проверки кодом
 // и вторым вызовом => передача с этим текстом одним сообщением => уведомление менеджеру. Настоящие агент, конвейер,
 // сервис передачи, исходящие и репозитории на SQLite в памяти; модель, подключение WhatsApp и сеть поддельные.
+// С 29.10.2026 передача по цене только с минимумом (что учитывать, число вещей, 1С, согласие с трудностью; компания не
+// нужна: определение компании выключено), поэтому клиент здесь называет и число позиций. Без минимума тот же вопрос
+// даёт вопрос о недостающем: pipeline/price-scenarios.test.ts.
 
 const CLIENT_PHONE = '77000000002';
 const CLIENT_JID = `${CLIENT_PHONE}@s.whatsapp.net` as Jid;
@@ -36,7 +39,7 @@ const MANAGER_JID = `${MANAGER_PHONE}@s.whatsapp.net` as Jid;
 
 /** Сообщение клиента из живого теста (после него бот ответил только фиксированной фразой). */
 const CLIENT_QUESTION =
-  '11 000 м², хотим учитывать ввоз и вывоз, сколько будет стоить, у нас 1С, у вас есть специалист, который подключится к нашей 1С?';
+  '11 000 м², около 20 000 позиций, хотим учитывать ввоз и вывоз, сколько будет стоить, у нас 1С, у вас есть специалист, который подключится к нашей 1С?';
 
 /** Ответ модели по решению владельца: ответ из знаний (раздел 9, вопрос 11) и одна фраза о передаче. */
 const MODEL_TEXT =
@@ -179,11 +182,29 @@ async function runDialogue(script: LlmScript): Promise<Dialogue> {
   };
 }
 
-const HOT_REPLY = { outcome: 'hot', text: MODEL_TEXT } as const;
+const HOT_REPLY = { outcome: 'hot', text: MODEL_TEXT, aboutPrice: true } as const;
+
+/** Оценка интереса этого сообщения: минимум для передачи по цене собран, клиент спрашивает цену. */
+const MINIMUM_COLLECTED: LlmScript['interests'] = [
+  {
+    profile: {
+      area: '11 000 м²',
+      scope: 'ввоз и вывоз',
+      itemCount: 'около 20 000',
+      has1C: true,
+      problemAgreed: true,
+    },
+    priceAsked: true,
+  },
+];
 
 describe('диалог про 1С и цену (живой случай): Sonnet решает hot, проверки пройдены', () => {
   it('клиент получает ровно одно сообщение: ответ из знаний и фраза о передаче; текст тот же, что в ответе модели', async () => {
-    const d = await runDialogue({ replies: [HOT_REPLY], level: 'warm' });
+    const d = await runDialogue({
+      replies: [HOT_REPLY],
+      level: 'warm',
+      interests: MINIMUM_COLLECTED,
+    });
 
     expect(d.toClient()).toEqual([MODEL_TEXT]);
     expect(d.storage.messages.recent(d.chat.id, 10).filter((m) => m.author === 'bot')).toEqual([
@@ -192,7 +213,11 @@ describe('диалог про 1С и цену (живой случай): Sonnet 
   });
 
   it('передача с причиной hot, уровень hot в передаче и в чате, чат у менеджера', async () => {
-    const d = await runDialogue({ replies: [HOT_REPLY], level: 'warm' });
+    const d = await runDialogue({
+      replies: [HOT_REPLY],
+      level: 'warm',
+      interests: MINIMUM_COLLECTED,
+    });
 
     expect(d.storage.handoffs.findOpen(d.chat.id)).toMatchObject({ reason: 'hot', level: 'hot' });
     const chat = d.storage.chats.getById(d.chat.id);
@@ -201,7 +226,11 @@ describe('диалог про 1С и цену (живой случай): Sonnet 
   });
 
   it('уведомление менеджеру с причиной hot уходит до сообщения клиенту и записано в базу', async () => {
-    const d = await runDialogue({ replies: [HOT_REPLY], level: 'warm' });
+    const d = await runDialogue({
+      replies: [HOT_REPLY],
+      level: 'warm',
+      interests: MINIMUM_COLLECTED,
+    });
 
     const notice = d.toManager();
     expect(notice).toHaveLength(1);
@@ -215,7 +244,11 @@ describe('диалог про 1С и цену (живой случай): Sonnet 
   });
 
   it('вызовы: ответ на Sonnet, проверка и оценка на Haiku (модели из config/models.json), проверка знает, что это сообщение о передаче', async () => {
-    const d = await runDialogue({ replies: [HOT_REPLY], level: 'warm' });
+    const d = await runDialogue({
+      replies: [HOT_REPLY],
+      level: 'warm',
+      interests: MINIMUM_COLLECTED,
+    });
 
     expect(d.llm.purposes()).toEqual(['reply', 'interest', 'review']);
     expect(d.llm.requests.map((request) => request.model)).toEqual([
@@ -229,7 +262,11 @@ describe('диалог про 1С и цену (живой случай): Sonnet 
   });
 
   it('модель видит вопрос клиента и ответ про 1С в знаниях (раздел 9, вопрос 11)', async () => {
-    const d = await runDialogue({ replies: [HOT_REPLY], level: 'warm' });
+    const d = await runDialogue({
+      replies: [HOT_REPLY],
+      level: 'warm',
+      interests: MINIMUM_COLLECTED,
+    });
 
     const reply = d.llm.requests[0];
     expect(reply?.turns.at(-1)?.text).toContain(CLIENT_QUESTION);
@@ -242,6 +279,7 @@ describe('диалог про 1С и цену: проверка не пройд�
     const d = await runDialogue({
       replies: [HOT_REPLY],
       level: 'warm',
+      interests: MINIMUM_COLLECTED,
       problems: ['Названы сроки, их нет в знаниях'],
     });
 
