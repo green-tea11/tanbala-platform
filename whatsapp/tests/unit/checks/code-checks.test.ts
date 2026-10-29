@@ -211,7 +211,7 @@ describe('runCodeChecks: сборка проверок', () => {
     ['*Важно*: учёт ведёт система.', 'markup'],
     ['• коробки', 'list'],
     ['Пишите +7 700 000 00 02.', 'contact'],
-    ['Ставим учёт. Клеим метки. Обучаем людей. Связываем с 1С.', 'too_long'],
+    ['Ставим учёт. Клеим метки. Обучаем людей. Связываем с 1С. Пишите.', 'too_long'],
     ['', 'empty'],
     ['Дадим cкидку.', 'homoglyph'],
   ])('подключена проверка: %s => %s', (text, code) => {
@@ -862,24 +862,35 @@ describe('длина: не больше 3 коротких предложени�
     expect(countSentences(text)).toBe(expected);
   });
 
-  it('три предложения проходят, четыре нет', () => {
+  it('четыре предложения проходят, пять нет', () => {
     // Arrange
-    const three = 'Ставим учёт. Клеим метки. Обучаем людей.';
-    const four = `${three} Связываем с 1С.`;
+    const four = 'Ставим учёт. Клеим метки. Обучаем людей. Связываем с 1С.';
+    const five = `${four} Пишите.`;
     // Act / Assert
-    expect(checkLength(three)).toEqual([]);
-    expect(codes(checkLength(four))).toEqual(new Set(['too_long']));
-    expect(details(checkLength(four))).toContain('4');
+    expect(checkLength(four)).toEqual([]);
+    expect(codes(checkLength(five))).toEqual(new Set(['too_long']));
+    expect(details(checkLength(five))).toContain('5');
   });
 
-  it('300 знаков проходят, 301 нет', () => {
+  it('350 знаков проходят, 351 нет', () => {
     // Arrange
-    const limit = `${'а'.repeat(299)}.`;
-    const over = `${'а'.repeat(300)}.`;
+    const limit = `${'а'.repeat(349)}.`;
+    const over = `${'а'.repeat(350)}.`;
     // Act / Assert
     expect(checkLength(limit)).toEqual([]);
     expect(codes(checkLength(over))).toEqual(new Set(['too_long']));
-    expect(details(checkLength(over))).toContain('301');
+    expect(details(checkLength(over))).toContain('351');
+  });
+
+  it.each([
+    // Полезная фраза и блок из трёх связанных вопросов одним предложением (решение владельца 29.10.2026 вечером).
+    'Метку клеят на вещь, а ридеры на входах и выходах сами отмечают приход и уход, сканировать по одной не нужно. Подскажите, какие вещи нужно учитывать, в чём они лежат (коробки, паллеты или поштучно) и есть ли среди них металл или жидкости?',
+    // Ответ, фраза об ориентире и блок из двух предложений-вопросов.
+    'Да, мы проводим интеграцию с вашей 1С, детали зависят от конфигурации. Ориентир коллега назовёт, когда поймём ваш объект. В каком городе склад и какое это помещение? Сколько примерно коробок проходит за месяц?',
+  ])('блок связанных вопросов и полезная фраза проходят проверки кодом: %s', (text) => {
+    expect(runCodeChecks(normalizeDraft(text), { ownPhone: OWN_PHONE, clientText: '' })).toEqual(
+      [],
+    );
   });
 });
 

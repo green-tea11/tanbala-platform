@@ -42,7 +42,7 @@ import {
 
 // Бесплатные проверки ответа кодом (шаг 4 плана). Перенос docs/reference/checks.py (B-web-email):
 // тире, цены, стоп-слова, ссылки, скобки, жаргон, стиль, контакты. Длина письма 5–8 предложений,
-// подпись и тема письма не перенесены: в чате не больше трёх коротких предложений.
+// подпись и тема письма не перенесены: в чате не больше четырёх коротких предложений.
 
 /** Вид нарушения: попадает в развилку решений и в замечания модели при повторе. */
 export type CheckCode =
@@ -469,7 +469,7 @@ export function countSentences(text: string): number {
   return text.split(SENTENCE_END).filter((part) => part.trim() !== '').length;
 }
 
-/** Не больше трёх предложений и 300 знаков на сообщение. */
+/** Не больше MAX_SENTENCES предложений и MAX_CHARS знаков на сообщение (rules.ts). */
 export function checkLength(text: string): readonly CheckFinding[] {
   const findings: CheckFinding[] = [];
   const sentences = countSentences(text);

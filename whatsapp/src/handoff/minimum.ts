@@ -68,6 +68,34 @@ export function minimumQuestion(field: MinimumField, company: CompanyPrompt | un
     : 'из какой клиент компании (companyQuestion: name)';
 }
 
+/**
+ * Группы вопросов минимума по порядку (решение владельца 29.10.2026 вечером): компания; что учитывать; где и сколько;
+ * 1С. В одном сообщении бот задаёт вопросы одной группы, блоком из двух или трёх связанных вопросов.
+ */
+export const MINIMUM_GROUPS: readonly (readonly MinimumField[])[] = [
+  ['company'],
+  ['items', 'material'],
+  ['city', 'premises', 'itemCount'],
+  ['has1C'],
+];
+
+/**
+ * Недостающее по группам для данных вызова ответа: «1) ...; 2) ...», в каждой группе только недостающие поля, группы
+ * без недостающего пропущены, номера по порядку оставшихся.
+ */
+export function minimumGroupQuestions(
+  missing: readonly MinimumField[],
+  company: CompanyPrompt | undefined,
+): string {
+  return MINIMUM_GROUPS.map((group) => group.filter((field) => missing.includes(field)))
+    .filter((fields) => fields.length > 0)
+    .map(
+      (fields, index) =>
+        `${index + 1}) ${fields.map((field) => minimumQuestion(field, company)).join(', ')}`,
+    )
+    .join('; ');
+}
+
 /** Что известно для минимума. */
 export interface MinimumInput {
   readonly profile: ClientProfile;

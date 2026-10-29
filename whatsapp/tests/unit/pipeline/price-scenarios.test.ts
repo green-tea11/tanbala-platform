@@ -68,12 +68,13 @@ describe('сценарии владельца 29.10.2026: минимум пер�
     expect(turn.toManager).toEqual([]);
     expect(s.storage.handoffs.findOpen(s.chatId())).toBeNull();
     expect(s.storage.chats.getById(s.chatId())?.control).toEqual({ status: 'bot', by: null });
-    // Черновик пишется параллельно с оценкой этого сообщения: выжимка в данных до него, вопросы даны по порядку.
+    // Черновик пишется параллельно с оценкой этого сообщения: выжимка в данных до него, вопросы даны группами.
     const data = turn.data('reply');
     expect(data).toContain('Для передачи по цене собрано: ничего');
-    expect(data).toContain('о чём клиент не сказал в последнем сообщении');
-    expect(data).toMatch(/Вопросы по порядку: какие вещи клиент хочет учитывать/);
-    expect(data).toContain('О компании спрашивай, только если до неё дошла очередь');
+    expect(data).toContain('о котором клиент не сказал в последнем сообщении');
+    expect(data).toMatch(
+      /Недостающее по группам: 1\) из какой клиент компании \(companyQuestion: name\); 2\) какие вещи клиент хочет учитывать/,
+    );
     // Вопрос цены засчитан: ответ ушёл.
     expect(s.storage.chats.getProgress(s.chatId())).toEqual({ priceAsks: 1, refused: false });
   });

@@ -11,6 +11,7 @@ import type {
 import {
   companyAskable,
   handoffMinimum,
+  MINIMUM_GROUPS,
   MINIMUM_LABELS,
   minimumQuestion,
   PRICE_ASKS_FOR_HANDOFF,
@@ -135,17 +136,26 @@ function firstMissing(situation: PriceSituation): MinimumField {
   return situation.minimum.missing[0] ?? 'items';
 }
 
+/** Недостающие поля первой группы минимума (MINIMUM_GROUPS), где чего-то не хватает. */
+function firstMissingGroup(situation: PriceSituation): readonly MinimumField[] {
+  const { missing } = situation.minimum;
+  const groups = MINIMUM_GROUPS.map((group) => group.filter((field) => missing.includes(field)));
+  return groups.find((fields) => fields.length > 0) ?? [firstMissing(situation)];
+}
+
 /**
- * Замечание повтору черновика: передавать рано, чего не хватает и какой один вопрос задать; при заметке для бота
- * напоминание ответить ориентиром из неё, если он там есть.
+ * Замечание повтору черновика: передавать рано, чего не хватает и какие вопросы задать одним блоком (первая группа
+ * недостающего); при заметке для бота напоминание ответить ориентиром из неё, если он там есть.
  */
 export function minimumRemark(situation: PriceSituation): string {
   const missing = situation.minimum.missing.map((field) => MINIMUM_LABELS[field]).join(', ');
-  const question = minimumQuestion(firstMissing(situation), situation.company);
+  const questions = firstMissingGroup(situation)
+    .map((field) => minimumQuestion(field, situation.company))
+    .join(', ');
   const note = situation.hasNote
-    ? ' Если в указании коллеги есть ориентир цены, ответь им ровно как там написано, вместо вопроса.'
+    ? ' Если в указании коллеги есть ориентир цены, ответь им ровно как там написано, вместо вопросов.'
     : '';
-  return `Передавать чат рано: для передачи по цене не хватает: ${missing}. Верни answer: ответь на то, что есть в документах, напиши «${ESTIMATE_LATER}» и задай один вопрос: ${question}. О передаче чата не пиши.${note}`;
+  return `Передавать чат рано: для передачи по цене не хватает: ${missing}. Верни answer: ответь на то, что есть в документах, напиши «${ESTIMATE_LATER}» и задай одним блоком вопросы первой группы недостающего: ${questions}. О передаче чата не пиши.${note}`;
 }
 
 /**
