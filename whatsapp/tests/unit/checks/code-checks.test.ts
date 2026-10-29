@@ -3,6 +3,7 @@ import {
   checkBrackets,
   checkContacts,
   checkDashes,
+  checkEstimatePhrase,
   checkHomoglyphs,
   checkJargon,
   checkLength,
@@ -1402,5 +1403,44 @@ describe('checkPrices и один голос: фраза «Ориентир ко
     'Ориентир коллега назовёт, когда поймём ваш объект: 3000 позиций уже хорошо. Из какого материала вещи?',
   ])('проходит проверки кодом: %s', (text) => {
     expect(run(text)).toEqual([]);
+  });
+});
+
+describe('фраза об ориентире только на ходу с вопросом цены (решение владельца 29.10.2026 вечером)', () => {
+  const ESTIMATE = 'Ориентир коллега назовёт, когда поймём ваш объект.';
+  /** Черновик из теста владельца: на «Здравствуйте вы нам писали на почту» бот написал фразу об ориентире. */
+  const OWNER_TEST = `Здравствуйте! ${ESTIMATE} Подскажите, какие именно вещи нужно учитывать?`;
+
+  function withTurn(text: string, priceTurn: boolean | undefined) {
+    return runCodeChecks(normalizeDraft(text), {
+      ownPhone: OWN_PHONE,
+      clientText: '',
+      ...(priceTurn === undefined ? {} : { priceTurn }),
+    });
+  }
+
+  it.each([
+    OWNER_TEST,
+    'Ориентир назовёт коллега, когда поймём объект. Какие вещи учитываете?',
+    'Коллега назовёт ориентир, когда поймём ваш объект.',
+  ])('клиент цену не спрашивал: «%s» нарушение', (text) => {
+    const findings = checkEstimatePhrase(text, false);
+    expect(codes(findings)).toEqual(new Set(['estimate_phrase']));
+    expect(details(findings)).toMatch(/только когда клиент спрашивает цену/);
+    expect(codes(withTurn(text, false)).has('estimate_phrase')).toBe(true);
+  });
+
+  it('клиент спрашивает цену или ход неизвестен: фраза допустима', () => {
+    expect(checkEstimatePhrase(OWNER_TEST, true)).toEqual([]);
+    expect(withTurn(OWNER_TEST, true)).toEqual([]);
+    expect(withTurn(OWNER_TEST, undefined)).toEqual([]);
+  });
+
+  it.each([
+    'Спасибо, этого хватит, чтобы коллега назвал ориентир. Уточню у коллеги и вернусь к вам.',
+    'Цена сильно зависит от объёма. Уточню у коллеги и вернусь к вам.',
+    'Ориентир на входе и выходе ставят ридеры.',
+  ])('без фразы об ориентире: «%s» не нарушение', (text) => {
+    expect(checkEstimatePhrase(text, false)).toEqual([]);
   });
 });

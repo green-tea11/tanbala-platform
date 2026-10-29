@@ -629,6 +629,7 @@ function codeGateOf(
     clientText,
     companyName,
     note,
+    priceTurn: flow.price.signals.priceAsked,
   });
   if (first === undefined) return null;
   const findings = [first, ...rest] as const;

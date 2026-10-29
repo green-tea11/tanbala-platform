@@ -657,3 +657,35 @@ describe('pipeline/reply-flow: минимум собран, а чат ещё н�
     expect(dump).not.toContain('интеграцию');
   });
 });
+
+describe('pipeline/reply-flow: фраза об ориентире только при вопросе цены (решение владельца 29.10.2026 вечером)', () => {
+  const NO_PRICE: TurnSignals = { priceAsked: false, refused: false };
+  const QUESTION = 'Подскажите, какие вещи нужно учитывать?';
+
+  it('клиент цену не спрашивал: черновик с фразой отклоняет код, повтор с замечанием, уходит повтор', async () => {
+    const r = await run({ signals: NO_PRICE, drafts: [answer(MINIMUM_ANSWER), answer(QUESTION)] });
+
+    expect(r.verdict).toEqual(sentWith(QUESTION));
+    expect(r.calls).toEqual(['draft', 'assess', 'save', 'draft:retry', 'review']);
+    expect(r.draftReply.mock.calls[1]?.[1]?.join(' ')).toMatch(
+      /только когда клиент спрашивает цену/,
+    );
+  });
+
+  it('клиент спрашивает цену: та же фраза проходит', async () => {
+    const r = await run({ drafts: [answer(MINIMUM_ANSWER)] });
+
+    expect(r.verdict).toEqual(sentWith(MINIMUM_ANSWER, { signals: PRICE_NOW }));
+  });
+
+  it('оценка не получилась: решает aboutPrice черновика', async () => {
+    const asked = await run({ assessmentFails: true, drafts: [answer(MINIMUM_ANSWER, true)] });
+    const notAsked = await run({
+      assessmentFails: true,
+      drafts: [answer(MINIMUM_ANSWER), answer(QUESTION)],
+    });
+
+    expect(asked.verdict).toEqual(sentWith(MINIMUM_ANSWER, { signals: PRICE_NOW }));
+    expect(notAsked.verdict).toEqual(sentWith(QUESTION));
+  });
+});

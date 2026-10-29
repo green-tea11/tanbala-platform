@@ -62,7 +62,8 @@ export type CheckCode =
   | 'too_long'
   | 'empty'
   | 'homoglyph'
-  | 'voice';
+  | 'voice'
+  | 'estimate_phrase';
 
 /** Одно нарушение: код и понятное описание с фрагментом текста. */
 export interface CheckFinding {
@@ -89,6 +90,11 @@ export interface CheckOptions {
    * разметка, контакты и длина проверяются по всему тексту. Нет поля или null: названия нет.
    */
   readonly companyName?: string | null;
+  /**
+   * Клиент в этом ходе спрашивает цену (сигнал оценки интереса или aboutPrice черновика). false: фраза «Ориентир коллега
+   * назовёт...» нарушение (решение владельца 29.10.2026 вечером). Нет поля: ход неизвестен, фраза не проверяется.
+   */
+  readonly priceTurn?: boolean;
 }
 
 /** Чем заменяется название компании клиента перед проверками формы: слово без тире, ссылки, капслока и латиницы. */
@@ -372,6 +378,21 @@ export function checkVoice(text: string): readonly CheckFinding[] {
   return scan(normalize(text), VOICE_PATTERNS, 'voice', VOICE_REASON);
 }
 
+/**
+ * Фраза «Ориентир коллега назовёт, когда поймём ваш объект» (в любом порядке слов): «ориентир» и «назовёт» в одном
+ * предложении. «Коллега назвал ориентир» из фразы передачи сюда не относится.
+ */
+const ESTIMATE_PATTERN = /ориентир[^.!?\n]{0,40}назов|назов[^.!?\n]{0,40}ориентир/gu;
+
+const ESTIMATE_REASON =
+  'фраза «Ориентир коллега назовёт, когда поймём ваш объект» только когда клиент спрашивает цену: он цену не спрашивал, убери её';
+
+/** Фраза об ориентире на ходу без вопроса цены (priceTurn false) нарушение; на ходу с вопросом цены допустима. */
+export function checkEstimatePhrase(text: string, priceTurn: boolean): readonly CheckFinding[] {
+  if (priceTurn) return [];
+  return scan(normalize(text), [ESTIMATE_PATTERN], 'estimate_phrase', ESTIMATE_REASON);
+}
+
 /** Нет ссылок: в чате их не присылают совсем. Почта не ссылка. Белый список хостов пуст по умолчанию. */
 export function checkLinks(
   text: string,
@@ -544,5 +565,6 @@ export function runCodeChecks(
     ...checkContacts(text, options.ownPhone),
     ...checkHomoglyphs(form),
     ...checkLength(text),
+    ...(options.priceTurn === false ? checkEstimatePhrase(text, false) : []),
   ];
 }
