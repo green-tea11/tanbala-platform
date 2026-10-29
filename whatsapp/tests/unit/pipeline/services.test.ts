@@ -246,6 +246,35 @@ describe('pipeline/services: подключение появляется поз�
     expect(h.sendText).not.toHaveBeenCalled();
   });
 
+  it('рабочий режим (TEST_MODE=false, этап 8): outbox пишет и в чат не из TEST_ALLOWLIST, ответ уходит', async () => {
+    const h = setup({ ...CONFIG, testMode: { ...CONFIG.testMode, enabled: false } });
+    const strangerJid = '77000000003@s.whatsapp.net' as Jid;
+    const stranger = h.storage.chats.upsertByIdentity(
+      { replyJid: strangerJid, lidJid: null, pnJid: strangerJid },
+      'Новый клиент',
+      T0,
+    );
+    h.storage.messages.insertIfNew({
+      chatId: stranger.id,
+      waId: 'WA-1' as WaMessageId,
+      author: 'client',
+      kind: 'text',
+      text: 'Здравствуйте',
+      tsMs: T0,
+    });
+    h.services.connect(h.connection);
+
+    expect(h.services.outbox.canSendFromPanel(stranger.id)).toBe(true);
+    await expect(
+      h.services.outbox.sendHandoffNotice(
+        stranger.id,
+        { reason: 'asked_human' },
+        'WA-1' as WaMessageId,
+      ),
+    ).resolves.toBe('sent');
+    expect(h.sendText).toHaveBeenCalledWith(strangerJid, expect.any(String), 'OUT-1');
+  });
+
   it('после connect и открытия подключения неотправленное уходит менеджеру', async () => {
     const h = setup();
     await limitHandoff(h);
