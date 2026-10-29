@@ -48,6 +48,7 @@ const EMPTY_PROFILE: ClientProfile = {
   premises: null,
   turnover: null,
   currentTracking: null,
+  inferred: [],
 };
 
 function historyOf(...clientTexts: readonly string[]): readonly StoredMessage[] {

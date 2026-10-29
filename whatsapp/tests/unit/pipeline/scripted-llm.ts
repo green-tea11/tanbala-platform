@@ -88,6 +88,7 @@ function rawInterest(level: InterestLevel, interest: InterestScript = {}): unkno
     premises: null,
     turnover: null,
     currentTracking: null,
+    inferred: [],
     ...interest.profile,
     reason: 'по разговору',
     companyName: interest.companyName ?? null,

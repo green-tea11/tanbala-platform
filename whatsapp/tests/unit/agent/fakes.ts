@@ -64,6 +64,7 @@ export const EMPTY_PROFILE: ClientProfile = {
   premises: null,
   turnover: null,
   currentTracking: null,
+  inferred: [],
 };
 
 export function history(count: number): StoredMessage[] {

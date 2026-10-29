@@ -166,6 +166,7 @@ describe('слияние чатов: выжимка клиента', () => {
       premises: null,
       turnover: null,
       currentTracking: null,
+      inferred: [],
       has1C: true,
       oneCName: 'УТ 11',
     });
@@ -214,6 +215,7 @@ describe('слияние чатов: выжимка клиента', () => {
       premises: null,
       turnover: null,
       currentTracking: null,
+      inferred: [],
     });
     expect(db.prepare('SELECT reason, updated_at_ms FROM client_profiles').all()).toEqual([
       { reason: 'новая причина', updated_at_ms: T0 + 20 },

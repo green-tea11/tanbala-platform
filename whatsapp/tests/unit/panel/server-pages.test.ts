@@ -199,6 +199,7 @@ describe('панель: страница чата', () => {
         premises: null,
         turnover: null,
         currentTracking: null,
+        inferred: [],
       },
     });
     const messages: StoredMessage[] = [
@@ -284,6 +285,7 @@ describe('панель: страница чата', () => {
               premises: null,
               turnover: null,
               currentTracking: null,
+              inferred: [],
             },
           }),
         ],
@@ -318,6 +320,7 @@ describe('панель: страница чата', () => {
               premises: null,
               turnover: null,
               currentTracking: null,
+              inferred: [],
             },
           }),
           makeChat(2),
@@ -486,6 +489,7 @@ describe('панель: страница чата', () => {
               premises: null,
               turnover: null,
               currentTracking: null,
+              inferred: [],
             },
           }),
         ],

@@ -125,7 +125,7 @@ export function formatManagerNotification(input: ManagerNotificationInput): stri
     `Чат в панели: ID ${input.chatId}`,
     `Уровень интереса: ${LEVEL_WORDS[input.level]}`,
     '',
-    'Выжимка (всё со слов клиента, не проверено):',
+    'Выжимка (со слов клиента, не проверено; «вероятно»: вывод из его слов):',
     ...profileEntries(input.profile).map(
       ({ label, value }) => `${label}: ${knownOr(value, PROFILE_FIELD_MAX_LENGTH, NOT_KNOWN)}`,
     ),

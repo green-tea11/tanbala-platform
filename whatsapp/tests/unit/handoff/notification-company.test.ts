@@ -33,6 +33,7 @@ const BASE: ManagerNotificationInput = {
     premises: null,
     turnover: null,
     currentTracking: null,
+    inferred: [],
   },
   chatId: 12 as ChatId,
 };

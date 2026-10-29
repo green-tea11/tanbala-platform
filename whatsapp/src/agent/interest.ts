@@ -1,10 +1,12 @@
 import { z } from 'zod';
 import type { CompanyMention, CompanyPrompt } from '../domain/company.js';
-import type {
-  ClientProfile,
-  InterestAssessment,
-  InterestLevel,
-  TurnSignals,
+import {
+  PROFILE_FACTS,
+  type ClientProfile,
+  type InterestAssessment,
+  type InterestLevel,
+  type ProfileFact,
+  type TurnSignals,
 } from '../domain/types.js';
 import { cleanLine } from './clean-text.js';
 import { companyInterestData } from './company-data.js';
@@ -91,6 +93,11 @@ export const interestSchema = z.object({
     .describe(
       'true, если в последних сообщениях клиент отказывается отвечать на вопросы бота; иначе false.',
     ),
+  inferred: z
+    .array(z.enum(PROFILE_FACTS as [ProfileFact, ...ProfileFact[]]))
+    .describe(
+      'Поля выжимки, значение которых ты вывел из слов клиента, а не услышал прямо; иначе пустой список.',
+    ),
 });
 
 /**
@@ -122,12 +129,36 @@ export interface RawInterest {
   readonly problemAgreed?: boolean;
   readonly priceAsked?: boolean;
   readonly refused?: boolean;
+  /** Поля, выведенные из слов клиента; нет поля (подделки LLM в тестах) => выводов нет. */
+  readonly inferred?: readonly ProfileFact[];
 }
 
-/** Новое значение поля после cleanLine; модель ничего не дала или остался пустой текст => прежнее значение. */
-function textField(fresh: string | null, previous: string | null): string | null {
-  const cleaned = fresh === null ? '' : cleanLine(fresh, MAX_FIELD_CHARS);
-  return cleaned === '' ? previous : cleaned;
+/** Значение поля выжимки и выведено ли оно из слов клиента (пометка «вероятно»). */
+interface Fact<T> {
+  readonly value: T | null;
+  readonly inferred: boolean;
+}
+
+/** Текстовые поля выжимки: все со значением, кроме «есть ли 1С». */
+type TextFact = Exclude<ProfileFact, 'has1C'>;
+
+const TEXT_FACTS = PROFILE_FACTS.filter((field): field is TextFact => field !== 'has1C');
+
+/** Значение поля после cleanLine; пусто => null. */
+function cleaned(fresh: string | null | undefined): string | null {
+  const text = fresh == null ? '' : cleanLine(fresh, MAX_FIELD_CHARS);
+  return text === '' ? null : text;
+}
+
+/**
+ * Свежее значение поля и прежнее (пункт 4 задания 29.10.2026). Модель ничего не дала => прежнее с прежней пометкой.
+ * Свежий вывод не заменяет сказанное клиентом прямо: сказанное остаётся без пометки. Иначе свежее значение со своей
+ * пометкой: прямые слова клиента снимают «вероятно», опровержение заменяет вывод.
+ */
+function mergeFact<T>(fresh: T | null, freshInferred: boolean, previous: Fact<T>): Fact<T> {
+  if (fresh === null) return { value: previous.value, inferred: previous.value !== null && previous.inferred };
+  if (freshInferred && previous.value !== null && !previous.inferred) return previous;
+  return { value: fresh, inferred: freshInferred };
 }
 
 /** Строка о компании после cleanLine; пусто => null. */
@@ -172,13 +203,47 @@ function turnSignals(raw: RawInterest): TurnSignals | undefined {
   return { priceAsked: raw.priceAsked === true, refused: raw.refused === true };
 }
 
-/** Есть ли 1С: ответ клиента, иначе прежнее значение; названная 1С без ответа значит, что 1С есть. */
+/**
+ * Есть ли 1С: ответ клиента, иначе прежнее значение; названная 1С без ответа значит, что 1С есть (с пометкой названия).
+ */
 function has1COf(
-  raw: RawInterest,
-  previous: ClientProfile,
-  oneCName: string | null,
-): boolean | null {
-  return raw.has1C ?? previous.has1C ?? (oneCName === null ? null : true);
+  fresh: Fact<boolean>,
+  previous: Fact<boolean>,
+  oneCName: Fact<string>,
+): Fact<boolean> {
+  const merged = mergeFact(fresh.value, fresh.inferred, previous);
+  if (merged.value !== null || oneCName.value === null) return merged;
+  return { value: true, inferred: oneCName.inferred };
+}
+
+/** Поля выжимки с пометками: что модель вывела (marked) против прежнего (previous.inferred). */
+function profileFacts(raw: RawInterest, previous: ClientProfile): Omit<ClientProfile, 'problemAgreed'> {
+  const marked = new Set(raw.inferred ?? []);
+  const was = new Set(previous.inferred);
+  const fact = <T>(field: ProfileFact, value: T | null): Fact<T> => ({
+    value,
+    inferred: was.has(field),
+  });
+  const texts = new Map(
+    TEXT_FACTS.map((field) => [
+      field,
+      mergeFact(cleaned(raw[field]), marked.has(field), fact(field, previous[field])),
+    ]),
+  );
+  const textOf = (field: TextFact): Fact<string> =>
+    texts.get(field) ?? fact<string>(field, null);
+  const has1C = has1COf(
+    { value: raw.has1C, inferred: marked.has('has1C') },
+    fact('has1C', previous.has1C),
+    textOf('oneCName'),
+  );
+  const values = Object.fromEntries(TEXT_FACTS.map((field) => [field, textOf(field).value])) as {
+    readonly [K in TextFact]: string | null;
+  };
+  const inferred = PROFILE_FACTS.filter((field) =>
+    field === 'has1C' ? has1C.inferred : textOf(field).inferred,
+  );
+  return { ...values, has1C: has1C.value, inferred };
 }
 
 /**
@@ -190,30 +255,16 @@ function has1COf(
  * (companyMention); его хранит и применяет сервис компании, а не выжимка. Какая 1С (oneCName) чистится как
  * текстовое поле; названная 1С без ответа «есть ли 1С» значит, что 1С есть. Согласие, что трудность есть
  * (problemAgreed), раз выяснено, не теряется. signals: вопрос цены и отказ отвечать в последних сообщениях клиента
- * (turnSignals), они в выжимку не входят.
+ * (turnSignals), они в выжимку не входят. inferred: поля, выведенные из слов клиента (mergeFact), по порядку
+ * PROFILE_FACTS; пометка на поле без значения не ставится.
  */
 export function normalizeInterest(raw: RawInterest, previous: ClientProfile): InterestAssessment {
   const company = companyMention(raw);
   const signals = turnSignals(raw);
-  const oneCName = textField(raw.oneCName ?? null, previous.oneCName);
   return {
     level: raw.level,
     profile: {
-      business: textField(raw.business, previous.business),
-      items: textField(raw.items ?? null, previous.items),
-      packaging: textField(raw.packaging ?? null, previous.packaging),
-      material: textField(raw.material ?? null, previous.material),
-      city: textField(raw.city ?? null, previous.city),
-      premises: textField(raw.premises ?? null, previous.premises),
-      area: textField(raw.area, previous.area),
-      scope: textField(raw.scope, previous.scope),
-      itemCount: textField(raw.itemCount, previous.itemCount),
-      turnover: textField(raw.turnover ?? null, previous.turnover),
-      currentTracking: textField(raw.currentTracking ?? null, previous.currentTracking),
-      has1C: has1COf(raw, previous, oneCName),
-      oneCName,
-      problem: textField(raw.problem, previous.problem),
-      specifics: textField(raw.specifics, previous.specifics),
+      ...profileFacts(raw, previous),
       problemAgreed: previous.problemAgreed || raw.problemAgreed === true,
     },
     reason: cleanLine(raw.reason, MAX_REASON_CHARS),

@@ -265,6 +265,14 @@ ALTER TABLE client_profiles ADD COLUMN current_tracking TEXT;
 `;
 
 /**
+ * Версия 12 (пункт 4 задания 29.10.2026, выводы с пометкой). client_profiles.inferred: JSON-массив полей выжимки,
+ * значение которых выведено из слов клиента («вероятно»). Старые строки получают '[]': всё сказано прямо.
+ */
+const SCHEMA_V12 = `
+ALTER TABLE client_profiles ADD COLUMN inferred TEXT NOT NULL DEFAULT '[]';
+`;
+
+/**
  * Миграции по порядку: элемент i переводит схему с версии i на i + 1.
  * Выпущенную миграцию не править: изменения схемы только новой версией в конце списка.
  */
@@ -280,6 +288,7 @@ const MIGRATIONS: readonly string[] = [
   SCHEMA_V9,
   SCHEMA_V10,
   SCHEMA_V11,
+  SCHEMA_V12,
 ];
 
 /**

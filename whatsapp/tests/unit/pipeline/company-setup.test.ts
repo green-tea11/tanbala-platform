@@ -56,6 +56,7 @@ const CHAT: Chat = {
     premises: null,
     turnover: null,
     currentTracking: null,
+    inferred: [],
   },
 };
 

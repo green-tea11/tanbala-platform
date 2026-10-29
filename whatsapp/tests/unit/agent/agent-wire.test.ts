@@ -52,6 +52,7 @@ const REPLIES = [
     premises: null,
     turnover: null,
     currentTracking: null,
+    inferred: [],
     priceAsked: true,
     refused: false,
   },
@@ -161,6 +162,7 @@ describe('агент с настоящим адаптером Anthropic', () => 
           'problemAgreed',
           'priceAsked',
           'refused',
+          'inferred',
         ],
       }),
     ]);
@@ -206,6 +208,7 @@ describe('агент с настоящим адаптером Anthropic', () => 
           premises: null,
           turnover: null,
           currentTracking: null,
+          inferred: [],
         },
         reason: 'Рассказал о бизнесе',
         company: {

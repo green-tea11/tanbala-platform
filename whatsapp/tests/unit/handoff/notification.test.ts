@@ -36,6 +36,7 @@ const PROFILE: ClientProfile = {
   premises: 'магазин',
   turnover: null,
   currentTracking: 'в 1С вручную',
+  inferred: [],
 };
 
 const EMPTY_PROFILE: ClientProfile = {
@@ -55,6 +56,7 @@ const EMPTY_PROFILE: ClientProfile = {
   premises: null,
   turnover: null,
   currentTracking: null,
+  inferred: [],
 };
 
 const BASE: ManagerNotificationInput = {
@@ -102,7 +104,7 @@ describe('formatManagerNotification', () => {
         'Чат в панели: ID 12',
         'Уровень интереса: горячий',
         '',
-        'Выжимка (всё со слов клиента, не проверено):',
+        'Выжимка (со слов клиента, не проверено; «вероятно»: вывод из его слов):',
         'Бизнес: магазин одежды',
         'Вещи: одежда',
         'В чём лежат: на вешалках',
@@ -115,7 +117,7 @@ describe('formatManagerNotification', () => {
         'Что отмечать: где лежит каждая вещь',
         'Учёт сейчас: в 1С вручную',
         'Что мешает: путаница с остатками',
-        '1С: есть',
+        '1С: есть, конфигурация не выяснена',
         'Особенности: два склада',
         '',
         'Для оценки цены собрано: какие вещи, материал, примерное число вещей, тип помещения, есть ли 1С',
@@ -276,6 +278,7 @@ describe('formatManagerNotification', () => {
           premises: null,
           turnover: null,
           currentTracking: null,
+          inferred: [],
         },
       });
 

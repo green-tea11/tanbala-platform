@@ -51,6 +51,7 @@ export const EMPTY_PROFILE: ClientProfile = {
   premises: null,
   turnover: null,
   currentTracking: null,
+  inferred: [],
 };
 
 /** Сводка выключенной функции определения компании: так панель работает по умолчанию в тестах. */

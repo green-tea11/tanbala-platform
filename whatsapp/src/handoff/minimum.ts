@@ -145,11 +145,17 @@ export function companyNameOf(summary: CompanySummary | null): string | null {
   return trimmed === '' ? null : trimmed;
 }
 
-/** Что собрано и что не выяснено (вместе: мешающее передаче и то, о чём спросить нельзя), словами для менеджера. */
+/**
+ * Что собрано и что не выяснено (вместе: мешающее передаче и то, о чём спросить нельзя), словами для менеджера.
+ * Собранное по выводу из слов клиента помечено «(вероятно)».
+ */
 export function minimumReport(input: Omit<MinimumInput, 'companyAskable'>): MinimumReport {
   const minimum = handoffMinimum({ ...input, companyAskable: true });
+  const inferred = new Set<string>(input.profile.inferred);
+  const label = (field: MinimumField): string =>
+    inferred.has(field) ? `${MINIMUM_LABELS[field]} (вероятно)` : MINIMUM_LABELS[field];
   const words = (fields: readonly MinimumField[], empty: string): string =>
-    fields.length === 0 ? empty : fields.map((field) => MINIMUM_LABELS[field]).join(', ');
+    fields.length === 0 ? empty : fields.map(label).join(', ');
   return {
     collected: words(minimum.collected, NOTHING_COLLECTED),
     missing: words(minimum.missing, NOTHING_MISSING),

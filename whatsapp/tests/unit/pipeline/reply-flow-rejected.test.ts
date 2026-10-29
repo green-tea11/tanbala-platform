@@ -33,6 +33,7 @@ const EMPTY_PROFILE: ClientProfile = {
   premises: null,
   turnover: null,
   currentTracking: null,
+  inferred: [],
 };
 const CONTEXT: ConversationContext = {
   chatId: CHAT_ID,

@@ -1,21 +1,23 @@
 import type Database from 'better-sqlite3';
 import type { ChatsRepo } from '../../domain/ports.js';
-import type {
-  BotNote,
-  Chat,
-  ChatControl,
-  ChatId,
-  ChatIdentity,
-  ChatProgress,
-  ChatStatus,
-  ClientProfile,
-  InterestAssessment,
-  InterestLevel,
-  Jid,
-  OpenHandoff,
-  PanelChatRow,
-  StatusChange,
-  TurnSignals,
+import {
+  PROFILE_FACTS,
+  type BotNote,
+  type Chat,
+  type ChatControl,
+  type ChatId,
+  type ChatIdentity,
+  type ChatProgress,
+  type ChatStatus,
+  type ClientProfile,
+  type InterestAssessment,
+  type InterestLevel,
+  type Jid,
+  type OpenHandoff,
+  type PanelChatRow,
+  type ProfileFact,
+  type StatusChange,
+  type TurnSignals,
 } from '../../domain/types.js';
 import { assertTimeMs } from '../time.js';
 import { assertCount, HANDOFF_REASONS, LEVELS, oneOf } from '../values.js';
@@ -40,6 +42,8 @@ interface ProfileColumns {
   readonly specifics: string | null;
   /** NULL у чата без оценки (LEFT JOIN): выжимки нет, согласие не выяснено. */
   readonly problem_agreed: number | null;
+  /** JSON-массив полей с пометкой «вероятно»; NULL у чата без оценки. */
+  readonly inferred: string | null;
 }
 
 /** Ход разговора о цене в chats. */
@@ -84,6 +88,7 @@ interface AssessmentParams {
   readonly problem: string | null;
   readonly specifics: string | null;
   readonly problemAgreed: 0 | 1;
+  readonly inferred: string;
   readonly reason: string;
   readonly nowMs: number;
 }
@@ -103,7 +108,8 @@ const MANAGER_AUTHORS = ['bot', 'phone', 'panel'] as const;
 const CHAT_COLUMNS = `c.id, c.reply_jid, c.lid_jid, c.pn_jid, c.phone, c.push_name, c.status,
     c.status_by, c.status_changed_at, c.interest_level, c.last_inbound_at, c.created_at,
     p.business, p.items, p.packaging, p.material, p.city, p.premises, p.area, p.scope, p.item_count,
-    p.turnover, p.current_tracking, p.has_1c, p.one_c_name, p.problem, p.specifics, p.problem_agreed`;
+    p.turnover, p.current_tracking, p.has_1c, p.one_c_name, p.problem, p.specifics, p.problem_agreed,
+    p.inferred`;
 
 const FROM_CHAT = 'FROM chats AS c LEFT JOIN client_profiles AS p ON p.chat_id = c.id';
 
@@ -129,9 +135,10 @@ const SELECT_PANEL = `SELECT ${CHAT_COLUMNS},
  */
 const UPSERT_PROFILE = `INSERT INTO client_profiles
     (chat_id, business, items, packaging, material, city, premises, area, scope, item_count, turnover,
-     current_tracking, has_1c, one_c_name, problem, specifics, problem_agreed, reason, updated_at_ms)
+     current_tracking, has_1c, one_c_name, problem, specifics, problem_agreed, inferred, reason, updated_at_ms)
   VALUES (@chatId, @business, @items, @packaging, @material, @city, @premises, @area, @scope, @itemCount,
-    @turnover, @currentTracking, @has1c, @oneCName, @problem, @specifics, @problemAgreed, @reason, @nowMs)
+    @turnover, @currentTracking, @has1c, @oneCName, @problem, @specifics, @problemAgreed, @inferred, @reason,
+    @nowMs)
   ON CONFLICT (chat_id) DO UPDATE SET
     business = excluded.business, items = excluded.items, packaging = excluded.packaging,
     material = excluded.material, city = excluded.city, premises = excluded.premises,
@@ -139,7 +146,7 @@ const UPSERT_PROFILE = `INSERT INTO client_profiles
     turnover = excluded.turnover, current_tracking = excluded.current_tracking,
     has_1c = excluded.has_1c, one_c_name = excluded.one_c_name,
     problem = excluded.problem, specifics = excluded.specifics,
-    problem_agreed = excluded.problem_agreed, reason = excluded.reason,
+    problem_agreed = excluded.problem_agreed, inferred = excluded.inferred, reason = excluded.reason,
     updated_at_ms = excluded.updated_at_ms`;
 
 /**
@@ -362,6 +369,7 @@ function toAssessmentParams(
     problem: profile.problem,
     specifics: profile.specifics,
     problemAgreed: flag(profile.problemAgreed),
+    inferred: JSON.stringify(profile.inferred),
     reason,
     nowMs,
   };
@@ -419,7 +427,22 @@ function toProfile(row: ProfileColumns): ClientProfile {
     problem: row.problem,
     specifics: row.specifics,
     problemAgreed: row.problem_agreed === 1,
+    inferred: inferredOf(row.inferred),
   };
+}
+
+/** Пометки «вероятно» из JSON: только известные поля, по порядку PROFILE_FACTS; испорченное значение => пометок нет. */
+function inferredOf(json: string | null): readonly ProfileFact[] {
+  if (json === null) return [];
+  let value: unknown;
+  try {
+    value = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(value)) return [];
+  const marked = new Set<unknown>(value);
+  return PROFILE_FACTS.filter((field) => marked.has(field));
 }
 
 function toNote(row: NoteRow): BotNote | null {

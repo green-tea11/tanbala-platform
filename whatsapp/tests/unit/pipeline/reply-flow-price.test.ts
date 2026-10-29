@@ -51,6 +51,7 @@ const EMPTY: ClientProfile = {
   premises: null,
   turnover: null,
   currentTracking: null,
+  inferred: [],
 };
 
 /**
@@ -71,6 +72,7 @@ const PROFILE_28_10: ClientProfile = {
   premises: 'склад',
   turnover: null,
   currentTracking: null,
+  inferred: [],
 };
 
 const FULL: ClientProfile = {

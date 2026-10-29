@@ -33,6 +33,7 @@ const NOTHING_NEW: RawInterest = {
   itemCount: null,
   turnover: null,
   currentTracking: null,
+  inferred: [],
   has1C: null,
   problem: null,
   specifics: null,
@@ -56,6 +57,7 @@ const KNOWN: ClientProfile = {
   premises: null,
   turnover: null,
   currentTracking: null,
+  inferred: [],
 };
 
 const FIELD_NAMES = [
@@ -71,6 +73,7 @@ const FIELD_NAMES = [
   'itemCount',
   'turnover',
   'currentTracking',
+  'inferred',
   'has1C',
   'problem',
   'specifics',
@@ -104,6 +107,7 @@ const NO_SIGNALS = {
   premises: null,
   turnover: null,
   currentTracking: null,
+  inferred: [],
   priceAsked: false,
   refused: false,
 } as const;
@@ -154,7 +158,7 @@ describe('createAgent: assessInterest, запрос', () => {
     expect(last).not.toMatch(/Уровень/);
   });
 
-  it('схема оценки: плоский объект из двадцати четырёх полей, все обязательны', async () => {
+  it('схема оценки: плоский объект из двадцати пяти полей, все обязательны', async () => {
     const { requests } = await assess({ ok: true, value: NOTHING_NEW });
     const { schema } = onlyRequest(requests);
 

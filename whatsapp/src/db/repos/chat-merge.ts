@@ -53,7 +53,8 @@ const PROFILE_FIELDS = [
 
 /**
  * Слияние выжимок. Берётся более свежая оценка, а поля, которых в ней нет (NULL), из другой; при равном времени
- * побеждает оставшийся чат. Согласие, что трудность есть (problem_agreed), не теряется: 1 у любого даёт 1. reason
+ * побеждает оставшийся чат. Согласие, что трудность есть (problem_agreed), не теряется: 1 у любого даёт 1. Пометки
+ * «вероятно» (inferred) объединяются: лишняя пометка безопаснее потерянной. reason
  * идёт от более свежей оценки, updated_at_ms остаётся самым поздним. Запрос собирается из списка полей один раз при
  * загрузке модуля, значения в него попадают только параметрами.
  */
@@ -65,12 +66,15 @@ function mergeProfileSql(): string {
         THEN coalesce(excluded.${field}, client_profiles.${field})
         ELSE coalesce(client_profiles.${field}, excluded.${field}) END`,
   );
-  return `INSERT INTO client_profiles (chat_id, ${columns}, problem_agreed, reason, updated_at_ms)
-    SELECT @survivor, ${columns}, problem_agreed, reason, updated_at_ms
+  return `INSERT INTO client_profiles (chat_id, ${columns}, problem_agreed, inferred, reason, updated_at_ms)
+    SELECT @survivor, ${columns}, problem_agreed, inferred, reason, updated_at_ms
     FROM client_profiles WHERE chat_id = @absorbed
     ON CONFLICT (chat_id) DO UPDATE SET
       ${fields.join(',\n      ')},
       problem_agreed = max(client_profiles.problem_agreed, excluded.problem_agreed),
+      inferred = (SELECT json_group_array(value) FROM (
+        SELECT value FROM json_each(client_profiles.inferred)
+        UNION SELECT value FROM json_each(excluded.inferred))),
       reason = CASE WHEN ${newer} THEN excluded.reason ELSE client_profiles.reason END,
       updated_at_ms = max(client_profiles.updated_at_ms, excluded.updated_at_ms)`;
 }

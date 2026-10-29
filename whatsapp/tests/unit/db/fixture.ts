@@ -31,6 +31,7 @@ export const EMPTY_PROFILE: ClientProfile = {
   premises: null,
   turnover: null,
   currentTracking: null,
+  inferred: [],
 };
 
 /** Заполненная выжимка; overrides меняют отдельные поля. */
@@ -52,6 +53,7 @@ export function profileOf(overrides: Partial<ClientProfile> = {}): ClientProfile
     premises: 'магазин',
     turnover: 'каждый день',
     currentTracking: 'в 1С вручную',
+    inferred: [],
     ...overrides,
   };
 }

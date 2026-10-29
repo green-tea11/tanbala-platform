@@ -202,6 +202,7 @@ const MINIMUM_COLLECTED: LlmScript['interests'] = [
       premises: 'склад',
       turnover: null,
       currentTracking: null,
+      inferred: [],
     },
     priceAsked: true,
   },

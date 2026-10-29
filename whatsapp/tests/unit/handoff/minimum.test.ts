@@ -26,6 +26,7 @@ const EMPTY: ClientProfile = {
   itemCount: null,
   turnover: null,
   currentTracking: null,
+  inferred: [],
   has1C: null,
   oneCName: null,
   problem: null,

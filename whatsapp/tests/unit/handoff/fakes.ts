@@ -242,6 +242,7 @@ export const FULL_PROFILE: ClientProfile = {
   premises: null,
   turnover: null,
   currentTracking: null,
+  inferred: [],
 };
 
 /** Чат клиента: по умолчанию бот ведёт, интерес тёплый, выжимка заполнена. */

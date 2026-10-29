@@ -49,6 +49,7 @@ const EMPTY_PROFILE: ClientProfile = {
   premises: null,
   turnover: null,
   currentTracking: null,
+  inferred: [],
 };
 const CONTEXT: ConversationContext = {
   chatId: CHAT_ID,
@@ -183,6 +184,7 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
             premises: 'склад',
             turnover: null,
             currentTracking: null,
+            inferred: [],
           },
           priceAsked: true,
         },

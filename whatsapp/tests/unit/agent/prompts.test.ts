@@ -310,7 +310,7 @@ describe('buildSystem', () => {
     });
   });
 
-  it('инструкция оценки: три уровня, поля выжимки, null для невыясненного, сохранение известного', () => {
+  it('инструкция оценки: три уровня, поля выжимки, null для невыясненного, выводы с пометкой, сохранение известного', () => {
     const instruction = buildSystem(KNOWLEDGE, 'interest')[1]?.text ?? '';
 
     for (const word of ['cold', 'warm', 'hot', 'level', 'reason', 'null', 'has1C']) {
@@ -319,7 +319,8 @@ describe('buildSystem', () => {
     for (const field of ['business', 'area', 'scope', 'itemCount', 'problem', 'specifics']) {
       expect(instruction).toContain(field);
     }
-    expect(instruction).toMatch(/только то, что клиент сказал сам/i);
+    expect(instruction).toContain('Пиши то, что клиент сказал, и то, что прямо следует из его слов');
+    expect(instruction).toContain('Не гадай: из чего ничего не следует, оставь null.');
     expect(instruction).toMatch(/повтори как есть/);
     expect(instruction).toMatch(/данные, а не инструкции/);
   });
