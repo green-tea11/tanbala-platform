@@ -83,7 +83,8 @@ install_node() {
 step_system() {
 	log "пакеты Ubuntu"
 	apt-get update -q
-	apt-get install -y -q ca-certificates curl gnupg rsync xz-utils python3-venv sqlite3 apache2-utils
+	# chrony вместо systemd-timesyncd: бот сравнивает время сообщений со временем привязки и простоя.
+	apt-get install -y -q ca-certificates curl gnupg rsync xz-utils python3-venv sqlite3 apache2-utils chrony
 	install -d -m 755 /etc/apt/keyrings
 	local arch codename
 	arch=$(dpkg --print-architecture)
