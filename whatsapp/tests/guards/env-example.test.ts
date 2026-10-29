@@ -25,6 +25,9 @@ const REQUIRED_KEYS = [
   'PANEL_PORT',
 ];
 
+/** Закрытый блок связи с почтовым проектом в шаблоне: в .env эти переменные можно раскомментировать. */
+const OPTIONAL_KEYS = ['INTERNAL_API_TOKEN', 'EMAIL_API_URL', 'EMAIL_UI_URL'];
+
 /** Разбирает KEY=VALUE. В сообщениях об ошибке только номер строки: в .env лежат секреты. */
 function parseEnvFile(path: URL): Map<string, string> {
   const entries = new Map<string, string>();
@@ -90,7 +93,7 @@ describe('.env.example', () => {
     expect(text).toMatch(/^# INTERNAL_API_TOKEN=$/m);
     expect(text).toMatch(/^# EMAIL_API_URL=http:\/\/127\.0\.0\.1:8000$/m);
     expect(text).toMatch(/^# EMAIL_UI_URL=$/m);
-    for (const name of ['INTERNAL_API_TOKEN', 'EMAIL_API_URL', 'EMAIL_UI_URL']) {
+    for (const name of OPTIONAL_KEYS) {
       expect(example.has(name)).toBe(false);
     }
   });
@@ -119,8 +122,12 @@ describe('.env.example', () => {
 });
 
 describe('.env', () => {
-  it.skipIf(!existsSync(LOCAL_ENV_PATH))('содержит те же переменные, что шаблон', () => {
-    const local = parseEnvFile(LOCAL_ENV_PATH);
-    expect([...local.keys()].sort()).toEqual([...REQUIRED_KEYS].sort());
-  });
+  it.skipIf(!existsSync(LOCAL_ENV_PATH))(
+    'содержит те же переменные, что шаблон, и может включить закрытый блок связи с почтовым проектом',
+    () => {
+      const local = [...parseEnvFile(LOCAL_ENV_PATH).keys()];
+      const required = local.filter((key) => !OPTIONAL_KEYS.includes(key));
+      expect(required.sort()).toEqual([...REQUIRED_KEYS].sort());
+    },
+  );
 });
