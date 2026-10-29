@@ -34,6 +34,7 @@ export interface MessageIntakeOptions {
     | 'onHistoryChats'
     | 'managerPhone'
     | 'testAllowlist'
+    | 'workingMode'
     | 'backlogMaxAgeMs'
   >;
   /** whatsapp/inbound.classifyUpsert или подмена в тестах. */
@@ -101,6 +102,7 @@ async function receiveMessages(
     linkedAtMs,
     backlogMaxAgeMs: deps.backlogMaxAgeMs,
     testAllowlist: allowlistWithoutBot(options, state, resolver.botPhone()),
+    workingMode: deps.workingMode,
   };
   let notAllowlisted = 0;
   for (const message of batch.messages) {

@@ -190,6 +190,17 @@ export interface ChatIdentity {
   readonly pnJid: Jid | null;
 }
 
+/**
+ * Рабочий режим (этап 8, TEST_MODE=false): бот отвечает всем чатам, кроме тех, что были на номере до перехода
+ * (pipeline/working-mode.ts). Номера TEST_ALLOWLIST работают как в закрытом режиме: правило перехода их не трогает.
+ */
+export interface WorkingMode {
+  /** Граница: момент последнего перехода TEST_MODE true => false, мс UTC (app_state). */
+  readonly sinceMs: number;
+  /** TEST_ALLOWLIST: чаты с этих номеров граница и правило перехода не касаются. */
+  readonly allowlist: ReadonlySet<PhoneDigits>;
+}
+
 /** Содержимое сообщения. Сырой WAMessage голосового остаётся в памяти адаптера, наружу только MediaRef. */
 export type MessageContent =
   | { readonly kind: 'text'; readonly text: string }

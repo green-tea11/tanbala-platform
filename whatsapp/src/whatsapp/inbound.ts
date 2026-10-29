@@ -18,6 +18,7 @@ import type {
   OwnMessage,
   PhoneDigits,
   WaMessageId,
+  WorkingMode,
 } from '../domain/types.js';
 import { cleanUntrusted, INVISIBLE, INVISIBLE_EXCEPT_NEWLINE } from '../shared/untrusted-text.js';
 import { jidToPhone, normalizeJid, phoneToJid } from './jid.js';
@@ -29,7 +30,8 @@ import { jidToPhone, normalizeJid, phoneToJid } from './jid.js';
  * CIPHERTEXT) или без годного ID.
  * not_allowlisted: закрытый режим включён, а номер собеседника не из TEST_ALLOWLIST, не определён
  * или совпал с номером самого бота.
- * before_link: отправлено до привязки номера к боту или без годного времени в 'append'.
+ * before_link: отправлено до привязки номера к боту или без годного времени в 'append'; в рабочем режиме ещё и
+ * сообщение чата не из TEST_ALLOWLIST, отправленное до перехода в рабочий режим (этап 8).
  * self: чат с самим собой; manager: чат с менеджером.
  * undecryptable: заглушка CIPHERTEXT: сообщение не расшифровалось или ждёт пересылки с телефона.
  */
@@ -88,6 +90,12 @@ export interface ClassifyContext {
    * не проходит, даже если попал в список.
    */
   readonly testAllowlist: ReadonlySet<PhoneDigits> | null;
+  /**
+   * Рабочий режим (этап 8): граница перехода и TEST_ALLOWLIST; null в закрытом режиме. Сообщение чата не из списка,
+   * отправленное раньше границы, пропускается как before_link: в закрытом режиме бот такие чаты не обрабатывал.
+   * Номер самого бота (из selfJids) в список не входит, как и в закрытом режиме.
+   */
+  readonly workingMode: WorkingMode | null;
   /**
    * Номер собеседника, который адаптер определил до разбора (key.remoteJidAlt или
    * lidMapping.getPNForLID); null, если номер неизвестен. Нужен для чатов @lid: у адреса с номером
@@ -161,7 +169,9 @@ const SERVICE_CONTENT_KEYS = [
  *    не отвечает, не уведомляет менеджера и не меняет их статус (решение владельца). В событии только JID и время
  *    для known_chats.
  * 4. Отправлено до привязки => 'before_link', тоже с JID и временем. Без годного времени живое сообщение ('notify')
- *    получает nowMs, иначе лид молча пропадёт; из 'append' => 'before_link' (безопаснее промолчать).
+ *    получает nowMs, иначе лид молча пропадёт; из 'append' => 'before_link' (безопаснее промолчать). Рабочий режим
+ *    (этап 8): чат не из TEST_ALLOWLIST и сообщение отправлено до перехода (workingMode.sinceMs) => тоже 'before_link'
+ *    с JID и временем, и для клиентских, и для своих сообщений; чаты из списка работают как раньше.
  * 5. Чат с самим собой => 'self'; чат менеджера (по remoteJid или remoteJidAlt) => 'manager'.
  * 6. Заглушка CIPHERTEXT (не расшифровалось или ждёт пересылки с телефона) => 'undecryptable' с JID и временем:
  *    для счётчика и known_chats, содержимое не берётся.
@@ -172,7 +182,6 @@ const SERVICE_CONTENT_KEYS = [
  * Тип upsert важен только для сообщений без годного времени (п. 4): после привязки обрабатывается всё,
  * в том числе 'append' после разрывов связи.
  * Текст и pushName недоверенные: без Cc (кроме \n в тексте) и Cf, NFKC, лимит длины после NFKC.
- * TODO(этап 8): при переходе TEST_MODE true => false граница: момент перехода записывается в app_state, и сообщения чатов не из списка, отправленные раньше, не обрабатываются (как before_link); сценарий запуска в main.ts.
  */
 export function classifyUpsert(message: WAMessage, context: ClassifyContext): WaEvent {
   const key: WAMessageKey | null | undefined = message.key;
@@ -192,7 +201,9 @@ export function classifyUpsert(message: WAMessage, context: ClassifyContext): Wa
     tsMs: tsMs ?? context.nowMs,
   });
   if (!isAllowlisted(chatJid, context)) return traced('not_allowlisted');
-  if (tsMs === null || tsMs < context.linkedAtMs) return traced('before_link');
+  if (tsMs === null || tsMs < context.linkedAtMs || isBeforeWorkingMode(chatJid, tsMs, context)) {
+    return traced('before_link');
+  }
   const altJid = key.remoteJidAlt ? normalizeJid(key.remoteJidAlt) : null;
   const fromMe = key.fromMe === true;
   // У своего сообщения remoteJidAlt может оказаться адресом самого бота, а не собеседника.
@@ -260,10 +271,24 @@ function messageTimeMs(message: WAMessage, context: ClassifyContext): number | n
  * из чужих чатов (remoteJidAlt своего сообщения может оказаться адресом бота).
  */
 function isAllowlisted(chatJid: Jid, context: ClassifyContext): boolean {
-  if (context.testAllowlist === null) return true;
+  return context.testAllowlist === null || isListed(chatJid, context.testAllowlist, context);
+}
+
+/** Рабочий режим: сообщение чата не из TEST_ALLOWLIST отправлено до перехода (граница workingMode.sinceMs). */
+function isBeforeWorkingMode(chatJid: Jid, tsMs: number, context: ClassifyContext): boolean {
+  const mode = context.workingMode;
+  return mode !== null && tsMs < mode.sinceMs && !isListed(chatJid, mode.allowlist, context);
+}
+
+/** Номер чата в списке; номер не определён или это номер самого бота => нет. */
+function isListed(
+  chatJid: Jid,
+  allowlist: ReadonlySet<PhoneDigits>,
+  context: ClassifyContext,
+): boolean {
   const phone = jidToPhone(chatJid) ?? context.chatPhone;
   if (phone === null || isOwnPhone(phone, context.selfJids)) return false;
-  return context.testAllowlist.has(phone);
+  return allowlist.has(phone);
 }
 
 /** Номер самого бота по адресам с номером из selfJids; суффикс устройства не мешает. */

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, type Mock } from 'vitest';
 import type { Chat, WAMessage } from 'baileys';
 import type { Logger } from '../../../src/domain/ports.js';
-import type { Jid, PhoneDigits, WaMessageId } from '../../../src/domain/types.js';
+import type { Jid, PhoneDigits, WaMessageId, WorkingMode } from '../../../src/domain/types.js';
 import type { HistoryChat } from '../../../src/whatsapp/connection-types.js';
 import type { ClassifyContext, WaEvent } from '../../../src/whatsapp/inbound.js';
 import type { LidResolver } from '../../../src/whatsapp/lid-resolver.js';
@@ -88,7 +88,10 @@ interface Setup {
   readonly onTooManyFailures: Mock<() => Promise<void>>;
 }
 
-function setup(testAllowlist: ReadonlySet<PhoneDigits> | null = null): Setup {
+function setup(
+  testAllowlist: ReadonlySet<PhoneDigits> | null = null,
+  workingMode: WorkingMode | null = null,
+): Setup {
   const logs: LogEntry[] = [];
   const calls: string[] = [];
   const classify = vi.fn((source: WAMessage, _context: ClassifyContext): WaEvent =>
@@ -116,6 +119,7 @@ function setup(testAllowlist: ReadonlySet<PhoneDigits> | null = null): Setup {
       onHistoryChats,
       managerPhone: MANAGER_PHONE,
       testAllowlist,
+      workingMode,
       backlogMaxAgeMs: 12 * HOUR_MS,
     },
     classify,
@@ -206,10 +210,22 @@ describe('whatsapp/message-intake: сообщения', () => {
       nowMs: NOW,
       backlogMaxAgeMs: 12 * HOUR_MS,
       testAllowlist: allowlist,
+      workingMode: null,
       chatPhone: CLIENT_PHONE,
       upsertType: 'append',
     });
     expect(calls).toEqual(['m1']);
+  });
+
+  it('рабочий режим: граница перехода и TEST_ALLOWLIST уходят в разбор как есть, закрытого списка нет', async () => {
+    const workingMode: WorkingMode = { sinceMs: LINKED_AT + 1, allowlist: new Set([BOT_PHONE]) };
+    const { intake, classify, logs } = setup(null, workingMode);
+
+    await intake.messages({ messages: [message('m1')], type: 'notify' }, resolver, LINKED_AT);
+
+    expect(classify.mock.calls[0]?.[1]).toMatchObject({ testAllowlist: null });
+    expect(classify.mock.calls[0]?.[1].workingMode).toBe(workingMode);
+    expect(logs.filter((entry) => entry.level === 'warn')).toEqual([]);
   });
 
   it('момент привязки неизвестен: сообщения не разбираются, в лог только их число', async () => {

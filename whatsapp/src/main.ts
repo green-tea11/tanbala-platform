@@ -563,6 +563,7 @@ function whatsAppDeps(
     pairingGuard: storage.pairingGuard,
     managerPhone: config.managerPhone,
     testAllowlist: allowlistOf(config.testMode),
+    workingMode: null,
     backlogMaxAgeMs: config.backlogMaxAgeHours * MS_PER_HOUR,
     onEvent: (event) => whileOpen(storage, () => routeEvent(context, event)),
     onHistoryChats: (chats) =>

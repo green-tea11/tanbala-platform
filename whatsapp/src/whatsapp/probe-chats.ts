@@ -81,6 +81,7 @@ const OPEN_CONTEXT: Omit<ClassifyContext, 'nowMs' | 'chatPhone' | 'upsertType'> 
   linkedAtMs: 0,
   backlogMaxAgeMs: Number.MAX_SAFE_INTEGER,
   testAllowlist: null,
+  workingMode: null,
 };
 
 function errorNameOf(error: unknown): string {

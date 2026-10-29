@@ -14,7 +14,7 @@ import type {
   PairingGuard,
   WhatsAppGateway,
 } from '../domain/ports.js';
-import type { Jid, PhoneDigits, WaMessageId } from '../domain/types.js';
+import type { Jid, PhoneDigits, WaMessageId, WorkingMode } from '../domain/types.js';
 import { SafeError } from '../shared/safe-error.js';
 import type { ProfileFetch } from './contacts.js';
 import type { ClassifyContext, WaEvent } from './inbound.js';
@@ -123,6 +123,11 @@ export interface WhatsAppDeps {
   managerPhone: PhoneDigits | null;
   /** Закрытый режим: номера из TEST_ALLOWLIST; null, если режим выключен. */
   testAllowlist: ReadonlySet<PhoneDigits> | null;
+  /**
+   * Рабочий режим (этап 8): граница перехода и TEST_ALLOWLIST для разбора (ClassifyContext.workingMode); null в
+   * закрытом режиме. Меняется только перезапуском: переход пишет main до подключения.
+   */
+  workingMode: WorkingMode | null;
   /** BACKLOG_MAX_AGE_HOURS в мс: порог для сообщений, пришедших за время простоя. */
   backlogMaxAgeMs: number;
   /** Каждое разобранное событие (whatsapp/inbound.ts) строго по порядку. Не ждать в нём stop(): stop ждёт очередь. */

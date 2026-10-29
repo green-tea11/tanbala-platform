@@ -63,6 +63,7 @@ function context(overrides: Partial<ClassifyContext> = {}): ClassifyContext {
     nowMs: NOW_MS,
     backlogMaxAgeMs: BACKLOG_MAX_AGE_MS,
     testAllowlist: null,
+    workingMode: null,
     chatPhone: CLIENT_PHONE,
     upsertType: 'notify',
     ...overrides,
@@ -547,6 +548,101 @@ describe('classifyUpsert: граница привязки', () => {
         tsMs: FRESH_SECONDS * 1000,
       },
     });
+  });
+});
+
+describe('classifyUpsert: граница рабочего режима (этап 8)', () => {
+  const SWITCHED_AT_MS = NOW_MS - 2 * HOUR_MS;
+  const BEFORE_SWITCH_SECONDS = toSeconds(SWITCHED_AT_MS - HOUR_MS);
+  const AFTER_SWITCH_SECONDS = toSeconds(SWITCHED_AT_MS + HOUR_MS);
+  /** Рабочий режим: закрытого списка в разборе нет, номер клиента остаётся в TEST_ALLOWLIST. */
+  const WORKING: Partial<ClassifyContext> = {
+    testAllowlist: null,
+    workingMode: { sinceMs: SWITCHED_AT_MS, allowlist: new Set([CLIENT_PHONE]) },
+  };
+  const STRANGER: Readonly<Record<string, unknown>> = { remoteJid: STRANGER_PN };
+
+  function working(overrides: Partial<ClassifyContext> = {}): Partial<ClassifyContext> {
+    return { ...WORKING, chatPhone: STRANGER_PHONE, ...overrides };
+  }
+
+  it('чужой чат, сообщение до перехода (офлайн-очередь) => before_link с JID и временем, без текста', () => {
+    const event = classify(
+      { messageTimestamp: BEFORE_SWITCH_SECONDS },
+      STRANGER,
+      working({ upsertType: 'append' }),
+    );
+
+    expect(event).toStrictEqual({
+      type: 'ignore',
+      reason: 'before_link',
+      chatJid: STRANGER_PN,
+      tsMs: BEFORE_SWITCH_SECONDS * 1000,
+    });
+  });
+
+  it('чужой чат после перехода => client: в рабочем режиме not_allowlisted не бывает', () => {
+    const event = classify({ messageTimestamp: AFTER_SWITCH_SECONDS }, STRANGER, working());
+
+    expect(event).toMatchObject({
+      type: 'client',
+      message: { identity: { replyJid: STRANGER_PN }, tsMs: AFTER_SWITCH_SECONDS * 1000 },
+    });
+  });
+
+  it('ровно в момент перехода => обрабатывается', () => {
+    const event = classify({ messageTimestamp: toSeconds(SWITCHED_AT_MS) }, STRANGER, working());
+
+    expect(event.type).toBe('client');
+  });
+
+  it('номер из TEST_ALLOWLIST до перехода разбирается как раньше: client', () => {
+    const event = classify(
+      { messageTimestamp: BEFORE_SWITCH_SECONDS },
+      {},
+      { ...WORKING, chatPhone: CLIENT_PHONE },
+    );
+
+    expect(event.type).toBe('client');
+  });
+
+  it('@lid: номер из списка определил адаптер => как раньше; номер неизвестен => before_link', () => {
+    const lid = { remoteJid: CLIENT_LID };
+    const before = { messageTimestamp: BEFORE_SWITCH_SECONDS };
+
+    expect(classify(before, lid, working({ chatPhone: CLIENT_PHONE })).type).toBe('client');
+    expect(classify(before, lid, working({ chatPhone: null }))).toMatchObject({
+      reason: 'before_link',
+      chatJid: CLIENT_LID,
+    });
+  });
+
+  it('своё сообщение в чужом чате до перехода => before_link, после => own', () => {
+    const own = { ...STRANGER, fromMe: true };
+
+    expect(classify({ messageTimestamp: BEFORE_SWITCH_SECONDS }, own, working())).toMatchObject({
+      type: 'ignore',
+      reason: 'before_link',
+    });
+    expect(classify({ messageTimestamp: AFTER_SWITCH_SECONDS }, own, working()).type).toBe('own');
+  });
+
+  it('после давнего перехода старое сообщение чужого чата => stale, как у любого клиента', () => {
+    const event = classify(
+      { messageTimestamp: STALE_SECONDS },
+      STRANGER,
+      working({
+        workingMode: { sinceMs: NOW_MS - 20 * HOUR_MS, allowlist: new Set([CLIENT_PHONE]) },
+      }),
+    );
+
+    expect(event.type).toBe('stale');
+  });
+
+  it('граница привязки по-прежнему раньше границы перехода: до привязки => before_link', () => {
+    const event = classify({ messageTimestamp: BEFORE_LINK_SECONDS }, {}, WORKING);
+
+    expect(event).toMatchObject({ reason: 'before_link', chatJid: CLIENT_PN });
   });
 });
 

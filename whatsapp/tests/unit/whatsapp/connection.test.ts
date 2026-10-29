@@ -15,7 +15,13 @@ import type {
 } from 'baileys';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import type { Clock, Logger, PairingDecision } from '../../../src/domain/ports.js';
-import type { Jid, MediaRef, PhoneDigits, WaMessageId } from '../../../src/domain/types.js';
+import type {
+  Jid,
+  MediaRef,
+  PhoneDigits,
+  WaMessageId,
+  WorkingMode,
+} from '../../../src/domain/types.js';
 import { SafeError } from '../../../src/shared/safe-error.js';
 import {
   LINKED_AT_SKEW_MS,
@@ -330,6 +336,7 @@ interface SetupOptions {
   readonly linkedAtMs?: number | null;
   readonly managerPhone?: PhoneDigits | null;
   readonly testAllowlist?: ReadonlySet<PhoneDigits> | null;
+  readonly workingMode?: WorkingMode | null;
   readonly pnForLid?: Readonly<Record<string, string>>;
   readonly lidForPn?: Readonly<Record<string, string>>;
 }
@@ -427,6 +434,7 @@ function setup(options: SetupOptions = {}): Harness {
     pairingGuard: { tryBeginAttempt: harness.tryBeginAttempt },
     managerPhone: options.managerPhone ?? null,
     testAllowlist: options.testAllowlist ?? null,
+    workingMode: options.workingMode ?? null,
     backlogMaxAgeMs: BACKLOG_MAX_AGE_MS,
     onEvent: harness.onEvent,
     onOfflineQueueDone: harness.onOfflineQueueDone,
@@ -887,9 +895,24 @@ describe('whatsapp/connection: события сокета', () => {
       nowMs: NOW + 5000,
       backlogMaxAgeMs: BACKLOG_MAX_AGE_MS,
       testAllowlist: allowlist,
+      workingMode: null,
       chatPhone: CLIENT_PHONE,
       upsertType: 'append',
     });
+  });
+
+  it('рабочий режим: граница перехода из deps в контексте разбора, закрытого списка нет', async () => {
+    const workingMode: WorkingMode = {
+      sinceMs: NOW - 1000,
+      allowlist: new Set([CLIENT_PHONE as PhoneDigits]),
+    };
+    const h = setup({ workingMode });
+    await startOpen(h);
+
+    upsert(h, [textMessage('m1')], 'notify');
+
+    await until(() => expect(h.calls).toEqual(['event:m1']));
+    expect(h.classify.mock.calls[0]?.[1]).toMatchObject({ testAllowlist: null, workingMode });
   });
 
   it('три сбоя подряд: стоп handler_failed, остаток пачки не разбирается', async () => {
