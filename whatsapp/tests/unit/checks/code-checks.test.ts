@@ -1262,3 +1262,35 @@ describe('runCodeChecks: сленг сумм, валюты и сроки (рев
     expect(findings).toEqual([]);
   });
 });
+
+describe('runCodeChecks: суммы заметки по значению, второй круг ревью', () => {
+  function withNote(text: string, note: string): readonly CheckFinding[] {
+    return runCodeChecks(normalizeDraft(text), { ownPhone: OWN_PHONE, clientText: '', note });
+  }
+
+  const RANGE_NOTE = 'Ориентир 1,5–2 млн тенге, нужен выезд';
+  const DOT_NOTE = 'Ориентир 1.500.000 тенге';
+  const NOTE = 'Ориентир от 1 500 000 тенге';
+
+  it.each([
+    ['Коллега подсказал: от 1 500 000 до 2 000 000 тенге.', RANGE_NOTE],
+    ['Коллега подсказал: от 1,5 до 2 млн тенге.', RANGE_NOTE],
+    ['Коллега подсказал: ориентир 1 500 000 тенге.', DOT_NOTE],
+    ['Коллега подсказал: ориентир 1.500.000 тенге.', DOT_NOTE],
+    ['Коллега подсказал: около полутора миллионов тенге.', NOTE],
+    ['Коллега подсказал: от 1 500 000 тенге за 3 склада.', NOTE],
+    ['Коллега подсказал: от 1 500 000 тенге на 2 этажа склада.', NOTE],
+  ])('проходит: %s (заметка «%s»)', (text, note) => {
+    expect(withNote(text, note)).toEqual([]);
+  });
+
+  it.each([
+    ['Коллега подсказал: от 1,5 тенге.', RANGE_NOTE],
+    ['Коллега подсказал: 0 тенге.', DOT_NOTE],
+    ['Коллега подсказал: от 1,5 тенге.', DOT_NOTE],
+    ['Коллега подсказал: от 2 000 000, оплата в тенге.', NOTE],
+    ['Коллега подсказал: от 1 500 000 тенге, выезд 50 000 тенге.', NOTE],
+  ])('нарушение: %s (заметка «%s»)', (text, note) => {
+    expect(codes(withNote(text, note)).has('price')).toBe(true);
+  });
+});

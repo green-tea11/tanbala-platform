@@ -209,12 +209,21 @@ function clauseAround(
 }
 
 /**
+ * Число без признака цены в части фразы о цене сверяется с указанием, только если оно не меньше этого: «от 1 500 000
+ * тенге за 3 склада» проходит, а «от 2 000 000, оплата в тенге» при указании «1 500 000» нет.
+ */
+const MIN_UNPRICED_AMOUNT = 1000;
+
+/**
  * Цена допустима: в её части фразы есть с чем сверять (сумма или валюта), каждая сумма (кроме «1С», количеств,
- * единиц длины и площади, сроков) по значению равна сумме-цене из указания, а валюта есть в указании.
+ * единиц длины и площади, сроков и мелких чисел без признака цены) по значению равна сумме-цене из указания, а валюта
+ * есть в указании.
  * «От 1,5 млн тенге» при указании «от 1 500 000 тенге» проходит, «от 1 млн» и «10 000 тенге» нет.
  */
 function clauseFromNote(clause: string, facts: NoteFacts): boolean {
-  const amounts = amountsOf(clause);
+  const amounts = amountsOf(clause).filter(
+    (amount) => amount.priced || amount.value >= MIN_UNPRICED_AMOUNT,
+  );
   const units = [...priceUnits(clause)];
   if (amounts.length === 0 && units.length === 0) return false;
   const known = (value: number): boolean => facts.amounts.some((fact) => sameAmount(fact, value));
