@@ -309,6 +309,13 @@ export interface MessagesRepo {
    */
   unansweredAfterLastOutbound(chatId: ChatId, sinceMs: number): readonly UnansweredInbound[];
   /**
+   * Возврат чата с заметкой после фразы передачи (ревью 29.10.2026, ждёт подтверждения владельца): последнее исходящее
+   * в чате это фраза передачи бота (outbound_ids.origin handoff_notice), и после неё никто не писал. Тогда сообщения
+   * клиента, на которые она ответила (после прошлого исходящего не о передаче) и не раньше sinceMs, снова ждут ответа
+   * (answered 0) и возвращаются по времени. Иначе ничего не меняется и пусто. Одной транзакцией.
+   */
+  reopenAnsweredByHandoff(chatId: ChatId, sinceMs: number): readonly UnansweredInbound[];
+  /**
    * Переписка для панели: до limit сообщений чата строго раньше сообщения beforeId (без него самые свежие),
    * по возрастанию времени.
    */

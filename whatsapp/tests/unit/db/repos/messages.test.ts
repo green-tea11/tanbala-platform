@@ -1,7 +1,8 @@
 import type Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { createMessagesRepo } from '../../../../src/db/repos/messages.js';
-import type { ChatId, NewMessage, WaMessageId } from '../../../../src/domain/types.js';
+import { createOutboundIdsRepo } from '../../../../src/db/repos/outbound-ids.js';
+import type { ChatId, NewMessage, SendOrigin, WaMessageId } from '../../../../src/domain/types.js';
 import { errorOf, insertChat, LID_A, PN_A, useMigratedDb } from '../fixture.js';
 
 function setup(): { db: Database.Database; chatId: ChatId; otherChatId: ChatId } {
@@ -536,5 +537,143 @@ describe('createMessagesRepo: unansweredAfterLastOutbound (возврат чат
     expect(() => createMessagesRepo(db).unansweredAfterLastOutbound(chatId, -1)).toThrow(
       RangeError,
     );
+  });
+});
+
+describe('createMessagesRepo: reopenAnsweredByHandoff (возврат с заметкой после фразы передачи)', () => {
+  const T = 1_761_400_000_000;
+  const JID = PN_A;
+
+  function rig() {
+    const { db, chatId, otherChatId } = setup();
+    const repo = createMessagesRepo(db);
+    const outbound = createOutboundIdsRepo(db);
+    const add = (
+      waId: string,
+      author: NewMessage['author'],
+      tsMs: number,
+      overrides: Partial<NewMessage> = {},
+      chat: ChatId = chatId,
+    ): void => {
+      repo.insertIfNew({
+        chatId: chat,
+        waId: waId as WaMessageId,
+        author,
+        kind: 'text',
+        text: `${author} ${waId}`,
+        tsMs,
+        ...overrides,
+      });
+    };
+    /** Исходящее бота: в истории как bot, в outbound_ids со своим origin. */
+    const bot = (waId: string, origin: SendOrigin, tsMs: number, chat: ChatId = chatId): void => {
+      outbound.register({
+        waId: waId as WaMessageId,
+        chatId: chat,
+        jid: JID,
+        origin,
+        text: 'текст',
+        nowMs: tsMs,
+      });
+      add(waId, 'bot', tsMs, {}, chat);
+    };
+    const answered = (waId: string): boolean =>
+      !repo.isUnansweredInbound(chatId, waId as WaMessageId);
+    return { db, repo, chatId, otherChatId, add, bot, answered };
+  }
+
+  it('последнее исходящее фраза передачи: сообщения, на которые она ответила, снова ждут ответа', () => {
+    const r = rig();
+    r.add('C1', 'client', T);
+    r.bot('B1', 'bot_reply', T + 1);
+    r.add('C2', 'client', T + 2);
+    r.add('C3', 'client', T + 3, { kind: 'voice', text: null });
+    r.bot('H1', 'handoff_notice', T + 4);
+    r.repo.markAnswered(r.chatId, 'C3' as WaMessageId);
+
+    const reopened = r.repo.reopenAnsweredByHandoff(r.chatId, T);
+
+    expect(reopened).toEqual([
+      { waId: 'C2', kind: 'text', text: 'client C2', tsMs: T + 2 },
+      { waId: 'C3', kind: 'voice', text: null, tsMs: T + 3 },
+    ]);
+    expect([r.answered('C1'), r.answered('C2'), r.answered('C3')]).toEqual([true, false, false]);
+  });
+
+  it.each(['human_phone', 'human_panel'] as const)(
+    'после фразы передачи писал менеджер (%s): ничего не открывается',
+    (author) => {
+      const r = rig();
+      r.add('C1', 'client', T);
+      r.bot('H1', 'handoff_notice', T + 1);
+      r.add('M1', author, T + 2);
+      r.repo.markAnswered(r.chatId, 'C1' as WaMessageId);
+
+      expect(r.repo.reopenAnsweredByHandoff(r.chatId, T)).toEqual([]);
+      expect(r.answered('C1')).toBe(true);
+    },
+  );
+
+  it.each(['bot_reply', 'voice_notice'] as const)(
+    'последнее исходящее не фраза передачи (%s): ничего не открывается',
+    (origin) => {
+      const r = rig();
+      r.add('C1', 'client', T);
+      r.bot('B1', origin, T + 1);
+      r.repo.markAnswered(r.chatId, 'C1' as WaMessageId);
+
+      expect(r.repo.reopenAnsweredByHandoff(r.chatId, T)).toEqual([]);
+    },
+  );
+
+  it('сообщения старше sinceMs не открываются', () => {
+    const r = rig();
+    r.add('C1', 'client', T - 10);
+    r.add('C2', 'client', T + 1);
+    r.bot('H1', 'handoff_notice', T + 2);
+    r.repo.markAnswered(r.chatId, 'C2' as WaMessageId);
+
+    expect(r.repo.reopenAnsweredByHandoff(r.chatId, T).map((m) => m.waId)).toEqual(['C2']);
+    expect(r.answered('C1')).toBe(true);
+  });
+
+  it('прошлая фраза передачи не граница: берутся сообщения после прошлого исходящего не о передаче', () => {
+    const r = rig();
+    r.bot('B1', 'bot_reply', T);
+    r.add('C1', 'client', T + 1);
+    r.bot('H0', 'handoff_notice', T + 2);
+    r.add('C2', 'client', T + 3);
+    r.bot('H1', 'handoff_notice', T + 4);
+    r.repo.markAnswered(r.chatId, 'C2' as WaMessageId);
+
+    expect(r.repo.reopenAnsweredByHandoff(r.chatId, T).map((m) => m.waId)).toEqual(['C1', 'C2']);
+  });
+
+  it('исходящих до фразы передачи не было: все сообщения клиента до неё', () => {
+    const r = rig();
+    r.add('C1', 'client', T);
+    r.add('C2', 'client', T + 1);
+    r.bot('H1', 'handoff_notice', T + 2);
+    r.repo.markAnswered(r.chatId, 'C2' as WaMessageId);
+
+    expect(r.repo.reopenAnsweredByHandoff(r.chatId, T).map((m) => m.waId)).toEqual(['C1', 'C2']);
+  });
+
+  it('другой чат не трогается: его фраза передачи и сообщения', () => {
+    const r = rig();
+    r.add('C1', 'client', T);
+    r.bot('B1', 'bot_reply', T + 1);
+    r.add('X1', 'client', T + 2, {}, r.otherChatId);
+    r.bot('XH', 'handoff_notice', T + 3, r.otherChatId);
+    r.repo.markAnswered(r.otherChatId, 'X1' as WaMessageId);
+
+    expect(r.repo.reopenAnsweredByHandoff(r.chatId, T)).toEqual([]);
+    expect(r.repo.isUnansweredInbound(r.otherChatId, 'X1' as WaMessageId)).toBe(false);
+  });
+
+  it('пустой чат: ничего', () => {
+    const r = rig();
+
+    expect(r.repo.reopenAnsweredByHandoff(r.chatId, T)).toEqual([]);
   });
 });

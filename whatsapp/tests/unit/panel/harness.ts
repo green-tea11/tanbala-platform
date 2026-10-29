@@ -228,6 +228,7 @@ function createMessagesRepo(data: PanelData): Harness['messages'] {
     markAnswered: unused('messages.markAnswered'),
     setTranscript: unused('messages.setTranscript'),
     unansweredAfterLastOutbound: unused('messages.unansweredAfterLastOutbound'),
+    reopenAnsweredByHandoff: unused('messages.reopenAnsweredByHandoff'),
     history: vi.fn((chat, query) => {
       const ordered = data.messages
         .filter((message) => message.chatId === chat)

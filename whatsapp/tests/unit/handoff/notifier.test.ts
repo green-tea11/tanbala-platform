@@ -471,6 +471,7 @@ function setupWithRealOutbox(managerJid: Jid | null): RealOutboxHarness {
       markAnswered: unexpected,
       setTranscript: unexpected,
       unansweredAfterLastOutbound: unexpected,
+      reopenAnsweredByHandoff: unexpected,
       history: unexpected,
     },
     outboundIds: {

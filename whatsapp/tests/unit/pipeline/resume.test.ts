@@ -49,7 +49,14 @@ function pending(waId: string, overrides: Partial<UnansweredInbound> = {}): Unan
   };
 }
 
-function setup(found: Chat | null, messages: readonly UnansweredInbound[]) {
+interface Extra {
+  /** Заметка для бота, оставленная при этом возврате. */
+  readonly note?: string;
+  /** Что вернёт reopenAnsweredByHandoff. */
+  readonly reopened?: readonly UnansweredInbound[];
+}
+
+function setup(found: Chat | null, messages: readonly UnansweredInbound[], extra: Extra = {}) {
   const logs: { level: string; context: unknown }[] = [];
   const log =
     (level: string) =>
@@ -69,15 +76,19 @@ function setup(found: Chat | null, messages: readonly UnansweredInbound[]) {
   };
   const push = vi.fn<(chatId: ChatId, message: InboundMessage) => void>();
   const unanswered = vi.fn<ResumeDeps['messages']['unansweredAfterLastOutbound']>(() => messages);
+  const reopen = vi.fn<ResumeDeps['messages']['reopenAnsweredByHandoff']>(
+    () => extra.reopened ?? [],
+  );
+  const note = extra.note === undefined ? null : { text: extra.note, atMs: NOW };
   const deps: ResumeDeps = {
-    chats: { getById: (id) => (found?.id === id ? found : null) },
-    messages: { unansweredAfterLastOutbound: unanswered },
+    chats: { getById: (id) => (found?.id === id ? found : null), getNote: () => note },
+    messages: { unansweredAfterLastOutbound: unanswered, reopenAnsweredByHandoff: reopen },
     batcher: { push },
     clock: { now: () => NOW },
     logger,
     maxAgeMs: 12 * HOUR_MS,
   };
-  return { deps, push, unanswered, logs };
+  return { deps, push, unanswered, reopen, logs };
 }
 
 describe('pipeline/resume: ответ на неотвеченное после возврата боту', () => {
@@ -112,7 +123,7 @@ describe('pipeline/resume: ответ на неотвеченное после �
     ]);
   });
 
-  it('расшифрованное голосовое идёт текстом, голосовое без расшифровки и вложение без текста', () => {
+  it('расшифрованное голосовое идёт текстом, голосовое без расшифровки голосовым, вложение без текста', () => {
     const h = setup(chat(), [
       pending('V1', { kind: 'voice', text: 'расшифровка' }),
       pending('V2', { kind: 'voice', text: null }),
@@ -121,15 +132,48 @@ describe('pipeline/resume: ответ на неотвеченное после �
 
     resumeAfterReturn(h.deps, CHAT_ID);
 
+    // Голосовое без расшифровки идёт голосовым (ревью 29.10.2026): конвейер пробует скачать его по waId; в памяти
+    // адаптера его уже нет => фраза про голосовое без платного вызова.
     expect(h.push.mock.calls.map(([, message]) => message.content)).toEqual([
       { kind: 'text', text: 'расшифровка' },
-      { kind: 'other' },
+      { kind: 'voice', media: 'V2', mimeType: 'audio/ogg; codecs=opus', seconds: null },
       { kind: 'other' },
     ]);
   });
 
   it('отвечать не на что (менеджер ответил или всё старше 12 часов): очередь не трогается', () => {
     const h = setup(chat(), []);
+
+    expect(resumeAfterReturn(h.deps, CHAT_ID)).toBe(0);
+    expect(h.push).not.toHaveBeenCalled();
+    expect(h.reopen).not.toHaveBeenCalled();
+  });
+
+  it('возврат с заметкой, клиент молчал после фразы передачи: бот возвращается к сообщениям, на которые она ответила', () => {
+    const h = setup(chat(), [], { note: 'Ориентир от 1 500 000 тенге', reopened: [pending('C1')] });
+
+    expect(resumeAfterReturn(h.deps, CHAT_ID)).toBe(1);
+    expect(h.reopen).toHaveBeenCalledWith(CHAT_ID, NOW - 12 * HOUR_MS);
+    expect(h.push.mock.calls.map(([, message]) => message.waId)).toEqual(['C1']);
+    expect(h.logs).toEqual([
+      { level: 'info', context: { chatId: CHAT_ID, count: 1, afterHandoffNotice: true } },
+    ]);
+    expect(JSON.stringify(h.logs)).not.toMatch(/Ориентир|1 500 000|текст/);
+  });
+
+  it('возврат с заметкой, а неотвеченные есть: на них и отвечает, фраза передачи не открывается', () => {
+    const h = setup(chat(), [pending('C2')], {
+      note: 'узнай число вещей',
+      reopened: [pending('C1')],
+    });
+
+    expect(resumeAfterReturn(h.deps, CHAT_ID)).toBe(1);
+    expect(h.reopen).not.toHaveBeenCalled();
+    expect(h.push.mock.calls.map(([, message]) => message.waId)).toEqual(['C2']);
+  });
+
+  it('возврат с заметкой, но открывать нечего (менеджер писал после фразы или она не последняя): молчание', () => {
+    const h = setup(chat(), [], { note: 'узнай число вещей', reopened: [] });
 
     expect(resumeAfterReturn(h.deps, CHAT_ID)).toBe(0);
     expect(h.push).not.toHaveBeenCalled();

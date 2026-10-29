@@ -41,6 +41,11 @@ interface UnansweredRow {
   readonly tsMs: number;
 }
 
+/** Входящее, на которое ответила фраза передачи: с ID строки для снятия отметки answered. */
+interface ReopenRow extends UnansweredRow {
+  readonly id: number;
+}
+
 /** Параметры страницы переписки: beforeId null значит «с самых свежих». */
 interface PageQuery {
   readonly chatId: ChatId;
@@ -66,9 +71,17 @@ const KINDS: readonly MessageKind[] = ['text', 'voice', 'other'];
  * (вид остаётся voice): уже записанный текст не перезаписывается.
  * unansweredAfterLastOutbound: входящие клиента без отметки answered, записанные после последнего сообщения не клиента
  * (по времени, при равном времени по порядку записи) и не раньше sinceMs; по времени.
+ * reopenAnsweredByHandoff: если последнее сообщение не клиента это фраза передачи бота (её wa_id в outbound_ids с
+ * origin handoff_notice в том же чате), входящие клиента до неё и после прошлого сообщения не клиента, которое не фраза
+ * передачи, не раньше sinceMs, получают answered 0 и возвращаются по времени; выборка и запись одной транзакцией.
  */
 export function createMessagesRepo(db: Database.Database): MessagesRepo {
   const statements = prepareStatements(db);
+  const reopen = db.transaction((chatId: ChatId, sinceMs: number): readonly UnansweredInbound[] => {
+    const rows = statements.selectAnsweredByHandoff.all({ chatId, sinceMs });
+    for (const row of rows) statements.reopen.run(row.id);
+    return rows.map(toUnanswered);
+  });
   const page = (query: PageQuery): readonly StoredMessage[] => {
     assertCount(query.limit, 'limit');
     return statements.selectPage.all(query).map(toStoredMessage);
@@ -93,6 +106,10 @@ export function createMessagesRepo(db: Database.Database): MessagesRepo {
     unansweredAfterLastOutbound(chatId: ChatId, sinceMs: number): readonly UnansweredInbound[] {
       assertTimeMs(sinceMs, 'sinceMs');
       return statements.selectUnansweredTail.all({ chatId, sinceMs }).map(toUnanswered);
+    },
+    reopenAnsweredByHandoff(chatId: ChatId, sinceMs: number): readonly UnansweredInbound[] {
+      assertTimeMs(sinceMs, 'sinceMs');
+      return reopen.immediate(chatId, sinceMs);
     },
     history(
       chatId: ChatId,
@@ -143,6 +160,28 @@ function prepareStatements(db: Database.Database) {
          AND NOT EXISTS (SELECT 1 FROM last_out AS o WHERE (m.ts_ms, m.id) <= (o.ts_ms, o.id))
        ORDER BY m.ts_ms, m.id`,
     ),
+    selectAnsweredByHandoff: db.prepare<{ chatId: ChatId; sinceMs: number }, ReopenRow>(
+      `WITH outs AS (
+         SELECT m.ts_ms, m.id, m.author,
+           EXISTS (SELECT 1 FROM outbound_ids AS o
+                   WHERE o.wa_id = m.wa_id AND o.chat_id = m.chat_id AND o.origin = 'handoff_notice') AS handoff
+         FROM messages AS m
+         WHERE m.chat_id = @chatId AND m.author <> 'client'
+       ),
+       last_out AS (SELECT ts_ms, id, author, handoff FROM outs ORDER BY ts_ms DESC, id DESC LIMIT 1),
+       notice AS (SELECT ts_ms, id FROM last_out WHERE author = 'bot' AND handoff = 1),
+       prev_out AS (
+         SELECT p.ts_ms, p.id FROM outs AS p, notice AS n
+         WHERE p.handoff = 0 AND (p.ts_ms, p.id) < (n.ts_ms, n.id)
+         ORDER BY p.ts_ms DESC, p.id DESC LIMIT 1
+       )
+       SELECT c.id, c.wa_id AS waId, c.kind, c.text, c.ts_ms AS tsMs FROM messages AS c, notice AS n
+       WHERE c.chat_id = @chatId AND c.author = 'client' AND c.ts_ms >= @sinceMs
+         AND (c.ts_ms, c.id) < (n.ts_ms, n.id)
+         AND NOT EXISTS (SELECT 1 FROM prev_out AS p WHERE (c.ts_ms, c.id) <= (p.ts_ms, p.id))
+       ORDER BY c.ts_ms, c.id`,
+    ),
+    reopen: db.prepare<[number]>('UPDATE messages SET answered = 0 WHERE id = ?'),
     updateTranscript: db.prepare<Transcript>(
       `UPDATE messages SET text = @text
        WHERE chat_id = @chatId AND wa_id = @waId AND kind = 'voice' AND text IS NULL`,

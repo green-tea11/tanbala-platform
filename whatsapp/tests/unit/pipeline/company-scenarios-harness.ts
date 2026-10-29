@@ -25,6 +25,7 @@ import type {
   InboundMessage,
   Jid,
   LlmPurpose,
+  MediaRef,
   WaMessageId,
 } from '../../../src/domain/types.js';
 import { assembleCompany, type CompanySetup } from '../../../src/pipeline/company-setup.js';
@@ -210,6 +211,10 @@ export interface Scenario {
   returnToBot(script: LlmScript, note?: string): Promise<Turn>;
   /** Менеджер пишет клиенту с телефона: сообщение в истории и перехват чата (как pipeline/takeover.ts). */
   managerWrites(text: string): Promise<void>;
+  /** Менеджер отвечает из панели: перехват чата (by panel), затем отправка outbox.sendFromPanel (как routes-chats). */
+  managerWritesFromPanel(text: string): Promise<void>;
+  /** Клиент присылает голосовое (без расшифровки в базе); модель в этой реплике отвечает по script. */
+  sayVoice(script: LlmScript): Promise<Turn>;
   /** Сдвигает часы сценария (например, на 13 часов простоя). */
   advance(ms: number): void;
   readonly contacts: FakeContacts;
@@ -387,17 +392,16 @@ async function responderOf(rig: Rig, llm: ScriptedLlm) {
 }
 
 /** Реплика клиента целиком: сообщение в базе (как после recorder.ts), очередь склейки, конвейер до конца. */
-async function handleText(
-  rig: Rig,
-  message: InboundMessage,
-  text: string,
-  llm: ScriptedLlm,
-): Promise<ChatId> {
+async function handleInbound(rig: Rig, message: InboundMessage, llm: ScriptedLlm): Promise<ChatId> {
   const responder = await responderOf(rig, llm);
   const { chats, messages } = rig.storage;
   const chat = chats.upsertByIdentity(message.identity, message.pushName, message.tsMs);
-  const { waId, tsMs } = message;
-  messages.insertIfNew({ chatId: chat.id, waId, author: 'client', kind: 'text', text, tsMs });
+  const { waId, tsMs, content } = message;
+  const stored =
+    content.kind === 'text'
+      ? { kind: 'text' as const, text: content.text }
+      : { kind: content.kind, text: null };
+  messages.insertIfNew({ chatId: chat.id, waId, author: 'client', ...stored, tsMs });
   responder.batcher.push(chat.id, message);
   await responder.batcher.drain();
   return chat.id;
@@ -431,7 +435,7 @@ export function createScenario(options: ScenarioOptions = {}): Scenario {
   let chatId: ChatId | null = null;
   let count = 0;
 
-  const say = async (text: string, script: LlmScript): Promise<Turn> => {
+  const receive = async (content: InboundMessage['content'], script: LlmScript): Promise<Turn> => {
     const mark = {
       sent: rig.sendText.mock.calls.length,
       api: rig.apiCalls.length,
@@ -444,14 +448,23 @@ export function createScenario(options: ScenarioOptions = {}): Scenario {
       identity,
       pushName: options.pushName ?? null,
       ...(options.verifiedName === undefined ? {} : { verifiedName: options.verifiedName }),
-      content: { kind: 'text', text },
+      content,
       tsMs: atMs,
     };
     const llm = scriptedLlm(script);
-    chatId = await handleText(rig, message, text, llm);
+    chatId = await handleInbound(rig, message, llm);
     rig.clock.advance(TURN_GAP_MS);
     return turnOf(rig, mark, atMs, llm, identity.replyJid);
   };
+
+  const say = (text: string, script: LlmScript): Promise<Turn> =>
+    receive({ kind: 'text', text }, script);
+
+  const sayVoice = (script: LlmScript): Promise<Turn> =>
+    receive(
+      { kind: 'voice', media: `WA-${count + 1}` as MediaRef, mimeType: 'audio/ogg', seconds: 5 },
+      script,
+    );
 
   const currentChatId = (): ChatId => {
     if (chatId === null) throw new Error('Клиент ещё не писал: чата нет');
@@ -488,10 +501,18 @@ export function createScenario(options: ScenarioOptions = {}): Scenario {
     rig.clock.advance(TURN_GAP_MS);
   };
 
+  const managerWritesFromPanel = async (text: string): Promise<void> => {
+    await rig.services.handoff.handOff(currentChatId(), { reason: 'human_took_over', by: 'panel' });
+    await rig.services.outbox.sendFromPanel(currentChatId(), text);
+    rig.clock.advance(TURN_GAP_MS);
+  };
+
   return {
     say,
+    sayVoice,
     returnToBot,
     managerWrites,
+    managerWritesFromPanel,
     advance: (ms) => {
       rig.clock.advance(ms);
     },
