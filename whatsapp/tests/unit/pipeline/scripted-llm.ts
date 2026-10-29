@@ -69,8 +69,15 @@ export interface ScriptedLlm {
   readonly purposes: () => LlmPurpose[];
 }
 
+/** Так отвечает модель: невыясненное текстовое поле пустая строка (null только у has1C), см. interestSchema. */
+function asModelOutput(value: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(value).map(([key, field]) => [key, field === null && key !== 'has1C' ? '' : field]),
+  );
+}
+
 function rawInterest(level: InterestLevel, interest: InterestScript = {}): unknown {
-  return {
+  return asModelOutput({
     level: interest.level ?? level,
     business: null,
     area: null,
@@ -97,7 +104,7 @@ function rawInterest(level: InterestLevel, interest: InterestScript = {}): unkno
     confirmedPains: interest.confirmedPains ?? [],
     priceAsked: interest.priceAsked ?? false,
     refused: interest.refused ?? false,
-  };
+  });
 }
 
 /** Элемент сценария для очередного вызова: следующий по счёту, последний повторяется; списка нет => undefined. */

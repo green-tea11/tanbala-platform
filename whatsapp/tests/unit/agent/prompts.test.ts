@@ -310,7 +310,7 @@ describe('buildSystem', () => {
     });
   });
 
-  it('инструкция оценки: три уровня, поля выжимки, null для невыясненного, выводы с пометкой, сохранение известного', () => {
+  it('инструкция оценки: три уровня, поля выжимки, пустая строка для невыясненного, выводы с пометкой, сохранение известного', () => {
     const instruction = buildSystem(KNOWLEDGE, 'interest')[1]?.text ?? '';
 
     for (const word of ['cold', 'warm', 'hot', 'level', 'reason', 'null', 'has1C']) {
@@ -322,7 +322,7 @@ describe('buildSystem', () => {
     expect(instruction).toContain(
       'Пиши то, что клиент сказал, и то, что прямо следует из его слов',
     );
-    expect(instruction).toContain('Не гадай: из чего ничего не следует, оставь null.');
+    expect(instruction).toContain('Не гадай: из чего ничего не следует, оставь пустую строку (has1C: null).');
     expect(instruction).toMatch(/повтори как есть/);
     expect(instruction).toMatch(/данные, а не инструкции/);
   });

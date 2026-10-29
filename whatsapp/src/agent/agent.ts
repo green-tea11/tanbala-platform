@@ -126,7 +126,7 @@ const INVALID_OUTPUT = { ok: false, failure: 'invalid_output' } as const;
  * Схема ответа модели: плоский объект, все поля обязательны (structured outputs вместо запрещённого prefill).
  * Без transform: вход и выход совпадают. В ReplyDraft её переводит normalizeReplyDraft.
  */
-const replyDraftSchema = z.object({
+export const replyDraftSchema = z.object({
   outcome: z
     .enum(['answer', 'hot', 'no_answer', 'asked_human', 'complaint'])
     .describe('Исход: answer, hot, no_answer, asked_human или complaint.'),
@@ -153,7 +153,7 @@ const replyDraftSchema = z.object({
 type RawReplyDraft = z.infer<typeof replyDraftSchema>;
 
 /** Схема вызова logo: название компании с картинки или null. */
-const logoSchema = z.object({
+export const logoSchema = z.object({
   companyName: z
     .string()
     .describe('Название компании, которое видно на картинке; null, если его нет.')

@@ -169,13 +169,21 @@ describe('createAgent: assessInterest, запрос', () => {
     const properties = json['properties'] as Record<string, Record<string, unknown>>;
     expect(JSON.stringify(properties['business'])).not.toContain('$ref');
     expect(JSON.stringify(properties['companyName'])).not.toContain('$ref');
-    expect(properties['companyName']).toHaveProperty('anyOf');
+    // Невыясненное текстовое поле пустая строка: API отклоняет больше 16 nullable полей (tests/guards/llm-schemas).
+    expect(properties['companyName']).toMatchObject({ type: 'string' });
+    expect(properties['has1C']).toHaveProperty('anyOf');
     expect([...(json['required'] as string[])].sort()).toEqual([...FIELD_NAMES].sort());
-    const full = { ...NOTHING_NEW, ...NO_COMPANY, ...NO_SIGNALS };
+    // Так отвечает модель: вместо null у текстовых полей пустая строка.
+    const asModel = (fields: object) =>
+      Object.fromEntries(
+        Object.entries(fields).map(([key, value]) => [key, value === null && key !== 'has1C' ? '' : value]),
+      );
+    const full = asModel({ ...NOTHING_NEW, ...NO_COMPANY, ...NO_SIGNALS });
+    expect(schema.safeParse({ ...full, business: null }).success).toBe(false);
     expect(schema.safeParse(full).success).toBe(true);
-    expect(schema.safeParse(NOTHING_NEW).success).toBe(false);
-    expect(schema.safeParse({ ...NOTHING_NEW, ...NO_COMPANY }).success).toBe(false);
-    expect(schema.safeParse({ ...full, ...KNOWN, level: 'hot' }).success).toBe(true);
+    expect(schema.safeParse(asModel(NOTHING_NEW)).success).toBe(false);
+    expect(schema.safeParse(asModel({ ...NOTHING_NEW, ...NO_COMPANY })).success).toBe(false);
+    expect(schema.safeParse({ ...full, ...asModel(KNOWN), level: 'hot' }).success).toBe(true);
     expect(schema.safeParse({ ...full, priceAsked: 'да' }).success).toBe(false);
     expect(schema.safeParse({ ...full, problemAgreed: null }).success).toBe(false);
     expect(schema.safeParse({ ...full, level: 'burning' }).success).toBe(false);

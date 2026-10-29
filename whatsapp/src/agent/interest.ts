@@ -26,47 +26,43 @@ const NOTHING_KNOWN = 'В выжимке пока ничего нет: клие�
 
 /**
  * Схема ответа оценки интереса: плоский объект (уровень, поля ClientProfile, причина), все поля обязательны.
- * Невыясненное поле null. describe() стоит до nullable(): SDK пишет поле как anyOf [тип, null] без $defs и $ref
- * (после nullable() он вынес бы тип в $defs).
+ * Невыясненное текстовое поле: пустая строка, не null: API отклоняет схему, где больше 16 полей с union-типами
+ * (nullable), а cleaned и companyField пустую строку и так читают как null. Nullable только has1C; describe() стоит
+ * до nullable(): SDK пишет поле как anyOf [тип, null] без $defs и $ref.
  * Без transform: вход и выход совпадают. В InterestAssessment её переводит normalizeInterest.
  */
 export const interestSchema = z.object({
   level: z.enum(['cold', 'warm', 'hot']).describe('Уровень интереса клиента: cold, warm или hot.'),
-  business: z.string().describe('Чем занимается компания клиента; иначе null.').nullable(),
-  items: z.string().describe('Какие вещи клиент хочет учитывать; иначе null.').nullable(),
-  packaging: z.string().describe('В чём вещи: коробки, паллеты, поштучно; иначе null.').nullable(),
+  business: z.string().describe('Чем занимается компания клиента; иначе пустая строка.'),
+  items: z.string().describe('Какие вещи клиент хочет учитывать; иначе пустая строка.'),
+  packaging: z.string().describe('В чём вещи: коробки, паллеты, поштучно; иначе пустая строка.'),
   material: z
     .string()
-    .describe('Материал вещей (металл, жидкости и другое); иначе null.')
-    .nullable(),
-  city: z.string().describe('Город объекта; иначе null.').nullable(),
+    .describe('Материал вещей (металл, жидкости и другое); иначе пустая строка.'),
+  city: z.string().describe('Город объекта; иначе пустая строка.'),
   premises: z
     .string()
-    .describe('Тип помещения: склад, открытая площадка, магазин и другое; иначе null.')
-    .nullable(),
-  area: z.string().describe('Площадь; иначе null.').nullable(),
+    .describe('Тип помещения: склад, открытая площадка, магазин и другое; иначе пустая строка.'),
+  area: z.string().describe('Площадь; иначе пустая строка.'),
   scope: z
     .string()
-    .describe('Что отмечать: только ввоз и вывоз или где лежит каждая вещь; иначе null.')
-    .nullable(),
-  itemCount: z.string().describe('Примерное число вещей; иначе null.').nullable(),
-  turnover: z.string().describe('Как часто вещи приходят и уходят; иначе null.').nullable(),
-  currentTracking: z.string().describe('Как клиент ведёт учёт сейчас; иначе null.').nullable(),
+    .describe('Что отмечать: только ввоз и вывоз или где лежит каждая вещь; иначе пустая строка.'),
+  itemCount: z.string().describe('Примерное число вещей; иначе пустая строка.'),
+  turnover: z.string().describe('Как часто вещи приходят и уходят; иначе пустая строка.'),
+  currentTracking: z.string().describe('Как клиент ведёт учёт сейчас; иначе пустая строка.'),
   has1C: z
     .boolean()
     .describe('true или false, если клиент сказал, есть ли у него 1С; иначе null.')
     .nullable(),
   problem: z
     .string()
-    .describe('Что мешает в нынешнем учёте, какую проблему клиент хочет решить; иначе null.')
-    .nullable(),
-  specifics: z.string().describe('Особенности со слов клиента; null, если их нет.').nullable(),
+    .describe('Что мешает в нынешнем учёте, какую проблему клиент хочет решить; иначе пустая строка.'),
+  specifics: z.string().describe('Особенности со слов клиента; пустая строка, если их нет.'),
   reason: z.string().describe('Одна короткая фраза: почему выбран этот уровень.'),
   companyName: z
     .string()
-    .describe('Название компании клиента, если клиент сам его написал или сказал; иначе null.')
-    .nullable(),
-  companyCity: z.string().describe('Город компании клиента с его слов; иначе null.').nullable(),
+    .describe('Название компании клиента, если клиент сам его написал или сказал; иначе пустая строка.'),
+  companyCity: z.string().describe('Город компании клиента с его слов; иначе пустая строка.'),
   companyAnswer: z
     .enum(['yes', 'no', 'none'])
     .describe(
@@ -77,7 +73,7 @@ export const interestSchema = z.object({
     .describe(
       'Трудности, с которыми клиент согласился или о которых рассказал сам, коротко; до трёх; иначе пустой список.',
     ),
-  oneCName: z.string().describe('Какая 1С у клиента, если он её назвал; иначе null.').nullable(),
+  oneCName: z.string().describe('Какая 1С у клиента, если он её назвал; иначе пустая строка.'),
   problemAgreed: z
     .boolean()
     .describe(

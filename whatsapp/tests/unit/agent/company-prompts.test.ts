@@ -51,7 +51,7 @@ describe('инструкции: компания клиента', () => {
     expect(text).toMatch(
       /companyName: название компании клиента, только если клиент сам его написал/,
     );
-    expect(text).toMatch(/если он лишь ответил «да» на вопрос бота, null/);
+    expect(text).toMatch(/если он лишь ответил «да» на вопрос бота, пустая строка/);
     expect(text).toMatch(/Если вопроса не было, всегда none/);
     expect(text).toMatch(/confirmedPains: трудности.*до трёх/);
   });
