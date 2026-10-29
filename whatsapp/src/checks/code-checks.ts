@@ -30,11 +30,13 @@ import {
   MAX_SENTENCES,
   PHONE_COMPARE_DIGITS,
   PHONE_PATTERN,
+  PRICE_CONTEXT,
   PRICE_PATTERNS,
   PROMISE_STOP_PATTERNS,
   PROMO_STOP_PATTERNS,
   SENTENCE_END,
   STOP_PATTERNS,
+  THOUSAND_PRICE_PATTERNS,
   VOICE_PATTERNS,
 } from './rules.js';
 
@@ -156,9 +158,10 @@ function scan(
 
 /**
  * Граница части фразы: знак конца или «,» не после цифры и не перед ней. «1,5» не делится, а «от 2 000 000, оплата в
- * тенге» остаётся одной частью: сумма без валюты сверяется вместе с валютой.
+ * тенге» остаётся одной частью: сумма без валюты сверяется вместе с валютой. Точка сокращения «тыс.» не граница:
+ * «900 тыс. за склад» одна часть.
  */
-const CLAUSE_BOUNDARY = /(?<!\p{Nd})[.,](?!\p{Nd})|[!?;:\n]/gu;
+const CLAUSE_BOUNDARY = /(?<!\p{Nd})(?<!(?<!\p{L})тыс)[.,](?!\p{Nd})|[!?;:\n]/giu;
 
 /** Валюта, проценты и «экономия» в одном виде: «₸», «тг», «tenge» и «тенге» одно и то же. */
 const PRICE_UNITS: readonly (readonly [RegExp, string])[] = [
@@ -299,14 +302,36 @@ export function checkDashes(text: string): readonly CheckFinding[] {
  * указании «ориентир от 1 500 000 ₸» проходит, «от 1 млн» нет.
  */
 export function checkPrices(text: string, note: string | null = null): readonly CheckFinding[] {
-  if (note === null) return scan(text, PRICE_PATTERNS, 'price', 'цена');
+  if (note === null) {
+    return priceMatches(text).map((match) => findingOf(text, match, 'price', 'цена'));
+  }
   const lower = normalize(text);
   const fromNote = priceFromNote(lower, noteFacts(note));
-  return PRICE_PATTERNS.flatMap((pattern) =>
-    findAll(lower, pattern)
-      .filter((match) => !fromNote(match))
-      .map((match) => findingOf(lower, match, 'price', 'цена не как в указании коллеги')),
+  return priceMatches(lower)
+    .filter((match) => !fromNote(match))
+    .map((match) => findingOf(lower, match, 'price', 'цена не как в указании коллеги'));
+}
+
+/**
+ * Найденные цены: все PRICE_PATTERNS и тысячи (THOUSAND_PRICE_PATTERNS), если в их части фразы есть признак цены
+ * (PRICE_CONTEXT). «До 10 тысяч или больше?» не цена, «900 тыс за склад» цена.
+ */
+function priceMatches(text: string): RegExpExecArray[] {
+  const bounds = findAll(text, CLAUSE_BOUNDARY);
+  // Признак цены ищется один раз на часть фразы: длинный текст из одних тысяч проверяется быстро.
+  const priced = new Map<string, boolean>();
+  const inPricedClause = (match: RegExpExecArray): boolean => {
+    const clause = clauseAround(text, bounds, match);
+    const known = priced.get(clause.key);
+    if (known !== undefined) return known;
+    const verdict = PRICE_CONTEXT.test(clause.text);
+    priced.set(clause.key, verdict);
+    return verdict;
+  };
+  const thousands = THOUSAND_PRICE_PATTERNS.flatMap((pattern) => findAll(text, pattern)).filter(
+    inPricedClause,
   );
+  return [...PRICE_PATTERNS.flatMap((pattern) => findAll(text, pattern)), ...thousands];
 }
 
 /**

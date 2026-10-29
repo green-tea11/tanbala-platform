@@ -110,6 +110,8 @@ describe('устойчивость к долгим регуляркам: све�
     ['ориентир', 'ориентир '.repeat(1_100)],
     ['суммы', '1,5 млн тенге '.repeat(700)],
     ['за неделю', 'за 2 недели '.repeat(830)],
+    ['тысячи с точками', '5 тыс. '.repeat(1_430)],
+    ['тысячи в одной части', 'около 5 тысяч за склад '.repeat(430)],
   ])('%s: 10 000 знаков с заметкой проверяются быстро', (_name, input) => {
     const started = performance.now();
     runCodeChecks(normalizeDraft(input), { ownPhone: OWN_PHONE, clientText: '', note: NOTE });
