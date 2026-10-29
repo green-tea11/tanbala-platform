@@ -50,6 +50,8 @@ const MANAGER_PHONE = '77000000009';
 const MANAGER_JID = `${MANAGER_PHONE}@s.whatsapp.net` as Jid;
 /** Клиент из первой синхронизации: переписка была задолго до бота. */
 const OLD_JID = '77000000003@s.whatsapp.net' as Jid;
+/** Его же @lid: синхронизация сообщила оба адреса чата. */
+const OLD_LID = '100000000000003@lid' as Jid;
 /** Писал, пока бот был в закрытом режиме: бот его пропустил, но запомнил чат. */
 const QUIET_JID = '77000000004@s.whatsapp.net' as Jid;
 /** Бывший тестировщик: чат в базе есть, а номер из TEST_ALLOWLIST убрали. */
@@ -185,7 +187,9 @@ async function switchedRig(): Promise<Rig> {
   storage.appState.setLinkedAtMs(LINKED_MS);
   const closed: Pick<Rig, 'storage' | 'workingMode'> = { storage, workingMode: null };
   const closedRecorder = recorderOf(closed, logger);
-  closedRecorder.onHistoryChats([{ jid: OLD_JID, lastMessageAtMs: LINKED_MS - 40 * 24 * HOUR_MS }]);
+  closedRecorder.onHistoryChats([
+    { jid: OLD_JID, altJids: [OLD_LID], lastMessageAtMs: LINKED_MS - 40 * 24 * HOUR_MS },
+  ]);
   for (const [jid, waId] of [
     [TESTER_JID, 'T-0'],
     [FORMER_JID, 'F-0'],
@@ -430,6 +434,22 @@ describe('сценарии этапа 8: переход в рабочий реж
     expect(back.resumed).toBe(1);
     expect(back.toClient).toEqual([ASK]);
     expect(controlOf(rig, OLD_JID)).toEqual({ status: 'bot', by: 'panel' });
+  });
+
+  it('старый клиент пишет с @lid без номера (WhatsApp не сообщил номер): адрес из синхронизации, чат у менеджера', async () => {
+    const rig = await switchedRig();
+
+    const turn = await receive(rig, {
+      jid: OLD_LID,
+      waId: 'O-L',
+      text: 'Добрый день, это снова я',
+      tsMs: rig.nowMs,
+    });
+
+    expect(turn.event.type).toBe('client');
+    expect(turn.outcome).toEqual({ kind: 'silent', reason: 'manager_mode' });
+    expect(turn.toClient).toEqual([]);
+    expect(controlOf(rig, OLD_LID)).toEqual({ status: 'manager', by: 'phone' });
   });
 
   it('клиент, писавший в закрытом режиме: после возврата бот отвечает только на сообщение после перехода', async () => {

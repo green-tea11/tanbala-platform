@@ -83,6 +83,11 @@ export interface FetchedVersion {
 /** Чат из первой синхронизации (messaging-history.set) для known_chats: только адрес и время, без текста. */
 export interface HistoryChat {
   readonly jid: Jid;
+  /**
+   * Другие адреса того же чата из синхронизации (Chat.pnJid, Chat.lidJid), без jid и без повторов; нет ключа, если
+   * WhatsApp их не сообщил. Нужны этапу 8: человек, известный по номеру, может написать с @lid, и наоборот.
+   */
+  readonly altJids?: readonly Jid[];
   /** Время последнего сообщения, мс UTC; null, если WhatsApp его не сообщил (своё время не подставляется). */
   readonly lastMessageAtMs: number | null;
 }

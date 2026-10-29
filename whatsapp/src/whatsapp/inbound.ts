@@ -63,6 +63,12 @@ export type WaEvent =
       readonly reason: TracedIgnoreReason;
       /** JID чата после нормализации (как key.remoteJid после cleanMessage). */
       readonly chatJid: Jid;
+      /**
+       * Второй адрес того же человека (@lid для адреса с номером и наоборот), если известен: из remoteJidAlt
+       * (у своих сообщений не берётся: там может оказаться адрес бота) или из номера, определённого адаптером
+       * (chatPhone). Нет ключа: неизвестен. Тоже только для known_chats.
+       */
+      readonly altJid?: Jid;
       /** Время сообщения, мс UTC; если времени нет или оно испорчено, момент разбора (nowMs). */
       readonly tsMs: number;
     };
@@ -194,18 +200,23 @@ export function classifyUpsert(message: WAMessage, context: ClassifyContext): Wa
     return { type: 'ignore', reason: 'protocol' };
   }
   const tsMs = messageTimeMs(message, context);
+  const altJid = key.remoteJidAlt ? normalizeJid(key.remoteJidAlt) : null;
+  const fromMe = key.fromMe === true;
+  const otherAddress = otherAddressOf(chatJid, fromMe ? null : altJid, context.chatPhone);
+  // Номер чата с самим собой даёт адрес бота: в known_chats его не пишем.
+  const tracedAlt =
+    otherAddress !== null && matchesAny(context.selfJids, [otherAddress]) ? null : otherAddress;
   const traced = (reason: TracedIgnoreReason): WaEvent => ({
     type: 'ignore',
     reason,
     chatJid,
+    ...(tracedAlt === null ? {} : { altJid: tracedAlt }),
     tsMs: tsMs ?? context.nowMs,
   });
   if (!isAllowlisted(chatJid, context)) return traced('not_allowlisted');
   if (tsMs === null || tsMs < context.linkedAtMs || isBeforeWorkingMode(chatJid, tsMs, context)) {
     return traced('before_link');
   }
-  const altJid = key.remoteJidAlt ? normalizeJid(key.remoteJidAlt) : null;
-  const fromMe = key.fromMe === true;
   // У своего сообщения remoteJidAlt может оказаться адресом самого бота, а не собеседника.
   if (matchesAny(context.selfJids, fromMe ? [chatJid] : [chatJid, altJid])) {
     return { type: 'ignore', reason: 'self' };
@@ -315,6 +326,17 @@ function identityOf(chatJid: Jid, altJid: Jid | null, chatPhone: PhoneDigits | n
     lidJid: addresses.find((jid) => isLidUser(jid)) ?? null,
     pnJid: pnJid ?? (chatPhone === null ? null : phoneToJid(chatPhone)),
   };
+}
+
+/** Второй адрес чата по тем же правилам, что identityOf: @lid для адреса с номером, адрес с номером для @lid. */
+function otherAddressOf(
+  chatJid: Jid,
+  altJid: Jid | null,
+  chatPhone: PhoneDigits | null,
+): Jid | null {
+  const { lidJid, pnJid } = identityOf(chatJid, altJid, chatPhone);
+  const other = lidJid === chatJid ? pnJid : lidJid;
+  return other === chatJid ? null : other;
 }
 
 /** Текст (conversation или extendedTextMessage.text), голосовое (audioMessage с ptt) или 'other'. */

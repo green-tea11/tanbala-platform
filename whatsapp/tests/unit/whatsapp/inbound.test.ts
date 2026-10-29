@@ -1040,3 +1040,66 @@ describe('classifyUpsert: чистая функция', () => {
     expect(ctx).toEqual(context());
   });
 });
+
+describe('classifyUpsert: второй адрес пропуска для known_chats (этап 8)', () => {
+  const BEFORE_LINK = { messageTimestamp: BEFORE_LINK_SECONDS };
+
+  it('@lid с номером в remoteJidAlt: altJid с номером', () => {
+    const event = classify(BEFORE_LINK, { remoteJid: CLIENT_LID, remoteJidAlt: CLIENT_PN });
+
+    expect(event).toStrictEqual({
+      type: 'ignore',
+      reason: 'before_link',
+      chatJid: CLIENT_LID,
+      altJid: CLIENT_PN,
+      tsMs: BEFORE_LINK_SECONDS * 1000,
+    });
+  });
+
+  it('адрес с номером и @lid в remoteJidAlt (вне TEST_ALLOWLIST): altJid @lid', () => {
+    const event = classify(
+      {},
+      { remoteJid: STRANGER_PN, remoteJidAlt: '100000000000002@lid' },
+      { testAllowlist: new Set([CLIENT_PHONE]), chatPhone: STRANGER_PHONE },
+    );
+
+    expect(event).toMatchObject({
+      reason: 'not_allowlisted',
+      chatJid: STRANGER_PN,
+      altJid: '100000000000002@lid',
+    });
+  });
+
+  it('@lid без remoteJidAlt, номер определил адаптер: altJid из номера', () => {
+    const event = classify(BEFORE_LINK, { remoteJid: CLIENT_LID }, { chatPhone: CLIENT_PHONE });
+
+    expect(event).toMatchObject({ reason: 'before_link', chatJid: CLIENT_LID, altJid: CLIENT_PN });
+  });
+
+  it('своё сообщение: remoteJidAlt (может быть адресом бота) не берётся, номер только от адаптера', () => {
+    const own = classify(
+      BEFORE_LINK,
+      { remoteJid: CLIENT_LID, remoteJidAlt: SELF_PN, fromMe: true },
+      { chatPhone: CLIENT_PHONE },
+    );
+    const ownByPhone = classify(
+      BEFORE_LINK,
+      { remoteJid: CLIENT_PN, remoteJidAlt: SELF_LID, fromMe: true },
+      { chatPhone: CLIENT_PHONE },
+    );
+
+    expect(own).toMatchObject({ chatJid: CLIENT_LID, altJid: CLIENT_PN });
+    expect(ownByPhone).toStrictEqual({
+      type: 'ignore',
+      reason: 'before_link',
+      chatJid: CLIENT_PN,
+      tsMs: BEFORE_LINK_SECONDS * 1000,
+    });
+  });
+
+  it('@lid без remoteJidAlt и без номера: второго адреса нет', () => {
+    const event = classify(BEFORE_LINK, { remoteJid: CLIENT_LID }, { chatPhone: null });
+
+    expect(event).not.toHaveProperty('altJid');
+  });
+});

@@ -529,6 +529,28 @@ describe('pipeline/recorder: пропуски (ignore)', () => {
     },
   );
 
+  it('второй адрес пропуска (altJid) тоже в known_chats и в отметке переписки без бота', async () => {
+    const marked: (readonly Jid[])[] = [];
+    const { db, recorder } = setup(undefined, undefined, (jids) => {
+      marked.push(jids);
+      return true;
+    });
+
+    await recorder.onEvent({
+      type: 'ignore',
+      reason: 'before_link',
+      chatJid: STRANGER_LID,
+      altJid: STRANGER_PN,
+      tsMs: NOW,
+    });
+
+    expect(knownOf(db)).toEqual([
+      { jid: STRANGER_LID, atMs: NOW, source: 'message' },
+      { jid: STRANGER_PN, atMs: NOW, source: 'message' },
+    ]);
+    expect(marked).toEqual([[STRANGER_LID, STRANGER_PN]]);
+  });
+
   it('сбой отметки откатывает и known_chats: всё одной транзакцией', async () => {
     const { db, recorder } = setup(undefined, undefined, () => {
       throw new Error('база заблокирована');
@@ -593,6 +615,25 @@ describe('pipeline/recorder: чаты первой синхронизации (o
         message: 'Первая синхронизация: чатов записано в known_chats: 2',
       },
     ]);
+  });
+
+  it('другие адреса чата синхронизации (altJids) тоже в known_chats и в отметке; в лог число чатов', () => {
+    const marked: (readonly Jid[])[] = [];
+    const { db, recorder, entries } = setup(undefined, undefined, (jids) => {
+      marked.push(jids);
+      return false;
+    });
+
+    recorder.onHistoryChats([
+      { jid: STRANGER_PN, altJids: [STRANGER_LID], lastMessageAtMs: NOW - DAY_MS },
+    ]);
+
+    expect(knownOf(db)).toEqual([
+      { jid: STRANGER_LID, atMs: NOW - DAY_MS, source: 'history' },
+      { jid: STRANGER_PN, atMs: NOW - DAY_MS, source: 'history' },
+    ]);
+    expect(marked).toEqual([[STRANGER_PN, STRANGER_LID]]);
+    expect(entries.map((entry) => entry.context)).toEqual([{ count: 1 }]);
   });
 
   it('более поздняя активность из сообщения не затирается историей', async () => {

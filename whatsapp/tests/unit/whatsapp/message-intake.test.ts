@@ -165,6 +165,23 @@ describe('whatsapp/message-intake: чаты первой синхронизац�
     ]);
   });
 
+  it('номер и @lid чата из синхронизации (pnJid, lidJid) идут в altJids: без суффикса, без повтора адреса чата', async () => {
+    const { intake, onHistoryChats } = setup();
+    const chats: Chat[] = [
+      { id: CLIENT_LID, pnJid: '77000000002:2@s.whatsapp.net', lidJid: CLIENT_LID },
+      { id: CLIENT_PN, lidJid: CLIENT_LID, pnJid: null },
+      { id: OTHER_PN, lidJid: GROUP },
+    ];
+
+    await intake.history(chats);
+
+    expect(onHistoryChats).toHaveBeenCalledWith([
+      { jid: CLIENT_LID, altJids: [CLIENT_PN], lastMessageAtMs: null },
+      { jid: CLIENT_PN, altJids: [CLIENT_LID], lastMessageAtMs: null },
+      { jid: OTHER_PN, lastMessageAtMs: null },
+    ]);
+  });
+
   it('без личных чатов onHistoryChats не вызывается', async () => {
     const { intake, onHistoryChats } = setup();
 

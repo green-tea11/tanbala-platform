@@ -1,5 +1,5 @@
 import { toNumber, type Chat, type MessageUpsertType, type WAMessage } from 'baileys';
-import type { PhoneDigits } from '../domain/types.js';
+import type { Jid, PhoneDigits } from '../domain/types.js';
 import type { HistoryChat, WhatsAppDeps } from './connection-types.js';
 import type { ClassifyContext, WaEvent } from './inbound.js';
 import { jidOf, type LidResolver } from './lid-resolver.js';
@@ -190,7 +190,10 @@ async function reportHistory(
   try {
     const known = chats.flatMap((chat): HistoryChat[] => {
       const jid = jidOf(chat.id);
-      return jid === null ? [] : [{ jid, lastMessageAtMs: lastMessageMs(chat) }];
+      if (jid === null) return [];
+      const altJids = otherJidsOf(chat, jid);
+      const lastMessageAtMs = lastMessageMs(chat);
+      return [altJids.length > 0 ? { jid, altJids, lastMessageAtMs } : { jid, lastMessageAtMs }];
     });
     if (known.length > 0) await deps.onHistoryChats(known);
   } catch (error: unknown) {
@@ -201,6 +204,14 @@ async function reportHistory(
       deps.logger.error({ err: markError }, 'Не удалось отметить неполную синхронизацию истории');
     }
   }
+}
+
+/** Номер и @lid чата из синхронизации (личные адреса без суффикса устройства), кроме адреса самого чата. */
+function otherJidsOf(chat: Chat, jid: Jid): Jid[] {
+  const others = [jidOf(chat.pnJid), jidOf(chat.lidJid)].filter(
+    (other): other is Jid => other !== null && other !== jid,
+  );
+  return [...new Set(others)];
 }
 
 /** Время последнего сообщения чата из синхронизации (секунды Baileys => мс); нет времени => null. */

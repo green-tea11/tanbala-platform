@@ -185,9 +185,12 @@ function recordInbound(
   return saved;
 }
 
-/** Пропуск с адресом: known_chats; before_link ещё и отметка переписки без бота (рабочий режим), одной транзакцией. */
+/**
+ * Пропуск с адресом: оба известных адреса в known_chats; before_link ещё и отметка переписки без бота (рабочий
+ * режим), одной транзакцией.
+ */
 function recordTraced(deps: InboundRecorderDeps, event: TracedIgnoreEvent): void {
-  const jids = [event.chatJid];
+  const jids = event.altJid === undefined ? [event.chatJid] : [event.chatJid, event.altJid];
   deps.unitOfWork.run(() => {
     for (const jid of jids) deps.knownChats.touch(jid, event.tsMs, 'message');
     if (event.reason === 'before_link') deps.holdUnseen(jids);
@@ -243,10 +246,12 @@ function recordHistory(deps: InboundRecorderDeps, chats: readonly HistoryChat[])
   if (chats.length === 0) return;
   const nowMs = deps.clock.now();
   const moved = deps.unitOfWork.run((): number => {
-    for (const chat of chats) {
-      deps.knownChats.touch(chat.jid, chat.lastMessageAtMs ?? nowMs, 'history');
-    }
-    const jids = chats.map((chat) => chat.jid);
+    const jids = chats.flatMap((chat) => {
+      const addresses = [chat.jid, ...(chat.altJids ?? [])];
+      for (const jid of addresses)
+        deps.knownChats.touch(jid, chat.lastMessageAtMs ?? nowMs, 'history');
+      return addresses;
+    });
     return deps.holdUnseen(jids) ? moveBotChats(deps, jids, nowMs) : 0;
   });
   deps.logger.info(
