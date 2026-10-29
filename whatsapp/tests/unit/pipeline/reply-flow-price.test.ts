@@ -373,3 +373,26 @@ describe('pipeline/reply-flow: указание коллеги в проверк
     expect(r.draftReply.mock.calls[1]?.[1]?.join(' ')).toMatch(/цена: /);
   });
 });
+
+describe('pipeline/reply-flow: ранняя передача при заметке с ориентиром', () => {
+  it('замечание повтору напоминает ответить ориентиром из указания коллеги', async () => {
+    const h = setup({ drafts: [hot(), answer()] });
+    const context: ConversationContext = {
+      ...h.context,
+      note: { text: 'Ориентир от 1 500 000 тенге', atMs: NOW },
+    };
+    const drafted = await requestDraft(h.deps, context);
+
+    await decideReply(h.deps, context, drafted);
+
+    expect(h.draftReply.mock.calls[1]?.[1]?.[0]).toMatch(
+      /Если в указании коллеги есть ориентир цены, ответь им ровно как там написано/,
+    );
+  });
+
+  it('без заметки этой строки в замечании нет', async () => {
+    const r = await run({ drafts: [hot(), answer()] });
+
+    expect(r.draftReply.mock.calls[1]?.[1]?.[0]).not.toMatch(/указании коллеги/);
+  });
+});

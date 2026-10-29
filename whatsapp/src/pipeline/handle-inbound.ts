@@ -370,7 +370,10 @@ function regenerate(
   turn: Turn,
 ): Promise<PipelineOutcome> | null {
   if (turn.regenerated) return null;
-  const newer = batch.takeNewer();
+  // Возврат чата боту мог отдать в очередь сообщение, которое уже в этой пачке: второй раз его не брать.
+  const newer = batch
+    .takeNewer()
+    .filter((message) => !turn.messages.some((known) => known.waId === message.waId));
   if (newer.length === 0) return null;
   const messages = [...turn.messages, ...newer];
   return processTurn(deps, batch, { ...turn, messages, regenerated: true });

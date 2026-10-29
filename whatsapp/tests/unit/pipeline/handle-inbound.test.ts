@@ -913,3 +913,23 @@ describe('pipeline/handle-inbound: заметка для бота', () => {
     expect(h.reviewContexts[0]?.note).toEqual(note);
   });
 });
+
+describe('pipeline/handle-inbound: перегенерация не берёт тот же waId дважды', () => {
+  it('во время ответа возврат боту отдал то же сообщение: перегенерации нет, один черновик', async () => {
+    const h = setup();
+
+    const outcome = await run(h, batchOf([text('A1')], [[text('A1')]]));
+
+    expect(outcome).toEqual({ kind: 'replied' });
+    expect(h.calls).toEqual(['read:A1', ...REPLY_STEPS('A1')]);
+  });
+
+  it('в новых есть и то же, и новое сообщение: перегенерация только с новым', async () => {
+    const h = setup({ drafts: [answer('Первый черновик'), answer()] });
+
+    await run(h, batchOf([text('A1')], [[text('A1'), text('A2')]]));
+
+    expect(h.calls).toContain('read:A2');
+    expect(h.outbox.sendBotReply).toHaveBeenCalledTimes(1);
+  });
+});

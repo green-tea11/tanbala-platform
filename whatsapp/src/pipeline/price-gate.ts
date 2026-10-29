@@ -31,6 +31,8 @@ export interface PriceSituation {
   /** Этот ход: спрашивает ли клиент цену и отказывается ли отвечать (записывается после отправленного ответа). */
   readonly signals: TurnSignals;
   readonly company: CompanyPrompt | undefined;
+  /** Есть заметка для бота (указание коллеги): в ней может быть ориентир цены. */
+  readonly hasNote: boolean;
 }
 
 /** Фиксированный ответ вместо ранней передачи: вопрос о первом недостающем поле минимума. */
@@ -68,6 +70,7 @@ export function priceSituation(
     refused: progress.refused || refusedNow,
     signals: { priceAsked, refused: refusedNow },
     company: context.company,
+    hasNote: context.note != null,
   };
 }
 
@@ -99,11 +102,17 @@ function firstMissing(situation: PriceSituation): MinimumField {
   return situation.minimum.missing[0] ?? 'itemCount';
 }
 
-/** Замечание повтору черновика: передавать рано, чего не хватает и какой один вопрос задать. */
+/**
+ * Замечание повтору черновика: передавать рано, чего не хватает и какой один вопрос задать; при заметке для бота
+ * напоминание ответить ориентиром из неё, если он там есть.
+ */
 export function minimumRemark(situation: PriceSituation): string {
   const missing = situation.minimum.missing.map((field) => MINIMUM_LABELS[field]).join(', ');
   const question = minimumQuestion(firstMissing(situation), situation.company);
-  return `Передавать чат рано: для передачи по цене не хватает: ${missing}. Верни answer: ответь на то, что есть в документах, напиши, что цена сильно зависит от объёма, и задай один вопрос: ${question}. Объясни зачем: чтобы коллега сразу назвал ориентир. О передаче чата не пиши.`;
+  const note = situation.hasNote
+    ? ' Если в указании коллеги есть ориентир цены, ответь им ровно как там написано, вместо вопроса.'
+    : '';
+  return `Передавать чат рано: для передачи по цене не хватает: ${missing}. Верни answer: ответь на то, что есть в документах, напиши, что цена сильно зависит от объёма, и задай один вопрос: ${question}. Объясни зачем: чтобы коллега сразу назвал ориентир. О передаче чата не пиши.${note}`;
 }
 
 /** Фиксированный вопрос о первом недостающем поле; вопрос о компании отмечается как вопрос о названии. */
