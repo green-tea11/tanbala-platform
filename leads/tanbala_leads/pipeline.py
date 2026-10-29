@@ -192,9 +192,11 @@ def default_deps(settings: Settings, limits: browsers.BrowserLimits | None = Non
     client = llm.make_client(settings)
     secret = settings.require("reacher_secret")
     parser_timeout = RESEARCH_PARSER_TIMEOUT_SECONDS if urgent else collect.PARSER_TIMEOUT_SECONDS
+    headless = collect.parse_headless(settings.parser_2gis_headless)
     return Deps(
         run_parser=limits.gis.guard(lambda url, out, n: collect.run_parser(url, out, n, settings.parser_2gis_bin,
-                                                                           timeout_seconds=parser_timeout),
+                                                                           timeout_seconds=parser_timeout,
+                                                                           headless=headless),
                                     urgent=urgent),
         crawl=limits.sites.guard(lambda url: asyncio.run(crawl_site(url)), urgent=urgent),
         check_email=lambda email: verify.check_email(email, base_url=settings.reacher_url, secret=secret),

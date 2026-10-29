@@ -41,6 +41,7 @@ from tanbala_leads import __version__, browsers, contact_policy, db, pipeline
 from tanbala_leads.internal import brief, research
 from tanbala_leads.settings import load_settings
 from tanbala_leads.steps import approve as approve_step
+from tanbala_leads.steps import collect
 from tanbala_leads.steps import send as send_step
 from tanbala_leads.web import internal
 from tanbala_leads.web import queries as q
@@ -594,8 +595,10 @@ def serve(host: str = BIND_HOST, port: int = 8000) -> None:
     # Браузеры общие для поиска и проверок из WhatsApp: не больше MAX_2GIS_BROWSERS и MAX_SITE_BROWSERS сразу
     # (по умолчанию по одному, VPS 4 ГБ). Неверная настройка останавливает запуск до миграций.
     limits = browsers.limits_from_settings(settings)
-    # Имя интерфейса за Caddy (PUBLIC_UI_HOST); неверное значение тоже останавливает запуск до миграций.
+    # Имя интерфейса за Caddy (PUBLIC_UI_HOST) и режим Chrome для 2ГИС (PARSER_2GIS_HEADLESS): неверное значение
+    # тоже останавливает запуск до миграций, а не первый поиск.
     public_host = parse_public_host(settings.public_ui_host)
+    collect.parse_headless(settings.parser_2gis_headless)
     try:
         test_address = send_step.test_recipient(settings)
     except send_step.SendBlocked:

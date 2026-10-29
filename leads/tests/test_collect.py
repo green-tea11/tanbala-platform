@@ -32,6 +32,57 @@ def test_parser_env_hides_secrets_and_keeps_temp_in_project(tmp_path, monkeypatc
     assert env["TEMP"] == env["TMP"] == str(tmp_path)
 
 
+def test_parser_env_has_what_chrome_needs_on_linux(tmp_path, monkeypatch):
+    """На сервере Chrome нужны домашняя папка, язык и TMPDIR; DISPLAY — только если Chrome всё же с окном (Xvfb)."""
+    for key, value in {"HOME": "/opt/tanbala/leads", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "DISPLAY": ":99"}.items():
+        monkeypatch.setenv(key, value)
+
+    env = collect.parser_env(tmp_path)
+
+    assert (env["HOME"], env["LANG"], env["LC_ALL"], env["DISPLAY"]) == ("/opt/tanbala/leads", "C.UTF-8", "C.UTF-8",
+                                                                         ":99")
+    assert env["TMPDIR"] == str(tmp_path)
+
+
+@pytest.mark.parametrize(("headless", "tail"), [(True, ["--chrome.headless", "yes"]), (False, ["5"])])
+def test_parser_runs_chrome_without_window_only_when_asked(tmp_path, monkeypatch, headless, tail):
+    commands = []
+    output = tmp_path / "out.json"
+
+    class DoneProcess:
+        pid = 4242
+        returncode = 0
+
+        def communicate(self, timeout=None):
+            output.write_text("[]", encoding="utf-8")
+            return "", ""
+
+    def popen(command, **kwargs):
+        commands.append(command)
+        return DoneProcess()
+
+    binary = tmp_path / "parser-2gis"
+    binary.write_text("")
+    monkeypatch.setattr(collect.subprocess, "Popen", popen)
+
+    collect.run_parser("https://2gis.kz/almaty/search/x", output, 5, str(binary), headless=headless)
+
+    assert commands[0][-len(tail):] == tail
+    assert ("--chrome.headless" in commands[0]) is headless
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("", False), ("false", False), ("No", False), ("0", False),
+                                               ("true", True), ("YES", True), ("1", True), (" true ", True)])
+def test_headless_setting(raw, expected):
+    assert collect.parse_headless(raw) is expected
+
+
+@pytest.mark.parametrize("raw", ["да", "on", "2", "truee", "y"])
+def test_bad_headless_setting_names_variable(raw):
+    with pytest.raises(ValueError, match="PARSER_2GIS_HEADLESS"):
+        collect.parse_headless(raw)
+
+
 def test_area_entries_are_skipped():
     assert len(cards()) == 4
 

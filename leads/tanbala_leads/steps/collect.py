@@ -19,11 +19,15 @@ PARSER_TIMEOUT_SECONDS = 20 * 60
 KILL_WAIT_SECONDS = 30  # сколько ждать, пока убитый parser-2gis завершится
 IS_WINDOWS = os.name == "nt"
 # parser-2gis живёт в отдельном окружении со старыми зависимостями: ключа API и паролей он не видит.
+# Последняя строка для Linux: Chrome на сервере нужны домашняя папка и язык, DISPLAY — только если он с окном (Xvfb).
 PASSED_ENV_KEYS = (
     "SYSTEMROOT", "WINDIR", "PATH", "PATHEXT", "COMSPEC", "NUMBER_OF_PROCESSORS",
     "PROCESSOR_ARCHITECTURE", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432",
     "LOCALAPPDATA", "APPDATA", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "USERNAME",
+    "HOME", "LANG", "LC_ALL", "DISPLAY",
 )
+# PARSER_2GIS_HEADLESS: Chrome для 2ГИС без окна. Пусто: с окном, как на ПК.
+HEADLESS_VALUES = {"": False, "false": False, "no": False, "0": False, "true": True, "yes": True, "1": True}
 
 CITIES: dict[str, str] = {
     "almaty": "Алматы",
@@ -54,14 +58,25 @@ def build_search_url(city: str, query: str) -> str:
 def parser_env(tmp_dir: Path) -> dict[str, str]:
     """Окружение для parser-2gis: только системные переменные, временные файлы Chrome в папке проекта."""
     env = {key: os.environ[key] for key in PASSED_ENV_KEYS if key in os.environ}
-    env["TEMP"] = env["TMP"] = str(tmp_dir)
+    env["TEMP"] = env["TMP"] = env["TMPDIR"] = str(tmp_dir)  # TEMP и TMP читает Windows, TMPDIR — Linux
     env["PYTHONUTF8"] = "1"
     return env
 
 
+def parse_headless(value: str) -> bool:
+    """Значение PARSER_2GIS_HEADLESS: true, yes, 1 или false, no, 0 (регистр не важен), пусто — false."""
+    key = value.strip().lower()
+    if key not in HEADLESS_VALUES:
+        raise ValueError("PARSER_2GIS_HEADLESS должен быть true или false (пусто — false)")
+    return HEADLESS_VALUES[key]
+
+
 def run_parser(search_url: str, output_path: Path, max_records: int, parser_bin: str, *,
-               timeout_seconds: int = PARSER_TIMEOUT_SECONDS) -> Path:
-    """Выгрузить одну ссылку 2ГИС в JSON через CLI parser-2gis. Не уложился в timeout_seconds: ParserError."""
+               timeout_seconds: int = PARSER_TIMEOUT_SECONDS, headless: bool = False) -> Path:
+    """Выгрузить одну ссылку 2ГИС в JSON через CLI parser-2gis. Не уложился в timeout_seconds: ParserError.
+
+    headless: Chrome без окна (сервер без экрана, PARSER_2GIS_HEADLESS).
+    """
     if max_records < 1:
         raise ValueError("max_records должен быть больше нуля")
     binary = Path(parser_bin)
@@ -75,6 +90,7 @@ def run_parser(search_url: str, output_path: Path, max_records: int, parser_bin:
     command = [
         str(binary), "-i", search_url, "-o", str(output_path), "-f", "json",
         "--parser.max-records", str(max_records),
+        *(["--chrome.headless", "yes"] if headless else []),
     ]
     process = subprocess.Popen(
         command, env=parser_env(tmp_dir), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,

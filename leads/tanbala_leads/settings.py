@@ -13,6 +13,7 @@ ENV_NAMES: dict[str, str] = {
     "reacher_url": "REACHER_URL",
     "reacher_secret": "REACHER_SECRET",
     "parser_2gis_bin": "PARSER_2GIS_BIN",
+    "parser_2gis_headless": "PARSER_2GIS_HEADLESS",
     "llm_log_path": "LLM_LOG_PATH",
     "agent_name": "AGENT_NAME",
     "agent_whatsapp": "AGENT_WHATSAPP",
@@ -53,6 +54,7 @@ class Settings:
     reacher_url: str = ""
     reacher_secret: str = field(default="", repr=False)
     parser_2gis_bin: str = ""
+    parser_2gis_headless: str = ""
     llm_log_path: str = ""
     agent_name: str = ""
     agent_whatsapp: str = ""

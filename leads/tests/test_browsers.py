@@ -180,10 +180,12 @@ def test_real_deps_take_shared_browser_places(monkeypatch):
     """default_deps поиска и проверки из WhatsApp занимают одни и те же места; проверка идёт вне очереди."""
     limits = browsers.BrowserLimits(gis=browsers.Slots(1), sites=browsers.Slots(1))
     seen: list[tuple[str, int, int, int]] = []
+    modes: list[bool] = []
     gate = threading.Event()
 
-    def fake_parser(url, out, n, parser_bin, *, timeout_seconds):
+    def fake_parser(url, out, n, parser_bin, *, timeout_seconds, headless):
         seen.append((url, limits.gis.busy, limits.sites.busy, timeout_seconds))
+        modes.append(headless)
         if url == "first":
             gate.wait(WAIT_SECONDS)
         return out
@@ -194,7 +196,8 @@ def test_real_deps_take_shared_browser_places(monkeypatch):
 
     monkeypatch.setattr(collect, "run_parser", fake_parser)
     monkeypatch.setattr(sites, "crawl_site", fake_crawl_site)
-    settings = load_settings({"VENMART_ANTHROPIC_KEY": "sk-ant-test", "REACHER_SECRET": "test"})
+    settings = load_settings({"VENMART_ANTHROPIC_KEY": "sk-ant-test", "REACHER_SECRET": "test",
+                              "PARSER_2GIS_HEADLESS": "true"})
     search = pipeline.default_deps(settings, limits)
     whatsapp = pipeline.default_deps(settings, limits, urgent=True)
 
@@ -216,6 +219,7 @@ def test_real_deps_take_shared_browser_places(monkeypatch):
     full, short = collect.PARSER_TIMEOUT_SECONDS, pipeline.RESEARCH_PARSER_TIMEOUT_SECONDS
     assert seen == [("https://pel.kz", 0, 1, 0), ("first", 1, 0, full), ("whatsapp", 1, 0, short),
                     ("next", 1, 0, full)]
+    assert modes == [True, True, True]  # PARSER_2GIS_HEADLESS и у поиска, и у проверки из WhatsApp
 
 
 # ---------- проводка в сервере ----------
@@ -252,6 +256,15 @@ def test_serve_gives_search_and_whatsapp_the_same_browsers(monkeypatch):
     assert isinstance(research_limits, browsers.BrowserLimits) and urgent is True
     assert calls["run"] is research_limits
     assert calls["uvicorn"]["host"] == "127.0.0.1"
+
+
+def test_serve_stops_on_bad_headless_setting_before_database(monkeypatch):
+    monkeypatch.setattr(web, "load_settings", lambda: load_settings({"DATABASE_URL": "postgresql://test",
+                                                                     "PARSER_2GIS_HEADLESS": "да"}))
+    monkeypatch.setattr(web.db, "connect", lambda dsn: pytest.fail("до базы дойти не должно"))
+
+    with pytest.raises(ValueError, match="PARSER_2GIS_HEADLESS"):
+        web.serve()
 
 
 def test_serve_stops_on_bad_browser_limit_before_database(monkeypatch):
