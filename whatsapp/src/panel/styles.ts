@@ -202,6 +202,15 @@ th {
   font-size: 0.8rem;
 }
 
+.rejected summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.rejected-list > li {
+  margin: 8px 0;
+}
+
 .msg .text,
 .note {
   margin: 0;

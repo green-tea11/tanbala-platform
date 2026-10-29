@@ -12,6 +12,7 @@ import type {
   Logger,
   ManagerNotificationsRepo,
   MessagesRepo,
+  RejectedDraftsRepo,
 } from '../domain/ports.js';
 import type { ChatId } from '../domain/types.js';
 import type { HandoffService } from '../handoff/handoff.js';
@@ -34,6 +35,8 @@ export interface PanelDeps {
   handoffs: HandoffsRepo;
   /** Уведомления менеджеру: список со статусами и последнее по чату. */
   notifications: ManagerNotificationsRepo;
+  /** Отклонённые черновики и замечания проверок для карточки чата (пункт 7 задания 29.10.2026). */
+  rejectedDrafts: Pick<RejectedDraftsRepo, 'listForChat'>;
   outbox: Outbox;
   handoff: HandoffService;
   /** Сводка о компании клиента для раздела «Компания» карточки чата. */

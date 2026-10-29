@@ -13,6 +13,7 @@ import { createKnownChatsRepo } from '../../../src/db/repos/known-chats.js';
 import { createManagerNotificationsRepo } from '../../../src/db/repos/manager-notifications.js';
 import { createMessagesRepo } from '../../../src/db/repos/messages.js';
 import { createOutboundIdsRepo } from '../../../src/db/repos/outbound-ids.js';
+import { createRejectedDraftsRepo } from '../../../src/db/repos/rejected-drafts.js';
 import { createWorkingModeRepo } from '../../../src/db/repos/working-mode.js';
 import type { CompanyService, CompanySummary, CompanyTurn } from '../../../src/domain/company.js';
 import type { Logger } from '../../../src/domain/ports.js';
@@ -114,6 +115,7 @@ function storageOf(config: AppConfig) {
     notifications: createManagerNotificationsRepo(db),
     knownChats: createKnownChatsRepo(db),
     unitOfWork: createUnitOfWork(db),
+    rejectedDrafts: createRejectedDraftsRepo(db),
   };
 }
 

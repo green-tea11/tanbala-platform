@@ -9,7 +9,9 @@ import type {
   ManagerNotification,
   MessageKind,
   OpenHandoff,
+  RejectionSource,
   StoredMessage,
+  StoredRejectedDraft,
 } from '../domain/types.js';
 import {
   AUTHOR_LABELS,
@@ -41,6 +43,8 @@ export interface ChatPageModel {
   readonly company: CompanySummary | null;
   /** Заметка для бота (указание коллеги), оставленная при возврате; нет => null. */
   readonly note: BotNote | null;
+  /** Отклонённые черновики и замечания проверок, свежие первыми. */
+  readonly rejected: readonly StoredRejectedDraft[];
   readonly csrf: string;
   readonly notice: NoticeKey | null;
   /** Причина отказа действия над формой ответа; null, если ошибки нет. */
@@ -109,6 +113,38 @@ function renderNote(note: BotNote | null): SafeHtml {
   if (note === null) return markup`нет`;
   return markup`${timeTag(note.atMs)}
 <pre class="note">${cleanText(note.text)}</pre>`;
+}
+
+const SOURCE_LABELS: Readonly<Record<RejectionSource, string>> = {
+  code: 'проверка кодом',
+  review: 'проверка вторым вызовом',
+};
+
+const NO_REMARKS = 'причина не названа';
+
+function renderRejected(item: StoredRejectedDraft): SafeHtml {
+  const remarks = item.remarks.map((remark) => cleanText(remark).trim()).filter((r) => r !== '');
+  return markup`<li>
+<div class="meta">${timeTag(item.atMs)}, попытка ${item.attempt}, ${SOURCE_LABELS[item.source]}</div>
+<pre class="note">${cleanText(item.draft)}</pre>
+${remarks.length === 0 ? markup`<p class="muted">${NO_REMARKS}</p>` : markup`<ul>${remarks.map((remark) => markup`<li>${remark}</li>`)}</ul>`}
+</li>`;
+}
+
+/**
+ * Отклонённые черновики (пункт 7 задания 29.10.2026): свёрнутый блок, свежие первыми, черновик и замечания каждой
+ * не пройденной проверки. Тексты модели и проверки экранирует markup``, скрытые символы убирает cleanText.
+ */
+function renderRejectedSection(items: readonly StoredRejectedDraft[]): SafeHtml {
+  if (items.length === 0) {
+    return markup`<section class="rejected"><p class="muted">Отклонённые черновики: нет</p></section>`;
+  }
+  return markup`<section class="rejected" aria-label="Отклонённые черновики">
+<details>
+<summary>Отклонённые черновики: ${items.length}</summary>
+<ol class="rejected-list">${items.map(renderRejected)}</ol>
+</details>
+</section>`;
 }
 
 function renderCard(model: ChatPageModel): SafeHtml {
@@ -211,6 +247,7 @@ ${notice === null ? null : markup`<p class="notice" role="status">${NOTICE_TEXTS
 ${error === null ? null : markup`<p class="alert" role="alert">${error}</p>`}
 ${renderCard(model)}
 ${renderCompanySection(model.company)}
+${renderRejectedSection(model.rejected)}
 ${renderHistory(model)}
 ${renderReplyForm(model)}
 ${renderReturnForm(model)}`,

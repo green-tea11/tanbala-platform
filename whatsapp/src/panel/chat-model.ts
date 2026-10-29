@@ -4,6 +4,9 @@ import type { PanelContext } from './context.js';
 import { HISTORY_PAGE_SIZE, type NoticeKey } from './params.js';
 import type { ChatPageModel } from './view-chat.js';
 
+/** Сколько последних отклонённых черновиков показывает карточка чата. */
+export const REJECTED_DRAFTS_SHOWN = 20;
+
 /** Что страница чата получает кроме данных из базы: токен, пометка после действия, ошибка и набранный текст. */
 export interface ChatPageExtras {
   readonly csrf: string;
@@ -42,6 +45,7 @@ export function loadChatPage(
     lastNotification: notifications.latestForChat(chat.id),
     company: companyOf(context, chat.id),
     note: context.deps.chats.getNote(chat.id),
+    rejected: context.deps.rejectedDrafts.listForChat(chat.id, REJECTED_DRAFTS_SHOWN),
     csrf: extras.csrf,
     notice: extras.notice,
     error: extras.error,

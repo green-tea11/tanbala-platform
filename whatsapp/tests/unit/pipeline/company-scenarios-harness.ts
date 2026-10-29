@@ -12,6 +12,7 @@ import { createHandoffsRepo } from '../../../src/db/repos/handoffs.js';
 import { createManagerNotificationsRepo } from '../../../src/db/repos/manager-notifications.js';
 import { createMessagesRepo } from '../../../src/db/repos/messages.js';
 import { createOutboundIdsRepo } from '../../../src/db/repos/outbound-ids.js';
+import { createRejectedDraftsRepo } from '../../../src/db/repos/rejected-drafts.js';
 import type { ChatCompaniesRepo, ChatCompanyState } from '../../../src/domain/company.js';
 import type {
   BusinessProfileResult,
@@ -266,6 +267,7 @@ function storageOf(config: AppConfig, logger: Logger): Storage {
     handoffs: createHandoffsRepo(db),
     notifications: createManagerNotificationsRepo(db),
     unitOfWork: createUnitOfWork(db),
+    rejectedDrafts: createRejectedDraftsRepo(db),
     chatCompanies: createChatCompaniesRepo(db, logger),
   };
 }

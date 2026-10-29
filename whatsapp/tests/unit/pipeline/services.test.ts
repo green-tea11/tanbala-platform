@@ -7,6 +7,7 @@ import { createHandoffsRepo } from '../../../src/db/repos/handoffs.js';
 import { createManagerNotificationsRepo } from '../../../src/db/repos/manager-notifications.js';
 import { createMessagesRepo } from '../../../src/db/repos/messages.js';
 import { createOutboundIdsRepo } from '../../../src/db/repos/outbound-ids.js';
+import { createRejectedDraftsRepo } from '../../../src/db/repos/rejected-drafts.js';
 import type { CompanyId, CompanyService, CompanySummary } from '../../../src/domain/company.js';
 import type { Clock, Logger, MessageSender } from '../../../src/domain/ports.js';
 import type {
@@ -103,6 +104,7 @@ function setup(config: ServicesConfig = CONFIG): Harness {
     handoffs: createHandoffsRepo(db),
     notifications: createManagerNotificationsRepo(db),
     unitOfWork: createUnitOfWork(db),
+    rejectedDrafts: createRejectedDraftsRepo(db),
   };
   const logs: Harness['logs'] = [];
   const summary = vi.fn<CompanyService['summary']>(() => CONFIRMED_SUMMARY);

@@ -7,6 +7,7 @@ import type {
   Logger,
   ManagerNotificationsRepo,
   MessagesRepo,
+  RejectedDraftsRepo,
 } from '../domain/ports.js';
 import { buildPanel, startPanel, type PanelStartOptions } from '../panel/server.js';
 import type { ChatId } from '../domain/types.js';
@@ -27,6 +28,8 @@ export interface PanelStorage {
   readonly messages: MessagesRepo;
   readonly handoffs: HandoffsRepo;
   readonly notifications: ManagerNotificationsRepo;
+  /** Отклонённые черновики для карточки чата. */
+  readonly rejectedDrafts: Pick<RejectedDraftsRepo, 'listForChat'>;
 }
 
 /** Из чего собирается панель. */
@@ -75,6 +78,7 @@ export function assemblePanel(context: PanelSetupContext): Panel {
     messages: storage.messages,
     handoffs: storage.handoffs,
     notifications: storage.notifications,
+    rejectedDrafts: storage.rejectedDrafts,
     outbox: services.outbox,
     handoff: services.handoff,
     company: context.company,

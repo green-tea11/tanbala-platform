@@ -7,6 +7,7 @@ import type {
   HandoffsRepo,
   ManagerNotificationsRepo,
   MessagesRepo,
+  RejectedDraftsRepo,
 } from '../../../src/domain/ports.js';
 import type {
   BotNote,
@@ -18,6 +19,7 @@ import type {
   OpenHandoff,
   PanelChatRow,
   StoredMessage,
+  StoredRejectedDraft,
 } from '../../../src/domain/types.js';
 import type { HandoffService } from '../../../src/handoff/handoff.js';
 import type { Outbox } from '../../../src/messaging/outbox.js';
@@ -123,6 +125,8 @@ export interface PanelData {
   companies: Map<number, CompanySummary | Error>;
   /** Заметки для бота по ID чата (по умолчанию нет). */
   notes: Map<number, BotNote>;
+  /** Отклонённые черновики (по умолчанию нет); репозиторий отдаёт свежие первыми. */
+  rejectedDrafts: StoredRejectedDraft[];
 }
 
 export interface HarnessOptions {
@@ -164,6 +168,7 @@ export interface Harness {
   readonly outbox: { [K in keyof Outbox]: Mock<Outbox[K]> };
   readonly handoff: { [K in keyof HandoffService]: Mock<HandoffService[K]> };
   readonly company: { summary: Mock<CompanyService['summary']> };
+  readonly rejectedDrafts: { listForChat: Mock<RejectedDraftsRepo['listForChat']> };
   /** Ответ бота на неотвеченное после возврата: по умолчанию отвечать не на что (0). */
   readonly resume: Mock<NonNullable<PanelDeps['resume']>>;
   /** Действия над чатом в порядке вызова: handOff, sendFromPanel, returnToBot, resume. */
@@ -302,6 +307,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     lastMessageAt: new Map(),
     companies: new Map(),
     notes: new Map(),
+    rejectedDrafts: [],
     ...options.data,
   };
   const password = options.password ?? WEAK_PASSWORD;
@@ -341,6 +347,14 @@ export function createHarness(options: HarnessOptions = {}): Harness {
   const handoffs = createHandoffsRepo(data);
   const notifications = createNotificationsRepo(data);
   const resume = vi.fn<NonNullable<PanelDeps['resume']>>(() => 0);
+  const rejectedDrafts: Harness['rejectedDrafts'] = {
+    listForChat: vi.fn((chatId, limit) =>
+      data.rejectedDrafts
+        .filter((item) => item.chatId === chatId)
+        .toSorted((a, b) => b.atMs - a.atMs || b.id - a.id)
+        .slice(0, limit),
+    ),
+  };
   const deps: PanelDeps = {
     chats,
     messages,
@@ -350,6 +364,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     handoff,
     company,
     resume,
+    rejectedDrafts,
     clock,
     logger,
     password,
@@ -391,6 +406,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     handoff,
     company,
     resume,
+    rejectedDrafts,
     actions: () =>
       [
         ...orderedCalls('handOff', handoff.handOff),

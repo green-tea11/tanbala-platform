@@ -15,6 +15,7 @@ import { createManagerNotificationsRepo } from './db/repos/manager-notifications
 import { createMessagesRepo } from './db/repos/messages.js';
 import { createOutboundIdsRepo } from './db/repos/outbound-ids.js';
 import { createPairingGuard } from './db/repos/pairing-attempts.js';
+import { createRejectedDraftsRepo } from './db/repos/rejected-drafts.js';
 import { createWorkingModeRepo } from './db/repos/working-mode.js';
 import type { ChatCompaniesRepo } from './domain/company.js';
 import type {
@@ -31,6 +32,7 @@ import type {
   OutboundIdsRepo,
   PairingGuard,
   ProcessLock,
+  RejectedDraftsRepo,
   UnitOfWork,
 } from './domain/ports.js';
 import type { Jid, PhoneDigits, WaMessageId, WorkingMode } from './domain/types.js';
@@ -177,6 +179,8 @@ interface Storage {
   readonly notifications: ManagerNotificationsRepo;
   /** Определение компании клиента по чатам. */
   readonly chatCompanies: ChatCompaniesRepo;
+  /** Отклонённые черновики и замечания проверок для панели (срок 30 дней). */
+  readonly rejectedDrafts: RejectedDraftsRepo;
   /** Рабочий режим с границей перехода (этап 8); null: закрытый режим. Решается при открытии базы. */
   readonly workingMode: WorkingMode | null;
   isOpen(): boolean;
@@ -524,6 +528,7 @@ function assembleStorage(db: Database, config: AppConfig, logger: Logger, clock:
     handoffs: createHandoffsRepo(db),
     notifications: createManagerNotificationsRepo(db),
     chatCompanies: createChatCompaniesRepo(db, logger),
+    rejectedDrafts: createRejectedDraftsRepo(db),
     workingMode,
     isOpen: () => db.open,
     // close в better-sqlite3 сам ничего не делает с уже закрытой базой.

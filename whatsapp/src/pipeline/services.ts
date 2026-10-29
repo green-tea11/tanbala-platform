@@ -10,6 +10,7 @@ import type {
   MessageSender,
   MessagesRepo,
   OutboundIdsRepo,
+  RejectedDraftsRepo,
   UnitOfWork,
 } from '../domain/ports.js';
 import { createHandoffService, type HandoffService } from '../handoff/handoff.js';
@@ -22,6 +23,9 @@ import { createBacklogCollector } from './backlog.js';
 export const NOTIFY_RETRY_INTERVAL_MS = 5 * 60_000;
 
 const HOUR_MS = 60 * 60_000;
+
+/** Отклонённые черновики хранятся 30 дней (пункт 7 задания 29.10.2026). */
+export const REJECTED_DRAFTS_RETENTION_MS = 30 * 24 * HOUR_MS;
 
 /** Подключения ещё нет: сообщение не уходит, а уведомление менеджеру остаётся на повтор (статус failed). */
 const NOT_CONNECTED_TEXT = 'WhatsApp не подключён: сообщение не отправлено';
@@ -38,6 +42,8 @@ export interface ServicesStorage {
   readonly handoffs: HandoffsRepo;
   readonly notifications: ManagerNotificationsRepo;
   readonly unitOfWork: UnitOfWork;
+  /** Отклонённые черновики: чистка старше REJECTED_DRAFTS_RETENTION_MS при запуске и таймером повтора. */
+  readonly rejectedDrafts: Pick<RejectedDraftsRepo, 'deleteOlderThan'>;
 }
 
 /** Из чего собираются общие службы. */
@@ -126,7 +132,11 @@ export function assembleServices(context: ServicesContext): Services {
     logger,
     backlogMaxAgeMs: config.backlogMaxAgeHours * HOUR_MS,
   });
-  const retry = createRetryTimer(notifier, logger);
+  const prune = (): void => {
+    pruneRejectedDrafts(storage.rejectedDrafts, clock, logger);
+  };
+  prune();
+  const retry = createRetryTimer(notifier, logger, prune);
   let stopped = false;
   return {
     outbox,
@@ -189,15 +199,39 @@ function createLateOutbox(): LateOutbox {
   };
 }
 
+/**
+ * Удаляет отклонённые черновики старше 30 дней. Сбой не мешает работе: предупреждение только с именем ошибки и без
+ * текстов, следующая попытка с таймером повтора.
+ */
+function pruneRejectedDrafts(
+  repo: Pick<RejectedDraftsRepo, 'deleteOlderThan'>,
+  clock: Clock,
+  logger: Logger,
+): void {
+  try {
+    repo.deleteOlderThan(Math.max(clock.now() - REJECTED_DRAFTS_RETENTION_MS, 0));
+  } catch (error: unknown) {
+    logger.warn(
+      { errorName: error instanceof Error ? error.name : typeof error },
+      'Старые отклонённые черновики не удалены',
+    );
+  }
+}
+
+/**
+ * Таймер повтора уведомлений; тем же проходом (onTick) чистятся старые отклонённые черновики, отдельного таймера нет.
+ */
 function createRetryTimer(
   notifier: Pick<ManagerNotifier, 'retryFailed'>,
   logger: Logger,
+  onTick: () => void,
 ): RetryTimer {
   const passes = new Set<Promise<number>>();
   let timer: ReturnType<typeof setInterval> | null = null;
   let stopped = false;
   const run = async (): Promise<void> => {
     if (stopped) return;
+    onTick();
     // retryFailed не бросает; перехват здесь страхует остановку от неожиданного отказа.
     const pass = notifier.retryFailed().catch((error: unknown) => {
       logger.error({ err: error }, 'Повтор уведомлений менеджеру упал неожиданно');

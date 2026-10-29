@@ -25,9 +25,11 @@ import type {
   OpenHandoff,
   PanelChatRow,
   PhoneDigits,
+  RejectedDraft,
   SendOrigin,
   StatusChange,
   StoredMessage,
+  StoredRejectedDraft,
   TokenUsageEntry,
   TurnSignals,
   UnansweredInbound,
@@ -390,6 +392,18 @@ export interface OutboundIdsRepo {
   register(record: OutboundRecord): void;
   setResult(waId: WaMessageId, result: 'sent' | 'failed'): void;
   find(waId: WaMessageId): Pick<OutboundRecord, 'jid' | 'origin' | 'text'> | null;
+}
+
+/**
+ * Отклонённые черновики и замечания проверок для панели (пункт 7 задания 29.10.2026). Тексты только здесь: в общий лог
+ * идут лишь ID, коды и числа.
+ */
+export interface RejectedDraftsRepo {
+  add(entry: RejectedDraft): void;
+  /** Черновики чата, свежие первыми (при равном времени позже записанный), не больше limit. */
+  listForChat(chatId: ChatId, limit: number): readonly StoredRejectedDraft[];
+  /** Удаляет строки со временем раньше cutoffMs; возвращает их число. */
+  deleteOlderThan(cutoffMs: number): number;
 }
 
 /** Передачи чатов менеджеру. На чат не больше одной открытой передачи, поэтому адрес везде chatId. */

@@ -71,6 +71,7 @@ const TABLES = [
   'messages',
   'outbound_ids',
   'pairing_attempts',
+  'rejected_drafts',
 ];
 /** Последняя версия схемы на момент проверки: новые миграции версию только повышают. */
 const MIN_SCHEMA_VERSION = 6;

@@ -167,6 +167,27 @@ export interface BotNote {
   readonly atMs: number;
 }
 
+/** Какая проверка отклонила черновик: проверки кодом (checks/code-checks.ts) или второй вызов (agent/review.ts). */
+export type RejectionSource = 'code' | 'review';
+
+/**
+ * Отклонённый черновик ответа для панели (пункт 7 задания 29.10.2026): текст модели и замечания проверки, номер попытки
+ * и время. Хранится 30 дней, только в базе и в карточке чата за паролем панели; в общий лог не пишется.
+ */
+export interface RejectedDraft {
+  readonly chatId: ChatId;
+  readonly attempt: 1 | 2;
+  readonly source: RejectionSource;
+  readonly draft: string;
+  readonly remarks: readonly string[];
+  readonly atMs: number;
+}
+
+/** Отклонённый черновик из базы. */
+export interface StoredRejectedDraft extends RejectedDraft {
+  readonly id: number;
+}
+
 /**
  * Ход разговора о цене с последнего возврата чата боту (или с начала): сколько раз клиент спрашивал цену в ходах, на
  * которые бот ответил, и отказывался ли он отвечать на вопросы. Третий вопрос цены и отказ отвечать позволяют

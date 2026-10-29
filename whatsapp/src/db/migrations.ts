@@ -229,6 +229,27 @@ ALTER TABLE known_chats ADD COLUMN held_for_manager INTEGER NOT NULL DEFAULT 0
 `;
 
 /**
+ * Версия 10 (пункт 7 задания 29.10.2026). rejected_drafts: отклонённые черновики ответа и замечания проверок для панели.
+ * attempt: попытка 1 или 2; source: code (проверки кодом) или review (второй вызов); remarks: JSON-массив строк. Срок
+ * хранения 30 дней (pipeline/services.ts); индекс по времени для чистки, по чату и времени для карточки. Новая таблица:
+ * живая база версии 8 или 9 переходит без переписывания строк.
+ */
+const SCHEMA_V10 = `
+CREATE TABLE rejected_drafts (
+  id INTEGER PRIMARY KEY,
+  chat_id INTEGER NOT NULL REFERENCES chats (id) ON DELETE CASCADE,
+  attempt INTEGER NOT NULL CHECK (attempt IN (1, 2)),
+  source TEXT NOT NULL CHECK (source IN ('code', 'review')),
+  draft TEXT NOT NULL,
+  remarks TEXT NOT NULL,
+  at_ms INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX rejected_drafts_chat ON rejected_drafts (chat_id, at_ms);
+CREATE INDEX rejected_drafts_at ON rejected_drafts (at_ms);
+`;
+
+/**
  * Миграции по порядку: элемент i переводит схему с версии i на i + 1.
  * Выпущенную миграцию не править: изменения схемы только новой версией в конце списка.
  */
@@ -242,6 +263,7 @@ const MIGRATIONS: readonly string[] = [
   SCHEMA_V7,
   SCHEMA_V8,
   SCHEMA_V9,
+  SCHEMA_V10,
 ];
 
 /**

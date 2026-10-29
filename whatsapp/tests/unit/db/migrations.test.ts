@@ -51,17 +51,20 @@ const CURRENT_TABLES = [
   'messages',
   'outbound_ids',
   'pairing_attempts',
+  'rejected_drafts',
 ];
 
 /** Таблицы до определения компании клиента: схема версии 5. */
-const VERSION_5_TABLES = CURRENT_TABLES.filter((name) => name !== 'chat_companies');
+const VERSION_5_TABLES = CURRENT_TABLES.filter(
+  (name) => name !== 'chat_companies' && name !== 'rejected_drafts',
+);
 
 /**
  * Последняя версия схемы: этап 2 дал версию 1, этап 3 версию 2, этапы 4, 5 и 6 версии 3, 4 и 5, определение
  * компании клиента версию 6, минимум для передачи по цене версию 7, заметка для бота версию 8, отметка «у менеджера»
- * при переходе в рабочий режим (этап 8) версию 9.
+ * при переходе в рабочий режим (этап 8) версию 9, отклонённые черновики для панели версию 10.
  */
-const CURRENT_VERSION = 9;
+const CURRENT_VERSION = 10;
 
 function columnNames(db: Database.Database, table: string): unknown[] {
   return db.prepare('SELECT name FROM pragma_table_info(?) ORDER BY cid').pluck().all(table);
@@ -241,9 +244,29 @@ describe('runMigrations', () => {
     expect(columnNames(db, 'known_chats')).not.toContain('held_for_manager');
 
     runMigrations(db, 9);
-    expect(userVersion(db)).toBe(CURRENT_VERSION);
+    expect(userVersion(db)).toBe(9);
     expect(columnNames(db, 'known_chats')).toContain('held_for_manager');
+    expect(tableNames(db)).not.toContain('rejected_drafts');
+
+    runMigrations(db, 10);
+    expect(userVersion(db)).toBe(CURRENT_VERSION);
+    expect(tableNames(db)).toContain('rejected_drafts');
   });
+
+  it.each([8, 9])(
+    'живая база версии %i переходит на 10: чаты на месте, отклонённых черновиков нет',
+    (from) => {
+      const db = useMemoryDb();
+      runMigrations(db, from);
+      const chatId = insertChat(db, { replyJid: PN_A });
+
+      runMigrations(db);
+
+      expect(userVersion(db)).toBe(CURRENT_VERSION);
+      expect(db.prepare('SELECT id FROM chats').pluck().all()).toEqual([chatId]);
+      expect(db.prepare('SELECT count(*) FROM rejected_drafts').pluck().get()).toBe(0);
+    },
+  );
 
   it('живая база версии 8 переходит на версию 9: известные чаты на месте, ни один не отмечен', () => {
     const db = useMemoryDb();
@@ -379,6 +402,45 @@ describe('индексы этапов 5 и 6', () => {
         'messages_chat_ts',
       ]),
     );
+  });
+});
+
+describe('схема версии 10: отклонённые черновики', () => {
+  const INSERT = `INSERT INTO rejected_drafts (chat_id, attempt, source, draft, remarks, at_ms)
+    VALUES (?, ?, ?, 'черновик', '["цена"]', 1000)`;
+
+  it.each<[number, string, string | undefined]>([
+    [1, 'code', undefined],
+    [2, 'review', undefined],
+    [3, 'code', 'SQLITE_CONSTRAINT_CHECK'],
+    [0, 'review', 'SQLITE_CONSTRAINT_CHECK'],
+    [1, 'price', 'SQLITE_CONSTRAINT_CHECK'],
+  ])('попытка %i и источник %s: ошибка %s', (attempt, source, code) => {
+    const db = useMigratedDb();
+    const chatId = insertChat(db, { replyJid: PN_A });
+
+    const error = errorOf(() => db.prepare(INSERT).run(chatId, attempt, source));
+
+    expect(code === undefined ? error : (error as { code?: string } | undefined)?.code).toBe(code);
+  });
+
+  it('черновик только для существующего чата', () => {
+    const db = useMigratedDb();
+
+    const error = errorOf(() => db.prepare(INSERT).run(999, 1, 'code'));
+
+    expect((error as { code?: string } | undefined)?.code).toBe('SQLITE_CONSTRAINT_FOREIGNKEY');
+  });
+
+  it('индексы по чату и по времени (чистка старше 30 дней) созданы', () => {
+    const db = useMigratedDb();
+
+    const names = db
+      .prepare("SELECT name FROM sqlite_schema WHERE type = 'index' AND tbl_name = 'rejected_drafts'")
+      .pluck()
+      .all();
+
+    expect(names).toEqual(expect.arrayContaining(['rejected_drafts_chat', 'rejected_drafts_at']));
   });
 });
 

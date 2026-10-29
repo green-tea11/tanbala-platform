@@ -132,6 +132,7 @@ const ABSORB_STEPS: readonly string[] = [
   CLOSE_DUPLICATE_HANDOFF,
   'UPDATE handoffs SET chat_id = @survivor WHERE chat_id = @absorbed',
   'UPDATE manager_notifications SET chat_id = @survivor WHERE chat_id = @absorbed',
+  'UPDATE rejected_drafts SET chat_id = @survivor WHERE chat_id = @absorbed',
   'UPDATE OR IGNORE messages SET chat_id = @survivor WHERE chat_id = @absorbed',
   'DELETE FROM messages WHERE chat_id = @absorbed',
   MERGE_PROGRESS,

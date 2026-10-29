@@ -12,6 +12,7 @@ import type {
   Logger,
   MessageSender,
   MessagesRepo,
+  RejectedDraftsRepo,
   Transcriber,
   WhatsAppInbox,
 } from '../domain/ports.js';
@@ -48,6 +49,8 @@ export interface ResponderStorage {
   readonly messages: MessagesRepo;
   /** Дневной предохранитель расходов API (API_DAILY_LIMIT и API_DAILY_LIMIT_PER_CHAT). */
   readonly budget: CallBudget;
+  /** Отклонённые черновики и замечания проверок для панели (пункт 7 задания 29.10.2026). */
+  readonly rejectedDrafts: Pick<RejectedDraftsRepo, 'add'>;
 }
 
 /** Из чего собираются ответы клиентам. */
@@ -184,6 +187,7 @@ function pipelineDeps(
     testAllowlist: allowlistOf(config),
     clock,
     logger,
+    rejectedDrafts: storage.rejectedDrafts,
   };
 }
 

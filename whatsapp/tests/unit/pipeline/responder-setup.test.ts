@@ -10,6 +10,7 @@ import { createHandoffsRepo } from '../../../src/db/repos/handoffs.js';
 import { createManagerNotificationsRepo } from '../../../src/db/repos/manager-notifications.js';
 import { createMessagesRepo } from '../../../src/db/repos/messages.js';
 import { createOutboundIdsRepo } from '../../../src/db/repos/outbound-ids.js';
+import { createRejectedDraftsRepo } from '../../../src/db/repos/rejected-drafts.js';
 import type { CompanyService, CompanySummary, CompanyTurn } from '../../../src/domain/company.js';
 import type { Clock, ImageInput, LlmClient, Logger } from '../../../src/domain/ports.js';
 import type { ChatId, InboundMessage, Jid, WaMessageId } from '../../../src/domain/types.js';
@@ -131,6 +132,7 @@ function storageOf(config: AppConfig): Storage {
     handoffs: createHandoffsRepo(db),
     notifications: createManagerNotificationsRepo(db),
     unitOfWork: createUnitOfWork(db),
+    rejectedDrafts: createRejectedDraftsRepo(db),
   };
 }
 

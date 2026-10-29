@@ -95,6 +95,7 @@ function build(options: { readonly allowlist: ReadonlySet<PhoneDigits> | null })
     messages,
     handoffs,
     notifications,
+    rejectedDrafts: { listForChat: () => [] },
     outbox,
     handoff,
     company,

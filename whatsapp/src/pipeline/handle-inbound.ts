@@ -6,6 +6,7 @@ import type {
   Logger,
   MessageSender,
   MessagesRepo,
+  RejectedDraftsRepo,
   Transcriber,
   WhatsAppInbox,
 } from '../domain/ports.js';
@@ -74,6 +75,8 @@ export interface PipelineDeps {
   readonly testAllowlist: ReadonlySet<PhoneDigits> | null;
   readonly clock: Clock;
   readonly logger: Logger;
+  /** Отклонённые черновики для панели (pipeline/reply-flow.ts); нет поля => не сохраняются. */
+  readonly rejectedDrafts?: Pick<RejectedDraftsRepo, 'add'>;
 }
 
 /** Чем закончилась обработка пачки сообщений клиента. */

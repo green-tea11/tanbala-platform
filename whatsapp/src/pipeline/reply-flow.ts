@@ -1,7 +1,7 @@
 import type { Agent, ConversationContext, DraftKind } from '../agent/agent.js';
 import { normalizeDraft, runCodeChecks } from '../checks/code-checks.js';
 import type { CompanyPrompt, CompanyQuestion } from '../domain/company.js';
-import type { ChatsRepo, Clock, Logger } from '../domain/ports.js';
+import type { ChatsRepo, Clock, Logger, RejectedDraftsRepo } from '../domain/ports.js';
 import type {
   BudgetScope,
   ChatId,
@@ -10,6 +10,7 @@ import type {
   LlmResult,
   NormalizedText,
   PhoneDigits,
+  RejectionSource,
   ReplyDraft,
   ReplyHandoffOutcome,
   ReviewedText,
@@ -33,6 +34,11 @@ export interface ReplyFlowDeps {
   readonly agent: Pick<Agent, 'draftReply' | 'reviewDraft' | 'assessInterest'>;
   readonly clock: Pick<Clock, 'now'>;
   readonly logger: Logger;
+  /**
+   * Отклонённые черновики для панели (пункт 7 задания 29.10.2026): черновик и замечания каждой не пройденной проверки.
+   * Нет поля => не сохраняются (тесты конвейера без базы).
+   */
+  readonly rejectedDrafts?: Pick<RejectedDraftsRepo, 'add'>;
 }
 
 /** Ответы двух параллельных вызовов LLM: черновик и оценка интереса. Сбой приходит значением. */
@@ -442,7 +448,11 @@ async function checkDraft(
 ): Promise<Checked> {
   const { deps, context } = flow;
   const codeGate = codeGateOf(flow, text, attempt);
-  if (codeGate !== null) return { kind: 'checked', text, gate: codeGate };
+  if (codeGate !== null) {
+    const remarks = codeGate.findings.map((finding) => finding.detail);
+    recordRejection(flow, { attempt, source: 'code', draft: text, remarks });
+    return { kind: 'checked', text, gate: codeGate };
+  }
   const kind: DraftKind = outcome === 'answer' ? 'answer' : 'handoff';
   const review = await call(() => deps.agent.reviewDraft(context, text, kind));
   if (!review.ok) {
@@ -454,8 +464,34 @@ async function checkDraft(
       { chatId: context.chatId, attempt, problems: review.value.problems.length },
       `Проверка не пропустила черновик: чат #${context.chatId}`,
     );
+    const remarks = [...review.value.problems];
+    recordRejection(flow, { attempt, source: 'review', draft: text, remarks });
   }
   return { kind: 'checked', text, gate: { kind: 'reviewed', review: review.value } };
+}
+
+interface Rejection {
+  readonly attempt: Attempt;
+  readonly source: RejectionSource;
+  readonly draft: string;
+  readonly remarks: readonly string[];
+}
+
+/**
+ * Отклонённый черновик и замечания проверки в базу для панели. Сбой записи не мешает ответу: предупреждение только с
+ * ID чата, попыткой и именем ошибки, без текстов.
+ */
+function recordRejection(flow: Flow, rejection: Rejection): void {
+  const { deps, context } = flow;
+  if (deps.rejectedDrafts === undefined) return;
+  try {
+    deps.rejectedDrafts.add({ chatId: context.chatId, ...rejection, atMs: deps.clock.now() });
+  } catch (error: unknown) {
+    deps.logger.warn(
+      { chatId: context.chatId, attempt: rejection.attempt, errorName: errorNameOf(error) },
+      `Отклонённый черновик не сохранён: чат #${context.chatId}`,
+    );
+  }
 }
 
 /**
