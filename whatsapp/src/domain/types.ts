@@ -308,6 +308,11 @@ export type ReplyDraft =
       readonly text: string;
       /** О чём из компании спросил ответ (вопрос задаётся один раз); нет поля => ни о чём. */
       readonly companyQuestion?: CompanyQuestion;
+      /**
+       * Модель считает, что клиент спрашивал цену; нет поля => false. Запасной сигнал вопроса цены: им конвейер
+       * пользуется, только если оценка интереса этого хода не вернула сигналов (pipeline/price-gate.ts).
+       */
+      readonly aboutPrice?: boolean;
     }
   | {
       readonly outcome: ReplyHandoffOutcome;

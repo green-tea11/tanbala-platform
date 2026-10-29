@@ -257,12 +257,24 @@ describe('createAgent: draftReply, нормализация ответа мод�
     },
   );
 
+  it('answer с aboutPrice true: пометка сохраняется (запасной сигнал вопроса цены, если оценка не получилась)', async () => {
+    const { result } = await draft({
+      ok: true,
+      value: { outcome: 'answer', text: 'Да.', stopRequested: false, aboutPrice: true },
+    });
+
+    expect(result).toStrictEqual({
+      ok: true,
+      value: { outcome: 'answer', text: 'Да.', aboutPrice: true },
+    });
+  });
+
   it.each([false, undefined])(
-    'aboutPrice %s у передачи и любое значение у answer и complaint: поля нет',
+    'aboutPrice %s у передачи и answer и любое значение у complaint: поля нет',
     async (aboutPrice) => {
       const cases = [
         { outcome: 'hot', text: '', stopRequested: false, aboutPrice },
-        { outcome: 'answer', text: 'Да.', stopRequested: false, aboutPrice: true },
+        { outcome: 'answer', text: 'Да.', stopRequested: false, aboutPrice },
         { outcome: 'complaint', text: '', stopRequested: false, aboutPrice: true },
       ];
       for (const raw of cases) {

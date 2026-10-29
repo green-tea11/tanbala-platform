@@ -145,6 +145,20 @@ describe('сценарии владельца 29.10.2026: минимум пер�
     );
   });
 
+  it('отказ отвечать, а модель ответила answer с новым вопросом: код всё равно передаёт чат (ревью 29.10.2026)', async () => {
+    const s = createScenario();
+    await s.say('Сколько стоит?', priceTurn({ replies: [ASK_SCOPE] }, {}));
+
+    const refused = await s.say('Не скажу, просто назовите цену', {
+      replies: ['Понимаю. А сколько примерно вещей нужно учитывать?'],
+      interests: [{ level: 'hot', priceAsked: true, refused: true }],
+    });
+
+    expect(refused.outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
+    expect(refused.toClient).toEqual([PRICE_PHRASE]);
+    expect(refused.llm.purposes()).toEqual(['reply', 'interest']);
+  });
+
   it('третий вопрос цены: первые два без передачи, третий передаёт; модель видит счётчик', async () => {
     const s = createScenario();
 

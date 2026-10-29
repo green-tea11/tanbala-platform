@@ -48,16 +48,32 @@ function aboutPriceOf(draft: LlmResult<ReplyDraft>): boolean {
 }
 
 /**
+ * Спрашивает ли клиент цену в этом ходе. У исхода передачи (hot и другие) вопрос цены по оценке интереса или по
+ * aboutPrice черновика. У answer aboutPrice только запасной сигнал (ревью 29.10.2026): он считается, если оценка
+ * интереса этого хода не вернула сигналов (сбой, исключение), иначе решает оценка. Модель отмечает «спрашивал цену в
+ * последних сообщениях» и в ходах после вопроса цены: без оценки счёт вопросов цены вырос бы на каждом ответе.
+ */
+function priceAskedOf(
+  assessment: InterestAssessment | null,
+  draft: LlmResult<ReplyDraft>,
+): boolean {
+  const signals = assessment?.signals;
+  const isAnswer = draft.ok && draft.value.outcome === 'answer';
+  if (isAnswer && signals !== undefined) return signals.priceAsked;
+  return signals?.priceAsked === true || aboutPriceOf(draft);
+}
+
+/**
  * Ход по данным разговора и оценке интереса. Выжимка и сигналы из оценки этого хода; оценки нет => выжимка до этого
- * сообщения, вопрос цены по aboutPrice черновика, отказа сейчас нет. Компания для минимума: context.companyName
- * (подтверждённая или со слов клиента) и можно ли о ней спросить по блоку о компании.
+ * сообщения, вопрос цены по aboutPrice черновика (priceAskedOf), отказа сейчас нет. Компания для минимума:
+ * context.companyName (подтверждённая или со слов клиента) и можно ли о ней спросить по блоку о компании.
  */
 export function priceSituation(
   context: ConversationContext,
   assessment: InterestAssessment | null,
   draft: LlmResult<ReplyDraft>,
 ): PriceSituation {
-  const priceAsked = assessment?.signals?.priceAsked === true || aboutPriceOf(draft);
+  const priceAsked = priceAskedOf(assessment, draft);
   const refusedNow = assessment?.signals?.refused === true;
   const progress = context.progress ?? { priceAsks: 0, refused: false };
   return {
@@ -89,13 +105,22 @@ export function isPrematurePriceHandoff(draft: ReplyDraft, situation: PriceSitua
   );
 }
 
-/** Клиент спросил цену третий раз, а модель ответила answer: чат передаётся по правилу владельца. */
-export function isThirdPriceAsk(draft: ReplyDraft, situation: PriceSituation): boolean {
-  return (
-    draft.outcome === 'answer' &&
-    situation.signals.priceAsked &&
-    situation.priceAsks >= PRICE_ASKS_FOR_HANDOFF
-  );
+/** Почему код передаёт чат сам, хотя модель ответила answer (решение владельца 29.10.2026, пункт 3). */
+export type ForcedPriceHandoff = 'third_price_ask' | 'refused';
+
+/**
+ * Модель ответила answer, а чат по правилу владельца уходит коллеге с фразой о цене: клиент спросил цену третий раз
+ * или в этом ходе отказывается отвечать на вопросы и спрашивает цену сейчас или спрашивал раньше (ревью 29.10.2026:
+ * отказ передаёт чат кодом, как третий вопрос, а не только разрешает hot модели). Иначе null.
+ */
+export function forcedPriceHandoff(
+  draft: ReplyDraft,
+  situation: PriceSituation,
+): ForcedPriceHandoff | null {
+  if (draft.outcome !== 'answer') return null;
+  const { signals, priceAsks } = situation;
+  if (signals.priceAsked && priceAsks >= PRICE_ASKS_FOR_HANDOFF) return 'third_price_ask';
+  return signals.refused && priceAsks > 0 ? 'refused' : null;
 }
 
 function firstMissing(situation: PriceSituation): MinimumField {

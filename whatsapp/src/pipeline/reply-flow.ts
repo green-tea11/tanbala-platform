@@ -18,11 +18,12 @@ import type {
 } from '../domain/types.js';
 import { decideAction, type Decision, type DraftGate, type TextDraft } from './decide.js';
 import {
+  forcedPriceHandoff,
   isPrematurePriceHandoff,
-  isThirdPriceAsk,
   minimumFallback,
   minimumRemark,
   priceSituation,
+  type ForcedPriceHandoff,
   type PriceSituation,
 } from './price-gate.js';
 
@@ -87,8 +88,11 @@ const CHECK_FAILED: ReplyVerdict = { kind: 'handoff', notice: { reason: 'check_f
 /** Сбой LLM там, где причины передачи ещё нет: fail-closed, клиенту уходит нейтральная фраза. */
 const LLM_ERROR: ReplyVerdict = { kind: 'handoff', notice: { reason: 'llm_error' } };
 
-/** Третий вопрос цены, а модель ответила answer: передача с фиксированной фразой о цене (решение владельца 29.10.2026). */
-const THIRD_PRICE_HANDOFF: ReplyVerdict = {
+/**
+ * Третий вопрос цены или отказ отвечать при вопросе цены, а модель ответила answer: передача с фиксированной фразой о
+ * цене (решение владельца 29.10.2026).
+ */
+const FORCED_PRICE_HANDOFF: ReplyVerdict = {
   kind: 'handoff',
   notice: { reason: 'hot', aboutPrice: true },
 };
@@ -194,8 +198,9 @@ export async function requestAssessment(
  * Правило минимума перед передачей по цене (решение владельца 29.10.2026, pipeline/price-gate.ts): исход hot из-за
  * вопроса цены, пока минимума нет (вопрос не третий, отказа отвечать не было), не передаёт чат: один повтор черновика с
  * замечанием, чего не хватает и какой один вопрос задать; повтор снова hot, не получился или не прошёл проверки =>
- * фиксированный вопрос о первом недостающем (pipeline/decide.priceQuestion), чат остаётся у бота. Третий вопрос цены,
- * а модель ответила answer => передача hot с фразой о цене. Повтор черновика видит выжимку из оценки этого хода.
+ * фиксированный вопрос о первом недостающем (pipeline/decide.priceQuestion), чат остаётся у бота. Третий вопрос цены
+ * или отказ отвечать (в этом ходе) при вопросе цены сейчас или раньше, а модель ответила answer => передача hot с
+ * фразой о цене. Повтор черновика видит выжимку из оценки этого хода.
  * Вердикт send несёт сигналы хода (вопрос цены, отказ отвечать), если они есть: конвейер записывает их после отправки.
  */
 export async function decideReply(
@@ -335,7 +340,8 @@ async function judge(flow: Flow, draft: ReplyDraft, attempt: Attempt): Promise<J
     return judgementOf(decideAction({ kind: 'handoff_outcome', draft }), null);
   }
   if (isPrematurePriceHandoff(draft, flow.price)) return premature(flow, attempt);
-  if (isThirdPriceAsk(draft, flow.price)) return thirdPriceAsk(flow);
+  const forced = forcedPriceHandoff(draft, flow.price);
+  if (forced !== null) return forcedHandoff(flow, forced);
   const text = normalizeDraft(draft.text);
   const keep = keepOf(draft);
   if (draft.outcome !== 'answer' && text.trim() === '') {
@@ -381,14 +387,22 @@ function fallbackVerdict(price: PriceSituation): SendVerdict {
     : { kind: 'send', text, companyQuestion };
 }
 
-/** Третий вопрос цены, а модель ответила answer: передача hot с фразой о цене, текст модели не нужен. */
-function thirdPriceAsk(flow: Flow): Judgement {
+const FORCED_TEXT: Readonly<Record<ForcedPriceHandoff, string>> = {
+  third_price_ask: 'Третий вопрос цены',
+  refused: 'Клиент отказывается отвечать на вопросы о цене',
+};
+
+/**
+ * Третий вопрос цены или отказ отвечать при вопросе цены, а модель ответила answer: передача hot с фразой о цене,
+ * текст модели не нужен. В лог только ID чата и число вопросов цены.
+ */
+function forcedHandoff(flow: Flow, why: ForcedPriceHandoff): Judgement {
   const { chatId } = flow.context;
   flow.deps.logger.info(
     { chatId, priceAsks: flow.price.priceAsks },
-    `Третий вопрос цены: чат передаётся менеджеру: чат #${chatId}`,
+    `${FORCED_TEXT[why]}: чат передаётся менеджеру: чат #${chatId}`,
   );
-  return verdictOf(THIRD_PRICE_HANDOFF);
+  return verdictOf(FORCED_PRICE_HANDOFF);
 }
 
 /**

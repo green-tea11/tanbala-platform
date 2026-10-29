@@ -76,9 +76,13 @@ function hot(text: string = HOT_PRICE_TEXT, aboutPrice = true): LlmResult<ReplyD
   return { ok: true, value: { outcome: 'hot', text, ...(aboutPrice ? { aboutPrice } : {}) } };
 }
 
-function answer(text: string = MINIMUM_ANSWER): LlmResult<ReplyDraft> {
-  return { ok: true, value: { outcome: 'answer', text } };
+function answer(text: string = MINIMUM_ANSWER, aboutPrice = false): LlmResult<ReplyDraft> {
+  return { ok: true, value: { outcome: 'answer', text, ...(aboutPrice ? { aboutPrice } : {}) } };
 }
+
+/** Модель ответила answer и задала ещё один вопрос, хотя клиент отказался отвечать. */
+const ANOTHER_QUESTION = 'Понимаю. А сколько примерно вещей нужно учитывать?';
+const HOT_PRICE_VERDICT = { kind: 'handoff', notice: { reason: 'hot', aboutPrice: true } };
 
 function setup(c: Case) {
   const calls: string[] = [];
@@ -294,6 +298,77 @@ describe('pipeline/reply-flow: когда передача по цене раз�
 
     expect(r.verdict).toMatchObject({ kind: 'handoff' });
     expect(r.calls).not.toContain('draft:retry');
+  });
+});
+
+describe('pipeline/reply-flow: отказ отвечать передаёт чат кодом (ревью 29.10.2026)', () => {
+  it('отказ и вопрос цены сейчас, а модель ответила answer с новым вопросом: передача hot с фразой о цене', async () => {
+    const r = await run({
+      drafts: [answer(ANOTHER_QUESTION)],
+      signals: { priceAsked: true, refused: true },
+    });
+
+    expect(r.verdict).toEqual(HOT_PRICE_VERDICT);
+    // Текст answer не проверяется: он не уйдёт.
+    expect(r.calls).toEqual(['draft', 'assess', 'save', 'save']);
+    expect(r.logs).toContainEqual({ level: 'info', context: { chatId: CHAT_ID, priceAsks: 1 } });
+  });
+
+  it('отказ сейчас, а цену клиент спрашивал раньше: передача hot с фразой о цене', async () => {
+    const r = await run({
+      drafts: [answer(ANOTHER_QUESTION)],
+      signals: { priceAsked: false, refused: true },
+      progress: { priceAsks: 1, refused: false },
+    });
+
+    expect(r.verdict).toEqual(HOT_PRICE_VERDICT);
+  });
+
+  it('отказ без вопроса цены ни сейчас, ни раньше: ответ уходит, чат у бота', async () => {
+    const r = await run({
+      drafts: [answer(ANOTHER_QUESTION)],
+      signals: { priceAsked: false, refused: true },
+    });
+
+    expect(r.verdict).toMatchObject({ kind: 'send' });
+  });
+
+  it('отказ был раньше, а сейчас нет: answer не передаёт чат', async () => {
+    const r = await run({
+      drafts: [answer(ANOTHER_QUESTION)],
+      signals: { priceAsked: false, refused: false },
+      progress: { priceAsks: 1, refused: true },
+    });
+
+    expect(r.verdict).toMatchObject({ kind: 'send' });
+  });
+});
+
+describe('pipeline/reply-flow: aboutPrice у answer как запасной сигнал (ревью 29.10.2026)', () => {
+  it('оценка не получилась, answer с aboutPrice: вопрос цены засчитывается после ответа', async () => {
+    const r = await run({ drafts: [answer(MINIMUM_ANSWER, true)], assessmentFails: true });
+
+    expect(r.verdict).toEqual(sentWith(MINIMUM_ANSWER, { signals: PRICE_NOW }));
+  });
+
+  it('оценка не получилась, два вопроса цены уже было, answer с aboutPrice: третий, передача', async () => {
+    const r = await run({
+      drafts: [answer(MINIMUM_ANSWER, true)],
+      assessmentFails: true,
+      progress: { priceAsks: 2, refused: false },
+    });
+
+    expect(r.verdict).toEqual(HOT_PRICE_VERDICT);
+  });
+
+  it('оценка есть и говорит, что цену не спрашивали: aboutPrice ответа не засчитывается', async () => {
+    const r = await run({
+      drafts: [answer('Учёт подбираем под задачу. Что вы храните?', true)],
+      signals: { priceAsked: false, refused: false },
+      progress: { priceAsks: 2, refused: false },
+    });
+
+    expect(r.verdict).toEqual(sentWith('Учёт подбираем под задачу. Что вы храните?'));
   });
 });
 

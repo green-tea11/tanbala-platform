@@ -167,7 +167,7 @@ const MAX_LOGO_NAME_CHARS = 200;
 
 /**
  * Противоречивый ответ модели нормализуется здесь один раз: text берётся у answer, hot, no_answer и asked_human,
- * stopRequested только у complaint, aboutPrice только у исходов передачи. answer без текста => invalid_output, не
+ * stopRequested только у complaint, aboutPrice у исходов передачи и у answer (там он запасной сигнал вопроса цены). answer без текста => invalid_output, не
  * угадывать (fail-closed). У hot, no_answer и asked_human пустой text допустим: чат всё равно уходит менеджеру,
  * клиенту пишется фиксированная фраза.
  */
@@ -191,13 +191,14 @@ function normalizeReplyDraft(raw: RawReplyDraft): LlmResult<ReplyDraft> {
 
 /**
  * Ответ answer: вопрос о компании (confirm или name) сохраняется, чтобы система не задала его второй раз; none
- * и отсутствие поля (подделки LLM в тестах его не пишут) не сохраняются.
+ * и отсутствие поля (подделки LLM в тестах его не пишут) не сохраняются. aboutPrice сохраняется только true: это
+ * запасной сигнал вопроса цены, если оценка интереса не получилась (pipeline/price-gate.ts).
  */
 function answerDraft(text: string, raw: RawReplyDraft): ReplyDraft {
   const question = (raw as Partial<RawReplyDraft>).companyQuestion;
-  return question === 'confirm' || question === 'name'
-    ? { outcome: 'answer', text, companyQuestion: question }
-    : { outcome: 'answer', text };
+  const asked = question === 'confirm' || question === 'name' ? { companyQuestion: question } : {};
+  const price = raw.aboutPrice === true ? { aboutPrice: true } : {};
+  return { outcome: 'answer', text, ...asked, ...price };
 }
 
 /**
