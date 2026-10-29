@@ -34,14 +34,18 @@ function readDotEnv(path: string): EnvVars {
 }
 
 /**
- * Закрытый режим и подключение к WhatsApp: переменная процесса (например, глобальная переменная Windows)
- * не должна молча перебить значение из .env.
+ * Закрытый режим и подключение к WhatsApp задаются только в .env: переменная процесса (например, глобальная
+ * переменная Windows) не должна молча перебить значение из .env или подставиться, когда в .env строки нет.
  */
 const GUARDED_VARIABLES = ['TEST_MODE', 'TEST_ALLOWLIST', 'WA_ENABLED'] as const;
 
 const CONFLICT_PROBLEM =
   'задана и в окружении процесса, и в .env, значения разные: оставьте одно место ' +
   '(переменная процесса молча перебила бы .env)';
+
+const PROCESS_ONLY_PROBLEM =
+  'задана в окружении процесса, а в .env её нет: перенесите её в .env и уберите из окружения ' +
+  '(иначе режим бота менялся бы мимо .env)';
 
 /** Значения переменной без учёта регистра имени: на Windows имена переменных от регистра не зависят. */
 function valuesOf(env: EnvVars, name: string): string[] {
@@ -50,21 +54,28 @@ function valuesOf(env: EnvVars, name: string): string[] {
   );
 }
 
-/** Защищённые переменные, у которых процесс и .env расходятся. Значения в текст не попадают. */
+/**
+ * Защищённые переменные, у которых процесс и .env расходятся: разные значения или значение только в процессе.
+ * Значения в текст не попадают.
+ */
 function conflictProblems(fileEnv: EnvVars, processEnv: EnvVars): string[] {
-  return GUARDED_VARIABLES.filter((name) => {
+  return GUARDED_VARIABLES.flatMap((name) => {
+    const fromProcess = valuesOf(processEnv, name);
+    if (fromProcess.length === 0) return [];
     const fromFile = valuesOf(fileEnv, name);
-    return (
-      fromFile.length > 0 && valuesOf(processEnv, name).some((value) => !fromFile.includes(value))
-    );
-  }).map((name) => `${name}: ${CONFLICT_PROBLEM}`);
+    if (fromFile.length === 0) return [`${name}: ${PROCESS_ONLY_PROBLEM}`];
+    return fromProcess.some((value) => !fromFile.includes(value))
+      ? [`${name}: ${CONFLICT_PROBLEM}`]
+      : [];
+  });
 }
 
 /**
  * Окружение приложения: переменные из .env в корне проекта, поверх них переменные процесса (они главнее).
  * Файла нет: только переменные процесса. Аргументы не меняются, результат: новый объект;
  * process.env не трогается. Незаданные (undefined) переменные процесса значения из .env не затирают.
- * TEST_MODE, TEST_ALLOWLIST или WA_ENABLED и в процессе, и в .env с разными значениями: ConfigError.
+ * TEST_MODE, TEST_ALLOWLIST или WA_ENABLED в процессе с другим значением, чем в .env, или в процессе при отсутствии
+ * в .env (в том числе без файла): ConfigError. Совпадающее значение в процессе ошибкой не считается.
  */
 export function loadEnvironment(root: string, processEnv: EnvVars): EnvVars {
   const fileEnv = readDotEnv(join(root, DOTENV_FILE));

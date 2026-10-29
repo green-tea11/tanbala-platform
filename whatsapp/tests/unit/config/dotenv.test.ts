@@ -36,9 +36,9 @@ afterEach(() => {
 
 describe('config/dotenv loadEnvironment', () => {
   it('без файла .env остаются только переменные процесса', () => {
-    expect(loadEnvironment(root, { PATH: '/usr/bin', WA_ENABLED: 'false' })).toEqual({
+    expect(loadEnvironment(root, { PATH: '/usr/bin', PANEL_PORT: '3100' })).toEqual({
       PATH: '/usr/bin',
-      WA_ENABLED: 'false',
+      PANEL_PORT: '3100',
     });
   });
 
@@ -84,7 +84,7 @@ describe('config/dotenv loadEnvironment', () => {
   });
 
   it('не меняет переданное окружение процесса и возвращает новый объект', () => {
-    writeDotEnv('WA_ENABLED=false\n');
+    writeDotEnv('WA_ENABLED=false\nTEST_MODE=true\n');
     const processEnv = Object.freeze({ TEST_MODE: 'true' });
 
     const env = loadEnvironment(root, processEnv);
@@ -146,12 +146,37 @@ describe('config/dotenv loadEnvironment: закрытый режим и подк
     });
   });
 
-  it('переменная только в процессе или только в .env конфликтом не считается', () => {
+  it('переменная только в .env ошибкой не считается', () => {
     writeDotEnv('TEST_MODE=true\n');
 
-    expect(loadEnvironment(root, { WA_ENABLED: 'false' })).toEqual({
+    expect(loadEnvironment(root, { PANEL_PORT: '3100' })).toEqual({
       TEST_MODE: 'true',
-      WA_ENABLED: 'false',
+      PANEL_PORT: '3100',
     });
+  });
+
+  // Глобальная переменная Windows не должна молча включить рабочий режим или WhatsApp, если в .env строки нет.
+  it.each([
+    ['TEST_MODE', 'false'],
+    ['TEST_ALLOWLIST', '77011234567'],
+    ['WA_ENABLED', 'true'],
+  ])('%s только в процессе, в .env её нет: ConfigError без значения', (name, inProcess) => {
+    writeDotEnv('PANEL_PORT=3100\n');
+
+    const problems = problemsOf({ [name]: inProcess });
+
+    expect(problems).toEqual([expect.stringMatching(new RegExp(`^${name}: .*\\.env`))]);
+    expect(problems.join('\n')).not.toMatch(/77011234567|true|false/);
+  });
+
+  it('файла .env нет, а защищённая переменная в процессе (пустая, в другом регистре): ConfigError', () => {
+    expect(problemsOf({ test_mode: 'false', TEST_ALLOWLIST: '' })).toEqual([
+      expect.stringMatching(/^TEST_MODE: /),
+      expect.stringMatching(/^TEST_ALLOWLIST: /),
+    ]);
+  });
+
+  it('незаданная (undefined) защищённая переменная процесса ошибкой не считается', () => {
+    expect(loadEnvironment(root, { WA_ENABLED: undefined })).toEqual({});
   });
 });

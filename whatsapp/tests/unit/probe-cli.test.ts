@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +18,12 @@ const PROJECT_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const PHONE = '77012345678';
 const VALID_ENV = { TEST_MODE: 'true', TEST_ALLOWLIST: '77000000002', WA_ENABLED: 'true' };
 
+/** Защищённые переменные живут только в .env (config/dotenv.ts): процесс может лишь повторить те же значения. */
+function writeDotEnv(env: Readonly<Record<string, string>>): void {
+  const lines = Object.entries(env).map(([name, value]) => `${name}=${value}\n`);
+  writeFileSync(join(root, '.env'), lines.join(''), 'utf8');
+}
+
 interface Run {
   readonly code: number;
   readonly stdout: string;
@@ -30,6 +36,7 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'tanbala-probe-cli-'));
   mkdirSync(join(root, 'config'));
   copyFileSync(join(PROJECT_ROOT, 'config', 'models.json'), join(root, 'config', 'models.json'));
+  writeDotEnv(VALID_ENV);
 });
 
 afterEach(() => {
@@ -76,7 +83,9 @@ describe('probe-cli runProbeCli', () => {
   });
 
   it('WA_ENABLED=false: отказ до замка и сессии, выход 1', async () => {
-    const result = await run({ env: { ...VALID_ENV, WA_ENABLED: 'false' } });
+    writeDotEnv({ ...VALID_ENV, WA_ENABLED: 'false' });
+
+    const result = await run({ env: {} });
 
     expect(result).toEqual({
       code: 1,
