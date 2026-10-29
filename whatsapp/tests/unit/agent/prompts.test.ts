@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import type { Knowledge } from '../../../src/agent/knowledge.js';
 import { buildSystem, buildTurns } from '../../../src/agent/prompts.js';
 import type {
@@ -370,6 +371,35 @@ describe('buildSystem', () => {
     expect(instruction).toMatch(/Ответ клиенту не пиши/);
     expect(instruction).toMatch(/Чат ты не передаёшь: уровень только сохраняется/);
     expect(instruction).toMatch(/передачу коллеге решает другой вызов/);
+  });
+});
+
+describe('без повтора объяснений (решение владельца 29.10.2026 вечером, пункт F)', () => {
+  const WHATSAPP_MD = readFileSync(
+    new URL('../../../knowledge/whatsapp.md', import.meta.url),
+    'utf8',
+  );
+
+  it('инструкция ответа: полезная фраза не повторяет объяснение, уже данное в этом чате', () => {
+    expect(buildSystem(KNOWLEDGE, 'reply')[1]?.text ?? '').toContain(
+      'Полезная фраза не повторяет объяснение, которое ты уже давал в этом чате (реплики assistant), даже другими словами: если полезное уже сказано, обойдись без неё.',
+    );
+  });
+
+  it('проверка: почти дословный повтор прошлого объяснения бота нарушение, повтор вопроса нет', () => {
+    const review = buildSystem(KNOWLEDGE, 'review')[1]?.text ?? '';
+    expect(review).toContain(
+      '12. Почти дословный повтор объяснения, которое Tanbala уже писала клиенту в этом чате (реплики assistant), например снова тот же рассказ, что ридер на входе и выходе видит всю партию и всё попадает в 1С.',
+    );
+    expect(review).toMatch(
+      /Повтор вопроса, на который клиент не ответил, и короткое подтверждение не нарушение/,
+    );
+  });
+
+  it('knowledge/whatsapp.md: объяснение, которое уже давал, не повторяй', () => {
+    expect(WHATSAPP_MD).toContain(
+      'Не повторяй объяснение, которое уже давал в этом чате, даже другими словами: каждая полезная фраза новая или её нет.',
+    );
   });
 });
 
