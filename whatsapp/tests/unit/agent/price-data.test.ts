@@ -119,16 +119,56 @@ describe('agent/price-data: минимум не собран', () => {
 });
 
 describe('agent/price-data: минимум собран и исключения', () => {
-  it('минимум собран: при вопросе цены передать чат (hot), без вопросов', () => {
+  const RETURNED: ChatProgress = { ...FRESH, handedOff: true };
+
+  it('минимум собран, чат уже передавался: при вопросе цены передать чат (hot), без вопросов', () => {
     const data = priceReplyData({
       profile: FULL,
       company: { kind: 'confirmed', name: 'ТОО Склад', rubric: null, pains: [], emailed: false },
       companyName: 'ТОО Склад',
-      progress: FRESH,
+      progress: RETURNED,
     });
 
     expect(data).toMatch(/Минимум для передачи по цене собран[^\n]*hot/);
     expect(data).not.toMatch(/не хватает/);
+    expect(data).not.toMatch(/даже если клиент не спрашивает цену/);
+  });
+
+  it('минимум собран, передач не было: передать чат сейчас (hot) даже без вопроса цены, с фразой владельца', () => {
+    const data = priceReplyData({
+      profile: FULL,
+      company: { kind: 'off' },
+      companyName: null,
+      progress: FRESH,
+    });
+
+    expect(data).toContain(
+      'Минимум для передачи собран, и чат ещё не передавался коллеге: передай чат сейчас (hot), даже если клиент не спрашивает цену.',
+    );
+    expect(data).toContain(
+      '«Спасибо, этого хватит, чтобы коллега назвал ориентир. Уточню у коллеги и вернусь к вам.»',
+    );
+    expect(data).toContain('Вопросов не задавай.');
+  });
+
+  it('минимума нет, передач не было: если клиент назвал недостающее в последнем сообщении, передать сейчас', () => {
+    const fresh = priceReplyData({
+      profile: { ...FULL, has1C: null },
+      company: { kind: 'off' },
+      companyName: null,
+      progress: FRESH,
+    });
+    const returned = priceReplyData({
+      profile: { ...FULL, has1C: null },
+      company: { kind: 'off' },
+      companyName: null,
+      progress: RETURNED,
+    });
+
+    expect(fresh).toMatch(
+      /Если в последнем сообщении клиент назвал всё, чего не хватает, минимум собран: передай чат сейчас \(hot\)/,
+    );
+    expect(returned).not.toMatch(/назвал всё, чего не хватает/);
   });
 
   it('компанию спросить нельзя: она не мешает и не упоминается среди недостающего', () => {
@@ -139,7 +179,7 @@ describe('agent/price-data: минимум собран и исключения'
       progress: FRESH,
     });
 
-    expect(data).toMatch(/Минимум для передачи по цене собран/);
+    expect(data).toMatch(/Минимум для передачи[^.]*собран/);
   });
 
   it.each([

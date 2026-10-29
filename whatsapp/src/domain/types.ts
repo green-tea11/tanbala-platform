@@ -237,6 +237,12 @@ export interface StoredRejectedDraft extends RejectedDraft {
 export interface ChatProgress {
   readonly priceAsks: number;
   readonly refused: boolean;
+  /**
+   * Чат хоть раз передавался менеджеру, по любой причине (есть запись в handoffs); возврат боту этого не снимает.
+   * Пока передач не было, собранный минимум и пятое сообщение клиента передают чат сами (решение владельца 29.10.2026
+   * вечером). Нет поля => не передавался.
+   */
+  readonly handedOff?: boolean;
 }
 
 /**

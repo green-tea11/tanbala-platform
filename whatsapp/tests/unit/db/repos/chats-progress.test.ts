@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createUnitOfWork } from '../../../../src/db/connection.js';
 import { createChatsRepo } from '../../../../src/db/repos/chats.js';
+import { createHandoffsRepo } from '../../../../src/db/repos/handoffs.js';
 import type { ChatId } from '../../../../src/domain/types.js';
 import { insertChat, PN_A, PN_B, useMigratedDb } from '../fixture.js';
 
@@ -33,6 +34,20 @@ describe('createChatsRepo: ход разговора о цене', () => {
 
     expect(repo.getProgress(chatId)).toEqual({ priceAsks: 2, refused: true });
     expect(repo.getProgress(otherChatId)).toEqual({ priceAsks: 0, refused: false });
+  });
+
+  it('чат хоть раз передавался менеджеру (любая причина): handedOff true, и возврат боту его не снимает', () => {
+    const { db, repo, chatId, otherChatId } = setup();
+    const handoffs = createHandoffsRepo(db);
+
+    handoffs.open(chatId, 'human_took_over', 'cold', '', 1_000);
+    expect(repo.getProgress(chatId)).toEqual({ priceAsks: 0, refused: false, handedOff: true });
+    handoffs.resolve(chatId, 2_000);
+    repo.resetProgress(chatId);
+
+    expect(repo.getProgress(chatId)).toEqual({ priceAsks: 0, refused: false, handedOff: true });
+    expect(repo.getProgress(otherChatId)).toEqual({ priceAsks: 0, refused: false });
+    expect(repo.getProgress(otherChatId).handedOff).toBeUndefined();
   });
 
   it('resetProgress: возврат боту обнуляет счётчик и отказ', () => {

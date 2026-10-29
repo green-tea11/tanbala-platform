@@ -461,8 +461,10 @@ describe('pipeline/reply-flow: указание коллеги в проверк
 
   async function runWith(note: string | null, drafts: readonly LlmResult<ReplyDraft>[]) {
     const h = setup({ drafts, signals: PRICE_NOW, profile: FULL, companyName: 'ТОО Склад' });
+    // Заметка бывает только после возврата чата: чат уже передавался, собранный минимум сам не передаёт.
     const context: ConversationContext = {
       ...h.context,
+      progress: { priceAsks: 0, refused: false, handedOff: true },
       note: note === null ? null : { text: note, atMs: NOW },
     };
     const drafted = await requestDraft(h.deps, context);
@@ -568,5 +570,90 @@ describe('pipeline/price-gate: фиксированный вопрос не по
     expect(minimumFallback(situation, groupQuestion(['city'], true)).text).toBe(
       groupQuestion(['city'], true),
     );
+  });
+});
+
+describe('pipeline/reply-flow: минимум собран, а чат ещё не передавался (решение владельца 29.10.2026 вечером)', () => {
+  const NO_PRICE: TurnSignals = { priceAsked: false, refused: false };
+  const MINIMUM_TEXT =
+    'Спасибо, этого хватит, чтобы коллега назвал ориентир. Уточню у коллеги и вернусь к вам.';
+  const ANSWER_WITH_QUESTION =
+    'Да, мы проводим интеграцию с вашей 1С. Подскажите, как вы сейчас ведёте учёт?';
+  const base = { profile: FULL, companyName: 'ТОО Склад', signals: NO_PRICE } as const;
+
+  it('ответ answer: передача hot, ответ на вопрос клиента из черновика и фраза владельца, проверка с подписью передачи', async () => {
+    const r = await run({ ...base, drafts: [answer(ANSWER_WITH_QUESTION)] });
+
+    expect(r.verdict).toEqual({
+      kind: 'handoff',
+      notice: { reason: 'hot' },
+      text: `Да, мы проводим интеграцию с вашей 1С. ${MINIMUM_TEXT}`,
+    });
+    expect(r.calls).toEqual(['draft', 'assess', 'save', 'review', 'save']);
+  });
+
+  it('ответ из черновика не прошёл проверку: только фраза владельца, без повтора', async () => {
+    const r = await run({
+      ...base,
+      drafts: [answer(ANSWER_WITH_QUESTION)],
+      problems: ['Утверждение не из документов'],
+    });
+
+    expect(r.verdict).toEqual({ kind: 'handoff', notice: { reason: 'hot' }, text: MINIMUM_TEXT });
+    expect(r.calls.filter((call) => call.startsWith('draft'))).toEqual(['draft']);
+  });
+
+  it('клиент спросил цену, а модель ответила answer: ответ из знаний и фраза о цене, без фразы об ориентире', async () => {
+    const r = await run({ ...base, signals: PRICE_NOW, drafts: [answer(MINIMUM_ANSWER)] });
+
+    expect(r.verdict).toEqual({
+      kind: 'handoff',
+      notice: { reason: 'hot' },
+      text: `Да, мы проводим интеграцию с вашей 1С. ${HOT_PRICE_TEXT.slice(HOT_PRICE_TEXT.indexOf('Цена'))}`,
+    });
+  });
+
+  it('клиент спросил цену, в черновике только вопросы: фиксированная фраза о цене', async () => {
+    const r = await run({
+      ...base,
+      signals: PRICE_NOW,
+      drafts: [answer('Подскажите, как вы сейчас ведёте учёт?')],
+    });
+
+    expect(r.verdict).toEqual(HOT_PRICE_VERDICT);
+  });
+
+  it('модель сама ответила hot без текста: вместо общей фразы фраза владельца', async () => {
+    const r = await run({ ...base, drafts: [hot('', false)] });
+
+    expect(r.verdict).toEqual({ kind: 'handoff', notice: { reason: 'hot' }, text: MINIMUM_TEXT });
+  });
+
+  it('no_answer без текста остаётся no_answer с общей фразой', async () => {
+    const r = await run({
+      ...base,
+      drafts: [{ ok: true, value: { outcome: 'no_answer', text: '' } }],
+    });
+
+    expect(r.verdict).toEqual({ kind: 'handoff', notice: { reason: 'no_answer' } });
+  });
+
+  it('чат уже передавался: ответ answer уходит как обычно, передачи нет', async () => {
+    const r = await run({
+      ...base,
+      drafts: [answer(ANSWER_WITH_QUESTION)],
+      progress: { priceAsks: 0, refused: false, handedOff: true },
+    });
+
+    expect(r.verdict).toEqual(sentWith(ANSWER_WITH_QUESTION));
+  });
+
+  it('в лог только ID чата, повод и ушёл ли ответ, без текста', async () => {
+    const r = await run({ ...base, drafts: [answer(ANSWER_WITH_QUESTION)] });
+
+    const dump = JSON.stringify(r.logs);
+    expect(dump).toContain('"auto":"minimum"');
+    expect(dump).toContain('"withAnswer":true');
+    expect(dump).not.toContain('интеграцию');
   });
 });

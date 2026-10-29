@@ -4,6 +4,7 @@ import type { CompanyPrompt } from '../../../src/domain/company.js';
 import type { Logger } from '../../../src/domain/ports.js';
 import type {
   ChatId,
+  ChatProgress,
   ClientProfile,
   LlmResult,
   ReplyDraft,
@@ -68,6 +69,7 @@ interface Case {
   readonly lastBot?: string;
   readonly company?: CompanyPrompt;
   readonly companyName?: string | null;
+  readonly progress?: ChatProgress;
 }
 
 function run(c: Case) {
@@ -142,6 +144,7 @@ function run(c: Case) {
     profile: EMPTY,
     ...(c.company === undefined ? {} : { company: c.company }),
     ...(c.companyName === undefined ? {} : { companyName: c.companyName }),
+    ...(c.progress === undefined ? {} : { progress: c.progress }),
   };
   return (async () => {
     const drafted = await requestDraft(deps, context);
@@ -203,8 +206,11 @@ describe('pipeline/reply-flow: два провала проверок дают �
     });
   });
 
-  it('спросить нечего (всё выяснено): передача check_failed', async () => {
-    const r = await run({ profile: EVERYTHING });
+  it('спросить нечего (всё выяснено), чат уже передавался: передача check_failed', async () => {
+    const r = await run({
+      profile: EVERYTHING,
+      progress: { priceAsks: 0, refused: false, handedOff: true },
+    });
 
     expect(r.verdict).toEqual({ kind: 'handoff', notice: { reason: 'check_failed' } });
   });
@@ -214,6 +220,7 @@ describe('pipeline/reply-flow: два провала проверок дают �
       profile: EVERYTHING,
       signals: { priceAsked: true, refused: false },
       companyName: 'ТОО Склад',
+      progress: { priceAsks: 0, refused: false, handedOff: true },
     });
 
     expect(r.verdict).toEqual({ kind: 'handoff', notice: { reason: 'hot', aboutPrice: true } });

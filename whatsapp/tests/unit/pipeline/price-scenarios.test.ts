@@ -207,6 +207,11 @@ describe('сценарии владельца 29.10.2026: минимум пер�
 
     await s.services.handoff.returnToBot(s.chatId());
 
-    expect(s.storage.chats.getProgress(s.chatId())).toEqual({ priceAsks: 0, refused: false });
+    // Счёт вопросов цены заново; что чат уже передавался, остаётся (собранный минимум сам больше не передаёт).
+    expect(s.storage.chats.getProgress(s.chatId())).toEqual({
+      priceAsks: 0,
+      refused: false,
+      handedOff: true,
+    });
   });
 });

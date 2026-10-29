@@ -101,7 +101,7 @@ describe('createAgent: draftReply, запрос', () => {
       context({
         profile,
         companyName: 'ТОО Склад',
-        progress: { priceAsks: 2, refused: true },
+        progress: { priceAsks: 2, refused: true, handedOff: true },
         company: { kind: 'unknown', askName: true },
       }),
     );

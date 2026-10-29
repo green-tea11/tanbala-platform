@@ -4,6 +4,7 @@ import {
   companyAskable,
   ESTIMATE_LATER,
   handoffMinimum,
+  MINIMUM_HANDOFF_TEXT,
   MINIMUM_LABELS,
   minimumGroupQuestions,
   PRICE_ASKS_FOR_HANDOFF,
@@ -29,6 +30,9 @@ export interface PriceDataInput {
 
 const COLLECTED_ALL =
   'Минимум для передачи по цене собран: если клиент спрашивает цену, сроки или договор, передай чат (hot).';
+/** Чат ещё не передавался (решение владельца 29.10.2026 вечером): собранный минимум передаёт чат сразу. */
+const COLLECTED_ALL_FIRST = `Минимум для передачи собран, и чат ещё не передавался коллеге: передай чат сейчас (hot), даже если клиент не спрашивает цену. Ответь на вопрос клиента, если он есть и ответ есть в документах, затем напиши «${MINIMUM_HANDOFF_TEXT}»; если клиент спрашивает цену, вместо этого «Цена сильно зависит от объёма. Уточню у коллеги и вернусь к вам.». Вопросов не задавай.`;
+const COMPLETES_NOW = `Если в последнем сообщении клиент назвал всё, чего не хватает, минимум собран: передай чат сейчас (hot) с фразой «${MINIMUM_HANDOFF_TEXT}», вопросов не задавай.`;
 const ALWAYS_NOW =
   'Сразу, при любом минимуме, чат передаётся, если клиент прямо просит живого человека (asked_human) или жалуется (complaint).';
 const NOTE_PRICE =
@@ -78,6 +82,9 @@ function missingLines(
 }
 
 /**
+ * Пока чат ни разу не передавался (progress.handedOff), собранный минимум велит передать чат сейчас, даже без вопроса
+ * цены, а при недостающем строка говорит, что делать, если клиент назвал его в последнем сообщении (решение владельца
+ * 29.10.2026 вечером; держит код: pipeline/auto-handoff.ts).
  * Строки о цене для блока данных вызова ответа (решение владельца 29.10.2026): что из минимума собрано и чего не
  * хватает (handoff/minimum.ts; компания, о которой спросить нельзя, не упоминается), какой один вопрос задать при
  * вопросе цены, сколько раз клиент уже спрашивал цену (четвёртый раз даёт передачу), отказывался ли отвечать, и что
@@ -91,10 +98,14 @@ export function priceReplyData(input: PriceDataInput): string {
     companyAskable: companyAskable(input.company),
   });
   const notePrice = input.notePrice === true;
+  const first = input.progress.handedOff !== true;
   const minimumLines =
     minimum.missing.length === 0
-      ? [notePrice ? COLLECTED_ALL_NOTE : COLLECTED_ALL]
-      : missingLines(input, minimum.collected, minimum.missing);
+      ? [notePrice ? COLLECTED_ALL_NOTE : first ? COLLECTED_ALL_FIRST : COLLECTED_ALL]
+      : [
+          ...missingLines(input, minimum.collected, minimum.missing),
+          ...(first ? [COMPLETES_NOW] : []),
+        ];
   const noteLines = notePrice ? [NOTE_HAS_PRICE] : input.hasNote === true ? [NOTE_PRICE] : [];
   return [
     ...minimumLines,

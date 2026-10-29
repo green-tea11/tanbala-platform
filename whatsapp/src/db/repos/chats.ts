@@ -50,6 +50,8 @@ interface ProfileColumns {
 interface ProgressRow {
   readonly price_asks: number;
   readonly refused_answers: number;
+  /** 1, если у чата есть хоть одна запись в handoffs (открытая или закрытая). */
+  readonly handed_off: number;
 }
 
 /** Заметка для бота в chats: текст и время есть или нет вместе (CHECK). */
@@ -167,6 +169,7 @@ const UPSERT_PROFILE = `INSERT INTO client_profiles
  * listForPanel и countForPanel: чаты для панели с фильтром по статусу и страницами; limit и offset проверяются
  * (отрицательный LIMIT в SQLite значит «без лимита»), статус только bot или manager.
  * getProgress, recordTurn и resetProgress: ход разговора о цене в колонках chats (price_asks, refused_answers);
+ * getProgress ещё говорит, передавался ли чат менеджеру хоть раз (handedOff, только если да: запись в handoffs);
  * getNote и setNote: заметка для бота (bot_note, bot_note_at_ms). Неизвестный чат => явная ошибка.
  */
 export function createChatsRepo(db: Database.Database): ChatsRepo {
@@ -313,7 +316,9 @@ function prepareStatements(db: Database.Database) {
       )
       .pluck(),
     progress: db.prepare<[number], ProgressRow>(
-      'SELECT price_asks, refused_answers FROM chats WHERE id = ?',
+      `SELECT c.price_asks, c.refused_answers,
+         EXISTS (SELECT 1 FROM handoffs h WHERE h.chat_id = c.id) AS handed_off
+       FROM chats c WHERE c.id = ?`,
     ),
     recordTurn: db.prepare<{ id: ChatId; priceAsked: 0 | 1; refused: 0 | 1 }>(
       `UPDATE chats SET price_asks = price_asks + @priceAsked,
@@ -454,7 +459,8 @@ function toProgress(row: ProgressRow): ChatProgress {
   if (row.refused_answers !== 0 && row.refused_answers !== 1) {
     throw new Error('В chats недопустимое значение отказа отвечать: строка испорчена');
   }
-  return { priceAsks: row.price_asks, refused: row.refused_answers === 1 };
+  const progress = { priceAsks: row.price_asks, refused: row.refused_answers === 1 };
+  return row.handed_off === 1 ? { ...progress, handedOff: true } : progress;
 }
 
 function toHas1C(value: number | null): boolean | null {
