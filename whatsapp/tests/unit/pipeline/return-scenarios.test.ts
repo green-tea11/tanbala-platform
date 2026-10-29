@@ -212,3 +212,31 @@ describe('возврат боту: голосовое, пришедшее, по�
     expect(back.llm.requests).toEqual([]);
   });
 });
+
+describe('возврат боту с заметкой после жалобы (ревью 29.10.2026, второй круг)', () => {
+  it('клиент просил больше не писать: возврат с заметкой не открывает его сообщения, бот молчит', async () => {
+    const s = createScenario({ api: null });
+    await s.say('Здравствуйте', { replies: [ASK] });
+    const stop = await s.say('Перестаньте мне писать', {
+      replies: [{ outcome: 'complaint', stopRequested: true }],
+    });
+
+    const back = await s.returnToBot({ replies: [ASK] }, 'Клиент просил больше не писать');
+
+    expect(stop.outcome).toEqual({ kind: 'handed_off', reason: 'complaint' });
+    expect(back.toClient).toEqual([]);
+    expect(back.llm.requests).toEqual([]);
+  });
+
+  it('жалоба без просьбы не писать: тоже не открывается, клиенту пишет человек', async () => {
+    const s = createScenario({ api: null });
+    await s.say('Вы мне уже надоели своими вопросами', {
+      replies: [{ outcome: 'complaint', stopRequested: false }],
+    });
+
+    const back = await s.returnToBot({ replies: [ASK] }, 'Ответь ему спокойно про 1С');
+
+    expect(back.toClient).toEqual([]);
+    expect(back.llm.requests).toEqual([]);
+  });
+});

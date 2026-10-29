@@ -74,6 +74,8 @@ const KINDS: readonly MessageKind[] = ['text', 'voice', 'other'];
  * reopenAnsweredByHandoff: если последнее сообщение не клиента это фраза передачи бота (её wa_id в outbound_ids с
  * origin handoff_notice в том же чате), входящие клиента до неё и после прошлого сообщения не клиента, которое не фраза
  * передачи, не раньше sinceMs, получают answered 0 и возвращаются по времени; выборка и запись одной транзакцией.
+ * Последняя передача чата (handoffs, по времени открытия) жалоба => ничего: извинение при жалобе (в том числе «больше
+ * не пишем» по просьбе клиента) имеет тот же origin, но не обещает вернуться, и клиенту пишет человек.
  */
 export function createMessagesRepo(db: Database.Database): MessagesRepo {
   const statements = prepareStatements(db);
@@ -169,7 +171,14 @@ function prepareStatements(db: Database.Database) {
          WHERE m.chat_id = @chatId AND m.author <> 'client'
        ),
        last_out AS (SELECT ts_ms, id, author, handoff FROM outs ORDER BY ts_ms DESC, id DESC LIMIT 1),
-       notice AS (SELECT ts_ms, id FROM last_out WHERE author = 'bot' AND handoff = 1),
+       last_handoff AS (
+         SELECT reason FROM handoffs WHERE chat_id = @chatId ORDER BY opened_at_ms DESC, id DESC LIMIT 1
+       ),
+       notice AS (
+         SELECT ts_ms, id FROM last_out
+         WHERE author = 'bot' AND handoff = 1
+           AND NOT EXISTS (SELECT 1 FROM last_handoff WHERE reason = 'complaint')
+       ),
        prev_out AS (
          SELECT p.ts_ms, p.id FROM outs AS p, notice AS n
          WHERE p.handoff = 0 AND (p.ts_ms, p.id) < (n.ts_ms, n.id)

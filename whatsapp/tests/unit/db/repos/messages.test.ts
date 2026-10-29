@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
+import { createHandoffsRepo } from '../../../../src/db/repos/handoffs.js';
 import { createMessagesRepo } from '../../../../src/db/repos/messages.js';
 import { createOutboundIdsRepo } from '../../../../src/db/repos/outbound-ids.js';
 import type { ChatId, NewMessage, SendOrigin, WaMessageId } from '../../../../src/domain/types.js';
@@ -669,6 +670,32 @@ describe('createMessagesRepo: reopenAnsweredByHandoff (возврат с зам�
 
     expect(r.repo.reopenAnsweredByHandoff(r.chatId, T)).toEqual([]);
     expect(r.repo.isUnansweredInbound(r.otherChatId, 'X1' as WaMessageId)).toBe(false);
+  });
+
+  it('последняя передача жалоба: извинение не фраза «вернусь к вам», ничего не открывается', () => {
+    const r = rig();
+    const handoffs = createHandoffsRepo(r.db);
+    r.add('C1', 'client', T);
+    handoffs.open(r.chatId, 'complaint', 'cold', '{}', T + 1);
+    r.bot('H1', 'handoff_notice', T + 1);
+    r.repo.markAnswered(r.chatId, 'C1' as WaMessageId);
+    handoffs.resolve(r.chatId, T + 2);
+
+    expect(r.repo.reopenAnsweredByHandoff(r.chatId, T)).toEqual([]);
+    expect(r.answered('C1')).toBe(true);
+  });
+
+  it('прошлая передача жалоба, последняя нет: открывается', () => {
+    const r = rig();
+    const handoffs = createHandoffsRepo(r.db);
+    handoffs.open(r.chatId, 'complaint', 'cold', '{}', T);
+    handoffs.resolve(r.chatId, T);
+    r.add('C1', 'client', T + 1);
+    handoffs.open(r.chatId, 'hot', 'hot', '{}', T + 2);
+    r.bot('H1', 'handoff_notice', T + 2);
+    r.repo.markAnswered(r.chatId, 'C1' as WaMessageId);
+
+    expect(r.repo.reopenAnsweredByHandoff(r.chatId, T).map((m) => m.waId)).toEqual(['C1']);
   });
 
   it('пустой чат: ничего', () => {
