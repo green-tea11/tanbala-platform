@@ -220,11 +220,21 @@ export interface AppStateRepo {
   setLinkedAtMs(ms: number): void;
   /**
    * Ставит флаг: список чатов из первой синхронизации (messaging-history.set) не сохранился, known_chats неполон.
-   * Пока флаг стоит, этап 8 не переключает TEST_MODE. Повтор не сдвигает момент первого сбоя.
+   * Пока флаг стоит, бот не переходит в рабочий режим (pipeline/working-mode.ts). Повтор не сдвигает момент
+   * первого сбоя.
    */
   markHistoryIncomplete(atMs: number): void;
   /** Момент первого сбоя сохранения списка чатов, мс UTC; null, если список не терялся. */
   getHistoryIncomplete(): number | null;
+  /**
+   * Граница рабочего режима (этап 8): момент последнего перехода TEST_MODE true => false, мс UTC; null, пока бот
+   * в закрытом режиме или ещё не переходил. Сообщения чатов не из TEST_ALLOWLIST, отправленные раньше, бот пропускает.
+   */
+  getWorkingSinceMs(): number | null;
+  /** Записывает границу с перезаписью. Когда писать, решает pipeline/working-mode.ts (вместе с правилом перехода). */
+  setWorkingSinceMs(ms: number): void;
+  /** Снимает границу (запуск в закрытом режиме): следующий TEST_MODE=false снова переход. true: граница была. */
+  clearWorkingSince(): boolean;
 }
 
 /** Откуда бот узнал о чате рабочего номера: первая синхронизация WhatsApp (history) или сообщение (message). */
@@ -242,6 +252,38 @@ export interface KnownChatsRepo {
   touch(jid: Jid, atMs: number, source: KnownChatSource): void;
   /** Сколько чатов запомнено: для лога счётчиком, без JID. */
   count(): number;
+}
+
+/** Чат рабочего номера в known_chats: адрес и время последней активности, мс UTC. */
+export interface KnownChat {
+  readonly jid: Jid;
+  readonly lastActivityMs: number;
+}
+
+/** Чат из базы для правила перехода в рабочий режим: адреса, кто ведёт и когда было последнее сообщение. */
+export interface SwitchChat {
+  readonly id: ChatId;
+  readonly identity: ChatIdentity;
+  readonly status: ChatStatus;
+  /** Время последнего сообщения переписки, мс UTC; null, если сообщений нет. */
+  readonly lastMessageAtMs: number | null;
+}
+
+/**
+ * Переход в рабочий режим (этап 8) в базе. Правило из CLAUDE.md: чаты с перепиской до переключения ведёт менеджер,
+ * бот берёт только чаты, впервые написавшие после него. Переход отмечает адреса known_chats «у менеджера»
+ * (holdForManager), и чат, который впервые появится в базе с таким адресом, начинает со статусом manager
+ * (pipeline/recorder.ts). Запись при переходе делать внутри UnitOfWork.run вместе с границей в app_state.
+ */
+export interface WorkingModeRepo {
+  /** Все известные чаты рабочего номера (known_chats). */
+  listKnownChats(): readonly KnownChat[];
+  /** Все чаты базы по ID. */
+  listChats(): readonly SwitchChat[];
+  /** Отмечает адреса, которые правило перехода отдало менеджеру; отметки остальных адресов снимаются. */
+  holdForManager(jids: readonly Jid[]): void;
+  /** Есть ли среди адресов отмеченный при переходе. */
+  isHeldForManager(jids: readonly Jid[]): boolean;
 }
 
 /**

@@ -218,6 +218,17 @@ ALTER TABLE chats ADD COLUMN bot_note_at_ms INTEGER
 `;
 
 /**
+ * Версия 9 (этап 8, переход в рабочий режим). known_chats.held_for_manager: 1, если правило перехода
+ * (pipeline/working-mode.ts) отдало этот адрес менеджеру: чат, который впервые появится в базе с таким адресом,
+ * начинает со статусом manager. Отметки ставит каждый переход TEST_MODE true => false, по умолчанию 0. Только
+ * ADD COLUMN со значением по умолчанию: живая база версии 8 переходит без переписывания строк.
+ */
+const SCHEMA_V9 = `
+ALTER TABLE known_chats ADD COLUMN held_for_manager INTEGER NOT NULL DEFAULT 0
+  CHECK (held_for_manager IN (0, 1));
+`;
+
+/**
  * Миграции по порядку: элемент i переводит схему с версии i на i + 1.
  * Выпущенную миграцию не править: изменения схемы только новой версией в конце списка.
  */
@@ -230,6 +241,7 @@ const MIGRATIONS: readonly string[] = [
   SCHEMA_V6,
   SCHEMA_V7,
   SCHEMA_V8,
+  SCHEMA_V9,
 ];
 
 /**

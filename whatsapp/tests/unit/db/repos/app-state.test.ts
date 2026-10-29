@@ -95,3 +95,53 @@ describe('createAppStateRepo: флаг неполной истории', () => {
     expect(() => createAppStateRepo(db).getHistoryIncomplete()).toThrow(/history_incomplete_at_ms/);
   });
 });
+
+describe('createAppStateRepo: граница рабочего режима (этап 8)', () => {
+  const SWITCHED_AT = LINKED_AT + 86_400_000;
+
+  it('пока бот не переходил в рабочий режим, границы нет', () => {
+    expect(createAppStateRepo(useMigratedDb()).getWorkingSinceMs()).toBeNull();
+  });
+
+  it('setWorkingSinceMs пишет границу отдельно от привязки и флага, повтор её перезаписывает', () => {
+    const db = useMigratedDb();
+    const repo = createAppStateRepo(db);
+    repo.setLinkedAtMs(LINKED_AT);
+    repo.markHistoryIncomplete(LINKED_AT + 1000);
+
+    repo.setWorkingSinceMs(SWITCHED_AT);
+    expect(createAppStateRepo(db).getWorkingSinceMs()).toBe(SWITCHED_AT);
+    repo.setWorkingSinceMs(SWITCHED_AT + 1);
+
+    expect(repo.getWorkingSinceMs()).toBe(SWITCHED_AT + 1);
+    expect(repo.getLinkedAtMs()).toBe(LINKED_AT);
+    expect(repo.getHistoryIncomplete()).toBe(LINKED_AT + 1000);
+  });
+
+  it('clearWorkingSince снимает границу и говорит, была ли она; привязку не трогает', () => {
+    const repo = createAppStateRepo(useMigratedDb());
+    repo.setLinkedAtMs(LINKED_AT);
+    repo.setWorkingSinceMs(SWITCHED_AT);
+
+    expect(repo.clearWorkingSince()).toBe(true);
+    expect(repo.getWorkingSinceMs()).toBeNull();
+    expect(repo.clearWorkingSince()).toBe(false);
+    expect(repo.getLinkedAtMs()).toBe(LINKED_AT);
+  });
+
+  it.each([-1, 1.5, Number.NaN])('отклоняет неверное время %s и границу не пишет', (value) => {
+    const repo = createAppStateRepo(useMigratedDb());
+
+    expect(() => {
+      repo.setWorkingSinceMs(value);
+    }).toThrow(RangeError);
+    expect(repo.getWorkingSinceMs()).toBeNull();
+  });
+
+  it('испорченное значение границы в базе: явная ошибка с названием ключа', () => {
+    const db = useMigratedDb();
+    db.prepare("INSERT INTO app_state (key, value) VALUES ('working_since_ms', 'завтра')").run();
+
+    expect(() => createAppStateRepo(db).getWorkingSinceMs()).toThrow(/working_since_ms/);
+  });
+});

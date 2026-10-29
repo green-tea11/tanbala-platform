@@ -58,9 +58,10 @@ const VERSION_5_TABLES = CURRENT_TABLES.filter((name) => name !== 'chat_companie
 
 /**
  * Последняя версия схемы: этап 2 дал версию 1, этап 3 версию 2, этапы 4, 5 и 6 версии 3, 4 и 5, определение
- * компании клиента версию 6, минимум для передачи по цене версию 7, заметка для бота версию 8.
+ * компании клиента версию 6, минимум для передачи по цене версию 7, заметка для бота версию 8, отметка «у менеджера»
+ * при переходе в рабочий режим (этап 8) версию 9.
  */
-const CURRENT_VERSION = 8;
+const CURRENT_VERSION = 9;
 
 function columnNames(db: Database.Database, table: string): unknown[] {
   return db.prepare('SELECT name FROM pragma_table_info(?) ORDER BY cid').pluck().all(table);
@@ -235,8 +236,41 @@ describe('runMigrations', () => {
     expect(columnNames(db, 'chats')).not.toContain('bot_note');
 
     runMigrations(db, 8);
-    expect(userVersion(db)).toBe(CURRENT_VERSION);
+    expect(userVersion(db)).toBe(8);
     expect(columnNames(db, 'chats')).toContain('bot_note');
+    expect(columnNames(db, 'known_chats')).not.toContain('held_for_manager');
+
+    runMigrations(db, 9);
+    expect(userVersion(db)).toBe(CURRENT_VERSION);
+    expect(columnNames(db, 'known_chats')).toContain('held_for_manager');
+  });
+
+  it('живая база версии 8 переходит на версию 9: известные чаты на месте, ни один не отмечен', () => {
+    const db = useMemoryDb();
+    runMigrations(db, 8);
+    db.prepare(
+      `INSERT INTO known_chats (jid, last_activity_ms, source)
+       VALUES ('x@lid', 1000, 'history'), ('77000000001@s.whatsapp.net', 2000, 'message')`,
+    ).run();
+
+    runMigrations(db);
+
+    expect(userVersion(db)).toBe(CURRENT_VERSION);
+    expect(
+      db
+        .prepare(
+          'SELECT jid, last_activity_ms, source, held_for_manager FROM known_chats ORDER BY jid',
+        )
+        .all(),
+    ).toEqual([
+      {
+        jid: '77000000001@s.whatsapp.net',
+        last_activity_ms: 2000,
+        source: 'message',
+        held_for_manager: 0,
+      },
+      { jid: 'x@lid', last_activity_ms: 1000, source: 'history', held_for_manager: 0 },
+    ]);
   });
 
   it('живая база версии 6 переходит сразу на 8: заметки нет', () => {
@@ -345,6 +379,26 @@ describe('индексы этапов 5 и 6', () => {
         'messages_chat_ts',
       ]),
     );
+  });
+});
+
+describe('схема версии 9: отметка «у менеджера» при переходе в рабочий режим', () => {
+  it.each<[number, string | undefined]>([
+    [0, undefined],
+    [1, undefined],
+    [2, 'SQLITE_CONSTRAINT_CHECK'],
+  ])('значение %j: ошибка %s', (held, code) => {
+    const db = useMigratedDb();
+
+    const error = errorOf(() =>
+      db
+        .prepare(
+          "INSERT INTO known_chats (jid, last_activity_ms, source, held_for_manager) VALUES ('x@lid', 1, 'history', ?)",
+        )
+        .run(held),
+    );
+
+    expect(code === undefined ? error : (error as { code?: string } | undefined)?.code).toBe(code);
   });
 });
 
