@@ -88,6 +88,17 @@ describe('agent: указание коллеги в системном пром�
     expect(block).not.toMatch(ANY_DASH);
   });
 
+  it('ответ: после своей фразы передачи бот возвращается к клиенту с ответом коллеги или вопросом из задания', async () => {
+    const { requests, agent } = agentWith(ANSWER);
+
+    await agent.draftReply(context({ note: NOTE }));
+
+    const block = onlyRequest(requests).system[2]?.text ?? '';
+    expect(block).toMatch(
+      /последняя реплика в переписке твоя фраза «Уточню у коллеги и вернусь к вам»[^\n]*ты возвращаешься к клиенту/,
+    );
+  });
+
   it('проверка: дословная цитата указания и внутреннее из него нарушение (ревью 29.10.2026)', async () => {
     const { requests, agent } = agentWith({ ok: true, problems: [] });
 
