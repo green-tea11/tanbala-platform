@@ -29,8 +29,9 @@ else
 	tar -C "$SITE_DIR" -cf - "${FILES[@]}" | tar -C "$work/src" -xf -
 fi
 echo "Сборка (npm ci и astro build)"
-(cd "$work/src" && npm ci --no-audit --no-fund --loglevel=error && npx astro build --outDir ../dist) \
-	>"$work/build.log" 2>&1 || {
+# Без install-скриптов пакетов (на этом ПК лежит ключ к серверу), без TANBALA_BASE (подпапка превью на GitHub).
+(cd "$work/src" && npm ci --ignore-scripts --no-audit --no-fund --loglevel=error &&
+	env -u TANBALA_BASE npx astro build --outDir ../dist) >"$work/build.log" 2>&1 || {
 	tail -30 "$work/build.log" >&2
 	echo "Сборка не удалась, на сервер ничего не ушло" >&2
 	exit 1

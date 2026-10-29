@@ -9,7 +9,11 @@ tanbala.kz {
 		X-Frame-Options DENY
 	}
 	# Файлы в /_astro/ с хэшем в имени не меняются: браузер держит их год. Страницу проверяет каждый раз.
-	@hashed path /_astro/*
+	# Только существующие: 404 на старый файл (открытая вкладка после выкладки) не должен застрять на год.
+	@hashed {
+		path /_astro/*
+		file
+	}
 	header @hashed Cache-Control "public, max-age=31536000, immutable"
 	header ?Cache-Control "no-cache"
 	file_server

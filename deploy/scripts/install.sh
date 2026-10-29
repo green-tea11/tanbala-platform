@@ -102,7 +102,7 @@ step_system() {
 	apt-get update -q
 	# Caddy с первой секунды на закрытом Caddyfile (с его import): стандартный показал бы свою страницу на :80.
 	if [[ ! -f /etc/caddy/Caddyfile ]]; then
-		install -D -m 644 "$SRC/deploy/caddy/common.caddy" "$ROOT/deploy/caddy/common.caddy"
+		install -D -m 644 -t "$ROOT/deploy/caddy" "$SRC"/deploy/caddy/*.caddy
 		install -D -m 644 "$SRC/deploy/Caddyfile.closed" /etc/caddy/Caddyfile
 	fi
 	apt-get install -y -q -o Dpkg::Options::=--force-confold \
