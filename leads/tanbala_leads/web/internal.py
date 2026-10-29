@@ -1,6 +1,7 @@
 """HTTP-часть внутреннего API для WhatsApp-бота (проект C).
 
-Контракт: ..\\D-Email+WhatsApp\\contract\\INTERNAL_API.md. Слушает только 127.0.0.1, как весь интерфейс.
+Контракт: ..\\contract\\INTERNAL_API.md. Слушает только 127.0.0.1, как весь интерфейс. Имя интерфейса за Caddy
+(PUBLIC_UI_HOST) сюда не пускается: app.LocalOnlyInternal отвечает 400 до токена.
 Токен X-Internal-Token проверяется первым: без него 401 на любой путь /internal/..., даже несуществующий.
 Ответы JSON, ошибки {"error": код}. Вход разбирается до соединения с базой: неверный запрос даёт 400, а не 503.
 В access-лог строка запроса не попадает (HideQuery): в ней телефоны, почты и названия от клиентов бота.
@@ -48,6 +49,11 @@ class InternalError(Exception):
 
 def is_internal_path(path: str) -> bool:
     return path == PREFIX or path.startswith(PREFIX + "/")
+
+
+def looks_internal(path: str) -> bool:
+    """Путь похож на /internal в любом регистре и с лишними «/» в начале: такие пути только для 127.0.0.1."""
+    return path.lstrip("/").lower().startswith(PREFIX.lstrip("/"))
 
 
 def is_internal(request: Request) -> bool:

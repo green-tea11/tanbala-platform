@@ -1,5 +1,6 @@
 """Внутренний API для WhatsApp-бота: токен, ошибки, поиск компании. Без сети и без Claude API."""
 
+import asyncio
 import os
 
 import psycopg
@@ -19,8 +20,8 @@ def no_db() -> psycopg.Connection:
     raise AssertionError("этот запрос не должен открывать соединение с базой")
 
 
-def make_client(connect=no_db, token: str | None = TOKEN) -> TestClient:
-    app = create_app(connect, lambda *args: 1, csrf_token="csrf", internal_token=token)
+def make_client(connect=no_db, token: str | None = TOKEN, **options) -> TestClient:
+    app = create_app(connect, lambda *args: 1, csrf_token="csrf", internal_token=token, **options)
     return TestClient(app, base_url=BASE_URL)
 
 
@@ -82,6 +83,55 @@ def test_foreign_host_is_refused(host):
 def test_host_with_port_passes_to_token_check(host):
     """Проект C шлёт Host с портом: такой запрос доходит до проверки токена, а не получает 400."""
     client = make_client()
+
+    without_token = client.get("/internal/lookup?domain=sklad.kz", headers={"Host": host})
+    unknown_path = client.get("/internal/nope", headers={**AUTH, "Host": host})
+
+    assert (without_token.status_code, without_token.json()) == (401, {"error": "unauthorized"})
+    assert (unknown_path.status_code, unknown_path.json()) == (404, {"error": "not_found"})
+
+
+PUBLIC_HOST = "leads.tanbala.kz"
+
+
+@pytest.mark.parametrize("path", ["/internal/lookup?domain=sklad.kz", "/internal/nope", "/internal", "/internal/",
+                                  "/INTERNAL/lookup", "/Internal/companies/1/brief", "/internal/research/x",
+                                  "/internal%2Flookup"])
+@pytest.mark.parametrize("method", ["GET", "POST"])
+def test_public_host_never_reaches_internal_api(path, method):
+    """Имя интерфейса за Caddy (PUBLIC_UI_HOST) годится только для интерфейса: /internal только с 127.0.0.1."""
+    client = make_client(public_host=PUBLIC_HOST)
+
+    response = client.request(method, path, headers={**AUTH, "Host": PUBLIC_HOST}, json={"name": "Рахат"})
+
+    assert (response.status_code, response.text) == (400, "Invalid host header")
+
+
+@pytest.mark.parametrize("path", ["//internal/lookup", "///INTERNAL/companies/1/brief"])
+def test_public_host_with_extra_slashes_is_refused(path):
+    """Путь «//internal/...» клиент может прислать как есть; TestClient счёл бы «internal» хостом, запрос собран вручную."""
+    app = create_app(no_db, lambda *args: 1, csrf_token="csrf", internal_token=TOKEN, public_host=PUBLIC_HOST)
+    scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "GET", "scheme": "http",
+             "path": path, "raw_path": path.encode(), "query_string": b"", "root_path": "",
+             "headers": [(b"host", PUBLIC_HOST.encode()), (b"x-internal-token", TOKEN.encode())],
+             "server": ("127.0.0.1", 8000), "client": ("127.0.0.1", 50000)}
+    sent: list[dict] = []
+
+    async def receive() -> dict:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    asyncio.run(app(scope, receive, send))
+
+    assert sent[0]["status"] == 400
+    assert b"".join(m.get("body", b"") for m in sent[1:]) == b"Invalid host header"
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1:8000", "localhost:8000", "127.0.0.1"])
+def test_local_hosts_still_reach_api_when_public_host_is_set(host):
+    client = make_client(public_host=PUBLIC_HOST)
 
     without_token = client.get("/internal/lookup?domain=sklad.kz", headers={"Host": host})
     unknown_path = client.get("/internal/nope", headers={**AUTH, "Host": host})

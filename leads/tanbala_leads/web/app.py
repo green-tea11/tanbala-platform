@@ -3,6 +3,8 @@
 Работает только на 127.0.0.1. Страницы показывают текст с чужих сайтов и от модели, поэтому:
 Jinja экранирует всё, ссылки выводятся только http(s), в JS данные попадают только через textContent,
 каждый POST требует CSRF-токен и своё Origin. Отправки писем здесь нет.
+На сервере интерфейс открывают через Caddy по имени из PUBLIC_UI_HOST (HTTPS и пароль в Caddy); внутренний API
+по этому имени недоступен.
 
 Модули: labels (подписи и лимиты), format (форматирование), queries (чтение из базы),
 views (данные для шаблонов), internal (API для WhatsApp-бота по токену), этот файл: безопасность, маршруты и запуск.
@@ -13,6 +15,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import logging
+import re
 import secrets
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -24,13 +27,15 @@ import psycopg
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
+from starlette.datastructures import Headers
 from starlette.datastructures import UploadFile  # request.form() отдаёт файлы этого класса, не fastapi.UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from tanbala_leads import __version__, browsers, contact_policy, db, pipeline
 from tanbala_leads.internal import brief, research
@@ -82,6 +87,9 @@ BIND_HOST = "127.0.0.1"
 # Защита от DNS rebinding: чужое имя хоста в запросе получает 400. Порт не сравнивается:
 # «127.0.0.1:8000» и «localhost:8000» проходят (так их шлют браузер и HTTP-клиент бота).
 ALLOWED_HOSTS = ("127.0.0.1", "localhost")
+# Имя интерфейса за Caddy (PUBLIC_UI_HOST): части из латиницы, цифр и дефиса через точку, последняя с буквы
+# (так IP-адрес не пройдёт), без схемы, порта и пути.
+PUBLIC_HOST_RE = re.compile(r"(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?")
 CSP = (
     "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
     "form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
@@ -124,11 +132,40 @@ def _redirect(url: str) -> RedirectResponse:
     return RedirectResponse(url, status_code=303)
 
 
+def parse_public_host(value: str) -> str | None:
+    """Имя интерфейса за Caddy из PUBLIC_UI_HOST в нижнем регистре. Пусто: интерфейс только по 127.0.0.1 и localhost."""
+    host = value.strip().lower()
+    if not host:
+        return None
+    if not PUBLIC_HOST_RE.fullmatch(host):
+        raise ValueError("PUBLIC_UI_HOST должен быть именем без схемы, порта и пути, например leads.tanbala.kz")
+    return host
+
+
+class LocalOnlyInternal:
+    """Внутренний API только по 127.0.0.1 и localhost: по имени из PUBLIC_UI_HOST (Caddy) на /internal ответ 400.
+
+    Путь сравнивается без учёта регистра и лишних «/» в начале. Ответ тот же, что у TrustedHostMiddleware для чужого
+    имени, и до проверки токена: снаружи не видно, есть ли такой путь.
+    """
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] in ("http", "websocket") and internal.looks_internal(scope["path"]):
+            host = Headers(scope=scope).get("host", "").split(":", 1)[0].lower()
+            if host not in ALLOWED_HOSTS:
+                await PlainTextResponse("Invalid host header", status_code=400)(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
 def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[str, str, int], int], *,
                csrf_token: str | None = None, daily_budget_usd: float | None = None,
                send_test: Callable[[psycopg.Connection, int], send_step.TestSendResult] | None = None,
                test_address: str | None = None, internal_token: str | None = None,
-               research_queue: research.ResearchQueue | None = None) -> FastAPI:
+               research_queue: research.ResearchQueue | None = None, public_host: str | None = None) -> FastAPI:
     """Собрать приложение. connect открывает соединение на запрос, start_run запускает поиск в фоне.
 
     daily_budget_usd: суточный лимит расходов на API для сводки на странице поиска (None: не показывать).
@@ -136,6 +173,8 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
     Без них, или если адрес не из send.TEST_RECIPIENTS, тестовая отправка выключена.
     internal_token: токен внутреннего API для WhatsApp-бота (web/internal.py); пустой выключает API.
     research_queue: очередь проверок новых компаний для бота (internal/research.py).
+    public_host: имя интерфейса за Caddy (parse_public_host). Пускается только к интерфейсу, своё Origin у него
+    https://имя: Caddy принимает HTTPS, а сюда приходит по HTTP.
     """
     token = csrf_token or secrets.token_urlsafe(32)
     # Компаниям здесь не отправляется ничего: только тест, и только на зашитый в send.py адрес владельца.
@@ -144,7 +183,8 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
     # redirect_slashes: /internal/lookup/ иначе получил бы 307 до проверки токена.
     app = FastAPI(title="Tanbala", docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False)
     app.middleware("http")(_security_headers)
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(ALLOWED_HOSTS))
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=[*ALLOWED_HOSTS, *([public_host] if public_host else [])])
+    app.add_middleware(LocalOnlyInternal)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @contextmanager
@@ -168,7 +208,11 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
             Вернуть текстовые поля формы; файлы (только у импорта) лежат отдельно в ключе "_files".
             """
             origin = request.headers.get("origin")
-            own_origin = f"{request.url.scheme}://{request.headers.get('host', '')}"
+            host = request.headers.get("host", "")
+            if public_host and host.split(":", 1)[0].lower() == public_host:
+                own_origin = f"https://{public_host}"
+            else:
+                own_origin = f"{request.url.scheme}://{host}"
             if origin is not None and origin != own_origin:
                 raise HTTPException(403, ERROR_MESSAGES[403])
             if request.headers.get("sec-fetch-site") == "cross-site":
@@ -550,6 +594,8 @@ def serve(host: str = BIND_HOST, port: int = 8000) -> None:
     # Браузеры общие для поиска и проверок из WhatsApp: не больше MAX_2GIS_BROWSERS и MAX_SITE_BROWSERS сразу
     # (по умолчанию по одному, VPS 4 ГБ). Неверная настройка останавливает запуск до миграций.
     limits = browsers.limits_from_settings(settings)
+    # Имя интерфейса за Caddy (PUBLIC_UI_HOST); неверное значение тоже останавливает запуск до миграций.
+    public_host = parse_public_host(settings.public_ui_host)
     try:
         test_address = send_step.test_recipient(settings)
     except send_step.SendBlocked:
@@ -572,7 +618,11 @@ def serve(host: str = BIND_HOST, port: int = 8000) -> None:
         test_address=test_address,
         internal_token=settings.internal_api_token,
         research_queue=research_queue,
+        public_host=public_host,
     )
+    if public_host:
+        logger.info("Интерфейс открыт и по имени %s (через Caddy, HTTPS); внутренний API по нему недоступен",
+                    public_host)
     if not internal.token_ok(settings.internal_api_token, settings.internal_api_token):
         logger.warning("Внутренний API выключен: INTERNAL_API_TOKEN пустой или короче %s символов",
                        internal.MIN_TOKEN_CHARS)

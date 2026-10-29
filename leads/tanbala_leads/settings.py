@@ -27,6 +27,7 @@ ENV_NAMES: dict[str, str] = {
     "research_per_day": "RESEARCH_PER_DAY",
     "max_2gis_browsers": "MAX_2GIS_BROWSERS",
     "max_site_browsers": "MAX_SITE_BROWSERS",
+    "public_ui_host": "PUBLIC_UI_HOST",
 }
 
 DEFAULTS: dict[str, str] = {
@@ -66,6 +67,7 @@ class Settings:
     research_per_day: str = ""
     max_2gis_browsers: str = ""
     max_site_browsers: str = ""
+    public_ui_host: str = ""
 
     def require(self, name: str) -> str:
         """Вернуть значение поля или остановиться с понятной ошибкой, если оно пустое."""

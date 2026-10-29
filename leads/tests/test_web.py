@@ -15,6 +15,7 @@ from tanbala_leads import contact_policy, db, pipeline
 from tanbala_leads.steps import approve as approve_step
 from tanbala_leads.steps import send as send_step
 from tanbala_leads.llm import call_cost_usd
+from tanbala_leads.settings import load_settings
 from tanbala_leads.web import app as web
 from tanbala_leads.web import create_app, views
 from tanbala_leads.web import format as fmt
@@ -165,6 +166,70 @@ def test_foreign_host_is_rejected():
     assert response.status_code == 400
     for host in ("localhost:8000", "127.0.0.1:8000"):
         assert make_client().get("/static/app.css", headers={"Host": host}).status_code == 200
+
+
+PUBLIC_HOST = "leads.tanbala.kz"
+RUN_FORM = {"csrf_token": TOKEN, "city": "almaty", "query": "склад", "max_companies": "5"}
+
+
+def test_public_host_serves_interface_only_when_configured():
+    """Интерфейс за Caddy: имя leads.tanbala.kz пускается, только если оно задано в PUBLIC_UI_HOST."""
+    assert make_client(base_url=f"http://{PUBLIC_HOST}").get("/static/app.css").status_code == 400
+    client = make_client(base_url=f"http://{PUBLIC_HOST}", public_host=PUBLIC_HOST)
+    assert client.get("/static/app.css").status_code == 200
+    assert client.get("/static/app.css", headers={"Host": "LEADS.TANBALA.KZ"}).status_code == 200
+    assert client.get("/static/app.css", headers={"Host": "evil.example"}).status_code == 400
+    assert client.get("/static/app.css", headers={"Host": "127.0.0.1:8000"}).status_code == 200
+
+
+@pytest.mark.parametrize(("origin", "status"), [(f"https://{PUBLIC_HOST}", 303), (f"http://{PUBLIC_HOST}", 403),
+                                                (f"https://{PUBLIC_HOST}:8443", 403), ("https://evil.example", 403),
+                                                (BASE_URL, 403), ("null", 403)])
+def test_post_via_public_host_expects_https_origin(origin, status):
+    """Caddy отдаёт интерфейс по HTTPS, а сюда приходит по HTTP: своё Origin у имени за Caddy только https://имя."""
+    start_run = FakeStartRun(result=42)
+    client = make_client(start_run=start_run, base_url=f"http://{PUBLIC_HOST}", public_host=PUBLIC_HOST)
+
+    response = client.post("/runs", data=RUN_FORM, headers={"Origin": origin}, follow_redirects=False)
+
+    assert response.status_code == status
+    assert len(start_run.calls) == int(status == 303)
+
+
+@pytest.mark.parametrize(("origin", "status"), [(BASE_URL, 303), ("https://127.0.0.1", 403),
+                                                (f"https://{PUBLIC_HOST}", 403)])
+def test_local_address_keeps_http_origin_when_public_host_is_set(origin, status):
+    start_run = FakeStartRun(result=42)
+    client = make_client(start_run=start_run, public_host=PUBLIC_HOST)
+
+    response = client.post("/runs", data=RUN_FORM, headers={"Origin": origin}, follow_redirects=False)
+
+    assert response.status_code == status
+
+
+@pytest.mark.parametrize(("raw", "host"), [("", None), ("leads.tanbala.kz", "leads.tanbala.kz"),
+                                           ("Leads.Tanbala.KZ", "leads.tanbala.kz"),
+                                           ("a-b.example.com", "a-b.example.com")])
+def test_public_host_setting(raw, host):
+    assert web.parse_public_host(raw) == host
+
+
+@pytest.mark.parametrize("raw", ["https://leads.tanbala.kz", "leads.tanbala.kz:443", "leads.tanbala.kz/",
+                                 "leads.tanbala.kz.", "localhost", "LOCALHOST", "127.0.0.1", "91.201.215.210",
+                                 "*.tanbala.kz", "leads", "-leads.tanbala.kz", "leads-.tanbala.kz",
+                                 "leads..tanbala.kz", "leads tanbala.kz", "лиды.рф", "a" * 64 + ".kz"])
+def test_bad_public_host_is_refused(raw):
+    with pytest.raises(ValueError, match="PUBLIC_UI_HOST"):
+        web.parse_public_host(raw)
+
+
+def test_serve_stops_on_bad_public_host_before_database(monkeypatch):
+    monkeypatch.setattr(web, "load_settings", lambda: load_settings({"DATABASE_URL": "postgresql://test",
+                                                                     "PUBLIC_UI_HOST": "https://leads.tanbala.kz"}))
+    monkeypatch.setattr(web.db, "connect", lambda dsn: pytest.fail("до базы дойти не должно"))
+
+    with pytest.raises(ValueError, match="PUBLIC_UI_HOST"):
+        web.serve()
 
 
 def test_cross_site_fetch_and_huge_body_are_refused():
