@@ -207,6 +207,17 @@ ALTER TABLE chats ADD COLUMN refused_answers INTEGER NOT NULL DEFAULT 0
 `;
 
 /**
+ * Версия 8 (заметка для бота при возврате чата, решение владельца 29.10.2026). chats.bot_note: текст менеджера из
+ * панели, клиенту не виден, действует до следующей передачи; bot_note_at_ms: когда заметку оставили. Текст и время
+ * есть или нет вместе (CHECK проверяется и на старых строках, у них оба NULL).
+ */
+const SCHEMA_V8 = `
+ALTER TABLE chats ADD COLUMN bot_note TEXT;
+ALTER TABLE chats ADD COLUMN bot_note_at_ms INTEGER
+  CHECK ((bot_note IS NULL) = (bot_note_at_ms IS NULL));
+`;
+
+/**
  * Миграции по порядку: элемент i переводит схему с версии i на i + 1.
  * Выпущенную миграцию не править: изменения схемы только новой версией в конце списка.
  */
@@ -218,6 +229,7 @@ const MIGRATIONS: readonly string[] = [
   SCHEMA_V5,
   SCHEMA_V6,
   SCHEMA_V7,
+  SCHEMA_V8,
 ];
 
 /**

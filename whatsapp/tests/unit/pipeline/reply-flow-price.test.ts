@@ -333,3 +333,43 @@ describe('pipeline/price-gate: защитные ветки', () => {
     expect(minimumFallback(situation).text).toBe(PRICE_QUESTION_TEXTS.itemCount);
   });
 });
+
+describe('pipeline/reply-flow: указание коллеги в проверках кодом', () => {
+  const NOTE_TEXT = 'Ориентир от 1 500 000 тенге, нужен выезд';
+  const WITH_PRICE =
+    'Коллега подсказал ориентир: от 1 500 000 тенге. Точнее скажем после выезда к вам.';
+
+  async function runWith(note: string | null, drafts: readonly LlmResult<ReplyDraft>[]) {
+    const h = setup({ drafts, signals: PRICE_NOW, profile: FULL, companyName: 'ТОО Склад' });
+    const context: ConversationContext = {
+      ...h.context,
+      note: note === null ? null : { text: note, atMs: NOW },
+    };
+    const drafted = await requestDraft(h.deps, context);
+    return { ...h, verdict: await decideReply(h.deps, context, drafted) };
+  }
+
+  it('заметка с ценой: цена ровно как в заметке проходит проверки и уходит', async () => {
+    const r = await runWith(NOTE_TEXT, [answer(WITH_PRICE)]);
+
+    expect(r.verdict).toEqual(sentWith(WITH_PRICE, { signals: PRICE_NOW }));
+    expect(r.calls).toEqual(['draft', 'assess', 'save', 'review']);
+  });
+
+  it('цена не как в заметке: повтор с замечанием сверить с указанием', async () => {
+    const r = await runWith(NOTE_TEXT, [
+      answer('Коллега подсказал ориентир: от 1,5 млн тенге. Точнее скажем после выезда.'),
+      answer(WITH_PRICE),
+    ]);
+
+    expect(r.verdict).toEqual(sentWith(WITH_PRICE, { signals: PRICE_NOW }));
+    expect(r.draftReply.mock.calls[1]?.[1]?.join(' ')).toContain('цена не как в указании коллеги');
+  });
+
+  it('без заметки бот цену не называет: та же цена нарушение, повтор', async () => {
+    const r = await runWith(null, [answer(WITH_PRICE), answer(MINIMUM_ANSWER)]);
+
+    expect(r.verdict).toEqual(sentWith(MINIMUM_ANSWER, { signals: PRICE_NOW }));
+    expect(r.draftReply.mock.calls[1]?.[1]?.join(' ')).toMatch(/цена: /);
+  });
+});

@@ -58,9 +58,9 @@ const VERSION_5_TABLES = CURRENT_TABLES.filter((name) => name !== 'chat_companie
 
 /**
  * Последняя версия схемы: этап 2 дал версию 1, этап 3 версию 2, этапы 4, 5 и 6 версии 3, 4 и 5, определение
- * компании клиента версию 6, минимум для передачи по цене версию 7.
+ * компании клиента версию 6, минимум для передачи по цене версию 7, заметка для бота версию 8.
  */
-const CURRENT_VERSION = 7;
+const CURRENT_VERSION = 8;
 
 function columnNames(db: Database.Database, table: string): unknown[] {
   return db.prepare('SELECT name FROM pragma_table_info(?) ORDER BY cid').pluck().all(table);
@@ -230,8 +230,26 @@ describe('runMigrations', () => {
     expect(columnNames(db, 'chats')).not.toContain('price_asks');
 
     runMigrations(db, 7);
-    expect(userVersion(db)).toBe(CURRENT_VERSION);
+    expect(userVersion(db)).toBe(7);
     expect(columnNames(db, 'chats')).toContain('price_asks');
+    expect(columnNames(db, 'chats')).not.toContain('bot_note');
+
+    runMigrations(db, 8);
+    expect(userVersion(db)).toBe(CURRENT_VERSION);
+    expect(columnNames(db, 'chats')).toContain('bot_note');
+  });
+
+  it('живая база версии 6 переходит сразу на 8: заметки нет', () => {
+    const db = useMemoryDb();
+    runMigrations(db, 6);
+    const chatId = insertChat(db, { replyJid: PN_A });
+
+    runMigrations(db);
+
+    expect(userVersion(db)).toBe(CURRENT_VERSION);
+    expect(
+      db.prepare('SELECT bot_note, bot_note_at_ms FROM chats WHERE id = ?').get(chatId),
+    ).toEqual({ bot_note: null, bot_note_at_ms: null });
   });
 
   it('живая база версии 6 переходит на версию 7: чат и выжимка на месте, счётчик цены и отказ по нулям', () => {
@@ -327,6 +345,26 @@ describe('индексы этапов 5 и 6', () => {
         'messages_chat_ts',
       ]),
     );
+  });
+});
+
+describe('схема версии 8: заметка для бота', () => {
+  it.each<[string | null, number | null, string | undefined]>([
+    ['узнай число вещей', 1, undefined],
+    [null, null, undefined],
+    ['без времени', null, 'SQLITE_CONSTRAINT_CHECK'],
+    [null, 1, 'SQLITE_CONSTRAINT_CHECK'],
+  ])('текст %j и время %j: ошибка %s', (note, atMs, code) => {
+    const db = useMigratedDb();
+    const chatId = insertChat(db, { replyJid: PN_A });
+
+    const error = errorOf(() =>
+      db
+        .prepare('UPDATE chats SET bot_note = ?, bot_note_at_ms = ? WHERE id = ?')
+        .run(note, atMs, chatId),
+    );
+
+    expect(code === undefined ? error : (error as { code?: string } | undefined)?.code).toBe(code);
   });
 });
 

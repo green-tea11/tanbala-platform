@@ -72,6 +72,12 @@ export interface CheckOptions {
   /** Текст сообщений клиента: технические термины, которые он написал сам, разрешены. */
   readonly clientText: string;
   /**
+   * Заметка для бота (указание коллеги) при возврате чата: цена и обещание в ответе допустимы, только если они есть
+   * в ней (цена: те же числа, суммы словами и валюта, что в указании; срок и обещание: тот же фрагмент). Нет поля или
+   * null: заметки нет, и цена в ответе нарушение всегда.
+   */
+  readonly note?: string | null;
+  /**
    * Название компании клиента (кандидат или подтверждённая, из блока о компании): в нём тире, ссылка, капслок и
    * прочий стиль, подмена букв и чужие цифры не нарушение, как термины клиента в проверке жаргона, если название стоит
    * отдельно, а не внутри адреса, почты или другого слова (maskCompanyName). Цены, стоп-слова, жаргон, скобки,
@@ -123,6 +129,15 @@ function snippetOf(text: string, match: RegExpExecArray): string {
   return oneLine(sliceWhole(text, start, end));
 }
 
+function findingOf(
+  text: string,
+  match: RegExpExecArray,
+  code: CheckCode,
+  reason: string,
+): CheckFinding {
+  return { code, detail: `${reason}: «${fragmentOf(match)}» в «…${snippetOf(text, match)}…»` };
+}
+
 function scan(
   text: string,
   patterns: readonly RegExp[],
@@ -130,11 +145,57 @@ function scan(
   reason: string,
 ): CheckFinding[] {
   return patterns.flatMap((pattern) =>
-    findAll(text, pattern).map((match) => ({
-      code,
-      detail: `${reason}: «${fragmentOf(match)}» в «…${snippetOf(text, match)}…»`,
-    })),
+    findAll(text, pattern).map((match) => findingOf(text, match, code, reason)),
   );
+}
+
+// --- указание коллеги: цена и обещания только из него ---
+
+/** Граница части фразы: знак конца или «,» вне числа («1,5» и «1.5» не делят). */
+const CLAUSE_BOUNDARY = /(?<!\p{Nd})[.,](?!\p{Nd})|[!?;:\n]/gu;
+
+/** Число с разрядами («1 500 000», «1,5»): пробелы внутри не важны. */
+const NUMBER = /\p{Nd}(?:[\p{Nd}\s.,]{0,30}\p{Nd})?/gu;
+
+/** Валюта, суммы словами и проценты в одном виде: «₸», «тг» и «тенге» одно и то же. */
+const PRICE_WORDS: readonly (readonly [RegExp, string])[] = [
+  [/те[нң]ге|(?<![а-я])тг(?![а-я])|(?<![а-я])тнг(?![а-я])|₸|kzt/u, 'kzt'],
+  [/(?<![а-я])руб/u, 'rub'],
+  [/\$|usd|(?<![а-я])долл/u, 'usd'],
+  [/€|(?<![а-я])евро/u, 'eur'],
+  [/(?<![а-я])тыс/u, 'тыс'],
+  [/(?<![а-я])(?:млн|миллион)/u, 'млн'],
+  [/(?<![а-я])млрд/u, 'млрд'],
+  [/%|(?<![а-я])процент|(?<![а-я])пайыз/u, '%'],
+  [/сэконом|(?<![а-я])экономи/u, 'эконом'],
+];
+
+/** Числа (без пробелов внутри), валюта, суммы словами и проценты текста: по ним цена сверяется с указанием. */
+function priceTokens(text: string): ReadonlySet<string> {
+  const lower = normalize(text);
+  const numbers = findAll(lower, NUMBER).map((match) => `число ${match[0].replace(/\s+/gu, '')}`);
+  const words = PRICE_WORDS.flatMap(([pattern, token]) => (pattern.test(lower) ? [token] : []));
+  return new Set([...numbers, ...words]);
+}
+
+/** Часть фразы вокруг найденного: от прошлой границы до следующей (CLAUSE_BOUNDARY). */
+function clauseAround(text: string, match: RegExpExecArray): string {
+  const end = match.index + match[0].length;
+  const bounds = findAll(text, CLAUSE_BOUNDARY);
+  const start = bounds.filter((bound) => bound.index < match.index).at(-1);
+  const stop = bounds.find((bound) => bound.index >= end);
+  return text.slice(start === undefined ? 0 : start.index + 1, stop?.index ?? text.length);
+}
+
+/** Цена допустима: числа, суммы словами и валюта её части фразы все есть в указании. */
+function priceFromNote(text: string, match: RegExpExecArray, facts: ReadonlySet<string>): boolean {
+  const tokens = [...priceTokens(clauseAround(text, match))];
+  return tokens.length > 0 && tokens.every((token) => facts.has(token));
+}
+
+/** Текст для сравнения фрагментов: нижний регистр, «е» вместо «ё», одиночные пробелы. */
+function comparable(text: string): string {
+  return normalize(text).replace(/\s+/gu, ' ');
 }
 
 /** Нижний регистр и «ё» => «е», чтобы словари не зависели от написания. */
@@ -168,14 +229,34 @@ export function checkDashes(text: string): readonly CheckFinding[] {
   return scan(text, DASH_PATTERNS, 'dash', 'тире');
 }
 
-/** Нет цен: суммы с валютой, валюта и проценты словами, «%», «сэкономите», число рядом с «цена». */
-export function checkPrices(text: string): readonly CheckFinding[] {
-  return scan(text, PRICE_PATTERNS, 'price', 'цена');
+/**
+ * Нет цен: суммы с валютой, валюта и проценты словами, «%», «сэкономите», число рядом с «цена». С указанием коллеги
+ * (note) цена допустима, если числа, суммы словами и валюта её части фразы все есть в указании (priceFromNote):
+ * «от 1 500 000 тенге» при указании «ориентир от 1 500 000 ₸» проходит, «от 1,5 млн тенге» нет.
+ */
+export function checkPrices(text: string, note: string | null = null): readonly CheckFinding[] {
+  if (note === null) return scan(text, PRICE_PATTERNS, 'price', 'цена');
+  const facts = priceTokens(note);
+  return PRICE_PATTERNS.flatMap((pattern) =>
+    findAll(text, pattern)
+      .filter((match) => !priceFromNote(text, match, facts))
+      .map((match) => findingOf(text, match, 'price', 'цена не как в указании коллеги')),
+  );
 }
 
-/** Нет запрещённых слов раздела 11 документа, казахских стоп-слов и обещаний времени ответа и сроков. */
-export function checkStopWords(text: string): readonly CheckFinding[] {
-  return scan(normalize(text), STOP_PATTERNS, 'stop_word', 'стоп-слово');
+/**
+ * Нет запрещённых слов раздела 11 документа, казахских стоп-слов и обещаний времени ответа и сроков. С указанием
+ * коллеги (note) найденный фрагмент допустим, если он дословно есть в указании («за 2 недели»).
+ */
+export function checkStopWords(text: string, note: string | null = null): readonly CheckFinding[] {
+  const lower = normalize(text);
+  if (note === null) return scan(lower, STOP_PATTERNS, 'stop_word', 'стоп-слово');
+  const source = comparable(note);
+  return STOP_PATTERNS.flatMap((pattern) =>
+    findAll(lower, pattern)
+      .filter((match) => !source.includes(comparable(match[0])))
+      .map((match) => findingOf(lower, match, 'stop_word', 'стоп-слово не из указания коллеги')),
+  );
 }
 
 const VOICE_REASON =
@@ -334,7 +415,8 @@ function maskCompanyName(text: string, name: string | null | undefined): string 
 /**
  * Все проверки ответа клиенту. Текст заранее подготовлен normalizeDraft (бренд NormalizedText).
  * Тире, один голос, ссылки, стиль и подмена букв проверяются без названия компании клиента (options.companyName,
- * maskCompanyName), остальное по всему тексту. Пустой список: ответ можно отдавать на второй вызов (ревью).
+ * maskCompanyName), остальное по всему тексту. Цены и стоп-слова с указанием коллеги (options.note) допустимы, только
+ * если они есть в нём. Пустой список: ответ можно отдавать на второй вызов (ревью).
  */
 export function runCodeChecks(
   text: NormalizedText,
@@ -346,8 +428,8 @@ export function runCodeChecks(
   const form = maskCompanyName(text, options.companyName);
   return [
     ...checkDashes(form),
-    ...checkPrices(text),
-    ...checkStopWords(text),
+    ...checkPrices(text, options.note ?? null),
+    ...checkStopWords(text, options.note ?? null),
     ...checkVoice(form),
     ...checkLinks(form),
     ...checkBrackets(text),

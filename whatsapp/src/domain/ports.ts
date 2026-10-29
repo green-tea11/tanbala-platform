@@ -4,6 +4,7 @@ import type { z } from 'zod';
 import type {
   AudioClip,
   BacklogChat,
+  BotNote,
   BudgetScope,
   Chat,
   ChatId,
@@ -284,6 +285,10 @@ export interface ChatsRepo {
   recordTurn(id: ChatId, signals: TurnSignals): void;
   /** Возврат чата боту: счётчик вопросов цены и отказ обнуляются. Можно звать внутри UnitOfWork.run. */
   resetProgress(id: ChatId): void;
+  /** Заметка для бота (указание коллеги); нет => null. */
+  getNote(id: ChatId): BotNote | null;
+  /** Ставит заметку при возврате боту или снимает её (null) при передаче. Можно звать внутри UnitOfWork.run. */
+  setNote(id: ChatId, note: BotNote | null): void;
 }
 
 /** История сообщений чата. */

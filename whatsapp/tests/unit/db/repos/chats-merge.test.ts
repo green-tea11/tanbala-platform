@@ -98,6 +98,22 @@ describe('слияние чатов: ход разговора о цене', () 
     expect(chats.getProgress(merged.id)).toEqual({ priceAsks: 2, refused: true });
   });
 
+  it('заметка для бота: своя у оставшегося чата важнее, иначе переходит от слитого', () => {
+    const { chats, survivor, absorbed } = pair();
+    chats.setNote(absorbed.id, { text: 'узнай число вещей', atMs: 7 });
+
+    expect(chats.getNote(merge(chats).id)).toEqual({ text: 'узнай число вещей', atMs: 7 });
+    expect(chats.getNote(survivor.id)).toEqual({ text: 'узнай число вещей', atMs: 7 });
+  });
+
+  it('заметки у обоих: остаётся заметка оставшегося чата', () => {
+    const { chats, survivor, absorbed } = pair();
+    chats.setNote(survivor.id, { text: 'своя', atMs: 1 });
+    chats.setNote(absorbed.id, { text: 'чужая', atMs: 2 });
+
+    expect(chats.getNote(merge(chats).id)).toEqual({ text: 'своя', atMs: 1 });
+  });
+
   it('у слитого чата ничего нет: ход оставшегося не меняется', () => {
     const { chats, survivor } = pair();
     chats.recordTurn(survivor.id, { priceAsked: true, refused: true });

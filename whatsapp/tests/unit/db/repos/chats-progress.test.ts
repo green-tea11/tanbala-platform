@@ -79,3 +79,45 @@ describe('createChatsRepo: ход разговора о цене', () => {
     expect(() => repo.getProgress(chatId)).toThrow(/отказ/);
   });
 });
+
+describe('createChatsRepo: заметка для бота', () => {
+  it('новый чат: заметки нет; setNote пишет текст и время, getNote читает', () => {
+    const { repo, chatId, otherChatId } = setup();
+    expect(repo.getNote(chatId)).toBeNull();
+
+    repo.setNote(chatId, { text: 'Узнай число вещей и 1С', atMs: 1_000 });
+
+    expect(repo.getNote(chatId)).toEqual({ text: 'Узнай число вещей и 1С', atMs: 1_000 });
+    expect(repo.getNote(otherChatId)).toBeNull();
+  });
+
+  it('setNote null снимает заметку', () => {
+    const { repo, chatId } = setup();
+    repo.setNote(chatId, { text: 'ориентир от 500 000 тенге', atMs: 1_000 });
+
+    repo.setNote(chatId, null);
+
+    expect(repo.getNote(chatId)).toBeNull();
+  });
+
+  it('текст как есть: кавычки, SQL, переводы строк', () => {
+    const { repo, chatId } = setup();
+    const text = "'); DROP TABLE chats; --\nвторая строка «в кавычках»";
+
+    repo.setNote(chatId, { text, atMs: 5 });
+
+    expect(repo.getNote(chatId)?.text).toBe(text);
+  });
+
+  it('неизвестный чат: явная ошибка; неверное время: RangeError', () => {
+    const { repo, chatId } = setup();
+
+    expect(() => repo.getNote(404 as ChatId)).toThrow(/404/);
+    expect(() => {
+      repo.setNote(404 as ChatId, null);
+    }).toThrow(/404/);
+    expect(() => {
+      repo.setNote(chatId, { text: 'x', atMs: -1 });
+    }).toThrow(RangeError);
+  });
+});

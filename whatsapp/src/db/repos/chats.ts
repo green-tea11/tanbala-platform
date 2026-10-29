@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
 import type { ChatsRepo } from '../../domain/ports.js';
 import type {
+  BotNote,
   Chat,
   ChatControl,
   ChatId,
@@ -38,6 +39,12 @@ interface ProfileColumns {
 interface ProgressRow {
   readonly price_asks: number;
   readonly refused_answers: number;
+}
+
+/** Заметка для бота в chats: текст и время есть или нет вместе (CHECK). */
+interface NoteRow {
+  readonly bot_note: string | null;
+  readonly bot_note_at_ms: number | null;
 }
 
 /** Чат вместе с выжимкой: то, что читают getById, findByJid и панель. */
@@ -136,7 +143,7 @@ const UPSERT_PROFILE = `INSERT INTO client_profiles
  * listForPanel и countForPanel: чаты для панели с фильтром по статусу и страницами; limit и offset проверяются
  * (отрицательный LIMIT в SQLite значит «без лимита»), статус только bot или manager.
  * getProgress, recordTurn и resetProgress: ход разговора о цене в колонках chats (price_asks, refused_answers);
- * неизвестный чат => явная ошибка.
+ * getNote и setNote: заметка для бота (bot_note, bot_note_at_ms). Неизвестный чат => явная ошибка.
  */
 export function createChatsRepo(db: Database.Database): ChatsRepo {
   const statements = prepareStatements(db);
@@ -189,6 +196,18 @@ export function createChatsRepo(db: Database.Database): ChatsRepo {
     resetProgress(id: ChatId): void {
       if (statements.resetProgress.run(id).changes === 0) {
         throw new Error(`Чат #${id} не найден: ход разговора не сброшен`);
+      }
+    },
+    getNote(id: ChatId): BotNote | null {
+      const row = statements.note.get(id);
+      if (row === undefined) throw new Error(`Чат #${id} не найден: заметки нет`);
+      return toNote(row);
+    },
+    setNote(id: ChatId, note: BotNote | null): void {
+      if (note !== null) assertTimeMs(note.atMs, 'note.atMs');
+      const params = { id, text: note?.text ?? null, atMs: note?.atMs ?? null };
+      if (statements.setNote.run(params).changes === 0) {
+        throw new Error(`Чат #${id} не найден: заметка не записана`);
       }
     },
   };
@@ -280,6 +299,10 @@ function prepareStatements(db: Database.Database) {
     resetProgress: db.prepare<[number]>(
       'UPDATE chats SET price_asks = 0, refused_answers = 0 WHERE id = ?',
     ),
+    note: db.prepare<[number], NoteRow>('SELECT bot_note, bot_note_at_ms FROM chats WHERE id = ?'),
+    setNote: db.prepare<{ id: ChatId; text: string | null; atMs: number | null }>(
+      'UPDATE chats SET bot_note = @text, bot_note_at_ms = @atMs WHERE id = @id',
+    ),
   };
 }
 
@@ -366,6 +389,11 @@ function toProfile(row: ProfileColumns): ClientProfile {
     specifics: row.specifics,
     problemAgreed: row.problem_agreed === 1,
   };
+}
+
+function toNote(row: NoteRow): BotNote | null {
+  const { bot_note: text, bot_note_at_ms: atMs } = row;
+  return text === null || atMs === null ? null : { text, atMs };
 }
 
 function toProgress(row: ProgressRow): ChatProgress {

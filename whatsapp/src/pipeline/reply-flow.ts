@@ -444,7 +444,10 @@ async function checkDraft(
   return { kind: 'checked', text, gate: { kind: 'reviewed', review: review.value } };
 }
 
-/** Нарушения проверок кодом или null, если их нет. В лог идут только виды нарушений. */
+/**
+ * Нарушения проверок кодом или null, если их нет. Цена и обещание допустимы, только если они есть в заметке для бота
+ * (указание коллеги, context.note). В лог идут только виды нарушений.
+ */
 function codeGateOf(
   flow: Flow,
   text: NormalizedText,
@@ -453,7 +456,13 @@ function codeGateOf(
   const { deps, context } = flow;
   const clientText = clientTextOf(context.history);
   const companyName = companyNameOf(context.company);
-  const [first, ...rest] = runCodeChecks(text, { ownPhone: NO_OWN_PHONE, clientText, companyName });
+  const note = context.note?.text ?? null;
+  const [first, ...rest] = runCodeChecks(text, {
+    ownPhone: NO_OWN_PHONE,
+    clientText,
+    companyName,
+    note,
+  });
   if (first === undefined) return null;
   const findings = [first, ...rest] as const;
   const codes = [...new Set(findings.map((finding) => finding.code))];

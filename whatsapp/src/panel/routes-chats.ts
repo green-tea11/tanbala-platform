@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Chat } from '../domain/types.js';
+import { botNoteProblem, cleanBotNote } from '../handoff/bot-note.js';
 import { panelTextProblem } from '../messaging/outbox.js';
 import { SafeError } from '../shared/safe-error.js';
 import { loadChatPage } from './chat-model.js';
@@ -56,7 +57,7 @@ function failurePage(
   context: PanelContext,
   chat: Chat,
   session: Session,
-  failure: { readonly error: string; readonly draft: string },
+  failure: { readonly error: string; readonly draft: string; readonly noteDraft?: string },
 ): string {
   const fresh = context.deps.chats.getById(chat.id) ?? chat;
   return renderChatPage(
@@ -65,6 +66,7 @@ function failurePage(
       notice: null,
       error: failure.error,
       draft: failure.draft,
+      noteDraft: failure.noteDraft ?? '',
       before: undefined,
     }),
   );
@@ -182,19 +184,33 @@ function resumeSafely(context: PanelContext, chat: Chat): number {
 
 /**
  * Возврат чата боту. Чат уже у бота (страница устарела): ничего не вызывается, пометка already_bot.
- * Вернуть чат боту можно только отсюда: сам бот себе чат не возвращает. После возврата бот отвечает на сообщения
+ * Вернуть чат боту можно только отсюда: сам бот себе чат не возвращает. Необязательная заметка для бота (поле note)
+ * чистится (cleanBotNote) и проверяется до возврата: длиннее BOT_NOTE_MAX_LENGTH => 422, чат остаётся у менеджера,
+ * набранный текст в форме. В аудит только то, есть ли заметка, без текста. После возврата бот отвечает на сообщения
  * клиента без ответа (resumeSafely); есть такие => пометка returned_answering.
  */
 async function handleReturn(
   context: PanelContext,
   chat: Chat,
   session: Session,
+  request: FastifyRequest,
   reply: FastifyReply,
 ): Promise<FastifyReply> {
   if (chat.control.status === 'bot')
     return redirectTo(reply, `/chats/${chat.id}?notice=already_bot`);
+  const typed = normalizeNewlines(formField(request.body, 'note') ?? '');
+  const note = cleanBotNote(typed);
+  const problem = botNoteProblem(note);
+  if (problem !== null) {
+    const page = failurePage(context, chat, session, {
+      error: problem,
+      draft: '',
+      noteDraft: typed,
+    });
+    return sendHtml(reply, BAD_STATUS, page);
+  }
   try {
-    await context.deps.handoff.returnToBot(chat.id);
+    await context.deps.handoff.returnToBot(chat.id, note === '' ? null : note);
   } catch (error: unknown) {
     context.audit.error(
       { action: 'return_to_bot_failed', chatId: chat.id, err: error },
@@ -208,7 +224,7 @@ async function handleReturn(
   }
   const resumed = resumeSafely(context, chat);
   context.audit.info(
-    { action: 'return_to_bot', chatId: chat.id, resumed },
+    { action: 'return_to_bot', chatId: chat.id, resumed, note: note !== '' },
     'Панель: чат возвращён боту',
   );
   const notice = resumed > 0 ? 'returned_answering' : 'returned';
@@ -235,7 +251,9 @@ function registerChatActionRoutes(app: FastifyInstance, context: PanelContext): 
     '/chats/:id/return',
     withSession<ChatRoute>(context, (request, reply, session) => {
       const chat = findChat(context, request.params.id);
-      return chat === null ? chatNotFound(reply) : handleReturn(context, chat, session, reply);
+      return chat === null
+        ? chatNotFound(reply)
+        : handleReturn(context, chat, session, request, reply);
     }),
   );
 }
@@ -274,6 +292,7 @@ export function registerChatRoutes(app: FastifyInstance, context: PanelContext):
         notice: parseNotice(request.query),
         error: null,
         draft: '',
+        noteDraft: '',
         before: parseBeforeId(request.query),
       });
       return sendHtml(reply, 200, renderChatPage(model));

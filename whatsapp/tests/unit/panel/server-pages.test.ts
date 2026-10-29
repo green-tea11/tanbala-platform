@@ -575,3 +575,36 @@ describe('панель: время', () => {
     expect(page).toContain('<time datetime="2026-10-26T10:30:00.000Z">26.10.2026 15:30</time>');
   });
 });
+
+describe('панель: заметка для бота (решение владельца 29.10.2026)', () => {
+  it('чат у менеджера: в форме возврата поле заметки до 1000 символов, клиенту не видна', async () => {
+    const h = createHarness({
+      data: { chats: [makeChat(1, { control: { status: 'manager', by: 'bot' } })] },
+    });
+
+    const page = await getPage(h, '/chats/1');
+
+    expect(page).toMatch(
+      /<form method="post" action="\/chats\/1\/return">[\s\S]*<textarea id="return-note" name="note" maxlength="1000"[\s\S]*<\/form>/,
+    );
+    expect(page).toContain('Заметка для бота (клиент её не увидит)');
+  });
+
+  it('карточка показывает заметку экранированной; нет заметки: «нет»', async () => {
+    const attack = '<script>alert(1)</script> ориентир от 500 000 тенге';
+    const h = createHarness({
+      data: {
+        chats: [makeChat(1), makeChat(2)],
+        notes: new Map([[1, { text: attack, atMs: T0 }]]),
+      },
+    });
+
+    const withNote = await getPage(h, '/chats/1');
+    const without = plain(await getPage(h, '/chats/2'));
+
+    expect(withNote).not.toContain('<script>');
+    expect(withNote).toContain('&lt;script&gt;alert(1)&lt;/script&gt; ориентир от 500 000 тенге');
+    expect(plain(withNote)).toContain('Заметка для бота');
+    expect(without).toContain('Заметка для бота нет');
+  });
+});

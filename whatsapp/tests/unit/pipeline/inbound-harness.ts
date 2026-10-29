@@ -4,6 +4,7 @@ import type { CompanySummary, CompanyTurn } from '../../../src/domain/company.js
 import type { Clock, Logger, Transcriber } from '../../../src/domain/ports.js';
 import type {
   AudioClip,
+  BotNote,
   Chat,
   ChatId,
   ChatProgress,
@@ -136,6 +137,8 @@ export interface Options {
   readonly progress?: ChatProgress;
   /** Сводка о компании (название для минимума); по умолчанию функция выключена. */
   readonly summary?: CompanySummary;
+  /** Заметка для бота (указание коллеги); по умолчанию нет. */
+  readonly note?: BotNote;
   /** waId входящих, на которые бот уже ответил (повтор пачки после возврата чата боту); по умолчанию нет. */
   readonly answered?: readonly string[];
 }
@@ -272,6 +275,7 @@ export function setup(options: Options = {}): Harness {
         calls.push(`save:${assessment.level}`);
       },
       getProgress: () => options.progress ?? { priceAsks: 0, refused: false },
+      getNote: () => options.note ?? null,
       recordTurn: (_id, signals) => {
         calls.push(
           `turn:${signals.priceAsked ? 'price' : '-'}:${signals.refused ? 'refused' : '-'}`,

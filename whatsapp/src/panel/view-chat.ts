@@ -1,7 +1,9 @@
 import { has1CText } from '../agent/profile.js';
 import type { CompanySummary } from '../domain/company.js';
+import { BOT_NOTE_MAX_LENGTH } from '../handoff/bot-note.js';
 import { PANEL_TEXT_MAX_LENGTH } from '../messaging/outbox.js';
 import type {
+  BotNote,
   Chat,
   ClientProfile,
   ManagerNotification,
@@ -37,12 +39,16 @@ export interface ChatPageModel {
   readonly lastNotification: ManagerNotification | null;
   /** Что известно о компании клиента; null: сводку прочитать не удалось. */
   readonly company: CompanySummary | null;
+  /** Заметка для бота (указание коллеги), оставленная при возврате; нет => null. */
+  readonly note: BotNote | null;
   readonly csrf: string;
   readonly notice: NoticeKey | null;
   /** Причина отказа действия над формой ответа; null, если ошибки нет. */
   readonly error: string | null;
   /** Текст, который менеджер набрал в форме ответа: после сбоя он остаётся на месте. */
   readonly draft: string;
+  /** Текст заметки для бота в форме возврата: после отказа он остаётся на месте. */
+  readonly noteDraft: string;
 }
 
 const NOT_KNOWN = 'не выяснили';
@@ -98,6 +104,13 @@ function renderLastNotification(item: ManagerNotification | null): SafeHtml {
 <pre class="note">${cleanText(item.text)}</pre>`;
 }
 
+/** Заметка для бота в карточке: текст экранирует markup``, скрытые символы убирает cleanText; нет => «нет». */
+function renderNote(note: BotNote | null): SafeHtml {
+  if (note === null) return markup`нет`;
+  return markup`${timeTag(note.atMs)}
+<pre class="note">${cleanText(note.text)}</pre>`;
+}
+
 function renderCard(model: ChatPageModel): SafeHtml {
   const { chat } = model;
   return markup`<section class="card" aria-labelledby="card-title">
@@ -106,6 +119,7 @@ function renderCard(model: ChatPageModel): SafeHtml {
 <dt>Статус</dt><dd>${controlLabel(chat.control)}</dd>
 <dt>Уровень интереса</dt><dd><span class="badge level-${chat.level}">${LEVEL_LABELS[chat.level]}</span></dd>
 ${PROFILE_FIELDS.map((field) => profileRow(field, chat.profile))}
+<dt>Заметка для бота</dt><dd>${renderNote(model.note)}</dd>
 <dt>Открытая передача</dt><dd>${renderHandoff(model.openHandoff)}</dd>
 <dt>Последнее уведомление менеджеру</dt><dd>${renderLastNotification(model.lastNotification)}</dd>
 </dl>
@@ -158,13 +172,22 @@ ${draft}</textarea>
 </section>`;
 }
 
+/**
+ * Возврат боту с необязательной заметкой (решение владельца 29.10.2026): клиент её не видит, бот получает её как
+ * указание коллеги до следующей передачи. Задание («узнай число вещей и 1С») бот выясняет по одному вопросу, ответ
+ * клиенту («ориентир от X, нужен выезд») передаёт своими словами; цифры только из заметки.
+ */
 function renderReturnForm(model: ChatPageModel): SafeHtml {
-  const { chat, csrf } = model;
+  const { chat, csrf, noteDraft } = model;
   if (chat.control.status !== 'manager') return markup``;
   return markup`<section aria-labelledby="return-title">
 <h2 id="return-title">Вернуть чат боту</h2>
 <form method="post" action="/chats/${chat.id}/return">
 ${csrfField(csrf)}
+<label for="return-note">Заметка для бота (клиент её не увидит)</label>
+<textarea id="return-note" name="note" maxlength="${BOT_NOTE_MAX_LENGTH}" rows="3">
+${noteDraft}</textarea>
+<p class="muted">Задание, например «узнай число вещей и 1С», или ответ клиенту, например «ориентир от X, нужен выезд». Цифры бот назовёт только из заметки. Заметка действует до следующей передачи.</p>
 <button type="submit" class="secondary">Вернуть боту</button>
 </form>
 </section>`;

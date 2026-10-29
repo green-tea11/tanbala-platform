@@ -14,6 +14,7 @@ import type {
 } from '../domain/types.js';
 import type { Outbox } from '../messaging/outbox.js';
 import { jidToPhone } from '../whatsapp/jid.js';
+import { botNoteProblem, cleanBotNote } from './bot-note.js';
 import { formatManagerNotification, type NotificationReason } from './notification.js';
 import type { ManagerNotifier } from './notifier.js';
 
@@ -49,10 +50,11 @@ export interface HandoffService {
   handOff(chatId: ChatId, request: HandOffRequest): Promise<void>;
   /**
    * Вернуть чат боту вручную из панели: снять ожидание ответа на «Вы из компании X?», затем закрыть передачу,
-   * поставить статус bot (by 'panel') и обнулить ход разговора о цене (вопросы цены и отказ отвечать считаются заново)
-   * одной транзакцией.
+   * поставить статус bot (by 'panel'), обнулить ход разговора о цене (вопросы цены и отказ отвечать считаются заново)
+   * и поставить заметку для бота (указание коллеги; пустая или нет => заметки нет) одной транзакцией. Заметка длиннее
+   * BOT_NOTE_MAX_LENGTH после чистки => отказ, чат остаётся у менеджера.
    */
-  returnToBot(chatId: ChatId): Promise<void>;
+  returnToBot(chatId: ChatId, note?: string | null): Promise<void>;
 }
 
 /** Зависимости передачи. */
@@ -116,9 +118,9 @@ export function createHandoffService(deps: HandoffDeps): HandoffService {
   return {
     handOff: (chatId, request) => handOff(deps, chatId, request),
     // Исполнитель промиса превращает исключение записи в отказ, а не в бросок.
-    returnToBot: (chatId) =>
+    returnToBot: (chatId, note = null) =>
       new Promise<void>((resolve) => {
-        resolve(returnToBot(deps, chatId));
+        resolve(returnToBot(deps, chatId, note));
       }),
   };
 }
@@ -162,7 +164,10 @@ function stopAwaiting(deps: HandoffDeps, chatId: ChatId): void {
   }
 }
 
-/** Запись передачи и смена статуса одной транзакцией. false: открытая передача уже была. */
+/**
+ * Запись передачи, смена статуса и снятие заметки для бота одной транзакцией. false: открытая передача уже была (тогда
+ * заметка уже снята прошлой передачей).
+ */
 function recordHandoff(deps: HandoffDeps, chat: Chat, request: HandOffRequest): boolean {
   const nowMs = deps.clock.now();
   const change = managerChangeOf(request);
@@ -175,6 +180,8 @@ function recordHandoff(deps: HandoffDeps, chat: Chat, request: HandOffRequest): 
       nowMs,
     );
     if (needsStatusChange(chat.control, change)) deps.chats.setStatus(chat.id, change, nowMs);
+    // Заметка для бота действует до следующей передачи (решение владельца 29.10.2026).
+    if (opened) deps.chats.setNote(chat.id, null);
     return opened;
   });
 }
@@ -305,18 +312,24 @@ function phoneOf(chat: Chat): PhoneDigits | null {
 /**
  * Возврат боту. Ожидание ответа на «Вы из компании X?» снимается до транзакции: иначе первое «да» клиента после
  * возврата подтвердило бы компанию. Его сбой (база) идёт отказом, и чат остаётся у менеджера. Ход разговора о цене
- * обнуляется в той же транзакции: третий вопрос цены считается с возврата (решение владельца 29.10.2026).
+ * обнуляется в той же транзакции: третий вопрос цены считается с возврата; там же ставится заметка для бота после
+ * чистки (cleanBotNote, пустая => нет), слишком длинная => отказ до любых записей (решение владельца 29.10.2026). В лог
+ * только ID чата и есть ли заметка, без текста.
  */
-function returnToBot(deps: HandoffDeps, chatId: ChatId): void {
+function returnToBot(deps: HandoffDeps, chatId: ChatId, note: string | null): void {
   requireChat(deps.chats, chatId);
+  const text = cleanBotNote(note ?? '');
+  const problem = botNoteProblem(text);
+  if (problem !== null) throw new RangeError(problem);
   deps.company.stopAwaiting(chatId);
   const nowMs = deps.clock.now();
   deps.unitOfWork.run(() => {
     deps.handoffs.resolve(chatId, nowMs);
     deps.chats.setStatus(chatId, { status: 'bot', by: 'panel' }, nowMs);
     deps.chats.resetProgress(chatId);
+    deps.chats.setNote(chatId, text === '' ? null : { text, atMs: nowMs });
   });
-  deps.logger.info({ chatId }, 'Чат возвращён боту из панели');
+  deps.logger.info({ chatId, note: text !== '' }, 'Чат возвращён боту из панели');
 }
 
 function requireChat(chats: ChatsRepo, chatId: ChatId): Chat {

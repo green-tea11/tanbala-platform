@@ -217,6 +217,35 @@ describe('панель на настоящих репозиториях', () => 
     expect(page.body).not.toContain('action="/chats/' + String(chat.id) + '/return"');
   });
 
+  it('возврат с заметкой: заметка в базе, карточка показывает её экранированной; ответ из панели снимает её', async () => {
+    const { app, chats, chat } = build({ allowlist: new Set([PHONE_A]) });
+    const auth = await openPanel(app);
+    const reply = (text: string) =>
+      post(
+        app,
+        `/chats/${String(chat.id)}/reply`,
+        auth,
+        new URLSearchParams({ csrf: auth.csrf, text }).toString(),
+      );
+    await reply('Подключился менеджер');
+
+    await post(
+      app,
+      `/chats/${String(chat.id)}/return`,
+      auth,
+      new URLSearchParams({ csrf: auth.csrf, note: 'Ориентир <от 500 000 тенге>' }).toString(),
+    );
+
+    expect(chats.getNote(chat.id)).toEqual({ text: 'Ориентир <от 500 000 тенге>', atMs: T0 });
+    const page = await app.inject({
+      url: `/chats/${String(chat.id)}`,
+      headers: { host: HOST_HEADER, cookie: auth.cookie },
+    });
+    expect(page.body).toContain('Ориентир &lt;от 500 000 тенге&gt;');
+    await reply('Снова менеджер');
+    expect(chats.getNote(chat.id)).toBeNull();
+  });
+
   it('закрытый режим действует и в панели: чат не из TEST_ALLOWLIST ответа не получает и менеджеру не передаётся, об этом написано на странице', async () => {
     const { app, sent, messages, chats, handoffs } = build({ allowlist: new Set([PHONE_A]) });
     const stranger = chats.upsertByIdentity(

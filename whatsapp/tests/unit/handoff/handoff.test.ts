@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { CompanySummary } from '../../../src/domain/company.js';
 import type { ChatsRepo, Clock, HandoffsRepo } from '../../../src/domain/ports.js';
 import type {
+  BotNote,
   Chat,
   ChatControl,
   ChatId,
@@ -124,6 +125,8 @@ interface Harness {
   readonly stopped: ChatId[];
   /** ID чатов, у которых возврат боту обнулил ход разговора о цене. */
   readonly progressResets: ChatId[];
+  /** Записи заметки для бота: поставлена при возврате, снята (null) при передаче. */
+  readonly notes: { id: ChatId; note: BotNote | null }[];
 }
 
 function setup(options: SetupOptions = {}): Harness {
@@ -138,6 +141,7 @@ function setup(options: SetupOptions = {}): Harness {
   const summaries: ChatId[] = [];
   const stopped: ChatId[] = [];
   const progressResets: ChatId[] = [];
+  const notes: { id: ChatId; note: BotNote | null }[] = [];
   let chat = options.chat === undefined ? makeChat() : options.chat;
   let isOpen = options.alreadyOpen === true;
   const unexpected = (): never => {
@@ -161,6 +165,11 @@ function setup(options: SetupOptions = {}): Harness {
     resetProgress: (id) => {
       events.push('chats.resetProgress');
       progressResets.push(id);
+    },
+    getNote: unexpected,
+    setNote: (id, note) => {
+      events.push('chats.setNote');
+      notes.push({ id, note });
     },
   };
   const handoffs: HandoffsRepo = {
@@ -250,6 +259,7 @@ function setup(options: SetupOptions = {}): Harness {
     summaries,
     stopped,
     progressResets,
+    notes,
   };
 }
 
@@ -262,6 +272,7 @@ const PHRASE_FLOW = [
   'tx:begin',
   'handoffs.open',
   'chats.setStatus',
+  'chats.setNote',
   'tx:commit',
   'notifier.notify',
   'outbox.sendHandoffNotice',
@@ -497,6 +508,7 @@ describe('createHandoffService: handOff с фразой клиенту', () => {
       'tx:begin',
       'handoffs.open',
       'chats.setStatus',
+      'chats.setNote',
       'tx:commit',
       'notifier.notify',
       'outbox.sendHandoffNotice',
@@ -659,6 +671,7 @@ describe('createHandoffService: handOff с сообщением модели в�
     'tx:begin',
     'handoffs.open',
     'chats.setStatus',
+    'chats.setNote',
     'tx:commit',
     'notifier.notify',
     'outbox.sendHandoffText',
@@ -731,6 +744,7 @@ describe('createHandoffService: handOff с сообщением модели в�
       'tx:begin',
       'handoffs.open',
       'chats.setStatus',
+      'chats.setNote',
       'tx:commit',
       'notifier.notify',
       'outbox.sendHandoffText',
@@ -827,6 +841,7 @@ describe('createHandoffService: handOff без фразы клиенту', () =>
         'tx:begin',
         'handoffs.open',
         'chats.setStatus',
+        'chats.setNote',
         'tx:commit',
         'notifier.notify',
         STOP_AWAITING,
@@ -872,6 +887,7 @@ describe('createHandoffService: handOff без фразы клиенту', () =>
         'tx:begin',
         'handoffs.open',
         'chats.setStatus',
+        'chats.setNote',
         'tx:commit',
         STOP_AWAITING,
       ]);
@@ -1020,6 +1036,7 @@ describe('createHandoffService: returnToBot', () => {
       'handoffs.resolve',
       'chats.setStatus',
       'chats.resetProgress',
+      'chats.setNote',
       'tx:commit',
     ]);
     expect(h.progressResets).toEqual([CHAT_ID]);
@@ -1144,5 +1161,59 @@ describe('createHandoffService: ожидание ответа на «Вы из �
     expect(h.events).toEqual([STOP_AWAITING]);
     expect(h.resolved).toEqual([]);
     expect(h.statusChanges).toEqual([]);
+  });
+});
+
+describe('createHandoffService: заметка для бота (решение владельца 29.10.2026)', () => {
+  const managerChat = (): Chat => makeChat({ control: { status: 'manager', by: 'bot' } });
+
+  it('возврат с заметкой: заметка после чистки и время возврата в той же транзакции; в лог без текста', async () => {
+    const h = setup({ alreadyOpen: true, chat: managerChat() });
+
+    await h.service.returnToBot(CHAT_ID, '  Узнай число вещей\r\nи какая 1С\u200B  ');
+
+    expect(h.notes).toEqual([
+      { id: CHAT_ID, note: { text: 'Узнай число вещей\nи какая 1С', atMs: T0 } },
+    ]);
+    expect(h.events.indexOf('chats.setNote')).toBeLessThan(h.events.indexOf('tx:commit'));
+    expect(h.logs).toContainEqual(
+      expect.objectContaining({ context: { chatId: CHAT_ID, note: true } }),
+    );
+    expect(loggedText(h.logs)).not.toContain('Узнай');
+  });
+
+  it.each([undefined, null, '', '  \n\u200B '])(
+    'возврат без заметки (%j): заметка снята',
+    async (note) => {
+      const h = setup({ alreadyOpen: true, chat: managerChat() });
+
+      await h.service.returnToBot(CHAT_ID, note);
+
+      expect(h.notes).toEqual([{ id: CHAT_ID, note: null }]);
+    },
+  );
+
+  it('заметка длиннее 1000 символов: отказ до любых записей, чат у менеджера', async () => {
+    const h = setup({ alreadyOpen: true, chat: managerChat() });
+
+    await expect(h.service.returnToBot(CHAT_ID, 'я'.repeat(1001))).rejects.toThrow(RangeError);
+    expect(h.events).toEqual([]);
+    expect(h.notes).toEqual([]);
+  });
+
+  it('следующая передача снимает заметку в своей транзакции', async () => {
+    const h = setup();
+
+    await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
+
+    expect(h.notes).toEqual([{ id: CHAT_ID, note: null }]);
+  });
+
+  it('передача уже открыта (повтор): заметку не трогает, её сняла прошлая передача', async () => {
+    const h = setup({ alreadyOpen: true, chat: managerChat() });
+
+    await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
+
+    expect(h.notes).toEqual([]);
   });
 });

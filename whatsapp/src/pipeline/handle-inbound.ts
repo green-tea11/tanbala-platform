@@ -39,7 +39,7 @@ export { SEND_RETRY_DELAY_MS } from './sending.js';
 export interface PipelineDeps {
   readonly chats: Pick<
     ChatsRepo,
-    'getById' | 'findByJid' | 'saveAssessment' | 'getProgress' | 'recordTurn'
+    'getById' | 'findByJid' | 'saveAssessment' | 'getProgress' | 'recordTurn' | 'getNote'
   >;
   readonly messages: Pick<
     MessagesRepo,
@@ -161,7 +161,8 @@ interface Noticed {
  *    передачу не записать (чата нет, сбой базы): ошибка в лог без текста, итог handoff_failed, «отвечено» не
  *    ставится.
  * Минимум для передачи по цене (решение владельца 29.10.2026): контекст черновика несёт ход разговора о цене
- * (chats.getProgress) и название компании из сводки (подтверждённое или со слов клиента); перед решением название
+ * (chats.getProgress), заметку для бота (chats.getNote, указание коллеги до следующей передачи) и название компании
+ * из сводки (подтверждённое или со слов клиента); перед решением название
  * читается заново, после оценки интереса. Ответ ушёл (sent) и в этом ходе клиент спросил цену или отказался отвечать
  * => chats.recordTurn: вопрос цены засчитывается, только когда бот на него ответил, поэтому перегенерация пачки его не
  * удваивает.
@@ -384,6 +385,7 @@ function contextOf(deps: PipelineDeps, chat: Chat): ConversationContext {
     level: chat.level,
     progress: deps.chats.getProgress(chat.id),
     companyName: companyNameNow(deps, chat.id),
+    note: deps.chats.getNote(chat.id),
   };
 }
 

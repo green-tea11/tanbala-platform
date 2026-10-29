@@ -69,12 +69,17 @@ function mergeProfileSql(): string {
 }
 
 /**
- * Ход разговора о цене: вопросов цены больше из двух, отказ отвечать остаётся, если был у любого чата. UPDATE в
- * SQLite читает старые значения строки, поэтому подзапросы видят слитый чат до удаления.
+ * Ход разговора о цене: вопросов цены больше из двух, отказ отвечать остаётся, если был у любого чата. Заметка для
+ * бота: своя у оставшегося чата, а если её нет, то слитого. UPDATE в SQLite читает старые значения строки (CASE видит
+ * прежний bot_note), поэтому подзапросы видят слитый чат до удаления.
  */
 const MERGE_PROGRESS = `UPDATE chats SET
     price_asks = max(price_asks, (SELECT price_asks FROM chats WHERE id = @absorbed)),
-    refused_answers = max(refused_answers, (SELECT refused_answers FROM chats WHERE id = @absorbed))
+    refused_answers = max(refused_answers, (SELECT refused_answers FROM chats WHERE id = @absorbed)),
+    bot_note = CASE WHEN bot_note IS NULL
+      THEN (SELECT bot_note FROM chats WHERE id = @absorbed) ELSE bot_note END,
+    bot_note_at_ms = CASE WHEN bot_note IS NULL
+      THEN (SELECT bot_note_at_ms FROM chats WHERE id = @absorbed) ELSE bot_note_at_ms END
   WHERE id = @survivor`;
 
 /**

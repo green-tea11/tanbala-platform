@@ -108,6 +108,8 @@ function setup(options: SetupOptions = {}): Harness {
     getProgress: unexpected,
     recordTurn: unexpected,
     resetProgress: unexpected,
+    getNote: unexpected,
+    setNote: unexpected,
   };
   const messages: MessagesRepo = {
     insertIfNew: (message) => {

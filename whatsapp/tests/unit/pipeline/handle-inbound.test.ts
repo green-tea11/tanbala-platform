@@ -137,6 +137,7 @@ describe('pipeline/handle-inbound: ответ', () => {
         company: { kind: 'off' },
         progress: { priceAsks: 0, refused: false },
         companyName: null,
+        note: null,
       },
     ]);
     expect(h.logs).toContainEqual({
@@ -898,5 +899,17 @@ describe('pipeline/handle-inbound: пачка, на которую уже отв
     const outcome = await run(h, batchOf([text('A1'), text('A2')]));
 
     expect(outcome).toEqual({ kind: 'replied' });
+  });
+});
+
+describe('pipeline/handle-inbound: заметка для бота', () => {
+  it('заметка из базы идёт в контекст черновика и проверки', async () => {
+    const note = { text: 'Узнай число вещей и 1С', atMs: NOW };
+    const h = setup({ note });
+
+    await run(h, batchOf([text('A1')]));
+
+    expect(h.contexts[0]?.note).toEqual(note);
+    expect(h.reviewContexts[0]?.note).toEqual(note);
   });
 });

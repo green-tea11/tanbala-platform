@@ -205,9 +205,9 @@ export interface Scenario {
   say(text: string, script: LlmScript): Promise<Turn>;
   /**
    * Менеджер возвращает чат боту, как кнопка панели: returnToBot, затем ответ бота на неотвеченное (Responder.resume);
-   * модель отвечает по script.
+   * модель отвечает по script. note: заметка для бота (необязательная).
    */
-  returnToBot(script: LlmScript): Promise<Turn>;
+  returnToBot(script: LlmScript, note?: string): Promise<Turn>;
   /** Менеджер пишет клиенту с телефона: сообщение в истории и перехват чата (как pipeline/takeover.ts). */
   managerWrites(text: string): Promise<void>;
   /** Сдвигает часы сценария (например, на 13 часов простоя). */
@@ -458,7 +458,7 @@ export function createScenario(options: ScenarioOptions = {}): Scenario {
     return chatId;
   };
 
-  const returnToBot = async (script: LlmScript): Promise<Turn> => {
+  const returnToBot = async (script: LlmScript, note?: string): Promise<Turn> => {
     const mark = {
       sent: rig.sendText.mock.calls.length,
       api: rig.apiCalls.length,
@@ -467,7 +467,7 @@ export function createScenario(options: ScenarioOptions = {}): Scenario {
     const atMs = rig.clock.now();
     const llm = scriptedLlm(script);
     const responder = await responderOf(rig, llm);
-    await rig.services.handoff.returnToBot(currentChatId());
+    await rig.services.handoff.returnToBot(currentChatId(), note ?? null);
     responder.resume(currentChatId());
     await responder.batcher.drain();
     rig.clock.advance(TURN_GAP_MS);

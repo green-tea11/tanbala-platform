@@ -9,6 +9,7 @@ import type {
   MessagesRepo,
 } from '../../../src/domain/ports.js';
 import type {
+  BotNote,
   Chat,
   ChatId,
   ClientProfile,
@@ -120,6 +121,8 @@ export interface PanelData {
   lastMessageAt: Map<number, number>;
   /** Сводки о компании по ID чата (по умолчанию OFF_COMPANY); Error: чтение сводки падает этой ошибкой. */
   companies: Map<number, CompanySummary | Error>;
+  /** Заметки для бота по ID чата (по умолчанию нет). */
+  notes: Map<number, BotNote>;
 }
 
 export interface HarnessOptions {
@@ -207,6 +210,8 @@ function createChatsRepo(data: PanelData): Harness['chats'] {
     getProgress: unused('chats.getProgress'),
     recordTurn: unused('chats.recordTurn'),
     resetProgress: unused('chats.resetProgress'),
+    getNote: vi.fn((id) => data.notes.get(id) ?? null),
+    setNote: unused('chats.setNote'),
   };
 }
 
@@ -295,6 +300,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
     notifications: [],
     lastMessageAt: new Map(),
     companies: new Map(),
+    notes: new Map(),
     ...options.data,
   };
   const password = options.password ?? WEAK_PASSWORD;

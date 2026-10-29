@@ -461,6 +461,8 @@ function setupWithRealOutbox(managerJid: Jid | null): RealOutboxHarness {
       getProgress: unexpected,
       recordTurn: unexpected,
       resetProgress: unexpected,
+      getNote: unexpected,
+      setNote: unexpected,
     },
     messages: {
       insertIfNew: unexpected,

@@ -10,6 +10,8 @@ export interface ChatPageExtras {
   readonly notice: NoticeKey | null;
   readonly error: string | null;
   readonly draft: string;
+  /** Текст заметки для бота, набранный в форме возврата: после отказа он остаётся на месте. */
+  readonly noteDraft: string;
   /** Курсор «показать раньше»: ID сообщения, раньше которого показывать; нет => самые свежие. */
   readonly before: number | undefined;
 }
@@ -39,10 +41,12 @@ export function loadChatPage(
     openHandoff: handoffs.findOpen(chat.id),
     lastNotification: notifications.latestForChat(chat.id),
     company: companyOf(context, chat.id),
+    note: context.deps.chats.getNote(chat.id),
     csrf: extras.csrf,
     notice: extras.notice,
     error: extras.error,
     draft: extras.draft,
+    noteDraft: extras.noteDraft,
   };
 }
 

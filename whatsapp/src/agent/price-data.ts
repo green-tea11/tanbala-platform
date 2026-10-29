@@ -17,12 +17,16 @@ export interface PriceDataInput {
   /** Название компании для минимума: подтверждённое или со слов клиента; null: неизвестно. */
   readonly companyName: string | null;
   readonly progress: ChatProgress;
+  /** Есть заметка для бота (указание коллеги): ориентир цены из неё и есть ответ на вопрос цены. */
+  readonly hasNote?: boolean;
 }
 
 const COLLECTED_ALL =
   'Минимум для передачи по цене собран: если клиент спрашивает цену, сроки или договор, передай чат (hot).';
 const ALWAYS_NOW =
   'Сразу, при любом минимуме, чат передаётся, если клиент прямо просит живого человека (asked_human) или жалуется (complaint).';
+const NOTE_PRICE =
+  'Если в указании коллеги есть ориентир цены, на вопрос цены отвечай им, ровно как в указании, и чат не передавай; если ориентира в указании нет, действуй по строкам выше.';
 const REFUSED =
   'Клиент уже отказывался отвечать на вопросы: если он спрашивает цену, передай чат сразу (hot).';
 
@@ -87,6 +91,7 @@ export function priceReplyData(input: PriceDataInput): string {
     ...minimumLines,
     priceAsksLine(input.progress.priceAsks),
     ...(input.progress.refused ? [REFUSED] : []),
+    ...(input.hasNote === true ? [NOTE_PRICE] : []),
     ALWAYS_NOW,
   ].join('\n');
 }

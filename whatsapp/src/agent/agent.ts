@@ -3,6 +3,7 @@ import type { ModelsConfig } from '../config/env.js';
 import type { CompanyPrompt, LogoReader } from '../domain/company.js';
 import type { ImageInput, LlmClient, Logger, SystemBlock } from '../domain/ports.js';
 import type {
+  BotNote,
   ChatId,
   ChatProgress,
   ClientProfile,
@@ -20,7 +21,7 @@ import { interestCallData, interestSchema, normalizeInterest } from './interest.
 import type { Knowledge } from './knowledge.js';
 import { priceReplyData } from './price-data.js';
 import { profileText } from './profile.js';
-import { buildSystem, buildTurns } from './prompts.js';
+import { buildSystem, buildTurns, noteBlock } from './prompts.js';
 import {
   EMPTY_DRAFT_REVIEW,
   normalizeReview,
@@ -57,6 +58,11 @@ export interface ConversationContext {
    * null => неизвестно.
    */
   readonly companyName?: string | null;
+  /**
+   * Заметка для бота (указание коллеги), оставленная при возврате чата: доверенный текст менеджера. Идёт отдельным
+   * блоком системного промпта ответа и проверки (prompts.noteBlock); оценка интереса её не видит. Нет => без блока.
+   */
+  readonly note?: BotNote | null;
 }
 
 /** Ход разговора, когда конвейер его не передал: вопросов цены не было, отказа нет. */
@@ -215,6 +221,7 @@ function replyCallData(
     company,
     companyName: context.companyName ?? null,
     progress: context.progress ?? NO_PROGRESS,
+    hasNote: context.note != null,
   });
   const parts = [profileText(context.profile), companyReplyData(company), price, remarks];
   return parts.filter((part) => part !== null).join('\n\n');
@@ -307,9 +314,20 @@ type Ask = <T>(
   callData: string | null,
 ) => Promise<LlmResult<T>>;
 
+/** system вызова: готовый для назначения; у ответа и проверки с заметкой ещё блок указания коллеги в конце. */
+function systemOf(
+  systems: Readonly<Record<LlmPurpose, readonly SystemBlock[]>>,
+  purpose: LlmPurpose,
+  note: BotNote | null | undefined,
+): readonly SystemBlock[] {
+  if (note == null || (purpose !== 'reply' && purpose !== 'review')) return systems[purpose];
+  return [...systems[purpose], noteBlock(purpose, note.text)];
+}
+
 /**
  * system строится один раз на назначение: блок знаний у трёх вызовов один и тот же (кэш общий), после него
- * инструкция вызова. Модель берётся из конфига по назначению.
+ * инструкция вызова, а у ответа и проверки при заметке для бота ещё блок указания коллеги (после точки кэша). Модель
+ * берётся из конфига по назначению.
  */
 function createAsk(deps: AgentDeps): Ask {
   const systems: Readonly<Record<LlmPurpose, readonly SystemBlock[]>> = {
@@ -322,7 +340,7 @@ function createAsk(deps: AgentDeps): Ask {
     deps.llm.structured({
       purpose,
       model: deps.models[purpose],
-      system: systems[purpose],
+      system: systemOf(systems, purpose, context.note),
       turns: buildTurns(context.history, HISTORY_MESSAGES, callData),
       schema,
       maxTokens: MAX_TOKENS,

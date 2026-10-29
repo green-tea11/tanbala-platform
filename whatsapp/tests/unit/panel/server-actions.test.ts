@@ -403,12 +403,56 @@ describe('панель: возврат чата боту', () => {
 
     expect(response.statusCode).toBe(303);
     expect(response.headers['location']).toBe('/chats/1?notice=returned');
-    expect(s.h.handoff.returnToBot).toHaveBeenCalledWith(chatIdOf(1));
+    expect(s.h.handoff.returnToBot).toHaveBeenCalledWith(chatIdOf(1), null);
     expect(s.h.chats.setStatus).not.toHaveBeenCalled();
     expect(s.h.logs()).toContainEqual(
       expect.objectContaining({ action: 'return_to_bot', chatId: 1 }),
     );
     expect(s.h.rawLog()).not.toContain('Алия');
+  });
+
+  async function giveBackWithNote(s: Session, note: string) {
+    return s.h.request({
+      url: '/chats/1/return',
+      cookie: s.auth.cookie,
+      form: { csrf: s.auth.csrf, note },
+    });
+  }
+
+  it('заметка для бота: после чистки уходит в returnToBot; в аудите есть ли заметка, без текста', async () => {
+    const s = await open();
+
+    const response = await giveBackWithNote(s, '  Узнай число вещей\r\nи 1С\u200B ');
+
+    expect(response.statusCode).toBe(303);
+    expect(s.h.handoff.returnToBot).toHaveBeenCalledWith(chatIdOf(1), 'Узнай число вещей\nи 1С');
+    expect(s.h.logs()).toContainEqual(
+      expect.objectContaining({ action: 'return_to_bot', chatId: 1, note: true }),
+    );
+    expect(s.h.rawLog()).not.toContain('Узнай');
+  });
+
+  it('пустая заметка (одни пробелы и невидимые символы): возврат без заметки', async () => {
+    const s = await open();
+
+    await giveBackWithNote(s, ' \u200B\n ');
+
+    expect(s.h.handoff.returnToBot).toHaveBeenCalledWith(chatIdOf(1), null);
+    expect(s.h.logs()).toContainEqual(
+      expect.objectContaining({ action: 'return_to_bot', note: false }),
+    );
+  });
+
+  it('заметка длиннее 1000 символов: 422, чат не возвращается, текст заметки остаётся в форме', async () => {
+    const s = await open();
+    const long = `${'я'.repeat(1000)}ж`;
+
+    const response = await giveBackWithNote(s, long);
+
+    expect(response.statusCode).toBe(422);
+    expect(response.body).toContain('Заметка длиннее 1000 символов: сократите её');
+    expect(response.body).toContain(long);
+    expect(s.h.actions()).toEqual([]);
   });
 
   it('после возврата бот отвечает на неотвеченное: сначала returnToBot, потом resume; пометка и число в аудите', async () => {
