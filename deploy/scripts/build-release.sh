@@ -17,7 +17,9 @@ name="tanbala-$sha"
 mkdir -p release
 archive="release/$name.tar.gz"
 # core.autocrlf=false: файлы едут с теми окончаниями строк, что в git (LF в deploy/ и whatsapp/), без замены на CRLF.
-git -c core.autocrlf=false archive --format=tar.gz --prefix="$name/" -o "$archive" HEAD leads whatsapp deploy contract
+# tar.umask=0022: файлы 644 и папки 755, без права записи для группы.
+git -c core.autocrlf=false -c tar.umask=0022 archive --format=tar.gz --prefix="$name/" -o "$archive" HEAD \
+	leads whatsapp deploy contract
 
 # Страховка: секретов и данных в архиве быть не должно.
 if tar -tzf "$archive" | grep -E '(^|/)\.env$|whatsapp-session|creds\.json|\.db$|\.dump$|\.pairing-attempts\.json'; then
@@ -27,4 +29,6 @@ if tar -tzf "$archive" | grep -E '(^|/)\.env$|whatsapp-session|creds\.json|\.db$
 fi
 
 echo "Архив: $archive ($(du -h "$archive" | cut -f1))"
-echo "На сервер: scp \"$archive\" $SERVER:/tmp/"
+echo "sha256: $(sha256sum "$archive" | cut -d' ' -f1)  (сверить на сервере: sha256sum ~/$name.tar.gz)"
+# В домашнюю папку ubuntu, а не в общий /tmp.
+echo "На сервер: scp \"$archive\" $SERVER:~/"

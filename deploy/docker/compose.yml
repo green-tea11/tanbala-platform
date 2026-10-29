@@ -1,5 +1,7 @@
 # Postgres и Reacher проекта leads на сервере. Основа: leads/docker-compose.yml (ПК).
-# Запуск (root): docker compose -f /opt/tanbala/deploy/docker/compose.yml --env-file /opt/tanbala/leads/.env up -d
+# Запуск (root): docker compose -f /opt/tanbala/deploy/docker/compose.yml --env-file /etc/tanbala/compose.env up -d
+# compose.env (root, права 600): только строки POSTGRES_* и REACHER_* из .env почты (deploy/env.md). Не сам .env
+# почты: его может менять пользователь tanbala-leads, а compose запускает root.
 # Порты только на 127.0.0.1: Docker обходит ufw, любой порт на 0.0.0.0 был бы открыт в интернет.
 # Имя проекта и тома как на ПК: tanbala-leads, том tanbala-leads_pgdata. Образы закреплены по digest: на сервере
 # те же, что проверены на ПК (29.10.2026). Новая версия — только осознанно, отдельным коммитом.
@@ -26,8 +28,18 @@ services:
     # База 43 МБ, соединений мало: 512 МБ с запасом (VPS 4 ГБ).
     mem_limit: 512m
     shm_size: 128m
+    pids_limit: 200
     security_opt:
       - "no-new-privileges:true"
+    # Набор прав, которого хватает официальному образу Postgres (смена владельца папки данных и пользователя).
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETUID
+      - SETGID
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
@@ -48,8 +60,12 @@ services:
     ports:
       - "127.0.0.1:${REACHER_PORT:-8080}:8080"
     mem_limit: 256m
+    pids_limit: 200
     security_opt:
       - "no-new-privileges:true"
+    # Reacher работает не от root (пользователь chrome): особые права ему не нужны.
+    cap_drop:
+      - ALL
     healthcheck:
       # /version не делает SMTP-проверок и не требует секрета.
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/version"]
@@ -60,3 +76,9 @@ services:
 
 volumes:
   pgdata:
+
+# Страховка: даже если кто-то опубликует порт без адреса ("5432:5432"), он откроется только на 127.0.0.1.
+networks:
+  default:
+    driver_opts:
+      com.docker.network.bridge.host_binding_ipv4: "127.0.0.1"

@@ -23,7 +23,7 @@ install -d -m 700 "$BACKUP_ROOT" "$BACKUP_ROOT/postgres" "$BACKUP_ROOT/whatsapp"
 # Временная папка, куда пишет пользователь бота: базу бота копирует он сам (см. ниже). В /tmp, а не в BACKUP_ROOT:
 # в BACKUP_ROOT (права 700) пользователь бота не войдёт. Служба tanbala-backup идёт с PrivateTmp.
 WA_TMP=$(mktemp -d /tmp/tanbala-wa-backup.XXXXXX)
-trap 'rm -rf "$WA_TMP"; rm -f "$BACKUP_ROOT"/postgres/*.part' EXIT
+trap 'rm -rf "$WA_TMP"; rm -f "$BACKUP_ROOT"/postgres/*.part "$BACKUP_ROOT"/whatsapp/*.part' EXIT
 
 # 1. Postgres: pg_dump в формате custom, проверка, что архив читается, и только потом имя без .part.
 pg_file="$BACKUP_ROOT/postgres/tanbala-$STAMP.dump"
@@ -32,14 +32,17 @@ docker exec -i "$PG_CONTAINER" pg_restore --list <"$pg_file.part" >/dev/null || 
 mv "$pg_file.part" "$pg_file"
 printf 'Postgres: %s (%s)\n' "$pg_file" "$(du -h "$pg_file" | cut -f1)"
 
-# 2. SQLite бота: .backup — целостная копия и при работающем боте (с учётом WAL). Копирует пользователь бота:
-# если бы базу открыл root, файлы -wal и -shm могли бы стать чужими для бота.
+# 2. SQLite бота: .backup — целостная копия и при работающем боте (с учётом WAL). Копирует и проверяет пользователь
+# бота: если бы базу открыл root, файлы -wal и -shm могли бы стать чужими для бота, а файлы в его папке root
+# не открывает (там мог бы оказаться symlink). Копия переливается потоком в файл root.
 if [[ -f $WA_DB ]]; then
 	chown "$WA_USER:" "$WA_TMP"
 	runuser -u "$WA_USER" -- sqlite3 "$WA_DB" ".backup '$WA_TMP/copy.db'"
-	[[ $(sqlite3 "$WA_TMP/copy.db" 'PRAGMA quick_check;') == ok ]] || fail "копия базы бота не прошла quick_check"
+	[[ $(runuser -u "$WA_USER" -- sqlite3 "$WA_TMP/copy.db" 'PRAGMA quick_check;') == ok ]] ||
+		fail "копия базы бота не прошла quick_check"
 	wa_file="$BACKUP_ROOT/whatsapp/tanbala-$STAMP.db"
-	install -m 600 -o root -g root "$WA_TMP/copy.db" "$wa_file"
+	runuser -u "$WA_USER" -- cat "$WA_TMP/copy.db" >"$wa_file.part"
+	mv "$wa_file.part" "$wa_file"
 	printf 'База бота: %s (%s)\n' "$wa_file" "$(du -h "$wa_file" | cut -f1)"
 else
 	printf 'База бота не найдена (%s): бот ещё не запускался?\n' "$WA_DB"

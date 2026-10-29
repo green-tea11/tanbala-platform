@@ -4,8 +4,10 @@
 
 [Unit]
 Description=Tanbala leads: интерфейс почты и внутренний API (127.0.0.1:8000)
-After=network-online.target docker.service
+After=network-online.target docker.service tanbala-firewall.service
 Wants=network-online.target docker.service
+# Без правил nftables (браузеры почты открывают чужие сайты) служба не стартует.
+Requires=tanbala-firewall.service
 # Не больше 10 запусков за 10 минут, дальше failed (start-limit-hit): читать журнал, затем
 # systemctl reset-failed tanbala-leads && systemctl start tanbala-leads.
 StartLimitIntervalSec=600
@@ -18,7 +20,11 @@ Group=tanbala-leads
 WorkingDirectory=/opt/tanbala/leads
 Environment=PYTHONUTF8=1
 Environment=LANG=C.UTF-8
-Environment=HOME=/opt/tanbala/leads
+# Язык браузеров для 2ГИС и сайтов: русский (проверить на первом разрешённом поиске, поле locale в выгрузке).
+Environment=LANGUAGE=ru
+# Домашняя папка для Chrome и Chromium (их ~/.cache, ~/.pki, загрузки) — внутри data/, не рядом с .env и кодом.
+Environment=HOME=/opt/tanbala/leads/data/home
+ExecStartPre=/usr/bin/mkdir -p /opt/tanbala/leads/data/home
 ExecStart=/opt/tanbala/leads/.venv/bin/python -m tanbala_leads web --port 8000
 
 # При старте применяются миграции. Если Postgres в Docker ещё не поднялся, выход 1 и повтор через 10 с.
@@ -34,16 +40,27 @@ UMask=0077
 # а не бота или Postgres. При общей нехватке памяти эта служба идёт первой (OOMScoreAdjust).
 MemoryHigh=2300M
 MemoryMax=2700M
+# Swap не больше 1 ГБ: Chrome не вытеснит в swap бота и Postgres.
+MemorySwapMax=1G
 OOMScoreAdjust=500
+# Убитый по памяти процесс (обычно вкладка Chrome) не останавливает всю службу: поиск упадёт, API для бота останется.
+OOMPolicy=continue
 
-# Песочница. Писать можно только в папку проекта (логи, data/tmp, браузер crawl4ai).
+# Песочница. Писать можно только в data/ (выгрузки 2ГИС, временные файлы и дом браузеров), logs/ и .crawl4ai/.
+# Код, окружения .venv* и .env только для чтения: Chrome без песочницы открывает чужие сайты, и если его взломают,
+# он не подменит код сервера. Байткод Python собирается при установке (compileall).
 # Chrome и Chromium запускаются с --no-sandbox (parser-2gis и Playwright), поэтому пространства имён им не нужны.
 # MemoryDenyWriteExecute не ставить: JIT V8 в Chrome не запустится.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/tanbala/leads
+ReadOnlyPaths=/opt/tanbala/leads
+ReadWritePaths=/opt/tanbala/leads/data /opt/tanbala/leads/logs /opt/tanbala/leads/.crawl4ai
+# Чужое (бот, копии баз, пароли и API Caddy) служба не видит вовсе.
+InaccessiblePaths=-/opt/tanbala/whatsapp -/var/backups/tanbala -/etc/caddy/auth -/etc/tanbala -/var/lib/caddy
+ProtectProc=invisible
+SystemCallArchitectures=native
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true

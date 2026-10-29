@@ -1,0 +1,6 @@
+// Автообновление Google Chrome вместе с обновлениями безопасности Ubuntu. Копия: /etc/apt/apt.conf.d/.
+// Chrome parser-2gis открывает 2ГИС и чужие сайты без песочницы: известные дыры в нём должны закрываться сами.
+// Строку origin сверить на сервере: apt-cache policy google-chrome-stable (o=Google LLC, n=stable).
+Unattended-Upgrade::Origins-Pattern {
+	"origin=Google LLC,codename=stable";
+};

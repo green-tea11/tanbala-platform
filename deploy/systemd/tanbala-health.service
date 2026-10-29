@@ -8,3 +8,6 @@ After=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/opt/tanbala/deploy/scripts/health.sh
+TimeoutStartSec=3min
+PrivateTmp=true
+ProtectSystem=strict

@@ -5,8 +5,10 @@
 [Unit]
 Description=Tanbala WhatsApp: бот и панель (127.0.0.1:3100)
 # Без внутреннего API бот работает, только без данных о компании: зависимости нет, только порядок запуска.
-After=network-online.target tanbala-leads.service
+After=network-online.target tanbala-leads.service tanbala-firewall.service
 Wants=network-online.target
+# Без правил nftables служба не стартует: они ограничивают бота внутренним API почты.
+Requires=tanbala-firewall.service
 # Не больше 4 запусков за 10 минут, дальше failed (start-limit-hit): читать журнал, затем
 # systemctl reset-failed tanbala-whatsapp && systemctl start tanbala-whatsapp.
 StartLimitIntervalSec=600
@@ -17,6 +19,7 @@ Type=simple
 User=tanbala-wa
 Group=tanbala-wa
 WorkingDirectory=/opt/tanbala/whatsapp
+Environment=HOME=/opt/tanbala/whatsapp
 
 # Запуск только при привязанной сессии WhatsApp (в creds.json есть ключ "me"). Без неё бот сам начал бы привязку
 # по QR, которую под systemd никто не отсканирует, а каждая попытка тратит одну из двух за 24 часа.
@@ -43,6 +46,11 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/opt/tanbala/whatsapp
+# Чужое (почта с её .env, копии баз, пароли и API Caddy) служба не видит вовсе.
+InaccessiblePaths=-/opt/tanbala/leads -/var/backups/tanbala -/etc/caddy/auth -/etc/tanbala -/var/lib/caddy
+PrivateDevices=true
+ProtectProc=invisible
+SystemCallArchitectures=native
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true
