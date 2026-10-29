@@ -114,6 +114,25 @@ describe('слияние чатов: ход разговора о цене', () 
     expect(chats.getNote(merge(chats).id)).toEqual({ text: 'своя', atMs: 1 });
   });
 
+  it('заметка слитого старше смены статуса оставшегося (передача после неё): заметка не возвращается', () => {
+    const { chats, survivor, absorbed } = pair();
+    chats.setNote(absorbed.id, { text: 'старое указание', atMs: T0 + 10 });
+    chats.setStatus(survivor.id, { status: 'manager', by: 'bot' }, T0 + 50);
+
+    expect(chats.getNote(merge(chats).id)).toBeNull();
+  });
+
+  it.each([
+    ['позже', T0 + 60],
+    ['в то же время', T0 + 50],
+  ])('заметка слитого %s смены статуса оставшегося: заметка переходит', (_when, atMs) => {
+    const { chats, survivor, absorbed } = pair();
+    chats.setStatus(survivor.id, { status: 'manager', by: 'bot' }, T0 + 50);
+    chats.setNote(absorbed.id, { text: 'свежее указание', atMs });
+
+    expect(chats.getNote(merge(chats).id)).toEqual({ text: 'свежее указание', atMs });
+  });
+
   it('у слитого чата ничего нет: ход оставшегося не меняется', () => {
     const { chats, survivor } = pair();
     chats.recordTurn(survivor.id, { priceAsked: true, refused: true });

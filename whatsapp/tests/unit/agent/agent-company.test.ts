@@ -51,7 +51,7 @@ function lastTurn(requests: Parameters<typeof onlyRequest>[0]): string {
 }
 
 describe('draftReply: компания клиента', () => {
-  it('блок о компании идёт в данных вызова после выжимки', async () => {
+  it('блок о компании идёт в данных вызова раньше выжимки: строки системы раньше слов клиента', async () => {
     const { requests, agent } = agentWith({
       ok: true,
       value: { outcome: 'answer', text: 'Вы из компании Альфа, правильно?', stopRequested: false },
@@ -62,7 +62,7 @@ describe('draftReply: компания клиента', () => {
     );
 
     const data = lastTurn(requests);
-    expect(data.indexOf('Площадь: 300 м2')).toBeLessThan(data.indexOf('«Альфа» (Алматы)'));
+    expect(data.indexOf('«Альфа» (Алматы)')).toBeLessThan(data.indexOf('Площадь: 300 м2'));
     expect(data).toContain('«Вы из компании Альфа, правильно?»');
   });
 

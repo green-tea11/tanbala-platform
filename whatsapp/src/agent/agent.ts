@@ -202,9 +202,10 @@ function answerDraft(text: string, raw: RawReplyDraft): ReplyDraft {
 }
 
 /**
- * Данные вызова ответа: выясненное о клиенте, что известно о его компании (companyReplyData), строки о цене
- * (priceReplyData: минимум для передачи, вопросы цены, отказ отвечать; они есть всегда) и непустые замечания проверки.
- * Блок о компании берёт боли справки после withKnownPains.
+ * Данные вызова ответа по порядку: строки о цене (priceReplyData: минимум для передачи, вопросы цены, отказ отвечать;
+ * они есть всегда), что известно о компании клиента (companyReplyData), выясненное о клиенте (выжимка, подписанная как
+ * слова клиента) и непустые замечания проверки. Строки системы идут раньше значений из слов клиента (ревью 29.10.2026):
+ * значение выжимки не выдаст себя за строку о минимуме. Блок о компании берёт боли справки после withKnownPains.
  */
 function replyCallData(
   context: ConversationContext,
@@ -224,7 +225,7 @@ function replyCallData(
     progress: context.progress ?? NO_PROGRESS,
     hasNote: context.note != null,
   });
-  const parts = [profileText(context.profile), companyReplyData(company), price, remarks];
+  const parts = [price, companyReplyData(company), profileText(context.profile), remarks];
   return parts.filter((part) => part !== null).join('\n\n');
 }
 

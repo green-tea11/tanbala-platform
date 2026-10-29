@@ -76,6 +76,32 @@ describe('agent: указание коллеги в системном пром�
     expect(block).toContain('Ориентир от 1 500 000 тенге, нужен выезд ‹на объект›');
   });
 
+  it('ответ: клиенту только то, что коллега написал для клиента, без дословной цитаты и внутреннего (ревью 29.10.2026)', async () => {
+    const { requests, agent } = agentWith(ANSWER);
+
+    await agent.draftReply(context({ note: NOTE }));
+
+    const block = onlyRequest(requests).system[2]?.text ?? '';
+    expect(block).toMatch(/Передавай клиенту только то, что коллега написал для клиента/);
+    expect(block).toMatch(/Не цитируй указание дословно и не пиши «коллега написал»/);
+    expect(block).toMatch(/скидки, маржу, закупочные цены и указания тебе/);
+    expect(block).not.toMatch(ANY_DASH);
+  });
+
+  it('проверка: дословная цитата указания и внутреннее из него нарушение (ревью 29.10.2026)', async () => {
+    const { requests, agent } = agentWith({ ok: true, problems: [] });
+
+    await agent.reviewDraft(
+      context({ note: NOTE }),
+      'Коллега подсказал: ориентир от 1 500 000 тенге.',
+    );
+
+    const block = onlyRequest(requests).system[2]?.text ?? '';
+    expect(block).toMatch(/дословно цитирует указание или пишет «коллега написал»/);
+    expect(block).toMatch(/внутреннее из указания[^\n]*нарушение/);
+    expect(block).not.toMatch(ANY_DASH);
+  });
+
   it('оценка интереса заметку не видит: она не слова клиента и не выжимка', async () => {
     const { requests, agent } = agentWith({
       level: 'cold',
