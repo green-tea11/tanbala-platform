@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { Anthropic } from '@anthropic-ai/sdk';
 import { expect, it, vi } from 'vitest';
 import { normalizeDraft, runCodeChecks } from '../../src/checks/code-checks.js';
 import { loadEnvironment } from '../../src/config/dotenv.js';
@@ -38,7 +39,10 @@ import { useMigratedDb } from '../unit/db/fixture.js';
 // Живой прогон диалога: сборка как в main.ts, настоящие модели (ключ из .env), настоящие знания и внутренний API
 // почтового проекта на 127.0.0.1 (если задан в .env). Поддельные только WhatsApp (отправленное копится) и часы
 // (сон не ждёт). База своя, в памяти. Платный: запускать только вручную, см. vitest.live.config.ts.
-// LIVE_DIALOG: JSON { "name": "...", "steps": [ { "say": "..." } | { "returnToBot": { "note": "..." | null } } ] }.
+// LIVE_DIALOG: JSON { "name": "...", "steps": [ { "say": "..." } | { "returnToBot": { "note": "..." | null } } ] }
+// или клиент-модель: { "name": "...", "persona": "кто клиент и что он знает", "opening": "первое сообщение",
+// "maxClientMessages": 8, "afterHandoff": [шаги как в steps; { "say": "<клиент>" } пишет клиент-модель] }:
+// реплики клиента пишет SIMULATOR_MODEL по переписке, диалог идёт до передачи менеджеру или до maxClientMessages.
 // LIVE_OUT: папка отчёта (report.md, calls.json). LIVE_ENV_ROOT: папка с .env (по умолчанию корень бота).
 
 const ROOT = process.cwd();
@@ -56,8 +60,23 @@ const PRICES: Record<string, readonly [number, number, number, number]> = {
 type Step = { readonly say: string } | { readonly returnToBot: { readonly note: string | null } };
 interface Dialog {
   readonly name: string;
-  readonly steps: readonly Step[];
+  readonly steps?: readonly Step[];
+  readonly persona?: string;
+  readonly opening?: string;
+  readonly maxClientMessages?: number;
+  readonly afterHandoff?: readonly Step[];
 }
+
+/** Модель, которая играет клиента: не бот, поэтому дешёвая. */
+const SIMULATOR_MODEL = 'claude-haiku-5-5';
+
+const SIMULATOR_SYSTEM = [
+  'Ты играешь клиента, который пишет в WhatsApp компании Tanbala (учёт вещей на RFID-метках). Ты не ассистент и не бот.',
+  'Пиши как живой человек в мессенджере: коротко, 1–2 предложения, без приветствий в каждом сообщении, можно без точек и с мелкими опечатками.',
+  'Отвечай только на то, что спросили; факты бери из описания клиента; чего там нет, отвечай «не знаю» или коротко и правдоподобно.',
+  'Если бот задаёт много вопросов подряд или повторяется, можешь показать лёгкое раздражение, как живой человек.',
+  'Верни только текст следующего сообщения клиента, без кавычек и пояснений.',
+].join('\n');
 
 interface Call {
   readonly turn: number;
@@ -224,13 +243,20 @@ it('живой диалог', async () => {
   const identity: ChatIdentity = { replyJid: CLIENT_JID, lidJid: null, pnJid: CLIENT_JID };
   let chatId: ChatId | null = null;
   const lines: string[] = [`# ${dialog.name}`, ''];
-  for (const step of dialog.steps) {
+  /** Переписка глазами клиента: только сообщения клиента и бота. */
+  const transcript: string[] = [];
+  let clientMessages = 0;
+  let simulatorCalls = 0;
+
+  const runStep = async (step: Step): Promise<void> => {
     turn += 1;
     const markSent = sendText.mock.calls.length;
     const markLogs = logs.length;
     const responder = await responderOf();
     if ('say' in step) {
+      clientMessages += 1;
       lines.push(`## ${turn}. Клиент: ${step.say}`, '');
+      transcript.push(`Клиент: ${step.say}`);
       const message: InboundMessage = {
         waId: `WA-${turn}` as WaMessageId,
         identity,
@@ -252,11 +278,10 @@ it('живой диалог', async () => {
       await responder.batcher.drain();
     } else {
       if (chatId === null) throw new Error('возврат до первого сообщения');
-      lines.push(
-        `## ${turn}. Менеджер: «Вернуть боту»${step.returnToBot.note ? ` с заметкой «${step.returnToBot.note}»` : ''}`,
-        '',
-      );
-      await services.handoff.returnToBot(chatId, step.returnToBot.note);
+      const note = step.returnToBot.note;
+      lines.push(`## ${turn}. Менеджер: «Вернуть боту»${note ? ` с заметкой «${note}»` : ''}`, '');
+      transcript.push(`(менеджер вернул чат боту${note ? `, заметка: ${note}` : ''})`);
+      await services.handoff.returnToBot(chatId, note);
       responder.resume(chatId);
       await responder.batcher.drain();
     }
@@ -267,14 +292,64 @@ it('живой диалог', async () => {
         lines.push(`  проверка кодом: ${JSON.stringify(call.checks)}`);
       }
     }
-    const turnLogs = logs.slice(markLogs);
-    for (const log of turnLogs)
+    for (const log of logs.slice(markLogs))
       lines.push(`- лог ${log.level}: ${log.message} ${JSON.stringify(log.context).slice(0, 300)}`);
     for (const [to, body] of sendText.mock.calls.slice(markSent)) {
-      lines.push(`- **→ ${to === CLIENT_JID ? 'клиенту' : 'менеджеру'}:** ${body}`);
+      const toClient = to === CLIENT_JID;
+      lines.push(`- **→ ${toClient ? 'клиенту' : 'менеджеру'}:** ${body}`);
+      transcript.push(toClient ? `Бот: ${body}` : '(уведомление менеджеру)');
     }
     lines.push('');
     nowMs += TURN_GAP_MS;
+  };
+
+  const withManager = (): boolean =>
+    chatId !== null &&
+    (db.prepare('SELECT status FROM chats WHERE id = ?').get(chatId) as { status: string } | undefined)
+      ?.status === 'manager';
+
+  const simulator = new Anthropic({ apiKey: String(fileEnv['VENMART_ANTHROPIC_KEY'] ?? '') });
+  const nextClientMessage = async (persona: string): Promise<string> => {
+    const response = await simulator.messages.create({
+      model: SIMULATOR_MODEL,
+      max_tokens: 1024,
+      system: SIMULATOR_SYSTEM,
+      messages: [
+        {
+          role: 'user',
+          content: `Кто ты (клиент):\n${persona}\n\nПереписка до сих пор:\n${transcript.join('\n')}\n\nНапиши следующее сообщение клиента.`,
+        },
+      ],
+    });
+    const u = response.usage;
+    usage.push({
+      model: SIMULATOR_MODEL,
+      input: u.input_tokens,
+      output: u.output_tokens,
+      cacheRead: u.cache_read_input_tokens ?? 0,
+      cacheWrite: u.cache_creation_input_tokens ?? 0,
+    });
+    simulatorCalls += 1;
+    const text = response.content
+      .flatMap((block) => (block.type === 'text' ? [block.text] : []))
+      .join(' ')
+      .trim();
+    return text === '' ? 'ок' : text;
+  };
+
+  if (dialog.persona !== undefined) {
+    const persona = dialog.persona;
+    const max = dialog.maxClientMessages ?? 8;
+    await runStep({ say: dialog.opening ?? 'Здравствуйте' });
+    while (!withManager() && clientMessages < max) {
+      await runStep({ say: await nextClientMessage(persona) });
+    }
+    for (const step of dialog.afterHandoff ?? []) {
+      const live = 'say' in step && step.say === '<клиент>';
+      await runStep(live ? { say: await nextClientMessage(persona) } : step);
+    }
+  } else {
+    for (const step of dialog.steps ?? []) await runStep(step);
   }
   const notes = db.prepare('SELECT text FROM manager_notifications ORDER BY id').all() as {
     text: string;
@@ -282,12 +357,34 @@ it('живой диалог', async () => {
   if (notes.length > 0)
     lines.push('## Уведомления менеджеру', '', ...notes.map((n) => '```\n' + n.text + '\n```'), '');
   const rejected = db.prepare('SELECT * FROM rejected_drafts ORDER BY id').all();
-  if (rejected.length > 0) lines.push('## Отклонённые черновики', '', '```json', JSON.stringify(rejected, null, 1), '```', '');
+  if (rejected.length > 0)
+    lines.push(
+      '## Отклонённые черновики',
+      '',
+      '```json',
+      JSON.stringify(rejected, null, 1),
+      '```',
+      '',
+    );
   const profiles = db.prepare('SELECT * FROM client_profiles').all();
   lines.push('## Выжимка в базе', '', '```json', JSON.stringify(profiles, null, 1), '```', '');
   const total = costOf(usage);
-  lines.push(`## Расход: $${total.toFixed(4)}, вызовов ${usage.length}`);
+  const botCost = costOf(usage.filter((u, i) => u.model !== SIMULATOR_MODEL || i < 0));
+  lines.push(`## Расход: $${total.toFixed(4)}, вызовов ${usage.length} (из них клиент-модель ${simulatorCalls})`);
   writeFileSync(join(outDir, 'report.md'), lines.join('\n'), 'utf8');
+  writeFileSync(
+    join(outDir, 'chat.md'),
+    [
+      `# ${dialog.name}`,
+      '',
+      ...transcript.map((line) => `${line}\n`),
+      `Сообщений клиента: ${clientMessages}. Передан менеджеру: ${withManager() ? 'да' : 'нет'}.`,
+      `Расход бота: $${botCost.toFixed(4)}, всего вместе с клиентом-моделью: $${total.toFixed(4)}.`,
+      '',
+      ...notes.map((n) => '```\n' + n.text + '\n```'),
+    ].join('\n'),
+    'utf8',
+  );
   writeFileSync(
     join(outDir, 'calls.json'),
     JSON.stringify({ calls, usage, total }, null, 1),
