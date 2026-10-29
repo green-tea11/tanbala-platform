@@ -1,0 +1,8 @@
+# Корень, contract/, handover/ и deploy/ едут на Linux-сервер: окончания строк LF.
+# Общее правило для всех файлов сюда не ставить: в leads/ часть файлов хранится с CRLF, у whatsapp/ свои правила.
+/*.md text eol=lf
+/.gitignore text eol=lf
+/.gitattributes text eol=lf
+/contract/** text eol=lf
+/handover/** text eol=lf
+/deploy/** text eol=lf

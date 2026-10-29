@@ -1,0 +1,14 @@
+# У leads/ и whatsapp/ свои .gitignore. Здесь главное для всей папки.
+
+# Секреты
+.env
+.env.*
+!.env.example
+
+# Дампы и копии баз: персональные данные, только вне git
+*.dump
+*.sql.gz
+/backups/
+
+# Локальные настройки Claude Code
+.claude/settings.local.json
