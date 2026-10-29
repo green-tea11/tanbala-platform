@@ -3,6 +3,7 @@ import type {
   AppStateRepo,
   ChatsRepo,
   Clock,
+  KnownChat,
   Logger,
   UnitOfWork,
   WorkingModeRepo,
@@ -31,7 +32,7 @@ export interface WorkingModeDeps {
 }
 
 /** Почему бот не переходит в рабочий режим. */
-export type WorkingModeRefusal = 'not_linked' | 'history_incomplete';
+export type WorkingModeRefusal = 'not_linked' | 'history_incomplete' | 'no_known_chats';
 
 const REFUSAL_TEXTS: Readonly<Record<WorkingModeRefusal, string>> = {
   not_linked:
@@ -41,6 +42,10 @@ const REFUSAL_TEXTS: Readonly<Record<WorkingModeRefusal, string>> = {
   history_incomplete:
     'Рабочий режим (TEST_MODE=false) не включён: в базе флаг «список чатов неполный», и старые чаты могли бы ' +
     'достаться боту. Верните TEST_MODE=true и передайте разработчику',
+  no_known_chats:
+    'Рабочий режим (TEST_MODE=false) не включён: список чатов рабочего номера пуст (первая синхронизация WhatsApp ' +
+    'ещё не пришла), и старые чаты достались бы боту. Верните TEST_MODE=true, запустите бота с WhatsApp, дождитесь ' +
+    'в логе строки «Первая синхронизация» и только потом переключайте. Если строка уже была, передайте разработчику',
 };
 
 /**
@@ -83,7 +88,8 @@ export function startsWithManager(lastActivityMs: number | null, switchedAtMs: n
  * TEST_MODE=false снова переход. Отметки и статусы чатов остаются.
  * TEST_MODE=false и граница уже есть: рабочий режим с этой границей, ничего не пересчитывается.
  * TEST_MODE=false без границы: переход. Сначала проверки, при отказе WorkingModeRefusedError и ничего не записано:
- * номер не привязан (список чатов ещё не собран) или стоит флаг «список чатов неполный». Затем одной транзакцией:
+ * номер не привязан (список чатов ещё не собран), стоит флаг «список чатов неполный» или known_chats пуст (первая
+ * синхронизация ещё не пришла: у рабочего номера с перепиской пустого списка не бывает). Затем одной транзакцией:
  * граница = сейчас (app_state), отметка «у менеджера» на адресах known_chats по правилу startsWithManager (новый чат с
  * таким адресом начнёт у менеджера, createHeldForManagerCheck) и статус manager (by 'phone') чатам базы со статусом
  * bot не из TEST_ALLOWLIST по тому же правилу. Сбой откатывает всё. Повторный переход после закрытого режима делает то
@@ -115,20 +121,26 @@ function closeWorkingMode(deps: WorkingModeDeps): void {
   );
 }
 
-function refusalOf(appState: WorkingModeDeps['appState']): WorkingModeRefusal | null {
+function refusalOf(
+  appState: WorkingModeDeps['appState'],
+  known: readonly KnownChat[],
+): WorkingModeRefusal | null {
   if (appState.getLinkedAtMs() === null) return 'not_linked';
   if (appState.getHistoryIncomplete() !== null) return 'history_incomplete';
+  if (known.length === 0) return 'no_known_chats';
   return null;
 }
 
 /** Переход одной транзакцией; возвращает границу. */
 function enterWorkingMode(deps: WorkingModeDeps, allowlist: TestMode['allowlist']): number {
-  const refusal = refusalOf(deps.appState);
+  // Запуск под замком процесса и до WhatsApp: список не меняется между проверкой и транзакцией.
+  const known = deps.repo.listKnownChats();
+  const refusal = refusalOf(deps.appState, known);
   if (refusal !== null) throw new WorkingModeRefusedError(refusal);
   const nowMs = deps.clock.now();
   const counts = deps.unitOfWork.run(() => {
     deps.appState.setWorkingSinceMs(nowMs);
-    const held = holdKnownChats(deps.repo, nowMs);
+    const held = holdKnownChats(deps.repo, known, nowMs);
     const moved = deps.repo
       .listChats()
       .filter(
@@ -149,9 +161,8 @@ function enterWorkingMode(deps: WorkingModeDeps, allowlist: TestMode['allowlist'
 }
 
 /** Отметки «у менеджера» на адресах known_chats по правилу; возвращает их число. */
-function holdKnownChats(repo: WorkingModeRepo, nowMs: number): number {
-  const held: Jid[] = repo
-    .listKnownChats()
+function holdKnownChats(repo: WorkingModeRepo, known: readonly KnownChat[], nowMs: number): number {
+  const held: Jid[] = known
     .filter((chat) => startsWithManager(chat.lastActivityMs, nowMs))
     .map((chat) => chat.jid);
   repo.holdForManager(held);

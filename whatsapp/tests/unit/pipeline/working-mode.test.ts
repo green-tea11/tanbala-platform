@@ -175,6 +175,23 @@ describe('pipeline/working-mode settleWorkingMode: отказ перехода',
     expect(rig.logs).toEqual([]);
   });
 
+  it('список чатов пуст (первая синхронизация ещё не пришла): отказ понятным текстом, ничего не записано', () => {
+    const rig = rigOf();
+    createAppStateRepo(rig.db).setLinkedAtMs(LINKED_AT);
+    const former = insertChat(rig.db, { replyJid: STRANGER_PN, pnJid: STRANGER_PN });
+
+    const error = errorOf(() => settleWorkingMode(rig.deps, WORKING));
+
+    expect(error).toBeInstanceOf(WorkingModeRefusedError);
+    expect(error).toMatchObject({ reason: 'no_known_chats' });
+    expect((error as Error).message).toMatch(/TEST_MODE=false.*список чатов.*пуст/);
+    expect((error as Error).message).toMatch(/Первая синхронизация/);
+    expect((error as Error).message).not.toMatch(/7700000000\d|@lid|@s\.whatsapp\.net/);
+    expect(workingKey(rig.db)).toBeUndefined();
+    expect(controlOf(rig.db, former)).toEqual({ status: 'bot', by: null });
+    expect(rig.logs).toEqual([]);
+  });
+
   it('отказ и при уже снятой границе: флаг проверяется на каждом переходе', () => {
     const rig = linkedRig();
     settleWorkingMode(rig.deps, WORKING);
