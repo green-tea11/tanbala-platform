@@ -5,6 +5,8 @@
 # (root:caddy, права 640), как их создать — deploy/env.md. Глобальные опции и (common) — в caddy/common.caddy.
 # Не добавлять сайты «на всё» (:443, http://, *): запрос с чужим именем дошёл бы до приложений.
 import /opt/tanbala/deploy/caddy/common.caddy
+# Сайт tanbala.kz и www: открыт всем, в обоих режимах.
+import /opt/tanbala/deploy/caddy/site.caddy
 
 # Панель WhatsApp-бота: пароль Caddy, затем свой вход панели (два слоя, решение владельца 29.10.2026).
 wa.tanbala.kz {

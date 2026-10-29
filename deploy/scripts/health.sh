@@ -69,6 +69,9 @@ else
 	expect 404 "внутренний API снаружи не виден" https://leads.tanbala.kz/internal/lookup
 	expect 401 "https://wa.tanbala.kz закрыт паролем" https://wa.tanbala.kz/
 fi
+# Сайт открыт всем, www ведёт на основное имя.
+expect 200 "сайт https://tanbala.kz открыт" https://tanbala.kz/
+expect 301 "https://www.tanbala.kz ведёт на tanbala.kz" https://www.tanbala.kz/
 
 disk=$(df --output=pcent / | tail -1 | tr -dc '0-9')
 if ((disk < DISK_MAX_PERCENT)); then ok "диск занят на $disk%"; else bad "диск занят на $disk% (df -h, journalctl --disk-usage)"; fi

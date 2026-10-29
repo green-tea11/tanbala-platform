@@ -9,6 +9,9 @@
 | `Caddyfile` | `/etc/caddy/Caddyfile` | HTTPS для wa.tanbala.kz и leads.tanbala.kz, пароль Caddy на обоих, `/internal*` → 404 |
 | `Caddyfile.closed` | `/etc/caddy/Caddyfile`, пока нет паролей Caddy | оба имени отвечают 503, сертификаты уже получаются |
 | `scripts/open-panels.sh` | `/opt/tanbala/deploy/scripts/` | пароли Caddy и переход на рабочий `Caddyfile` одной командой (env.md) |
+| `caddy/common.caddy`, `caddy/site.caddy` | `/opt/tanbala/deploy/caddy/`, их импортируют оба Caddyfile | общие настройки Caddy; сайт tanbala.kz (открыт всем) и www → tanbala.kz |
+| `scripts/site.sh` | на ПК | новая версия сайта одной командой: сборка из последнего коммита `../A-site` и выкладка |
+| `scripts/site-install.sh` | `/opt/tanbala/deploy/scripts/` | версия сайта в `/srv/tanbala-site/releases`, переключение `current`, 5 версий, `--rollback` |
 | `systemd/tanbala-leads.service` | `/etc/systemd/system/` | интерфейс почты и внутренний API, 127.0.0.1:8000 |
 | `systemd/tanbala-whatsapp.service` | `/etc/systemd/system/` | бот и панель, 127.0.0.1:3100; без привязанной сессии не стартует |
 | `systemd/tanbala-firewall.service`, `nftables/tanbala-guard.nft` | `/etc/systemd/system/`, `/opt/tanbala/deploy/nftables/` | куда службам можно внутри сервера: бот только в API почты, Caddy только в две панели, браузеры почты не уходят на 127.0.0.1, в частные сети и метаданные облака; без этих правил службы не стартуют |
@@ -30,6 +33,7 @@
 | почта (код, окружения, браузер crawl4ai, логи, `.env`) | `/opt/tanbala/leads` | root, группа `tanbala-leads`; служба пишет только в `data/`, `logs/`, `.crawl4ai/` |
 | бот (код, `data/` с базой и сессией, `.env`) | `/opt/tanbala/whatsapp` | `tanbala-wa`; root внутри не пишет, `install.sh` обновляет код от имени бота |
 | эта папка | `/opt/tanbala/deploy` | root |
+| сайт tanbala.kz (сборка A-site) | `/srv/tanbala-site/current` → `releases/<время>` | root, Caddy только читает |
 | Postgres | том Docker `tanbala-leads_pgdata` | Docker (root) |
 | копии баз | `/var/backups/tanbala` | root, права 700 |
 | Node 22.23.2 | `/opt/node`, ссылка `/usr/local/bin/node` | root |
