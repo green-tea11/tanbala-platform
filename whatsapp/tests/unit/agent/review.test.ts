@@ -17,8 +17,7 @@ import {
 } from './fakes.js';
 
 const DRAFT = 'Цена зависит от задачи. Какой у вас бизнес?';
-const HANDOFF_DRAFT =
-  'Да, проводим интеграцию с вашей 1С. Передал вопрос специалисту, он вам напишет.';
+const HANDOFF_DRAFT = 'Да, проводим интеграцию с вашей 1С. Уточню у коллеги и вернусь к вам.';
 const PASSED: RawReview = { ok: true, problems: [] };
 const LEFT_ANGLE = String.fromCharCode(0x2039);
 const RIGHT_ANGLE = String.fromCharCode(0x203a);
@@ -61,15 +60,15 @@ describe('createAgent: reviewDraft, запрос', () => {
     );
   });
 
-  it('сообщение о передаче: в данных сказано, что после него чат уходит специалисту, текст в конце', async () => {
+  it('сообщение о передаче: в данных сказано, что после него чат уходит коллеге, текст в конце', async () => {
     const { requests, llm } = fakeLlm({ ok: true, value: PASSED });
     const agent = createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS, logger: SILENT_LOGGER });
 
     await agent.reviewDraft(context(), HANDOFF_DRAFT, 'handoff');
 
     const text = onlyRequest(requests).turns.at(-1)?.text ?? '';
-    expect(text).toMatch(/сообщени[ея] о передаче чата специалисту/);
-    expect(text).toMatch(/после него чат уходит специалисту/);
+    expect(text).toMatch(/сообщени[ея] о передаче чата коллеге/);
+    expect(text).toMatch(/после него чат уходит коллеге/);
     expect(text).toContain(HANDOFF_DRAFT);
     expect(text.endsWith(`${HANDOFF_DRAFT}\n</данные>`)).toBe(true);
   });
@@ -229,11 +228,11 @@ describe('reviewCallData', () => {
     expect(data).not.toMatch(/передач/);
   });
 
-  it('сообщение о передаче: подпись говорит, что чат после него уходит специалисту', () => {
+  it('сообщение о передаче: подпись говорит, что чат после него уходит коллеге', () => {
     const data = reviewCallData(`  ${HANDOFF_DRAFT}  \n`, 'handoff');
 
-    expect(data).toMatch(/^Черновик сообщения о передаче чата специалисту/);
-    expect(data).toMatch(/после него чат уходит специалисту/);
+    expect(data).toMatch(/^Черновик сообщения о передаче чата коллеге/);
+    expect(data).toMatch(/после него чат уходит коллеге/);
     expect(data.endsWith(`\n${HANDOFF_DRAFT}`)).toBe(true);
   });
 });

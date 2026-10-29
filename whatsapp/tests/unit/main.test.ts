@@ -916,7 +916,7 @@ describe('main: ответы клиентам, службы этапа 5 и ве
 
     const [jid, text, waId] = sendText.mock.calls[0] ?? [];
     expect([jid, waId]).toEqual([CLIENT_JID, 'OUT-1']);
-    expect(text).toMatch(/специалисту/);
+    expect(text).toBe('Уточню у коллеги и вернусь к вам.');
     expect(chatRow(harness.dbPath)).toEqual({ status: 'manager', statusBy: 'bot' });
     // Номера менеджера нет: уведомление остаётся в панели со статусом no_manager, в лог строка без текста клиента.
     await vi.waitFor(() => expect(count(harness.dbPath, 'manager_notifications')).toBe(1));

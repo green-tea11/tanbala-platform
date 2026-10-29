@@ -203,18 +203,18 @@ describe('createAgent: draftReply, нормализация ответа мод�
     [
       {
         outcome: 'hot',
-        text: ' Да, интеграцию проводим. Передал вопрос специалисту.\n',
+        text: ' Да, интеграцию проводим. Уточню у коллеги и вернусь к вам.\n',
         stopRequested: false,
       },
-      { outcome: 'hot', text: 'Да, интеграцию проводим. Передал вопрос специалисту.' },
+      { outcome: 'hot', text: 'Да, интеграцию проводим. Уточню у коллеги и вернусь к вам.' },
     ],
     [
-      { outcome: 'no_answer', text: 'Уточню у специалиста.', stopRequested: true },
-      { outcome: 'no_answer', text: 'Уточню у специалиста.' },
+      { outcome: 'no_answer', text: 'Уточню у коллеги и вернусь к вам.', stopRequested: true },
+      { outcome: 'no_answer', text: 'Уточню у коллеги и вернусь к вам.' },
     ],
     [
-      { outcome: 'asked_human', text: 'Передал вопрос специалисту.', stopRequested: false },
-      { outcome: 'asked_human', text: 'Передал вопрос специалисту.' },
+      { outcome: 'asked_human', text: 'Уточню у коллеги и вернусь к вам.', stopRequested: false },
+      { outcome: 'asked_human', text: 'Уточню у коллеги и вернусь к вам.' },
     ],
     [
       { outcome: 'hot', text: '', stopRequested: false },

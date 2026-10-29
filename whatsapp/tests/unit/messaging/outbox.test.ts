@@ -324,16 +324,20 @@ describe('createOutbox: лимиты исходящих в чаты клиент
 });
 
 describe('createOutbox: sendHandoffNotice', () => {
+  /** Один голос (решение владельца 29.10.2026): бот сам уточнит у коллеги, без сроков и без «он вам напишет». */
+  const ONE_VOICE = 'Уточню у коллеги и вернусь к вам.';
+  const single: readonly (readonly [string, HandoffNotice])[] = [
+    ['hot', { reason: 'hot' }],
+    ['asked_human', { reason: 'asked_human' }],
+    ['no_answer', { reason: 'no_answer' }],
+    ['check_failed', { reason: 'check_failed' }],
+    ['llm_error', { reason: 'llm_error' }],
+  ];
   const cases: readonly (readonly [string, HandoffNotice, RegExp])[] = [
-    ['hot', { reason: 'hot' }, /передал.*специалисту, он вам напишет\.$/i],
-    ['asked_human', { reason: 'asked_human' }, /передал.*специалисту, он вам напишет\.$/i],
-    ['no_answer', { reason: 'no_answer' }, /уточню.*у специалиста/i],
-    ['check_failed', { reason: 'check_failed' }, /передам.*специалисту/i],
-    ['llm_error', { reason: 'llm_error' }, /передам.*специалисту/i],
     [
       'complaint',
       { reason: 'complaint', stopRequested: false },
-      /^(извините|простите|приношу извинения).*передал.*специалисту/i,
+      /^(извините|простите|приношу извинения)[^.]*\. Уточню у коллеги и вернусь к вам\.$/i,
     ],
     [
       'complaint со stopRequested',
@@ -353,6 +357,15 @@ describe('createOutbox: sendHandoffNotice', () => {
     return texts;
   }
 
+  it.each(single)(
+    '%s: ровно «Уточню у коллеги и вернусь к вам.» при любой случайности',
+    async (_label, notice) => {
+      const texts = await phrasesOf(notice);
+
+      expect(texts).toEqual([ONE_VOICE, ONE_VOICE, ONE_VOICE]);
+    },
+  );
+
   it.each(cases)(
     '%s: фиксированная фраза по поводу, несколько вариантов',
     async (_label, notice, phrase) => {
@@ -368,7 +381,7 @@ describe('createOutbox: sendHandoffNotice', () => {
     const texts = await phrasesOf({ reason: 'hot', aboutPrice: true });
 
     expect(HOT_PRICE_HANDOFF_TEXT).toBe(
-      'Цена сильно зависит от объёма. Передал ваш вопрос специалисту, он вам напишет.',
+      'Цена сильно зависит от объёма. Уточню у коллеги и вернусь к вам.',
     );
     expect(texts).toEqual([HOT_PRICE_HANDOFF_TEXT, HOT_PRICE_HANDOFF_TEXT, HOT_PRICE_HANDOFF_TEXT]);
   });
@@ -376,14 +389,13 @@ describe('createOutbox: sendHandoffNotice', () => {
   it('hot с aboutPrice false: обычные варианты без слов о цене', async () => {
     const texts = await phrasesOf({ reason: 'hot', aboutPrice: false });
 
-    for (const text of texts) expect(text).toMatch(/передал.*специалисту, он вам напишет\.$/i);
-    for (const text of texts) expect(text).not.toMatch(/цен/i);
+    for (const text of texts) expect(text).toBe(ONE_VOICE);
   });
 
-  it('complaint со stopRequested: только извинение, без передачи специалисту', async () => {
+  it('complaint со stopRequested: только извинение, без «уточню» и «вернусь»', async () => {
     const texts = await phrasesOf({ reason: 'complaint', stopRequested: true });
 
-    for (const text of texts) expect(text).not.toMatch(/специалист|передал/i);
+    for (const text of texts) expect(text).not.toMatch(/коллег|уточн|вернусь/i);
   });
 
   it('случайность NaN выбирает первый вариант, а не пустую фразу', async () => {
@@ -395,12 +407,13 @@ describe('createOutbox: sendHandoffNotice', () => {
     expect(sentTexts(h.steps)).toEqual([first]);
   });
 
-  it('фразы без тире, ссылок и обещаний времени', async () => {
-    const texts = (await Promise.all(cases.map(([, notice]) => phrasesOf(notice)))).flat();
+  it('фразы без тире, ссылок, обещаний времени и чужого голоса («специалист», «напишет»)', async () => {
+    const notices = [...single, ...cases].map(([, notice]) => notice);
+    const texts = (await Promise.all(notices.map((notice) => phrasesOf(notice)))).flat();
 
-    for (const text of texts) {
+    for (const text of [...texts, HOT_PRICE_HANDOFF_TEXT]) {
       expect(text).not.toMatch(
-        /[\u2010-\u2015\u2212-]|https?:|www\.|сейчас|минут|час|сегодня|завтра/i,
+        /[\u2010-\u2015\u2212-]|https?:|www\.|сейчас|минут|час|сегодня|завтра|специалист|напишет/i,
       );
     }
   });
@@ -435,7 +448,7 @@ describe('createOutbox: sendHandoffNotice', () => {
 
 describe('createOutbox: sendHandoffText', () => {
   const HANDOFF_TEXT =
-    'Да, мы проводим интеграцию с вашей 1С. Передал вопрос специалисту, он вам напишет.' as ReviewedText;
+    'Да, мы проводим интеграцию с вашей 1С. Уточню у коллеги и вернусь к вам.' as ReviewedText;
 
   it('отправляет ровно этот текст вместо фиксированной фразы: ID записан до отправки, источник handoff_notice, текст в истории', async () => {
     const h = setup();

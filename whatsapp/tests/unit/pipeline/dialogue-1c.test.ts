@@ -43,7 +43,7 @@ const CLIENT_QUESTION =
 
 /** Ответ модели по решению владельца: ответ из знаний (раздел 9, вопрос 11) и одна фраза о передаче. */
 const MODEL_TEXT =
-  'Да, мы проводим интеграцию с вашей 1С, детали решаем по вашей конфигурации. Стоимость зависит от вашей задачи, я передал вопрос специалисту, он вам напишет.';
+  'Да, мы проводим интеграцию с вашей 1С, детали решаем по вашей конфигурации. Стоимость зависит от вашей задачи, уточню у коллеги и вернусь к вам.';
 
 const KNOWLEDGE_ANSWER =
   'Да, мы проводим интеграцию с вашей 1С. Детали решаем по вашей конфигурации.';
@@ -258,7 +258,7 @@ describe('диалог про 1С и цену (живой случай): Sonnet 
     ]);
     const review = d.llm.requests[2]?.turns.at(-1)?.text ?? '';
     expect(review).toContain(MODEL_TEXT);
-    expect(review).toMatch(/сообщения о передаче чата специалисту/);
+    expect(review).toMatch(/сообщения о передаче чата коллеге/);
   });
 
   it('модель видит вопрос клиента и ответ про 1С в знаниях (раздел 9, вопрос 11)', async () => {
@@ -286,7 +286,7 @@ describe('диалог про 1С и цену: проверка не пройд�
     expect(d.llm.purposes()).toEqual(['reply', 'interest', 'review', 'reply', 'review']);
     const toClient = d.toClient();
     expect(toClient).toHaveLength(1);
-    expect(toClient[0]).toMatch(/передал.*специалисту, он вам напишет\.$/i);
+    expect(toClient[0]).toMatch(/Уточню у коллеги и вернусь к вам\.$/);
     expect(toClient[0]).not.toBe(MODEL_TEXT);
     expect(d.storage.handoffs.findOpen(d.chat.id)).toMatchObject({ reason: 'hot', level: 'hot' });
     expect(d.toManager()[0]).toContain('Передача чата менеджеру: горячий клиент.');

@@ -32,6 +32,7 @@ import {
   PRICE_PATTERNS,
   SENTENCE_END,
   STOP_PATTERNS,
+  VOICE_PATTERNS,
 } from './rules.js';
 
 // Бесплатные проверки ответа кодом (шаг 4 плана). Перенос docs/reference/checks.py (B-web-email):
@@ -55,7 +56,8 @@ export type CheckCode =
   | 'contact'
   | 'too_long'
   | 'empty'
-  | 'homoglyph';
+  | 'homoglyph'
+  | 'voice';
 
 /** Одно нарушение: код и понятное описание с фрагментом текста. */
 export interface CheckFinding {
@@ -174,6 +176,14 @@ export function checkPrices(text: string): readonly CheckFinding[] {
 /** Нет запрещённых слов раздела 11 документа, казахских стоп-слов и обещаний времени ответа и сроков. */
 export function checkStopWords(text: string): readonly CheckFinding[] {
   return scan(normalize(text), STOP_PATTERNS, 'stop_word', 'стоп-слово');
+}
+
+const VOICE_REASON =
+  'один голос: говори «коллега», а не «специалист», и не обещай, что напишет другой человек, а пиши «Уточню у коллеги и вернусь к вам»';
+
+/** Один голос (решение владельца 29.10.2026): без «специалист» и без «он вам напишет», «свяжется», «позвонит». */
+export function checkVoice(text: string): readonly CheckFinding[] {
+  return scan(normalize(text), VOICE_PATTERNS, 'voice', VOICE_REASON);
 }
 
 /** Нет ссылок: в чате их не присылают совсем. Почта не ссылка. Белый список хостов пуст по умолчанию. */
@@ -323,7 +333,7 @@ function maskCompanyName(text: string, name: string | null | undefined): string 
 
 /**
  * Все проверки ответа клиенту. Текст заранее подготовлен normalizeDraft (бренд NormalizedText).
- * Тире, ссылки, стиль и подмена букв проверяются без названия компании клиента (options.companyName,
+ * Тире, один голос, ссылки, стиль и подмена букв проверяются без названия компании клиента (options.companyName,
  * maskCompanyName), остальное по всему тексту. Пустой список: ответ можно отдавать на второй вызов (ревью).
  */
 export function runCodeChecks(
@@ -338,6 +348,7 @@ export function runCodeChecks(
     ...checkDashes(form),
     ...checkPrices(text),
     ...checkStopWords(text),
+    ...checkVoice(form),
     ...checkLinks(form),
     ...checkBrackets(text),
     ...checkJargon(text, options.clientText),

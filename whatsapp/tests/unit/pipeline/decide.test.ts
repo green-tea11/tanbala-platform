@@ -23,8 +23,7 @@ import {
 const TEXT = 'Учёт подбираем под задачу. Что вы храните?';
 /** Своего номера в ответах у бота нет (как в pipeline/reply-flow.ts). */
 const NO_PHONE = '' as PhoneDigits;
-const HANDOFF_TEXT =
-  'Да, мы проводим интеграцию с вашей 1С. Передал вопрос специалисту, он вам напишет.';
+const HANDOFF_TEXT = 'Да, мы проводим интеграцию с вашей 1С. Уточню у коллеги и вернусь к вам.';
 const DASH: CheckFinding = { code: 'dash', detail: 'тире: «—» в «…учёт — это…»' };
 const PRICE: CheckFinding = { code: 'price', detail: 'цена: «5 000 тг» в «…стоит 5 000 тг…»' };
 

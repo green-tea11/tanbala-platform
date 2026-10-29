@@ -10,8 +10,7 @@ const KNOWLEDGE: Knowledge = {
 };
 
 /** Фраза владельца от 27.10.2026 при передаче чата после вопроса цены. */
-const PRICE_HANDOFF =
-  'Цена сильно зависит от объёма. Передал ваш вопрос специалисту, он вам напишет.';
+const PRICE_HANDOFF = 'Цена сильно зависит от объёма. Уточню у коллеги и вернусь к вам.';
 
 function instruction(purpose: 'review' | 'interest'): string {
   return buildSystem(KNOWLEDGE, purpose).at(-1)?.text ?? '';
@@ -51,6 +50,27 @@ describe('вопрос цены: проверка и оценка интерес
     expect(text).toMatch(/problemAgreed: true, если клиент согласился, что трудность у него есть/);
     expect(text).toMatch(/priceAsked: true, если в них клиент спрашивает цену/);
     expect(text).toMatch(/refused: true, если в них клиент отказывается отвечать/);
+  });
+});
+
+describe('knowledge/whatsapp.md: один голос (решение владельца 29.10.2026)', () => {
+  const whatsapp = readFileSync(new URL('../../../knowledge/whatsapp.md', import.meta.url), 'utf8');
+
+  it('клиенту сотрудник Tanbala это «коллега», фраза передачи «Уточню у коллеги и вернусь к вам»', () => {
+    expect(whatsapp).toMatch(/Клиенту менеджера называй коллегой/);
+    expect(whatsapp).toContain('«Уточню у коллеги и вернусь к вам.»');
+    expect(whatsapp).not.toMatch(/Передал ваш вопрос|Передал вопрос|передал специалисту/);
+    // «он вам напишет» только как запрет: «не «он вам напишет»».
+    expect(whatsapp.match(/он вам напишет/g)).toHaveLength(1);
+    expect(whatsapp).toContain('не «он вам напишет»');
+  });
+
+  it('«специалист» только в цитате документа и в правиле одного голоса', () => {
+    const lines = whatsapp.split('\n').filter((line) => /специалист/.test(line));
+
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain('«расскажет специалист в WhatsApp»');
+    expect(lines[1]).toMatch(/Слово «специалист» из документа клиенту не пиши/);
   });
 });
 

@@ -40,9 +40,8 @@ export const JID = `${PHONE}@s.whatsapp.net` as Jid;
 export const ALLOWLIST: ReadonlySet<PhoneDigits> = new Set([PHONE]);
 export const ANSWER = 'Учёт подбираем под задачу. Что вы храните?';
 export const HOT_TEXT =
-  'Да, мы проводим интеграцию с вашей 1С, детали решаем по вашей конфигурации. Стоимость зависит от вашей задачи, я передал вопрос специалисту, он вам напишет.';
-export const SECOND_HOT_TEXT =
-  'Интеграцию с вашей 1С проводим. Передал вопрос специалисту, он вам напишет.';
+  'Да, мы проводим интеграцию с вашей 1С, детали решаем по вашей конфигурации. Стоимость зависит от вашей задачи, уточню у коллеги и вернусь к вам.';
+export const SECOND_HOT_TEXT = 'Интеграцию с вашей 1С проводим. Уточню у коллеги и вернусь к вам.';
 export const MIME = 'audio/ogg; codecs=opus';
 export const TYPING_MS = 1200;
 export const EMPTY_PROFILE: ClientProfile = {

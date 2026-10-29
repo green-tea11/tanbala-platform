@@ -18,9 +18,9 @@ import { scriptedLlm, type LlmScript } from './scripted-llm.js';
 const CHAT_ID = 7 as ChatId;
 const NOW = Date.UTC(2026, 9, 26, 9, 0, 0);
 const HOT_TEXT =
-  'Да, мы проводим интеграцию с вашей 1С, детали решаем по вашей конфигурации. Стоимость зависит от вашей задачи, я передал вопрос специалисту, он вам напишет.';
+  'Да, мы проводим интеграцию с вашей 1С, детали решаем по вашей конфигурации. Стоимость зависит от вашей задачи, уточню у коллеги и вернусь к вам.';
 const FIRST = 'Учёт подбираем под задачу. Что вы храните?';
-const SECOND = 'Решение подбирает специалист. Что вы хотите учитывать?';
+const SECOND = 'Решение подбирает коллега. Что вы хотите учитывать?';
 const KNOWLEDGE: Knowledge = { owner: 'Документ', whatsapp: 'Правила', version: 'v1' };
 // Модели из config/models.json: ответ на Sonnet, проверка и оценка интереса на Haiku.
 const MODELS_FILE = JSON.parse(
@@ -132,7 +132,7 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
     expect(model.purposes()).toEqual(['reply', 'interest', 'review']);
     const review = model.requests[2]?.turns.at(-1)?.text ?? '';
     expect(review).toContain(HOT_TEXT);
-    expect(review).toMatch(/сообщения о передаче чата специалисту/);
+    expect(review).toMatch(/сообщения о передаче чата коллеге/);
     expect(saveAssessment).toHaveBeenNthCalledWith(
       2,
       CHAT_ID,

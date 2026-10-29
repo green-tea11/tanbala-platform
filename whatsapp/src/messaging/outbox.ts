@@ -110,11 +110,16 @@ export const VOICE_NOTICE_TEXT =
   'Сейчас не могу прослушать голосовое, напишите, пожалуйста, текстом';
 
 /**
- * Фраза передачи hot, когда клиент спрашивал цену (HandoffNotice.aboutPrice, решение владельца 27.10.2026): ровно
- * этот текст, без вариантов.
+ * Фраза передачи: один голос (решение владельца 29.10.2026). Бот сам уточнит у коллеги, без сроков и без обещаний за
+ * другого человека; ровно этот текст, без вариантов.
  */
-export const HOT_PRICE_HANDOFF_TEXT =
-  'Цена сильно зависит от объёма. Передал ваш вопрос специалисту, он вам напишет.';
+export const HANDOFF_TEXT = 'Уточню у коллеги и вернусь к вам.';
+
+/**
+ * Фраза передачи hot, когда клиент спрашивал цену (HandoffNotice.aboutPrice, решения владельца 27.10 и 29.10.2026):
+ * ровно этот текст, без вариантов.
+ */
+export const HOT_PRICE_HANDOFF_TEXT = `Цена сильно зависит от объёма. ${HANDOFF_TEXT}`;
 
 /** Наибольшая длина ответа из панели (без пробелов по краям), в символах. */
 export const PANEL_TEXT_MAX_LENGTH = 4096;
@@ -161,26 +166,13 @@ const HOUR_MS = 60 * 60 * 1000;
 /** Варианты фразы: хотя бы один. */
 type Variants = readonly [string, ...string[]];
 
-// Фразы передачи (knowledge/whatsapp.md, «Что писать клиенту»): специалист вместо менеджера, без тире и без времени.
-const PASSED_WILL_WRITE: Variants = [
-  'Передал ваш вопрос специалисту, он вам напишет.',
-  'Я передал вопрос специалисту, он вам напишет.',
-  'Передал вопрос нашему специалисту, он вам напишет.',
-];
-const WILL_CHECK: Variants = [
-  'Уточню этот вопрос у специалиста.',
-  'Этот вопрос уточню у специалиста.',
-  'Уточню у специалиста, как лучше ответить на ваш вопрос.',
-];
-const WILL_PASS: Variants = [
-  'Передам ваш вопрос специалисту.',
-  'Передам этот вопрос специалисту.',
-  'Я передам вопрос специалисту.',
-];
+// Фразы передачи (knowledge/whatsapp.md, «Что писать клиенту»): один голос «Уточню у коллеги и вернусь к вам», без тире
+// и без времени. Варианты остались только у извинения при жалобе.
+const ONE_VOICE: Variants = [HANDOFF_TEXT];
 const APOLOGY_PASSED: Variants = [
-  'Извините, пожалуйста. Передал ваш вопрос специалисту.',
-  'Простите за неудобство. Передал вопрос специалисту.',
-  'Приношу извинения. Я передал ваш вопрос специалисту.',
+  `Извините, пожалуйста. ${HANDOFF_TEXT}`,
+  `Простите за неудобство. ${HANDOFF_TEXT}`,
+  `Приношу извинения. ${HANDOFF_TEXT}`,
 ];
 /** Клиент просит больше не писать: только извинение. */
 const APOLOGY_ONLY: Variants = [
@@ -190,11 +182,11 @@ const APOLOGY_ONLY: Variants = [
 ];
 
 const HANDOFF_PHRASES = {
-  hot: PASSED_WILL_WRITE,
-  asked_human: PASSED_WILL_WRITE,
-  no_answer: WILL_CHECK,
-  check_failed: WILL_PASS,
-  llm_error: WILL_PASS,
+  hot: ONE_VOICE,
+  asked_human: ONE_VOICE,
+  no_answer: ONE_VOICE,
+  check_failed: ONE_VOICE,
+  llm_error: ONE_VOICE,
 } as const satisfies Record<Exclude<HandoffNotice['reason'], 'complaint'>, Variants>;
 
 /** Почему сообщение в чат клиента не отправлено. Extra: свой отказ вида отправки (статус manager). */
@@ -242,8 +234,8 @@ interface SendQuotas {
  * исходящих. «Печатает» с паузой (messaging/typing.ts) показывает конвейер до вызова: здесь паузы нет, иначе клиент
  * ждал бы дважды. Лимиты за скользящий час: CLIENT_SENDS_PER_CHAT_PER_HOUR на чат и CLIENT_SENDS_PER_HOUR на все чаты;
  * уведомления менеджеру по квотам MANAGER_NOTIFY_PER_HOUR раздельно по kind, нет managerJid => 'no_manager'.
- * Фразы передачи фиксированные по поводу, вариант выбирает random (у hot с aboutPrice одна фраза
- * HOT_PRICE_HANDOFF_TEXT); сообщение передачи, написанное моделью
+ * Фразы передачи фиксированные по поводу: одна фраза HANDOFF_TEXT (у hot с aboutPrice HOT_PRICE_HANDOFF_TEXT), вариант
+ * извинения при жалобе выбирает random; сообщение передачи, написанное моделью
  * (sendHandoffText), уходит с тем же origin 'handoff_notice' и теми же проверками, но своим текстом; фраза про
  * голосовое одна, origin 'voice_notice'.
  * sendFromPanel (ответ человека из панели): текст непустой после trim и не длиннее PANEL_TEXT_MAX_LENGTH, чат существует,

@@ -29,9 +29,8 @@ const NOW = Date.UTC(2026, 9, 26, 9, 0, 0);
 const CHAT_ID = 7 as ChatId;
 const ANSWER = 'Учёт подбираем под задачу. Что вы храните?';
 const SECOND_ANSWER = 'Цена зависит от задачи. Что вы хотите учитывать?';
-const HANDOFF_TEXT =
-  'Да, интеграцию с вашей 1С проводим. Передал вопрос специалисту, он вам напишет.';
-const SECOND_HANDOFF_TEXT = 'Интеграцию проводим. Передал вопрос специалисту, он вам напишет.';
+const HANDOFF_TEXT = 'Да, интеграцию с вашей 1С проводим. Уточню у коллеги и вернусь к вам.';
+const SECOND_HANDOFF_TEXT = 'Интеграцию проводим. Уточню у коллеги и вернусь к вам.';
 const EMPTY_PROFILE: ClientProfile = {
   business: null,
   area: null,
@@ -389,7 +388,7 @@ describe('pipeline/reply-flow: повтор с замечаниями', () => {
     expect(h.reviewDraft).not.toHaveBeenCalled();
   });
 
-  it('в повторе модель передала вопрос специалисту: передача по новому исходу', async () => {
+  it('в повторе модель передала вопрос коллеге: передача по новому исходу', async () => {
     const h = setup({
       drafts: [answerDraft(), outcomeDraft({ outcome: 'no_answer', text: '' })],
       reviews: [reviewProblems('нет в знаниях')],
@@ -526,7 +525,7 @@ describe('pipeline/reply-flow: сообщение о передаче (hot, no_a
 
   it('диалог про 1С: ответ из знаний и фраза о передаче проходят проверки кода и уходят одним текстом', async () => {
     const text =
-      'Да, мы проводим интеграцию с вашей 1С, детали решаем по вашей конфигурации. Стоимость зависит от вашей задачи, я передал вопрос специалисту, он вам напишет.';
+      'Да, мы проводим интеграцию с вашей 1С, детали решаем по вашей конфигурации. Стоимость зависит от вашей задачи, уточню у коллеги и вернусь к вам.';
     const h = setup({ drafts: [handoffDraft('hot', text)], assessment: assessed('warm') });
 
     const verdict = await flow(h, contextOf('11 000 м², сколько будет стоить, у нас 1С'));
@@ -537,8 +536,7 @@ describe('pipeline/reply-flow: сообщение о передаче (hot, no_a
   });
 
   it('невидимые символы убираются до проверок: ревью и клиент получают один и тот же текст', async () => {
-    const dirty =
-      'Да, интеграцию с вашей 1С проводим. Передал​ вопрос специалисту, он вам напишет.';
+    const dirty = 'Да, интеграцию с вашей 1С проводим. Уточню​ у коллеги и вернусь к вам.';
     const h = setup({ drafts: [handoffDraft('hot', dirty)] });
 
     const verdict = await flow(h);
@@ -548,7 +546,7 @@ describe('pipeline/reply-flow: сообщение о передаче (hot, no_a
   });
 
   it('нарушение кода в сообщении передачи: ревью не зовётся, повтор с описанием, второй текст уходит', async () => {
-    const dashed = 'Интеграцию — проводим. Передал вопрос специалисту, он вам напишет.';
+    const dashed = 'Интеграцию — проводим. Уточню у коллеги и вернусь к вам.';
     const h = setup({
       drafts: [handoffDraft('hot', dashed), handoffDraft('hot', SECOND_HANDOFF_TEXT)],
     });
@@ -560,8 +558,8 @@ describe('pipeline/reply-flow: сообщение о передаче (hot, no_a
     expect(h.draftReply.mock.calls[1]?.[1]?.[0]).toContain('тире');
   });
 
-  it('обещание времени в сообщении передачи ловит код: «напишет сегодня» нельзя, повтор', async () => {
-    const promise = 'Передал вопрос специалисту, он вам напишет сегодня.';
+  it('обещание времени в сообщении передачи ловит код: «ответит сегодня» нельзя, повтор', async () => {
+    const promise = 'Коллега вам ответит сегодня.';
     const h = setup({
       drafts: [handoffDraft('asked_human', promise), handoffDraft('asked_human')],
     });
@@ -608,7 +606,7 @@ describe('pipeline/reply-flow: сообщение о передаче (hot, no_a
   );
 
   it('повтор снова с нарушением кода: та же причина без текста, второго ревью нет', async () => {
-    const dashed = handoffDraft('hot', 'Интеграцию — проводим. Передал вопрос специалисту.');
+    const dashed = handoffDraft('hot', 'Интеграцию — проводим. Уточню у коллеги и вернусь к вам.');
     const h = setup({ drafts: [dashed, dashed] });
 
     const verdict = await flow(h);
@@ -713,7 +711,7 @@ describe('pipeline/reply-flow: сообщение о передаче (hot, no_a
     await flow(h);
 
     expect(logsOf(h, 'info')).toContainEqual({ chatId: CHAT_ID, reason: 'hot' });
-    expect(JSON.stringify(h.logs)).not.toContain('Передал вопрос специалисту');
+    expect(JSON.stringify(h.logs)).not.toContain('Уточню у коллеги');
   });
 });
 
@@ -997,7 +995,7 @@ describe('pipeline/reply-flow: hot после вопроса цены (aboutPric
   });
 
   it('текст hot с aboutPrice дважды не прошёл проверки: фраза о цене', async () => {
-    const dashed = priced('hot', 'Интеграцию — проводим. Передал вопрос специалисту.', true);
+    const dashed = priced('hot', 'Интеграцию — проводим. Уточню у коллеги и вернусь к вам.', true);
     const h = setup({ drafts: [dashed, dashed] });
 
     await expect(flow(h, THIRD_ASK)).resolves.toStrictEqual(
