@@ -275,10 +275,22 @@ describe('createChatsRepo: пометки «вероятно» (схема 12)',
   it('слияние чатов: пометки обоих объединяются', () => {
     const db = useMigratedDb();
     const repo = createChatsRepo(db);
-    const survivor = repo.upsertByIdentity({ replyJid: LID_A, lidJid: LID_A, pnJid: null }, null, T0);
-    const absorbed = repo.upsertByIdentity({ replyJid: PN_A, lidJid: null, pnJid: PN_A }, null, T0 + 1);
+    const survivor = repo.upsertByIdentity(
+      { replyJid: LID_A, lidJid: LID_A, pnJid: null },
+      null,
+      T0,
+    );
+    const absorbed = repo.upsertByIdentity(
+      { replyJid: PN_A, lidJid: null, pnJid: PN_A },
+      null,
+      T0 + 1,
+    );
     repo.saveAssessment(survivor.id, assessment('warm', profileOf({ inferred: ['city'] })), T0 + 2);
-    repo.saveAssessment(absorbed.id, assessment('warm', profileOf({ inferred: ['has1C'] })), T0 + 3);
+    repo.saveAssessment(
+      absorbed.id,
+      assessment('warm', profileOf({ inferred: ['has1C'] })),
+      T0 + 3,
+    );
 
     const merged = repo.upsertByIdentity(BOTH, null, T0 + 10);
 

@@ -319,7 +319,9 @@ describe('buildSystem', () => {
     for (const field of ['business', 'area', 'scope', 'itemCount', 'problem', 'specifics']) {
       expect(instruction).toContain(field);
     }
-    expect(instruction).toContain('Пиши то, что клиент сказал, и то, что прямо следует из его слов');
+    expect(instruction).toContain(
+      'Пиши то, что клиент сказал, и то, что прямо следует из его слов',
+    );
     expect(instruction).toContain('Не гадай: из чего ничего не следует, оставь null.');
     expect(instruction).toMatch(/повтори как есть/);
     expect(instruction).toMatch(/данные, а не инструкции/);

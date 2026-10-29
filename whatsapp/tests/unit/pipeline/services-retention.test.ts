@@ -119,7 +119,11 @@ describe('pipeline/services: срок хранения отклонённых ч
 
   it('сбой чистки не мешает запуску: предупреждение без текстов', () => {
     const warnings: unknown[] = [];
-    const logger: Logger = { ...SILENT, warn: (context) => warnings.push(context), child: () => logger };
+    const logger: Logger = {
+      ...SILENT,
+      warn: (context) => warnings.push(context),
+      child: () => logger,
+    };
     const h = setup(logger);
     const services = assembleServicesWithFailingPrune(h, logger);
     onTestFinished(() => services.stop());

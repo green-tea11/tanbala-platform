@@ -27,6 +27,7 @@ import {
   type ForcedPriceHandoff,
   type PriceSituation,
 } from './price-gate.js';
+import { nextSafeField, safeQuestion } from './safe-questions.js';
 
 /** Что нужно ходу ответа от остальной системы: агент, запись оценки интереса, часы и лог. */
 export interface ReplyFlowDeps {
@@ -221,9 +222,54 @@ export async function decideReply(
   const retryContext = assessment === null ? context : { ...context, profile: assessment.profile };
   const flow: Flow = { deps, context, retryContext, price };
   const first = await judgeResult(flow, drafted.draft, 1, null);
-  const verdict = first.kind === 'verdict' ? first.verdict : await retryOnce(flow, first);
+  const judged = first.kind === 'verdict' ? first.verdict : await retryOnce(flow, first);
+  const verdict = isCheckFailed(judged) ? afterCheckFailed(flow) : judged;
   if (isHotHandoff(verdict)) markHot(deps, context, assessment);
   return withSignals(verdict, price.signals);
+}
+
+/**
+ * Ответ дважды не прошёл проверки (пункт 2 задания 29.10.2026): чат не уходит менеджеру. Клиент спрашивает цену и
+ * минимум собран => передача по цене с фразой о цене (так велит правило цены). Иначе фиксированный безопасный вопрос о
+ * следующем невыясненном, не о том, что бот спросил прошлым сообщением (safe-questions.nextSafeField); при вопросе цены
+ * перед ним фраза об ориентире. Спросить нечего => check_failed. В лог только ID чата и код поля.
+ */
+function afterCheckFailed(flow: Flow): ReplyVerdict {
+  const { context, price, deps } = flow;
+  const { chatId } = context;
+  if (price.signals.priceAsked && price.minimum.missing.length === 0 && !price.notePrice) {
+    deps.logger.info(
+      { chatId },
+      `Черновик дважды не прошёл проверки, минимум собран: передача по цене: чат #${chatId}`,
+    );
+    return FORCED_PRICE_HANDOFF;
+  }
+  const field = nextSafeField({
+    profile: flow.retryContext.profile,
+    minimum: price.minimum,
+    lastBotText: lastBotTextOf(context.history),
+  });
+  if (field === null) {
+    deps.logger.info(
+      { chatId },
+      `Черновик дважды не прошёл проверки, спросить нечего: чат #${chatId}`,
+    );
+    return CHECK_FAILED;
+  }
+  deps.logger.info(
+    { chatId, field, aboutPrice: price.signals.priceAsked },
+    `Черновик дважды не прошёл проверки, клиенту уходит безопасный вопрос: чат #${chatId}`,
+  );
+  const text = safeQuestion(field, price.signals.priceAsked);
+  return field === 'company'
+    ? { kind: 'send', text, companyQuestion: 'name' }
+    : { kind: 'send', text };
+}
+
+/** Последнее сообщение бота клиенту в окне истории; нет => null. */
+function lastBotTextOf(history: readonly StoredMessage[]): string | null {
+  const sorted = [...history].sort((a, b) => a.tsMs - b.tsMs || a.id - b.id);
+  return sorted.findLast((message) => message.author === 'bot')?.text ?? null;
 }
 
 /** Ответ уходит: сигналы хода идут с ним, если клиент спросил цену или отказался отвечать. */
@@ -381,13 +427,16 @@ function premature(flow: Flow, attempt: Attempt): Judgement {
     { chatId, attempt, missing: [...minimum.missing], priceAsks },
     `Передача по цене рано: не хватает минимума, чат остаётся у бота: чат #${chatId}`,
   );
-  const fallback = fallbackVerdict(flow.price);
+  const fallback = fallbackVerdict(flow);
   if (attempt === 2) return verdictOf(fallback);
   return { kind: 'retry', feedback: [minimumRemark(flow.price)], keep: fallback, fallback };
 }
 
-function fallbackVerdict(price: PriceSituation): SendVerdict {
-  const { text, companyQuestion } = minimumFallback(price);
+function fallbackVerdict(flow: Flow): SendVerdict {
+  const { text, companyQuestion } = minimumFallback(
+    flow.price,
+    lastBotTextOf(flow.context.history),
+  );
   return companyQuestion === undefined
     ? { kind: 'send', text }
     : { kind: 'send', text, companyQuestion };

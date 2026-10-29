@@ -56,7 +56,15 @@ describe('вопрос цены: проверка и оценка интерес
 
   it('оценка интереса: поля минимума и сигналы последних сообщений клиента', () => {
     const text = instruction('interest');
-    for (const field of ['items: ', 'packaging: ', 'material: ', 'city: ', 'premises: ', 'turnover: ', 'currentTracking: ']) {
+    for (const field of [
+      'items: ',
+      'packaging: ',
+      'material: ',
+      'city: ',
+      'premises: ',
+      'turnover: ',
+      'currentTracking: ',
+    ]) {
       expect(text).toContain(field);
     }
     expect(text).toMatch(/oneCName: какая у клиента 1С/);

@@ -5,6 +5,7 @@ import type { Knowledge } from '../../../src/agent/knowledge.js';
 import type { ModelsConfig } from '../../../src/config/env.js';
 import type { Logger } from '../../../src/domain/ports.js';
 import type { ChatId, ClientProfile, ReviewedText } from '../../../src/domain/types.js';
+import { safeQuestion } from '../../../src/pipeline/safe-questions.js';
 import {
   decideReply,
   requestDraft,
@@ -105,13 +106,13 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
     );
   });
 
-  it('проверка не пропустила: второй черновик получает замечание проверки, второй провал даёт check_failed', async () => {
+  it('проверка не пропустила: второй черновик получает замечание проверки, второй провал даёт безопасный вопрос', async () => {
     const { verdict, model } = await run({
       replies: [FIRST, SECOND],
       problems: ['Названа цена, её нет в знаниях'],
     });
 
-    expect(verdict).toEqual({ kind: 'handoff', notice: { reason: 'check_failed' } });
+    expect(verdict).toEqual({ kind: 'send', text: safeQuestion('items', false) });
     expect(model.purposes()).toEqual(['reply', 'interest', 'review', 'reply', 'review']);
     const retry = model.requests[3]?.turns.at(-1)?.text ?? '';
     expect(retry).toContain('Названа цена, её нет в знаниях');

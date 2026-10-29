@@ -22,6 +22,7 @@ import {
   type ReplyFlowDeps,
   type ReplyVerdict,
 } from '../../../src/pipeline/reply-flow.js';
+import { safeQuestion } from '../../../src/pipeline/safe-questions.js';
 
 // Агент и репозиторий поддельные; шаги пишутся в общий журнал calls, по нему видно порядок.
 
@@ -374,7 +375,7 @@ describe('pipeline/reply-flow: повтор с замечаниями', () => {
     expect(h.reviewDraft).toHaveBeenLastCalledWith(expect.anything(), SECOND_ANSWER, 'answer');
   });
 
-  it('второй провал ревью: check_failed, третьего черновика нет (всего пять звонков)', async () => {
+  it('второй провал ревью: безопасный вопрос вместо передачи, третьего черновика нет (всего пять звонков)', async () => {
     const h = setup({
       drafts: [answerDraft(), answerDraft(SECOND_ANSWER)],
       reviews: [reviewProblems('первое'), reviewProblems('второе')],
@@ -382,17 +383,17 @@ describe('pipeline/reply-flow: повтор с замечаниями', () => {
 
     const verdict = await flow(h);
 
-    expect(verdict).toEqual(handedOff({ reason: 'check_failed' }));
+    expect(verdict).toEqual(sent(safeQuestion('items', false)));
     expect(h.calls).toEqual(['draft', 'assess', 'save', 'review', 'draft:retry', 'review']);
   });
 
-  it('повтор снова с нарушением кода: check_failed, второго ревью нет', async () => {
+  it('повтор снова с нарушением кода: безопасный вопрос, второго ревью нет', async () => {
     const dashed = answerDraft('Учёт — это просто. Что вы храните?');
     const h = setup({ drafts: [dashed, dashed] });
 
     const verdict = await flow(h);
 
-    expect(verdict).toEqual(handedOff({ reason: 'check_failed' }));
+    expect(verdict).toEqual(sent(safeQuestion('items', false)));
     expect(h.reviewDraft).not.toHaveBeenCalled();
   });
 
@@ -497,14 +498,14 @@ describe('pipeline/reply-flow: передачу решает вызов отве
     expect(h.reviewDraft).toHaveBeenCalledTimes(1);
   });
 
-  it('оценка интереса hot и второй провал ревью ответа: check_failed, а не hot', async () => {
+  it('оценка интереса hot и второй провал ревью ответа: безопасный вопрос, а не передача hot', async () => {
     const h = setup({
       drafts: [answerDraft(), answerDraft(SECOND_ANSWER)],
       reviews: [reviewProblems('первое'), reviewProblems('второе')],
       assessment: assessed('hot'),
     });
 
-    await expect(flow(h)).resolves.toEqual(handedOff({ reason: 'check_failed' }));
+    await expect(flow(h)).resolves.toEqual(sent(safeQuestion('items', false)));
   });
 
   it('клиент не горячий: ревью зовётся как обычно', async () => {

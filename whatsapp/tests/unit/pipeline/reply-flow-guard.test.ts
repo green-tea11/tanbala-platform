@@ -9,6 +9,7 @@ import {
   type ReplyFlowDeps,
   type ReplyVerdict,
 } from '../../../src/pipeline/reply-flow.js';
+import { safeQuestion } from '../../../src/pipeline/safe-questions.js';
 
 // Защитная ветка конвейера: по правилу decideAction на второй попытке повтора нет. Если бы решение всё же вернуло
 // повтор (ошибка в правиле), текст без проверки не должен уйти клиенту. Решение подменено, остальное настоящее.
@@ -85,13 +86,13 @@ async function verdictWithEndlessRetry(draft: ReplyDraft): Promise<ReplyVerdict>
 }
 
 describe('pipeline/reply-flow: повтор на второй попытке невозможен', () => {
-  it('ответ answer: если решение всё же вернуло повтор, итог check_failed, текст не уходит', async () => {
+  it('ответ answer: если решение всё же вернуло повтор, текст модели не уходит, уходит безопасный вопрос', async () => {
     const verdict = await verdictWithEndlessRetry({
       outcome: 'answer',
       text: 'Учёт подбираем под задачу. Что вы храните?',
     });
 
-    expect(verdict).toEqual({ kind: 'handoff', notice: { reason: 'check_failed' } });
+    expect(verdict).toEqual({ kind: 'send', text: safeQuestion('items', false) });
   });
 
   it('исход передачи: тот же случай оставляет причину и фиксированную фразу, текст не уходит', async () => {

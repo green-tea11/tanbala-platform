@@ -142,7 +142,11 @@ describe('db/repos/rejected-drafts', () => {
     repo.add(entry(absorbed.id, { draft: 'слитый' }));
     repo.add(entry(survivor.id, { draft: 'свой', atMs: T0 + 5 }));
 
-    const merged = chats.upsertByIdentity({ replyJid: LID_A, lidJid: LID_A, pnJid: PN_A }, null, T0 + 10);
+    const merged = chats.upsertByIdentity(
+      { replyJid: LID_A, lidJid: LID_A, pnJid: PN_A },
+      null,
+      T0 + 10,
+    );
 
     expect(merged.id).toBe(survivor.id);
     expect(repo.listForChat(survivor.id, 10).map((item) => item.draft)).toEqual(['свой', 'слитый']);

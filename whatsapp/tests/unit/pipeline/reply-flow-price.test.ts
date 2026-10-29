@@ -540,3 +540,29 @@ describe('pipeline/reply-flow: ранняя передача при заметк
     expect(r.draftReply.mock.calls[1]?.[1]?.[0]).not.toMatch(/указании коллеги/);
   });
 });
+
+describe('pipeline/price-gate: фиксированный вопрос не повторяет прошлый вопрос бота', () => {
+  it('прошлым сообщением бот спросил о вещах: вопрос о следующем недостающем', () => {
+    const situation = priceSituation(
+      { chatId: CHAT_ID, history: [], profile: EMPTY },
+      null,
+      hot(),
+    );
+
+    expect(minimumFallback(situation, 'Подскажите, какие вещи нужно учитывать?').text).toBe(
+      safeQuestion('material', true),
+    );
+  });
+
+  it('недостающее только то, о чём уже спросили: вопрос повторяется, а не передача', () => {
+    const situation = priceSituation(
+      { chatId: CHAT_ID, history: [], profile: { ...FULL, city: null } },
+      null,
+      hot(),
+    );
+
+    expect(minimumFallback(situation, safeQuestion('city', true)).text).toBe(
+      safeQuestion('city', true),
+    );
+  });
+});

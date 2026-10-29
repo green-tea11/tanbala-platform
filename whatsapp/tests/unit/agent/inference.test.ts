@@ -89,7 +89,10 @@ describe('normalizeInterest: выводы с пометкой', () => {
   });
 
   it('пометка на поле без значения не ставится; подделка без поля inferred: выводов нет', () => {
-    const marked = normalizeInterest({ ...NOTHING, inferred: ['material', 'has1C'] }, EMPTY_PROFILE);
+    const marked = normalizeInterest(
+      { ...NOTHING, inferred: ['material', 'has1C'] },
+      EMPTY_PROFILE,
+    );
     const withoutField: RawInterest = Object.fromEntries(
       Object.entries(NOTHING).filter(([key]) => key !== 'inferred'),
     ) as unknown as RawInterest;
@@ -130,14 +133,16 @@ describe('выжимка словами: пометка «вероятно»', (
     const known = profileEntries({ ...EMPTY_PROFILE, has1C: true });
     const named = profileEntries({ ...EMPTY_PROFILE, has1C: true, oneCName: 'УТ 11' });
 
-    expect(known.find((item) => item.label === '1С')?.value).toBe(
-      'есть, конфигурация не выяснена',
-    );
+    expect(known.find((item) => item.label === '1С')?.value).toBe('есть, конфигурация не выяснена');
     expect(named.find((item) => item.label === '1С')?.value).toBe('есть, УТ 11');
   });
 
   it('текстовое поле по выводу: «вероятно» перед значением', () => {
-    const entries = profileEntries({ ...EMPTY_PROFILE, material: 'металл', inferred: ['material'] });
+    const entries = profileEntries({
+      ...EMPTY_PROFILE,
+      material: 'металл',
+      inferred: ['material'],
+    });
 
     expect(entries.find((item) => item.label === 'Материал')?.value).toBe('вероятно металл');
   });

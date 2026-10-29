@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CheckFinding } from '../../../src/checks/code-checks.js';
-import type {
-  ReplyDraft,
-  ReplyHandoffOutcome,
-  ReviewedText,
-} from '../../../src/domain/types.js';
+import type { ReplyDraft, ReplyHandoffOutcome, ReviewedText } from '../../../src/domain/types.js';
 import {
   decideAction,
   type Decision,

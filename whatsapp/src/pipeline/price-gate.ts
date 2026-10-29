@@ -17,7 +17,7 @@ import {
   type HandoffMinimum,
   type MinimumField,
 } from '../handoff/minimum.js';
-import { ESTIMATE_LATER, safeQuestion } from './safe-questions.js';
+import { askedFields, ESTIMATE_LATER, safeQuestion } from './safe-questions.js';
 
 /**
  * Что код знает о цене в этом ходе (решение владельца 29.10.2026): минимум для передачи по свежей выжимке, сколько
@@ -149,11 +149,17 @@ export function minimumRemark(situation: PriceSituation): string {
 }
 
 /**
- * Фиксированный вопрос о первом недостающем поле с фразой об ориентире (клиент спросил цену); вопрос о компании
+ * Фиксированный вопрос о первом недостающем поле с фразой об ориентире (клиент спросил цену); о чём бот спросил прошлым
+ * сообщением (lastBotText), второй раз подряд не спрашивается, если есть другое недостающее. Вопрос о компании
  * отмечается как вопрос о названии.
  */
-export function minimumFallback(situation: PriceSituation): MinimumFallback {
-  const field = firstMissing(situation);
+export function minimumFallback(
+  situation: PriceSituation,
+  lastBotText: string | null = null,
+): MinimumFallback {
+  const asked = lastBotText === null ? new Set<string>() : askedFields(lastBotText);
+  const fresh = situation.minimum.missing.find((missing) => !asked.has(missing));
+  const field = fresh ?? firstMissing(situation);
   const text = safeQuestion(field, true);
   return field === 'company' ? { field, text, companyQuestion: 'name' } : { field, text };
 }

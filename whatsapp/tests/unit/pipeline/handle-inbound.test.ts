@@ -19,6 +19,7 @@ import {
   type PipelineOutcome,
 } from '../../../src/pipeline/handle-inbound.js';
 import { MAX_AUDIO_BYTES } from '../../../src/voice/transcriber.js';
+import { safeQuestion } from '../../../src/pipeline/safe-questions.js';
 import {
   ALLOWLIST,
   answer,
@@ -556,27 +557,16 @@ describe('pipeline/handle-inbound: проверки, оценка интерес
     expect(h.outbox.sendBotReply).toHaveBeenCalledTimes(1);
   });
 
-  it('ревью не пропустило два раза: передача check_failed с фразой, текст модели не уходит', async () => {
+  it('ревью не пропустило два раза: чат у бота, уходит безопасный вопрос, текст модели не уходит', async () => {
     const failed: LlmResult<ReviewResult> = { ok: true, value: { ok: false, problems: ['срок'] } };
     const h = setup({ drafts: [answer(), answer(SECOND)], reviews: [failed] });
 
     const outcome = await run(h, batchOf([text('A1')]));
 
-    expect(outcome).toEqual({ kind: 'handed_off', reason: 'check_failed' });
-    expect(h.calls).toEqual([
-      'read:A1',
-      'draft',
-      'assess',
-      'save:cold',
-      'review',
-      'draft:retry',
-      'review',
-      'handoff:check_failed',
-      'answered:A1',
-    ]);
-    expect(h.handOff).toHaveBeenCalledWith(CHAT_ID, { reason: 'check_failed', replyToWaId: 'A1' });
+    expect(outcome).toEqual({ kind: 'replied' });
+    expect(h.handOff).not.toHaveBeenCalled();
     expect(h.feedbacks[1]).toEqual(['срок']);
-    expect(h.outbox.sendBotReply).not.toHaveBeenCalled();
+    expect(h.outbox.sendBotReply).toHaveBeenCalledWith(CHAT_ID, safeQuestion('items', false), 'A1');
   });
 
   it('уходит ровно тот текст, который проверен: после нормализации, и пауза считается по нему', async () => {
