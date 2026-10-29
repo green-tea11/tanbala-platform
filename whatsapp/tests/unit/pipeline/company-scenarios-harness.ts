@@ -19,6 +19,7 @@ import type {
   Clock,
   Logger,
   WhatsAppContacts,
+  RejectedDraftsRepo,
 } from '../../../src/domain/ports.js';
 import type {
   ChatId,
@@ -200,7 +201,11 @@ export interface FakeContacts {
   readonly profilePhoto: Mock<WhatsAppContacts['profilePhoto']>;
 }
 
-type Storage = ResponderStorage & ServicesStorage & { readonly chatCompanies: ChatCompaniesRepo };
+type Storage = ResponderStorage &
+  ServicesStorage & {
+    readonly chatCompanies: ChatCompaniesRepo;
+    readonly rejectedDrafts: RejectedDraftsRepo;
+  };
 
 export interface Scenario {
   /** Клиент пишет сообщение; модель в этой реплике отвечает по script. */
