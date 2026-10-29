@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% import "_letter.html" as lu with context %}
+{% block content %}
+<div class="title-row">
+  <div>
+    <h1>Письма</h1>
+    <p class="sub">Прочитайте черновик и решите: одобрить или отклонить. Компаниям письма не отправляются, только тест на ваш адрес.</p>
+  </div>
+</div>
+
+{# Сообщение о сделанном: в открытом письме (страница прокручивается к нему), иначе наверху. #}
+{% if done_message and not letter %}<p class="notice pos" role="status">{{ done_message }}</p>{% endif %}
+
+<nav class="filter-row" aria-label="Какие письма показать">
+  <ul class="filter-chips">
+    {% for item in filters %}
+    <li><a class="filter-chip" href="{{ item.url }}"{% if item.selected %} aria-current="true"{% endif %}>{{ item.label }} <span class="num">{{ item.count|fmt_int }}</span></a></li>
+    {% endfor %}
+  </ul>
+  {% if run %}
+  <p class="run-filter">Запуск №{{ run.id }}: {{ run.city_name }}, «{{ run.query }}». <a class="text-link" href="{{ clear_run_url }}">Все запуски</a></p>
+  {% endif %}
+</nav>
+
+{% if not items and not letter %}
+<section class="panel queue-empty" aria-labelledby="empty-title">
+  {% if filter_code == 'pending' %}
+  <h2 id="empty-title">Все письма проверены</h2>
+  <p>Новых черновиков нет. Найдите ещё компании, и письма появятся здесь.</p>
+  <p class="empty-actions"><a class="btn primary" href="/">Новый поиск</a>{% for item in filters if item.code == 'approved' and item.count %} <a class="btn" href="{{ item.url }}">Одобренные ({{ item.count|fmt_int }})</a>{% endfor %}</p>
+  {% else %}
+  <h2 id="empty-title">Здесь пока пусто</h2>
+  <p>Писем с таким статусом нет. <a class="text-link" href="/letters">Письма на проверку</a></p>
+  {% endif %}
+</section>
+{% else %}
+<div class="queue">
+  <section class="panel queue-list" aria-labelledby="queue-title">
+    <header>
+      <h2 id="queue-title">{% for item in filters if item.selected %}{{ item.label }}{% endfor %}</h2>
+      <span class="meta">{% if shown_count < filter_total %}первые {{ shown_count }} из {{ filter_total|fmt_int }}{% else %}{{ filter_total|fmt_int }} {{ filter_total|plural(letter_forms) }}{% endif %}</span>
+    </header>
+    {% if items %}
+    <ol class="letter-list">
+      {% for item in items %}
+      <li>
+        <a class="letter-item" href="{{ item.url }}"{% if item.selected %} aria-current="true"{% endif %}>
+          <span class="letter-item-top">
+            <span class="letter-item-company">{{ item.company_name }}</span>
+            <span class="letter-item-score num" title="Оценка">{% if item.score is not none %}{{ item.score }}{% else %}—{% endif %}</span>
+          </span>
+          <span class="letter-item-subject">{{ item.subject }}</span>
+          {% if item.blocked or filter_code != 'pending' or item.search_query %}
+          <span class="letter-item-flags">
+            {% if item.search_query %}<span class="tag">{{ item.search_query }}</span>{% endif %}
+            {% if filter_code != 'pending' %}<span class="pill {{ item.review_tone }}">{{ item.review_label }}</span>{% endif %}
+            {% if item.blocked %}<span class="pill neg">{{ item.blocked_label }}</span>{% endif %}
+          </span>
+          {% endif %}
+          <span class="letter-item-meta">{{ lu.checks_mini(item.checks_total, item.checks_failed) }}<span class="meta">{{ item.created_at|fmt_dt }}</span></span>
+        </a>
+      </li>
+      {% endfor %}
+    </ol>
+    {% else %}
+    <p class="empty">В этом списке писем нет.</p>
+    {% endif %}
+  </section>
+
+  {% if letter %}
+  <article class="panel letter-pane" id="letter" aria-labelledby="letter-title">
+    {% if done_message %}<p class="notice pos" role="status">{{ done_message }}</p>{% endif %}
+    <header class="letter-head">
+      <div>
+        <h2 id="letter-title">{{ letter.company_name }}{% if letter.search_query %} <span class="tag">{{ letter.search_query }}</span>{% endif %}</h2>
+        <p class="meta">{{ letter.rubric or 'рубрика не указана' }}{% if letter.city_name %} · {{ letter.city_name }}{% endif %} · письмо от {{ letter.created_at|fmt_dt }}{% if letter.kind == 'reply' %} · ответ клиенту{% endif %}</p>
+      </div>
+      <span class="letter-head-pills">
+        {% if letter.blocked %}<span class="pill neg">{{ letter.blocked_label }}</span>{% endif %}
+        <span class="pill {{ letter.review_tone }}">{{ letter.review_label }}</span>
+      </span>
+    </header>
+    {{ lu.whatsapp_notice(letter.whatsapp_contacted_at) }}
+
+    <section class="brief" aria-label="О компании">
+      <div class="brief-score">
+        {% if letter.score is not none %}<span class="score-big num">{{ letter.score }}<small>/100</small></span>
+        <span class="fit fit-{{ letter.fit }}">{{ letter.fit_label|capitalize }}{% if letter.segment %} · {{ letter.segment }}{% endif %}</span>
+        {% else %}<span class="meta">Ещё не оценена</span>{% endif %}
+      </div>
+      <div class="brief-text">
+        {% if letter.reason %}<p class="reason">{{ letter.reason }}</p>{% endif %}
+        <p class="brief-links">
+          <a class="card-link" href="{{ letter.company_url }}">Карточка компании</a>
+          {% if letter.source_href %}<a class="card-link" href="{{ letter.source_href }}" rel="noopener noreferrer" target="_blank">Открыть в 2ГИС</a>{% endif %}
+        </p>
+      </div>
+      <div class="brief-pains">{{ lu.pains_block(letter.pains) }}</div>
+    </section>
+
+    {{ lu.letter_block(letter, 'letters', filter_code, run_id, letter.contact) }}
+  </article>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

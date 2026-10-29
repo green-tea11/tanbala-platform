@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="title-row">
+  <div>
+    <h1>Поиск компаний</h1>
+    <p class="sub">Компании из 2ГИС: сайт, почта, оценка и черновик первого письма. Компаниям письма не отправляются.</p>
+  </div>
+</div>
+
+{% set o = overview %}
+<section class="overview" aria-label="Итоги">
+  <dl class="kpis">
+    <div class="kpi"><dt>Компаний найдено</dt><dd class="kpi-value num">{{ o.companies|fmt_int }}</dd></div>
+    <div class="kpi"><dt>Подходят</dt><dd class="kpi-value num">{{ o.fit|fmt_int }}</dd></div>
+    <div class="kpi">
+      <dt>Средняя оценка</dt>
+      <dd class="kpi-value num">{% if o.avg_score is not none %}{{ o.avg_score }}<small>/100</small>{% else %}<span class="dash">—</span>{% endif %}</dd>
+      <dd class="kpi-sub">у подходящих компаний</dd>
+    </div>
+    <div class="kpi kpi-link">
+      <dt>Писем ждут проверки</dt>
+      <dd class="kpi-value num">{% if o.pending %}<a href="/letters">{{ o.pending|fmt_int }}</a>{% else %}0{% endif %}</dd>
+    </div>
+    <div class="kpi"><dt>Одобрено</dt><dd class="kpi-value num">{{ o.approved|fmt_int }}</dd></div>
+    <div class="kpi">
+      <dt>Расход API</dt>
+      <dd class="kpi-value num">{{ o.cost_total }}</dd>
+      <dd class="kpi-sub num">сегодня {{ o.cost_today }}{% if o.budget %} из {{ o.budget }}{% endif %}{% if o.unpriced_tokens %}, ещё {{ o.unpriced_tokens|fmt_int }} {{ o.unpriced_tokens|plural(token_forms) }} без цены{% endif %}</dd>
+      {% if o.budget_share is not none %}
+      <dd class="budget-bar" aria-hidden="true"><svg viewBox="0 0 100 4" preserveAspectRatio="none" width="100%" height="4"><rect class="budget-track" width="100" height="4" rx="2"/><rect class="budget-fill{% if o.budget_over %} over{% endif %}" width="{{ o.budget_share }}" height="4" rx="2"/></svg></dd>
+      {% endif %}
+    </div>
+  </dl>
+</section>
+
+<div class="grid search-grid">
+  <section class="panel search-form" aria-labelledby="new-search">
+    <header><h2 id="new-search">Новый поиск</h2></header>
+    {% if message %}
+    <p class="notice neg" role="alert">{{ message }}</p>
+    {% endif %}
+    <form method="post" action="/runs" class="stack" id="search-form"{% if active_run %} data-active-run-id="{{ active_run.id }}"{% endif %}>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="field">
+        <label for="query">Что ищем в 2ГИС</label>
+        <input id="query" name="query" class="input" type="text" required maxlength="{{ max_query_length }}"
+               placeholder="склад, логистика, производство" value="{{ form.query }}" autocomplete="off"
+               aria-describedby="query-hint">
+        <p class="hint" id="query-hint">Можно несколько отраслей через запятую.</p>
+        <ul class="chips" aria-label="Добавить или убрать отрасль">
+          {% for chip in chips %}
+          <li><a class="chip" href="{{ chip.url }}" data-query="{{ chip.label }}" aria-pressed="{{ 'true' if chip.pressed else 'false' }}">{{ chip.label }}</a></li>
+          {% endfor %}
+        </ul>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="city">Город</label>
+          <select id="city" name="city" class="input">
+            {% for slug, name in cities.items() %}
+            <option value="{{ slug }}"{% if slug == form.city %} selected{% endif %}>{{ name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="field field-count">
+          <label for="max_companies">Компаний на каждую отрасль</label>
+          <input id="max_companies" name="max_companies" class="input num" type="number" required
+                 min="1" max="{{ max_limit }}" step="1" value="{{ form.max_companies }}" inputmode="numeric"
+                 aria-describedby="count-hint">
+          <p class="hint" id="count-hint">от 1 до {{ max_limit }}</p>
+        </div>
+      </div>
+      <div class="submit-row">
+        <button type="submit" class="btn primary btn-large" id="start-button"{% if active_run %} disabled data-busy="true" aria-describedby="busy-note"{% endif %}>Найти компании</button>
+        <p class="run-estimate num" id="run-estimate" aria-live="polite" data-limits='{{ limits|tojson }}'>{{ run_estimate }}</p>
+        <p class="run-limit" id="run-limit" role="alert" hidden></p>
+        <p class="estimate">Примерно {{ usd_per_company }} за компанию, плюс около {{ usd_first_run }} на первый запуск за 5 минут.</p>
+      </div>
+      {% if active_run %}
+      <p class="hint" id="busy-note">Идёт запуск №{{ active_run.id }}. Новый можно начать, когда он закончится.</p>
+      {% endif %}
+    </form>
+  </section>
+
+  <section class="panel run-panel" aria-labelledby="run-title" id="run-panel"
+           {% if run %}data-run-id="{{ run.id }}" data-finished="{{ 'true' if run.finished else 'false' }}" data-poll-ms="{{ poll_ms }}"{% endif %}>
+    {% if run %}
+    <header>
+      <div>
+        <h2 id="run-title">Запуск №{{ run.id }}</h2>
+        <p class="run-industries">{{ run.industries|join(', ') }}</p>
+        <p class="meta">{{ run.city_name }} · до {{ run.max_companies }} на отрасль · {{ run.created_at|fmt_dt }}</p>
+      </div>
+      <span class="pill {{ run.status_tone }}" data-run-field="status_label">{{ run.status_label }}</span>
+    </header>
+    <div class="track" aria-hidden="true">
+      {% for stage in run.stages %}<span class="track-step" data-stage-track="{{ stage.code }}" data-state="{{ stage.state }}"></span>{% endfor %}
+    </div>
+    <ol class="stages">
+      {% for stage in run.stages %}
+      <li class="stage" data-stage="{{ stage.code }}" data-state="{{ stage.state }}">
+        <span class="stage-mark" aria-hidden="true"></span>
+        <span class="stage-text"><span class="stage-name">{{ stage.label }}</span><span class="stage-hint" data-stage-hint>{{ stage.hint }}</span></span>
+        <span class="stage-counts">
+          {% for counter in stage.counters %}
+          <span class="count"><span class="count-label">{{ counter.label }}</span> <b class="num" data-run-count="{{ counter.field }}">{{ counter.value|fmt_int }}</b></span>
+          {% endfor %}
+        </span>
+        <span class="stage-state" data-stage-state>{{ stage.state_label }}</span>
+      </li>
+      {% endfor %}
+    </ol>
+    <p class="notice neg" data-run-error{% if not run.error %} hidden{% endif %}>{{ run.error or '' }}</p>
+    <footer class="run-foot">
+      <span class="meta">Ошибок по компаниям: <b class="num" data-run-count="errors">{{ run.errors|fmt_int }}</b> · расход <span class="num" data-run-cost>{{ run.cost_text }}</span></span>
+      <span class="run-actions">
+        <a class="card-link" href="{{ run.companies_url }}" data-run-link{% if not run.finished %} hidden{% endif %}>Смотреть компании</a>
+        <a class="btn review btn-large" href="{{ run.letters_url }}" data-run-review{% if not run.show_review %} hidden{% endif %}><span>Проверить письма (<span data-run-count="letters_pending">{{ run.letters_pending }}</span>)</span></a>
+      </span>
+    </footer>
+    <p class="meta poll-note" data-run-poll hidden></p>
+    {% else %}
+    <header><h2 id="run-title">Как идёт поиск</h2></header>
+    <ol class="stages">
+      {% for stage in stage_legend %}
+      <li class="stage" data-state="pending">
+        <span class="stage-mark" aria-hidden="true"></span>
+        <span class="stage-text"><span class="stage-name">{{ stage.label }}</span><span class="stage-hint">{{ stage.hint }}</span></span>
+      </li>
+      {% endfor %}
+    </ol>
+    <p class="empty">Запусков ещё не было. Выберите город и запрос и нажмите «Найти компании».</p>
+    {% endif %}
+  </section>
+
+  <section class="panel history" aria-labelledby="history-title">
+    <header>
+      <h2 id="history-title">Прошлые запуски</h2>
+      {% if history %}<span class="meta">последние {{ history|length }}</span>{% endif %}
+    </header>
+    {% if history %}
+    <div class="table-wrap">
+      <table class="table stacked">
+        <thead>
+          <tr>
+            <th>Запуск</th><th>Город</th><th>Запрос</th>
+            <th class="n">Найдено</th><th class="n">Новых</th><th class="n">Подходят</th><th class="n">Писем</th>
+            <th>Статус</th><th class="n">Расход</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in history %}
+          <tr data-history-run="{{ item.id }}">
+            <td class="cell-id"><a class="row-link" href="{{ item.companies_url }}">№{{ item.id }}</a><span class="sub">{{ item.created_at|fmt_dt }}</span></td>
+            <td class="cell-city">{{ item.city_name }}</td>
+            <td class="cell-query"><a href="{{ item.companies_url }}">{{ item.industries|join(', ') }}</a><span class="sub">до {{ item.max_companies }} на отрасль</span></td>
+            <td class="n num" data-label="найдено" data-run-count="found">{{ item.found|fmt_int }}</td>
+            <td class="n num" data-label="новых" data-run-count="new_companies">{{ item.new_companies|fmt_int }}</td>
+            <td class="n num" data-label="подходят" data-run-count="qualified">{{ item.qualified|fmt_int }}</td>
+            <td class="n num" data-label="писем">{% if item.drafted %}<a class="text-link" href="{{ item.letters_all_url }}"><span data-run-count="drafted">{{ item.drafted|fmt_int }}</span></a>{% else %}<span data-run-count="drafted">0</span>{% endif %}</td>
+            <td class="cell-status"><span class="pill {{ item.status_tone }}" data-run-field="status_label">{{ item.status_label }}</span></td>
+            <td class="n num cell-cost" data-run-cost>{{ item.cost_text }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="empty">Здесь появятся запуски: дата, город, запрос, сколько найдено и сколько писем готово.</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

@@ -1,0 +1,31 @@
+{
+ "input": "info@pel.kz",
+ "is_reachable": "unknown",
+ "misc": {
+  "is_disposable": false,
+  "is_role_account": true,
+  "is_b2c": false,
+  "gravatar_url": null,
+  "haveibeenpwned": null
+ },
+ "mx": {
+  "accepts_mail": true,
+  "records": [
+   "mx.yandex.net."
+  ]
+ },
+ "smtp": {
+  "error": {
+   "type": "AsyncSmtpError",
+   "message": "permanent: 5.1.7 Bad address mailbox syntax. 1792754697-vObet90YE8c0-UAiV37zw"
+  }
+ },
+ "syntax": {
+  "address": "info@pel.kz",
+  "domain": "pel.kz",
+  "is_valid_syntax": true,
+  "username": "info",
+  "normalized_email": "info@pel.kz",
+  "suggestion": null
+ }
+}

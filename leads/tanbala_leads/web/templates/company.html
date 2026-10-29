@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% import "_letter.html" as lu with context %}
+{% block content %}
+<nav class="crumbs" aria-label="Путь"><a href="/companies">Компании</a>{% if run_url %} <span aria-hidden="true">/</span> <a href="{{ run_url }}">запуск №{{ company.run_id }}</a>{% endif %}</nav>
+<div class="title-row">
+  <div>
+    <div class="title-line">
+      <h1>{{ company.name }}</h1>
+      <span class="pill {{ company.status_tone }}">{{ company.status_label }}</span>
+      {% if company.search_query %}<a class="tag" href="/companies?query={{ company.search_query|urlencode }}" title="Все компании этой отрасли">{{ company.search_query }}</a>{% endif %}
+      {% if blocked %}<span class="pill neg">{{ blocked_label }}</span>{% endif %}
+    </div>
+    <p class="sub">
+      {% if qualification %}{{ qualification.fit_label|capitalize }}, {{ qualification.score }} из 100{% if qualification.segment %} · {{ qualification.segment }}{% endif %}{% else %}Ещё не оценена{% endif %}
+      · найдена {{ company.created_at|fmt_dt }} · расход на компанию {{ company_cost }}
+    </p>
+  </div>
+</div>
+
+{% if done_message %}<p class="notice pos" role="status">{{ done_message }}</p>{% endif %}
+{% if company.requested_via %}
+<p class="notice warn" role="note"><b>Компанию добавила проверка из WhatsApp.</b> В рассылку она не попадает.</p>
+{% endif %}
+{{ lu.whatsapp_notice(company.whatsapp_contacted_at) }}
+{% if company.requested_via or company.whatsapp_contacted_at %}
+{# Ложная отметка: собеседник бота назвал чужую компанию. Снимаются обе пометки сразу. #}
+{% if company.requested_via %}
+{% set clear_confirm = "Снять отметки WhatsApp с «" ~ company.name ~ "»? Предупреждение пропадёт, и следующий поиск сможет взять компанию в рассылку." %}
+{% else %}
+{% set clear_confirm = "Снять отметку «писал в WhatsApp» с «" ~ company.name ~ "»? Предупреждение пропадёт." %}
+{% endif %}
+<form class="whatsapp-clear" method="post" action="/companies/{{ company.id }}/whatsapp-clear" data-confirm="{{ clear_confirm }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit" class="btn btn-small">Снять отметку WhatsApp</button>
+  <span class="hint">Если бот перепутал компанию: предупреждение пропадёт{% if company.requested_via %}, компания сможет попасть в рассылку{% endif %}.</span>
+</form>
+{% endif %}
+{% if company.last_error %}<p class="notice neg"><b>Ошибка на последнем шаге.</b> {{ company.last_error }}</p>{% endif %}
+
+<div class="detail">
+  <div class="detail-main">
+    <section class="panel letter order-letter" id="letter" aria-labelledby="letter-title">
+      <header>
+        <h2 id="letter-title">Письмо</h2>
+        {% if draft %}<span class="pill {{ draft.review_tone }}">{{ draft.review_label }}</span>{% endif %}
+      </header>
+      {% if draft %}
+      <p class="queue-link"><a class="card-link" href="{{ draft.queue_url }}">Открыть в очереди писем</a></p>
+      <p class="meta letter-foot">
+        {% if draft.kind == 'reply' %}Ответ клиенту · {% endif %}написал {{ draft.model or '—' }} · {{ draft.created_at|fmt_dt }}
+        {% if draft.approved_at %} · одобрил {{ draft.approved_by }} {{ draft.approved_at|fmt_dt }}{% endif %}
+      </p>
+      {{ lu.letter_block(draft, 'company') }}
+      {% else %}
+      <p class="empty">Письма пока нет. Черновик появится после проверки почты.</p>
+      {% endif %}
+    </section>
+
+  </div>
+
+  <aside class="detail-side">
+    <section class="panel order-why" aria-labelledby="why-title">
+      <header><h2 id="why-title">Почему подходит</h2>{% if qualification %}<span class="score-big num">{{ qualification.score }}<small>/100</small></span>{% endif %}</header>
+      {% if qualification %}
+      <p class="fit fit-{{ qualification.fit }}">{{ qualification.fit_label|capitalize }}{% if qualification.segment %} · {{ qualification.segment }}{% endif %}</p>
+      <p class="reason">{{ qualification.reason }}</p>
+      <p class="meta">{{ qualification.model }} · {{ qualification.created_at|fmt_dt }}</p>
+      {{ lu.pains_block(qualification.pains) }}
+      {% else %}
+      <p class="meta">Ещё не оценена.</p>
+      {% endif %}
+    </section>
+
+    <section class="panel order-emails" aria-labelledby="emails-title">
+      <header><h2 id="emails-title">Почты</h2>{% if contacts %}<span class="meta">{{ contacts|length }}</span>{% endif %}</header>
+      {% if contacts %}
+      <ul class="rows">
+        {% for contact in contacts %}
+        <li class="row contact">
+          <div class="contact-main">
+            <span class="email">{{ contact.email }}</span>
+            {% if contact.flags %}<span class="sub">{{ contact.flags|join(' · ') }}</span>{% endif %}
+            <span class="sub source">{% if contact.source_href %}<a class="text-link" href="{{ contact.source_href }}" rel="noopener noreferrer" target="_blank">{{ contact.source_page }}</a>{% elif contact.source_page %}{{ contact.source_page }}{% else %}страница не записана{% endif %}</span>
+          </div>
+          <span class="pill {{ contact.verify_tone }}">{{ contact.verify_label }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="meta">Почт не найдено.</p>
+      {% endif %}
+    </section>
+
+    <section class="panel order-history" aria-labelledby="history-title">
+      <header><h2 id="history-title">История писем</h2>{% if history %}<span class="meta">{{ history|length }}</span>{% endif %}</header>
+      {% if history %}
+      <ul class="rows history-rows">
+        {% for item in history %}
+        <li class="row">
+          <div class="contact-main">
+            <span class="email">{{ item.email }}</span>
+            <span class="sub">{{ item.what_label }} · {{ item.source_label }}{% if item.subject %} · «{{ item.subject }}»{% endif %}</span>
+          </div>
+          <span class="meta history-date">{{ item.occurred_at|fmt_dt }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="meta">Этой компании ещё не писали.</p>
+      {% endif %}
+      <div class="block-zone">
+        {% if blocked %}
+        <p class="blocked-state"><span class="pill neg">{{ blocked_label }}</span> Письма этой компании одобрить нельзя.</p>
+        {% else %}
+        <form method="post" action="/companies/{{ company.id }}/block" data-confirm="Больше не писать «{{ company.name }}»? Компания и её домен попадут в список «не писать».">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="btn danger">Больше не писать</button>
+        </form>
+        <p class="hint">Компания и её домен попадут в список «не писать»: письма им не уйдут.</p>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="panel order-card" aria-labelledby="card-title">
+      <header><h2 id="card-title">Карточка 2ГИС</h2>{% if company.source_href %}<a class="card-link" href="{{ company.source_href }}" rel="noopener noreferrer" target="_blank">Открыть в 2ГИС</a>{% endif %}</header>
+      <dl class="kv">
+        <div><dt>Рубрика</dt><dd>{{ company.rubric or '—' }}</dd></div>
+        <div><dt>Город</dt><dd>{{ company.city_name or '—' }}</dd></div>
+        <div><dt>Адрес</dt><dd>{{ company.address or '—' }}</dd></div>
+        <div><dt>Телефоны</dt><dd>{% for phone in company.phones %}{% if phone.href %}<a class="text-link num" href="{{ phone.href }}">{{ phone.text }}</a>{% else %}{{ phone.text }}{% endif %}{% if not loop.last %}<br>{% endif %}{% else %}—{% endfor %}</dd></div>
+        <div><dt>Сайт</dt><dd>{% if company.website_href %}<a class="text-link" href="{{ company.website_href }}" rel="noopener noreferrer" target="_blank">{{ company.website_text }}</a>{% else %}{{ company.website or '—' }}{% endif %}</dd></div>
+        <div><dt>Филиалов</dt><dd class="num">{{ company.branches_count if company.branches_count is not none else '—' }}</dd></div>
+      </dl>
+    </section>
+    <section class="panel site order-site" aria-labelledby="site-title">
+      <header><h2 id="site-title">Текст сайта</h2>{% if site_text_length %}<span class="meta num">{{ site_text_length|fmt_int }} символов</span>{% endif %}</header>
+      {% if site_text %}
+      <details class="site-text">
+        <summary>Показать текст, который прочитал Claude</summary>
+        <div class="site-text-body">{{ site_text }}</div>
+        {% if site_text_truncated %}<p class="meta">Показаны первые {{ site_text|length|fmt_int }} символов.</p>{% endif %}
+      </details>
+      {% else %}
+      <p class="meta">Сайт ещё не обойдён или текста на нём нет.</p>
+      {% endif %}
+    </section>
+  </aside>
+</div>
+{% endblock %}

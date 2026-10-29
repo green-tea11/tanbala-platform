@@ -1,0 +1,32 @@
+{
+ "input": "info@pel.kz",
+ "is_reachable": "safe",
+ "misc": {
+  "is_disposable": false,
+  "is_role_account": true,
+  "is_b2c": false,
+  "gravatar_url": null,
+  "haveibeenpwned": null
+ },
+ "mx": {
+  "accepts_mail": true,
+  "records": [
+   "mx.yandex.net."
+  ]
+ },
+ "smtp": {
+  "can_connect_smtp": true,
+  "has_full_inbox": false,
+  "is_catch_all": false,
+  "is_deliverable": true,
+  "is_disabled": false
+ },
+ "syntax": {
+  "address": "info@pel.kz",
+  "domain": "pel.kz",
+  "is_valid_syntax": true,
+  "username": "info",
+  "normalized_email": "info@pel.kz",
+  "suggestion": null
+ }
+}

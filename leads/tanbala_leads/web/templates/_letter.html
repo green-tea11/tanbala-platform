@@ -1,0 +1,181 @@
+{# Письмо: заметки для владельца, текст клиенту, проверки и действия. Общие для очереди и карточки компании. #}
+
+{% macro mark(passed) -%}
+<svg class="check-mark {{ 'passed' if passed else 'failed' }}" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">{% if passed %}<path d="M3 8.5 6.5 12 13 4.5"/>{% else %}<path d="M4 4l8 8M12 4l-8 8"/>{% endif %}</svg>
+{%- endmacro %}
+
+{% macro checks_mini(total, failed) -%}
+{% if not total %}<span class="checks-mini">проверок нет</span>
+{% elif failed %}<span class="checks-mini failed">{{ mark(false) }}не прошло {{ failed }} из {{ total }}</span>
+{% else %}<span class="checks-mini passed">{{ mark(true) }}{{ total }} из {{ total }}</span>{% endif %}
+{%- endmacro %}
+
+{# Боли компании с цитатой. Цитата — чужой текст (сайт, 2ГИС, модель): только экранированный вывод. #}
+{% macro pains_block(pains, heading_level=3) %}
+<section class="pains" aria-label="Боли">
+  <h{{ heading_level }} class="pains-title">Боли</h{{ heading_level }}>
+  {% if pains %}
+  <ul class="pain-list">
+    {% for pain in pains %}
+    <li class="pain{% if not pain.verified %} unverified{% endif %}">
+      <p class="pain-label">{{ pain.label }}</p>
+      {% if pain.evidence %}<blockquote class="pain-evidence">«{{ pain.evidence }}»</blockquote>{% endif %}
+      <p class="pain-meta">{{ pain.source_label }} ·
+        {% if pain.verified %}<span class="pain-verified">{{ mark(true) }}цитата найдена в источнике</span>{% else %}<span class="pain-unverified">не подтверждено</span>{% endif %}</p>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="meta">Явных болей не найдено.</p>
+  {% endif %}
+</section>
+{% endmacro %}
+
+{# Клиент уже писал в WhatsApp: рассылку это не блокирует, решение при одобрении за владельцем. #}
+{% macro whatsapp_notice(contacted_at) %}
+{% if contacted_at %}
+<p class="notice warn whatsapp-notice" role="note"><b>Клиент уже писал в WhatsApp ({{ contacted_at|fmt_date }}).</b> Проверьте, нужно ли письмо.</p>
+{% endif %}
+{% endmacro %}
+
+{% macro notes_box(letter) %}
+{% if letter.notes %}
+<section class="notes-box" aria-labelledby="notes-title-{{ letter.id }}">
+  <h3 id="notes-title-{{ letter.id }}">Заметки для вас</h3>
+  <ul>
+    {% for note in letter.notes %}<li><b>{{ note.kind }}:</b> {{ note.text }}</li>{% endfor %}
+  </ul>
+  <p class="meta">Клиенту не уходят.</p>
+</section>
+{% endif %}
+{% endmacro %}
+
+{# Тестовая отправка: кнопка рядом с адресом, куда письмо уйдёт. Компании не отправляется ничего. #}
+{% macro send_test_control(letter, back, status=None, run=None) %}
+{% if letter.sent_at is none %}
+  {% if not test_address %}
+  <button type="button" class="btn btn-small" disabled aria-describedby="send-off-{{ letter.id }}">Отправить тест</button>
+  <span class="sub" id="send-off-{{ letter.id }}">{{ test_off_text }}</span>
+  {% elif not letter.can_send_test %}
+  <button type="button" class="btn btn-small" disabled aria-describedby="send-off-{{ letter.id }}">Отправить тест</button>
+  <span class="sub" id="send-off-{{ letter.id }}">{{ rejected_test_text }}</span>
+  {% else %}
+  <form method="post" action="/drafts/{{ letter.id }}/send-test" class="send-test-form"
+        data-confirm="Письмо уйдёт только на {{ test_address }}. Компании оно не отправляется.">
+    {{ hidden_fields(back, status, run) }}
+    <button type="submit" class="btn btn-small">Отправить тест</button>
+  </form>
+  {% endif %}
+{% endif %}
+{% endmacro %}
+
+{% macro test_sends_list(letter) %}
+{% if letter.test_sends %}
+<section class="test-sends" aria-labelledby="test-sends-{{ letter.id }}">
+  <h3 id="test-sends-{{ letter.id }}">Тестовые отправки</h3>
+  <ul>
+    {% for item in letter.test_sends %}
+    <li class="test-send {{ 'ok' if item.ok else 'fail' }}">{{ mark(item.ok) }}<span><span class="num">{{ item.created_at|fmt_dt }}</span> · {{ item.status_label }} на {{ item.sent_to }}{% if item.error %} · <span class="test-send-error">{{ item.error }}</span>{% endif %}</span></li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% endmacro %}
+
+{% macro letter_text(letter, contact=None, back='company', status=None, run=None) %}
+<dl class="letter-meta">
+  <div><dt>Адрес компании</dt><dd>{{ letter.to_email or '—' }} <span class="not-sent">(не отправляем)</span>{% if contact %} <span class="pill {{ contact.verify_tone }}">{{ contact.verify_label }}</span>{% for flag in contact.flags %}<span class="sub">{{ flag }}</span>{% endfor %}{% endif %}</dd></div>
+  <div class="test-row"><dt>Тест уйдёт на</dt><dd>{% if test_address %}<b class="test-address">{{ test_address }}</b>{% else %}<span class="dash">не настроено</span>{% endif %} {{ send_test_control(letter, back, status, run) }}</dd></div>
+  <div><dt>Тема</dt><dd class="letter-subject" data-letter-subject>{{ letter.subject }}</dd></div>
+</dl>
+<div class="letter-body" data-letter-body aria-label="Текст письма">
+  {% for line in letter.lines %}<p class="line{% if line.note %} note{% endif %}">{{ line.text }}</p>{% endfor %}
+</div>
+{% endmacro %}
+
+{% macro checks_block(letter) %}
+<section class="checks" aria-labelledby="checks-title-{{ letter.id }}">
+  <h3 id="checks-title-{{ letter.id }}">Проверки письма{% if letter.checks %}: {% if letter.checks_failed %}<span class="neg-text">не прошло {{ letter.checks_failed }} из {{ letter.checks|length }}</span>{% else %}все {{ letter.checks|length }} пройдены{% endif %}{% endif %}</h3>
+  {% if letter.checks %}
+  <ul class="check-list">
+    {% for check in letter.checks %}
+    <li class="check {{ 'passed' if check.passed else 'failed' }}">
+      {{ mark(check.passed) }}
+      <span class="check-name">{{ check.label }}<span class="visually-hidden">: {{ 'пройдена' if check.passed else 'не пройдена' }}</span></span>
+      {% if check.details %}<ul class="check-details">{% for detail in check.details %}<li>{{ detail }}</li>{% endfor %}</ul>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="meta">Проверки ещё не запускались.</p>
+  {% endif %}
+</section>
+{% endmacro %}
+
+{% macro hidden_fields(back, status, run) %}
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<input type="hidden" name="back" value="{{ back }}">
+{% if status %}<input type="hidden" name="status" value="{{ status }}">{% endif %}
+{% if run %}<input type="hidden" name="run" value="{{ run }}">{% endif %}
+{% endmacro %}
+
+{% macro action_bar(letter, back, status=None, run=None) %}
+{% if letter.can_approve or letter.can_reject or letter.can_edit %}
+<div class="action-bar">
+  {% if letter.can_approve %}
+  <form method="post" action="/drafts/{{ letter.id }}/approve">
+    {{ hidden_fields(back, status, run) }}
+    <button type="submit" class="btn primary">Одобрить</button>
+  </form>
+  {% elif letter.approve_blocked %}
+  <button type="button" class="btn primary" disabled aria-describedby="blocked-note-{{ letter.id }}">Одобрить</button>
+  {% endif %}
+  {% if letter.can_reject %}
+  <form method="post" action="/drafts/{{ letter.id }}/reject" data-confirm="Отклонить это письмо? Компания вернётся к статусу «Почта проверена».">
+    {{ hidden_fields(back, status, run) }}
+    <button type="submit" class="btn">Отклонить</button>
+  </form>
+  {% endif %}
+  {% if letter.can_edit %}<a class="btn" href="{{ letter.edit_url }}">Изменить</a>{% endif %}
+  <button type="button" class="btn" data-copy-letter hidden>Скопировать</button>
+  <span class="meta action-note" data-copy-status>Компаниям не отправляем.</span>
+  {% if letter.approve_blocked %}<p class="blocked-note" id="blocked-note-{{ letter.id }}">Компания в списке «не писать»: одобрить нельзя.</p>{% endif %}
+</div>
+{% elif letter.review_status == 'rejected' %}
+<p class="meta action-note">Письмо отклонено. Новый черновик напишет следующий запуск.</p>
+{% endif %}
+{% endmacro %}
+
+{% macro edit_form(letter, back, status=None, run=None) %}
+<form method="post" action="/drafts/{{ letter.id }}/edit" class="stack edit-form" id="edit">
+  {{ hidden_fields(back, status, run) }}
+  {% if edit.error %}<p class="notice neg" role="alert">{{ edit.error }}</p>{% endif %}
+  <div class="field">
+    <label for="edit-subject">Тема</label>
+    <input id="edit-subject" name="subject" class="input" type="text" required maxlength="200" value="{{ edit.subject }}">
+  </div>
+  <div class="field">
+    <label for="edit-body">Текст</label>
+    <textarea id="edit-body" name="body" class="input textarea" rows="18" required maxlength="10000">{{ edit.body }}</textarea>
+    <p class="hint">Заметки в квадратных скобках оставьте в начале: клиенту они не уходят. После сохранения проверки пройдут заново, одобрение снимется.</p>
+  </div>
+  <div class="edit-actions">
+    <button type="submit" class="btn primary">Сохранить и проверить</button>
+    <a class="btn" href="{{ letter.self_url }}">Отмена</a>
+  </div>
+</form>
+{% endmacro %}
+
+{# Письмо целиком: в режиме правки форма вместо текста, действия прячутся до сохранения. #}
+{% macro letter_block(letter, back, status=None, run=None, contact=None) %}
+{% if edit_open %}
+{{ edit_form(letter, back, status, run) }}
+{% else %}
+{% if send_error %}<p class="notice neg" role="alert">{{ send_error }}</p>{% endif %}
+{{ notes_box(letter) }}
+{{ letter_text(letter, contact, back, status, run) }}
+{{ checks_block(letter) }}
+{{ test_sends_list(letter) }}
+{{ action_bar(letter, back, status, run) }}
+{% endif %}
+{% endmacro %}

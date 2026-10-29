@@ -1,0 +1,27 @@
+# Секреты
+.env
+
+# Python
+.venv/
+.venv-2gis/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Данные и логи
+data/
+logs/
+
+# Браузер и служебные файлы crawl4ai (держим в папке проекта)
+.browsers/
+.crawl4ai/
+
+# Исходник ТЗ из Claude Docs, рабочая копия в docs/TZ.md
+VenMart — AI-поиск клиентов для RFID.md
+
+# IDE
+.vscode/
+.idea/

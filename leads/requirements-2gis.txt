@@ -1,0 +1,2 @@
+# Отдельное окружение .venv-2gis: parser-2gis требует pydantic<2 и несовместим с crawl4ai.
+parser-2gis==1.2.1
