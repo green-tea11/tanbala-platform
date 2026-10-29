@@ -25,12 +25,15 @@ export interface VoiceConfig {
 }
 
 /**
- * Закрытый режим на рабочем номере (решение владельца, тестового номера нет): пока он включён, бот
- * обрабатывает только чаты с номеров из списка, остальные полностью игнорирует.
+ * TEST_MODE и TEST_ALLOWLIST. Закрытый режим на рабочем номере (enabled true, решение владельца, тестового номера
+ * нет): бот обрабатывает только чаты с номеров из списка, остальные полностью игнорирует. Рабочий режим (enabled
+ * false, этап 8): бот отвечает всем, кроме чатов, которые были на номере до перехода (pipeline/working-mode.ts);
+ * номера из списка работают как в закрытом режиме, правило перехода их не трогает.
  */
-export type TestMode =
-  | { readonly enabled: false }
-  | { readonly enabled: true; readonly allowlist: ReadonlySet<PhoneDigits> };
+export interface TestMode {
+  readonly enabled: boolean;
+  readonly allowlist: ReadonlySet<PhoneDigits>;
+}
 
 /** Внутренний API почтового проекта: адрес (только эта машина) и токен. Токен в логи и тексты ошибок не попадает. */
 export interface CompanyApiConfig {
