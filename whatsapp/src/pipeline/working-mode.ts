@@ -7,7 +7,7 @@ import type {
   UnitOfWork,
   WorkingModeRepo,
 } from '../domain/ports.js';
-import type { ChatIdentity, Jid, WorkingMode } from '../domain/types.js';
+import type { ChatIdentity, Jid, StatusChange, WorkingMode } from '../domain/types.js';
 import { isChatAllowlisted } from '../messaging/allowlist.js';
 import { SafeError } from '../shared/safe-error.js';
 
@@ -57,8 +57,11 @@ export class WorkingModeRefusedError extends SafeError {
   }
 }
 
-/** Кто ведёт чат, который правило отдало менеджеру: до бота чаты рабочего номера вели люди с телефона. */
-const HELD_STATUS = { status: 'manager', by: 'phone' } as const;
+/**
+ * Статус чата, который правило перехода отдало менеджеру: тот же manager, что у перехвата; by 'phone', потому что до
+ * бота чаты рабочего номера вели люди с телефона. Передачи (handoffs) и уведомления менеджеру нет: это его прежние чаты.
+ */
+export const HELD_FOR_MANAGER = { status: 'manager', by: 'phone' } as const satisfies StatusChange;
 
 /**
  * Правило перехода для чата, который был на рабочем номере до перехода (по умолчанию до решения владельца): каждый
@@ -134,7 +137,7 @@ function enterWorkingMode(deps: WorkingModeDeps, allowlist: TestMode['allowlist'
           !isChatAllowlisted(allowlist, chat.identity) &&
           startsWithManager(chat.lastMessageAtMs, nowMs),
       );
-    for (const chat of moved) deps.chats.setStatus(chat.id, HELD_STATUS, nowMs);
+    for (const chat of moved) deps.chats.setStatus(chat.id, HELD_FOR_MANAGER, nowMs);
     return { heldAddresses: held, movedChats: moved.length };
   });
   deps.logger.info(

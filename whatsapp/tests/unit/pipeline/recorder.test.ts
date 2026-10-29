@@ -80,8 +80,14 @@ interface Setup {
   readonly entries: LogEntry[];
 }
 
-/** Регистратор на свежей базе; knownChats можно подменить, чтобы проверить откат транзакции. */
-function setup(knownChatsOf?: (db: Database.Database) => KnownChatsRepo): Setup {
+/**
+ * Регистратор на свежей базе; knownChats можно подменить, чтобы проверить откат транзакции. heldForManager: правило
+ * этапа 8 для нового чата, по умолчанию закрытый режим (никогда).
+ */
+function setup(
+  knownChatsOf?: (db: Database.Database) => KnownChatsRepo,
+  heldForManager: (identity: ChatIdentity) => boolean = () => false,
+): Setup {
   const db = useMigratedDb();
   const entries: LogEntry[] = [];
   const recorder = createInboundRecorder({
@@ -90,6 +96,7 @@ function setup(knownChatsOf?: (db: Database.Database) => KnownChatsRepo): Setup 
     backlog: createBacklogRepo(db),
     knownChats: knownChatsOf === undefined ? createKnownChatsRepo(db) : knownChatsOf(db),
     unitOfWork: createUnitOfWork(db),
+    heldForManager,
     logger: createFakeLogger(entries),
     clock,
   });
@@ -350,6 +357,111 @@ describe('pipeline/recorder: своё сообщение с номера бот�
 
     expect(messagesOf(db)).toEqual([]);
     expect(chatsOf(db)).toHaveLength(1);
+  });
+});
+
+describe('pipeline/recorder: чат, известный до перехода в рабочий режим (этап 8)', () => {
+  /** Правило «адрес отмечен при переходе», которое запоминает, о каких чатах его спрашивали. */
+  function heldRule(held: boolean): {
+    readonly asked: ChatIdentity[];
+    readonly rule: (identity: ChatIdentity) => boolean;
+  } {
+    const asked: ChatIdentity[] = [];
+    return {
+      asked,
+      rule: (identity) => {
+        asked.push(identity);
+        return held;
+      },
+    };
+  }
+
+  function controlOf(db: Database.Database): unknown {
+    return createChatsRepo(db).getById(1 as ChatId)?.control;
+  }
+
+  it('новый чат с отмеченным адресом начинает у менеджера; сообщение и known_chats записаны, в лог без адресов', async () => {
+    const { asked, rule } = heldRule(true);
+    const { db, recorder, entries } = setup(undefined, rule);
+
+    await expect(recorder.onEvent(client({ identity: LID_WITH_PN }))).resolves.toEqual({
+      chatId: 1,
+      isNew: true,
+    });
+
+    expect(asked).toEqual([LID_WITH_PN]);
+    expect(controlOf(db)).toEqual({ status: 'manager', by: 'phone' });
+    expect(messagesOf(db)).toEqual([expect.objectContaining({ chatId: 1, waId: 'WA-1' })]);
+    expect(knownOf(db)).toHaveLength(2);
+    expect(entries).toContainEqual({
+      level: 'info',
+      context: { chatId: 1 },
+      message:
+        'Новый чат был на рабочем номере до перехода в рабочий режим: ведёт менеджер, чат #1',
+    });
+    expect(JSON.stringify(entries)).not.toMatch(/7700000000\d|@lid|@s\.whatsapp\.net/);
+  });
+
+  it('адрес не отмечен (впервые написал после перехода): чат у бота', async () => {
+    const { rule } = heldRule(false);
+    const { db, recorder } = setup(undefined, rule);
+
+    await recorder.onEvent(client());
+
+    expect(controlOf(db)).toEqual({ status: 'bot', by: null });
+  });
+
+  it('чат уже есть в базе: правило не спрашивается, статус не меняется', async () => {
+    const { db, recorder } = setup();
+    await recorder.onEvent(client({ identity: PN_ONLY }));
+    const { asked, rule } = heldRule(true);
+    const later = createInboundRecorder({
+      chats: createChatsRepo(db),
+      messages: createMessagesRepo(db),
+      backlog: createBacklogRepo(db),
+      knownChats: createKnownChatsRepo(db),
+      unitOfWork: createUnitOfWork(db),
+      heldForManager: rule,
+      logger: createFakeLogger([]),
+      clock,
+    });
+
+    await later.onEvent(client({ waId: 'WA-2' as WaMessageId, identity: LID_WITH_PN }));
+
+    expect(asked).toEqual([]);
+    expect(controlOf(db)).toEqual({ status: 'bot', by: null });
+  });
+
+  it('старое сообщение (простой) нового отмеченного чата: у менеджера и в списке простоя', async () => {
+    const { rule } = heldRule(true);
+    const { db, recorder } = setup(undefined, rule);
+
+    await recorder.onEvent(stale());
+
+    expect(controlOf(db)).toEqual({ status: 'manager', by: 'phone' });
+    expect(backlogOf(db)).toEqual([{ chatId: 1, markedAtMs: NOW - DAY_MS, notifiedAtMs: null }]);
+  });
+
+  it('своё сообщение создаёт чат с отмеченным адресом: тоже у менеджера', async () => {
+    const { asked, rule } = heldRule(true);
+    const { db, recorder } = setup(undefined, rule);
+
+    await recorder.onEvent({ type: 'own', message: own({ chatJid: CLIENT_LID }) });
+
+    expect(asked).toEqual([{ replyJid: CLIENT_LID, lidJid: CLIENT_LID, pnJid: null }]);
+    expect(controlOf(db)).toEqual({ status: 'manager', by: 'phone' });
+  });
+
+  it('сбой правила откатывает всю запись: ни чата, ни сообщения', async () => {
+    const { db, recorder } = setup(undefined, () => {
+      throw new Error('база заблокирована');
+    });
+
+    await expect(recorder.onEvent(client())).rejects.toThrow('база заблокирована');
+
+    expect(chatsOf(db)).toEqual([]);
+    expect(messagesOf(db)).toEqual([]);
+    expect(knownOf(db)).toEqual([]);
   });
 });
 

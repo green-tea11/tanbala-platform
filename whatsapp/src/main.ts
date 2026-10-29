@@ -481,6 +481,7 @@ function assembleStorage(db: Database, config: AppConfig, logger: Logger, clock:
     backlog,
     knownChats,
     unitOfWork,
+    heldForManager: () => false,
     logger,
     clock,
   });

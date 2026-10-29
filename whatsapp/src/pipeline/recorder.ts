@@ -21,6 +21,7 @@ import type {
 } from '../domain/types.js';
 import type { HistoryChat } from '../whatsapp/connection.js';
 import type { IgnoreReason, WaEvent } from '../whatsapp/inbound.js';
+import { HELD_FOR_MANAGER } from './working-mode.js';
 
 /** Зависимости записи входящих этапа 2. */
 export interface InboundRecorderDeps {
@@ -32,6 +33,11 @@ export interface InboundRecorderDeps {
   knownChats: KnownChatsRepo;
   /** Чат, сообщение и отметки пишутся одной транзакцией: всё или ничего. */
   unitOfWork: UnitOfWork;
+  /**
+   * Правило этапа 8 (pipeline/working-mode.createHeldForManagerCheck): чат, который впервые появился в базе, был на
+   * рабочем номере до перехода в рабочий режим и начинает у менеджера. В закрытом режиме всегда false.
+   */
+  heldForManager: (identity: ChatIdentity) => boolean;
   logger: Logger;
   clock: Clock;
 }
@@ -104,7 +110,10 @@ const LID_SUFFIX = '@lid';
  * первым, не нашёл бы чата). ignore: счётчик по причине (ignoreStats); редкие причины
  * (manager, self, before_link, undecryptable) ещё и строкой в лог, частые только счётчиком. ignore с адресом
  * (not_allowlisted, before_link и undecryptable: сообщение не расшифровалось, но чат с перепиской) запоминает чат
- * в known_chats. Логи без текста, имён, номеров и адресов: только ID чата, вид сообщения или причина пропуска.
+ * в known_chats. Этап 8: чат, которого ещё не было в базе (ни по одному адресу), после записи проверяется правилом
+ * heldForManager в той же транзакции; был на номере до перехода в рабочий режим => статус manager (by 'phone'), бот
+ * в нём молчит до «Вернуть боту», строка в лог после транзакции. Логи без текста, имён, номеров и адресов: только ID
+ * чата, вид сообщения или причина пропуска.
  * Записи синхронные (better-sqlite3), stop() здесь не вызывается и не ожидается.
  */
 export function createInboundRecorder(deps: InboundRecorderDeps): InboundRecorder {
@@ -151,13 +160,16 @@ function recordInbound(
   stale: boolean,
 ): RecordedInbound {
   const nowMs = deps.clock.now();
-  const saved = deps.unitOfWork.run((): RecordedInbound => {
+  const { held, ...saved } = deps.unitOfWork.run((): RecordedInbound & HeldMark => {
+    const first = isUnknownChat(deps.chats, message.identity);
     const chat = deps.chats.upsertByIdentity(message.identity, message.pushName, nowMs);
+    const held = first && holdForManager(deps, chat, nowMs);
     const isNew = deps.messages.insertIfNew(toNewMessage(chat.id, 'client', message));
     if (stale && isNew) deps.backlog.markStale(chat.id, message.tsMs);
     touchChat(deps.knownChats, chat, message.tsMs);
-    return { chatId: chat.id, isNew };
+    return { chatId: chat.id, isNew, held };
   });
+  if (held) logHeld(deps.logger, saved.chatId);
   const { kind } = columnsOf(message.content);
   const text = stale
     ? `Сохранено старое входящее (простой): чат #${saved.chatId} отмечен для менеджера, вид ${kind}`
@@ -169,12 +181,38 @@ function recordInbound(
 /** Своё сообщение: чат по адресу (или новый с этим адресом) и known_chats; сообщение пишет pipeline/takeover.ts. */
 function recordOwn(deps: InboundRecorderDeps, message: OwnMessage): void {
   const nowMs = deps.clock.now();
-  deps.unitOfWork.run(() => {
-    const chat =
-      deps.chats.findByJid(message.chatJid) ??
-      deps.chats.upsertByIdentity(identityOf(message.chatJid), null, nowMs);
+  const held = deps.unitOfWork.run((): ChatId | null => {
+    const found = deps.chats.findByJid(message.chatJid);
+    const chat = found ?? deps.chats.upsertByIdentity(identityOf(message.chatJid), null, nowMs);
     touchChat(deps.knownChats, chat, message.tsMs);
+    return found === null && holdForManager(deps, chat, nowMs) ? chat.id : null;
   });
+  if (held !== null) logHeld(deps.logger, held);
+}
+
+/** Отметка изнутри транзакции записи: чат ушёл менеджеру по правилу этапа 8 (лог после транзакции). */
+interface HeldMark {
+  readonly held: boolean;
+}
+
+/** Чата нет в базе ни по одному адресу: сейчас его создаст upsertByIdentity. */
+function isUnknownChat(chats: ChatsRepo, identity: ChatIdentity): boolean {
+  const { replyJid, lidJid, pnJid } = identity;
+  return [replyJid, lidJid, pnJid].every((jid) => jid === null || chats.findByJid(jid) === null);
+}
+
+/** Новый чат был на номере до перехода в рабочий режим: статус manager. true, если правило сработало. */
+function holdForManager(deps: InboundRecorderDeps, chat: Chat, nowMs: number): boolean {
+  if (!deps.heldForManager(chat.identity)) return false;
+  deps.chats.setStatus(chat.id, HELD_FOR_MANAGER, nowMs);
+  return true;
+}
+
+function logHeld(logger: Logger, chatId: ChatId): void {
+  logger.info(
+    { chatId },
+    `Новый чат был на рабочем номере до перехода в рабочий режим: ведёт менеджер, чат #${chatId}`,
+  );
 }
 
 /** Чаты синхронизации без времени получают момент синхронизации: чат всё равно известен до переключения этапа 8. */
