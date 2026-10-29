@@ -1,4 +1,5 @@
 import type { NormalizedText, PhoneDigits } from '../domain/types.js';
+import { amountsOf, sameAmount } from './amounts.js';
 import {
   AI_MENTION_PATTERNS,
   ALLOWED_CAPS,
@@ -30,6 +31,8 @@ import {
   PHONE_COMPARE_DIGITS,
   PHONE_PATTERN,
   PRICE_PATTERNS,
+  PROMISE_STOP_PATTERNS,
+  PROMO_STOP_PATTERNS,
   SENTENCE_END,
   STOP_PATTERNS,
   VOICE_PATTERNS,
@@ -151,46 +154,86 @@ function scan(
 
 // --- указание коллеги: цена и обещания только из него ---
 
-/** Граница части фразы: знак конца или «,» вне числа («1,5» и «1.5» не делят). */
+/**
+ * Граница части фразы: знак конца или «,» не после цифры и не перед ней. «1,5» не делится, а «от 2 000 000, оплата в
+ * тенге» остаётся одной частью: сумма без валюты сверяется вместе с валютой.
+ */
 const CLAUSE_BOUNDARY = /(?<!\p{Nd})[.,](?!\p{Nd})|[!?;:\n]/gu;
 
-/** Число с разрядами («1 500 000», «1,5»): пробелы внутри не важны. */
-const NUMBER = /\p{Nd}(?:[\p{Nd}\s.,]{0,30}\p{Nd})?/gu;
-
-/** Валюта, суммы словами и проценты в одном виде: «₸», «тг» и «тенге» одно и то же. */
-const PRICE_WORDS: readonly (readonly [RegExp, string])[] = [
-  [/те[нң]ге|(?<![а-я])тг(?![а-я])|(?<![а-я])тнг(?![а-я])|₸|kzt/u, 'kzt'],
-  [/(?<![а-я])руб/u, 'rub'],
+/** Валюта, проценты и «экономия» в одном виде: «₸», «тг», «tenge» и «тенге» одно и то же. */
+const PRICE_UNITS: readonly (readonly [RegExp, string])[] = [
+  [/те[нң]ге|tenge|(?<![а-я])тг(?![а-я])|(?<![а-я])тнг(?![а-я])|₸|kzt/u, 'kzt'],
+  [/(?<![а-я])руб|₽|(?<![a-z])ru[br](?![a-z])/u, 'rub'],
   [/\$|usd|(?<![а-я])долл/u, 'usd'],
-  [/€|(?<![а-я])евро/u, 'eur'],
-  [/(?<![а-я])тыс/u, 'тыс'],
-  [/(?<![а-я])(?:млн|миллион)/u, 'млн'],
-  [/(?<![а-я])млрд/u, 'млрд'],
+  [/€|(?<![а-я])евро|(?<![a-z])eur(?![a-z])/u, 'eur'],
   [/%|(?<![а-я])процент|(?<![а-я])пайыз/u, '%'],
   [/сэконом|(?<![а-я])экономи/u, 'эконом'],
 ];
 
-/** Числа (без пробелов внутри), валюта, суммы словами и проценты текста: по ним цена сверяется с указанием. */
-function priceTokens(text: string): ReadonlySet<string> {
-  const lower = normalize(text);
-  const numbers = findAll(lower, NUMBER).map((match) => `число ${match[0].replace(/\s+/gu, '')}`);
-  const words = PRICE_WORDS.flatMap(([pattern, token]) => (pattern.test(lower) ? [token] : []));
-  return new Set([...numbers, ...words]);
+/** Валюта, проценты и «экономия», которые есть в тексте (текст уже normalize). */
+function priceUnits(lower: string): ReadonlySet<string> {
+  return new Set(PRICE_UNITS.flatMap(([pattern, unit]) => (pattern.test(lower) ? [unit] : [])));
 }
 
-/** Часть фразы вокруг найденного: от прошлой границы до следующей (CLAUSE_BOUNDARY). */
-function clauseAround(text: string, match: RegExpExecArray): string {
+/**
+ * Что из цены есть в указании коллеги: значения сумм с признаком цены (валюта, слово суммы, слово цены рядом;
+ * «10 000 вещей» и «5000 м²» не цена) и валюта. Пары «от/до» и период («в месяц», «за склад») код не сверяет: их
+ * оценивает проверка Haiku, которая видит указание целиком.
+ */
+interface NoteFacts {
+  readonly amounts: readonly number[];
+  readonly units: ReadonlySet<string>;
+}
+
+function noteFacts(note: string): NoteFacts {
+  const lower = normalize(note.normalize('NFKC'));
+  const amounts = amountsOf(lower).flatMap((amount) => (amount.priced ? [amount.value] : []));
+  return { amounts, units: priceUnits(lower) };
+}
+
+/** Часть фразы вокруг найденного: от прошлой границы до следующей (bounds: все CLAUSE_BOUNDARY текста). */
+function clauseAround(
+  text: string,
+  bounds: readonly RegExpExecArray[],
+  match: RegExpExecArray,
+): { readonly key: string; readonly text: string } {
   const end = match.index + match[0].length;
-  const bounds = findAll(text, CLAUSE_BOUNDARY);
-  const start = bounds.filter((bound) => bound.index < match.index).at(-1);
-  const stop = bounds.find((bound) => bound.index >= end);
-  return text.slice(start === undefined ? 0 : start.index + 1, stop?.index ?? text.length);
+  const before = bounds.filter((bound) => bound.index < match.index).at(-1);
+  const start = before === undefined ? 0 : before.index + 1;
+  const stop = bounds.find((bound) => bound.index >= end)?.index ?? text.length;
+  return { key: `${start}:${stop}`, text: text.slice(start, stop) };
 }
 
-/** Цена допустима: числа, суммы словами и валюта её части фразы все есть в указании. */
-function priceFromNote(text: string, match: RegExpExecArray, facts: ReadonlySet<string>): boolean {
-  const tokens = [...priceTokens(clauseAround(text, match))];
-  return tokens.length > 0 && tokens.every((token) => facts.has(token));
+/**
+ * Цена допустима: в её части фразы есть с чем сверять (сумма или валюта), каждая сумма (кроме «1С», количеств,
+ * единиц длины и площади, сроков) по значению равна сумме-цене из указания, а валюта есть в указании.
+ * «От 1,5 млн тенге» при указании «от 1 500 000 тенге» проходит, «от 1 млн» и «10 000 тенге» нет.
+ */
+function clauseFromNote(clause: string, facts: NoteFacts): boolean {
+  const amounts = amountsOf(clause);
+  const units = [...priceUnits(clause)];
+  if (amounts.length === 0 && units.length === 0) return false;
+  const known = (value: number): boolean => facts.amounts.some((fact) => sameAmount(fact, value));
+  return (
+    amounts.every((amount) => known(amount.value)) && units.every((unit) => facts.units.has(unit))
+  );
+}
+
+/**
+ * Проверка цены по указанию для каждого найденного фрагмента. Границы частей фразы ищутся один раз, а итог части
+ * запоминается: фрагменты одной части (валюта и сумма рядом) не сверяются заново, длинный текст проверяется быстро.
+ */
+function priceFromNote(lower: string, facts: NoteFacts): (match: RegExpExecArray) => boolean {
+  const bounds = findAll(lower, CLAUSE_BOUNDARY);
+  const verdicts = new Map<string, boolean>();
+  return (match) => {
+    const clause = clauseAround(lower, bounds, match);
+    const known = verdicts.get(clause.key);
+    if (known !== undefined) return known;
+    const verdict = clauseFromNote(clause.text, facts);
+    verdicts.set(clause.key, verdict);
+    return verdict;
+  };
 }
 
 /** Текст для сравнения фрагментов: нижний регистр, «е» вместо «ё», одиночные пробелы. */
@@ -201,6 +244,28 @@ function comparable(text: string): string {
 /** Нижний регистр и «ё» => «е», чтобы словари не зависели от написания. */
 function normalize(text: string): string {
   return text.toLowerCase().replaceAll('ё', 'е');
+}
+
+/** Перед фрагментом «не» или «без»: «не за 2 недели» и «за 2 недели» разные обещания. */
+const NEGATION_BEFORE = /(?<!\p{L})(?:не|без)\s{1,3}$/u;
+
+/** Сколько знаков слева смотреть на отрицание. */
+const NEGATION_LOOK_BEHIND = 8;
+
+function negatedAt(text: string, index: number): boolean {
+  return NEGATION_BEFORE.test(text.slice(Math.max(0, index - NEGATION_LOOK_BEHIND), index));
+}
+
+/** Срок или обещание есть в указании с тем же отрицанием, что в ответе. */
+function promiseFromNote(lower: string, match: RegExpExecArray, source: string): boolean {
+  const fragment = comparable(match[0]);
+  const negated = negatedAt(lower, match.index);
+  let from = source.indexOf(fragment);
+  while (from !== -1) {
+    if (negatedAt(source, from) === negated) return true;
+    from = source.indexOf(fragment, from + 1);
+  }
+  return false;
 }
 
 /** Последние цифры номера: +7, 8 и номер без кода страны сравниваются одинаково. */
@@ -230,33 +295,38 @@ export function checkDashes(text: string): readonly CheckFinding[] {
 }
 
 /**
- * Нет цен: суммы с валютой, валюта и проценты словами, «%», «сэкономите», число рядом с «цена». С указанием коллеги
- * (note) цена допустима, если числа, суммы словами и валюта её части фразы все есть в указании (priceFromNote):
- * «от 1 500 000 тенге» при указании «ориентир от 1 500 000 ₸» проходит, «от 1,5 млн тенге» нет.
+ * Нет цен: суммы с валютой, валюта и проценты словами, «%», «сэкономите», число рядом с «цена», «ориентир» или «вилка»
+ * с числом, число со словом суммы («900 тыс», «500к»), сумма словом без цифр («полтора миллиона»). С указанием коллеги
+ * (note) цена допустима, если её суммы по значению и валюта есть в указании (priceFromNote): «от 1,5 млн тенге» при
+ * указании «ориентир от 1 500 000 ₸» проходит, «от 1 млн» нет.
  */
 export function checkPrices(text: string, note: string | null = null): readonly CheckFinding[] {
   if (note === null) return scan(text, PRICE_PATTERNS, 'price', 'цена');
-  const facts = priceTokens(note);
+  const lower = normalize(text);
+  const fromNote = priceFromNote(lower, noteFacts(note));
   return PRICE_PATTERNS.flatMap((pattern) =>
-    findAll(text, pattern)
-      .filter((match) => !priceFromNote(text, match, facts))
-      .map((match) => findingOf(text, match, 'price', 'цена не как в указании коллеги')),
+    findAll(lower, pattern)
+      .filter((match) => !fromNote(match))
+      .map((match) => findingOf(lower, match, 'price', 'цена не как в указании коллеги')),
   );
 }
 
 /**
- * Нет запрещённых слов раздела 11 документа, казахских стоп-слов и обещаний времени ответа и сроков. С указанием
- * коллеги (note) найденный фрагмент допустим, если он дословно есть в указании («за 2 недели»).
+ * Нет запрещённых слов раздела 11 документа, казахских стоп-слов и обещаний времени ответа и сроков. Рекламу и
+ * обещания результата (скидка, бесплатно, подарок, гарантия, образцы) указание коллеги не разрешает никогда: «выезд
+ * не бесплатный» в указании не разрешает «выезд бесплатный». Срок или обещание времени с указанием (note) допустимы,
+ * если тот же фрагмент есть в нём с тем же отрицанием («не за 2 недели» не разрешает «за 2 недели»).
  */
 export function checkStopWords(text: string, note: string | null = null): readonly CheckFinding[] {
   const lower = normalize(text);
   if (note === null) return scan(lower, STOP_PATTERNS, 'stop_word', 'стоп-слово');
   const source = comparable(note);
-  return STOP_PATTERNS.flatMap((pattern) =>
+  const promises = PROMISE_STOP_PATTERNS.flatMap((pattern) =>
     findAll(lower, pattern)
-      .filter((match) => !source.includes(comparable(match[0])))
+      .filter((match) => !promiseFromNote(lower, match, source))
       .map((match) => findingOf(lower, match, 'stop_word', 'стоп-слово не из указания коллеги')),
   );
+  return [...scan(lower, PROMO_STOP_PATTERNS, 'stop_word', 'стоп-слово'), ...promises];
 }
 
 const VOICE_REASON =
