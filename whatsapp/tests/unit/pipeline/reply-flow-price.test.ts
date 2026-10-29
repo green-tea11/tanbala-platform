@@ -603,24 +603,30 @@ describe('pipeline/reply-flow: минимум собран, а чат ещё н�
     expect(r.calls.filter((call) => call.startsWith('draft'))).toEqual(['draft']);
   });
 
-  it('клиент спросил цену, а модель ответила answer: ответ из знаний и фраза о цене, без фразы об ориентире', async () => {
+  // Живой прогон 29.10.2026: при вопросе цены ответ из черновика пересказывал слова клиента, а «Цена сильно зависит от
+  // объёма» перед фразой владельца звучала лишним повтором. Теперь только фраза владельца, отметка о цене для уведомления.
+  it('клиент спросил цену, а модель ответила answer: только фраза владельца, без ответа из черновика', async () => {
     const r = await run({ ...base, signals: PRICE_NOW, drafts: [answer(MINIMUM_ANSWER)] });
 
     expect(r.verdict).toEqual({
       kind: 'handoff',
-      notice: { reason: 'hot' },
-      text: `Да, мы проводим интеграцию с вашей 1С. ${HOT_PRICE_TEXT.slice(HOT_PRICE_TEXT.indexOf('Цена'))}`,
+      notice: { reason: 'hot', aboutPrice: true },
+      text: MINIMUM_TEXT,
     });
   });
 
-  it('клиент спросил цену, в черновике только вопросы: фиксированная фраза о цене', async () => {
+  it('клиент спросил цену, в черновике только вопросы: та же фраза владельца', async () => {
     const r = await run({
       ...base,
       signals: PRICE_NOW,
       drafts: [answer('Подскажите, как вы сейчас ведёте учёт?')],
     });
 
-    expect(r.verdict).toEqual(HOT_PRICE_VERDICT);
+    expect(r.verdict).toEqual({
+      kind: 'handoff',
+      notice: { reason: 'hot', aboutPrice: true },
+      text: MINIMUM_TEXT,
+    });
   });
 
   it('модель сама ответила hot без текста: вместо общей фразы фраза владельца', async () => {

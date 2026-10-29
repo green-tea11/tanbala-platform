@@ -140,12 +140,13 @@ describe('pipeline/auto-handoff: пятое сообщение клиента б
 });
 
 describe('pipeline/auto-handoff: фраза передачи', () => {
-  it('без вопроса цены «Спасибо, этого хватит...», при вопросе цены фраза о цене', () => {
+  it('по минимуму всегда «Спасибо, этого хватит...» (и при вопросе цены), по пределу сообщений при цене фраза о цене', () => {
     expect(MINIMUM_HANDOFF_TEXT).toBe(
       'Спасибо, этого хватит, чтобы коллега назвал ориентир. Уточню у коллеги и вернусь к вам.',
     );
     expect(autoHandoffPhrase('minimum', false)).toBe(MINIMUM_HANDOFF_TEXT);
-    expect(autoHandoffPhrase('minimum', true)).toBe(HOT_PRICE_HANDOFF_TEXT);
+    expect(autoHandoffPhrase('minimum', true)).toBe(MINIMUM_HANDOFF_TEXT);
+    expect(autoHandoffPhrase('message_cap', true)).toBe(HOT_PRICE_HANDOFF_TEXT);
   });
 
   it('фраза проходит проверки кодом', () => {

@@ -482,10 +482,18 @@ async function autoHandoff(
 ): Promise<Judgement> {
   const { chatId, history } = flow.context;
   const priceTurn = flow.price.signals.priceAsked;
-  const fixed: ReplyVerdict = priceTurn
-    ? FORCED_PRICE_HANDOFF
-    : { kind: 'handoff', notice: { reason: 'hot' }, text: autoText(flow) };
-  const part = clientAsksNow(history) ? answerPartOf(normalizeDraft(draft.text)) : null;
+  const auto = flow.auto ?? 'minimum';
+  const fixed: ReplyVerdict =
+    priceTurn && auto === 'message_cap'
+      ? FORCED_PRICE_HANDOFF
+      : {
+          kind: 'handoff',
+          notice: priceTurn ? { reason: 'hot', aboutPrice: true } : { reason: 'hot' },
+          text: autoHandoffPhrase(auto, priceTurn) as ReviewedText,
+        };
+  // На вопрос цены ответ из черновика не берётся: в нём остаются пересказ слов клиента и обрывки (живой прогон 29.10.2026).
+  const part =
+    !priceTurn && clientAsksNow(history) ? answerPartOf(normalizeDraft(draft.text)) : null;
   const log = (withAnswer: boolean): void => {
     flow.deps.logger.info(
       { chatId, auto: flow.auto, withAnswer },
@@ -496,7 +504,7 @@ async function autoHandoff(
     log(false);
     return verdictOf(fixed);
   }
-  const text = normalizeDraft(`${part} ${autoHandoffPhrase(flow.auto ?? 'minimum', priceTurn)}`);
+  const text = normalizeDraft(`${part} ${autoHandoffPhrase(auto, priceTurn)}`);
   const checked = await checkDraft(flow, 'hot', text, attempt, fixed);
   if (checked.kind === 'failed') return verdictOf(checked.verdict);
   const hot: TextDraft = {

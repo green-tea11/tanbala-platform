@@ -16,6 +16,7 @@ import type {
   ReviewResult,
   StoredMessage,
 } from '../domain/types.js';
+import { ESTIMATE_LATER } from '../handoff/minimum.js';
 import { cleanLine } from './clean-text.js';
 import { companyReplyData, companyReviewData } from './company-data.js';
 import { interestCallData, interestSchema, normalizeInterest } from './interest.js';
@@ -227,6 +228,10 @@ function replyCallData(
     hasNote: context.note != null,
     notePrice: context.note != null && priceAmountsOf(context.note.text).length > 0,
     clientMessages: context.history.filter((message) => message.author === 'client').length,
+    estimateSaid: context.history.some(
+      (message) =>
+        message.author === 'bot' && message.text !== null && message.text.includes(ESTIMATE_LATER),
+    ),
   });
   const parts = [price, companyReplyData(company), profileText(context.profile), remarks];
   return parts.filter((part) => part !== null).join('\n\n');

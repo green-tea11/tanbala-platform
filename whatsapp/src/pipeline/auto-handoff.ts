@@ -37,12 +37,13 @@ export function autoHandoffOf(
 }
 
 /**
- * Фраза передачи: при вопросе цены фраза о цене; по минимуму «Спасибо, этого хватит, чтобы коллега назвал ориентир...»;
- * по пределу сообщений «Спасибо! Уточню у коллеги и вернусь к вам.».
+ * Фраза передачи: по минимуму всегда «Спасибо, этого хватит, чтобы коллега назвал ориентир...» (она же отвечает на вопрос
+ * цены: живой прогон 29.10.2026 показал, что «Цена сильно зависит от объёма» перед ней звучит дважды); по пределу
+ * сообщений при вопросе цены фраза о цене, иначе «Спасибо! Уточню у коллеги и вернусь к вам.».
  */
 export function autoHandoffPhrase(kind: AutoHandoff, priceTurn: boolean): string {
-  if (priceTurn) return HOT_PRICE_HANDOFF_TEXT;
-  return kind === 'minimum' ? MINIMUM_HANDOFF_TEXT : CAP_HANDOFF_TEXT;
+  if (kind === 'minimum') return MINIMUM_HANDOFF_TEXT;
+  return priceTurn ? HOT_PRICE_HANDOFF_TEXT : CAP_HANDOFF_TEXT;
 }
 
 /** Признак вопроса в словах клиента: знак вопроса, вопросительное слово или просьба рассказать. */

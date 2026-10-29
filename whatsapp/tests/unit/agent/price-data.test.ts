@@ -57,6 +57,20 @@ describe('agent/price-data: минимум не собран', () => {
     expect(data).not.toMatch(/один вопрос/);
   });
 
+  it('фраза об ориентире уже была в чате: не повторять, коротко сказать, что осталось немного (живой прогон 29.10)', () => {
+    const data = priceReplyData({
+      profile: SKLAD_28_10,
+      company: { kind: 'unknown', askName: true },
+      companyName: null,
+      progress: FRESH,
+      estimateSaid: true,
+    });
+
+    expect(data).not.toContain('напиши «Ориентир коллега назовёт');
+    expect(data).toContain('ты уже писал: не повторяй её и не объясняй снова, от чего зависит цена');
+    expect(data).toContain('задай одним блоком вопросы первой группы, где есть недостающее');
+  });
+
   it('ничего не собрано, компания выключена: первым спрашивается, какие вещи; о компании ни слова', () => {
     const data = priceReplyData({
       profile: EMPTY_PROFILE,
