@@ -1,0 +1,6 @@
+# Единые окончания строк LF: проект работает на Linux VPS
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary

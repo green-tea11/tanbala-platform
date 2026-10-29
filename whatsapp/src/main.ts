@@ -1,0 +1,711 @@
+import { join } from 'node:path';
+import { loadConfig, type AppConfig, type TestMode } from './config/env.js';
+import { readModelsJson } from './config/models-file.js';
+import { createUnitOfWork, openDatabase } from './db/connection.js';
+import { runMigrations } from './db/migrations.js';
+import { acquireProcessLock } from './db/process-lock.js';
+import { createAppStateRepo } from './db/repos/app-state.js';
+import { createBacklogRepo } from './db/repos/backlog.js';
+import { createCallBudget } from './db/repos/call-budget.js';
+import { createChatCompaniesRepo } from './db/repos/chat-companies.js';
+import { createChatsRepo } from './db/repos/chats.js';
+import { createHandoffsRepo } from './db/repos/handoffs.js';
+import { createKnownChatsRepo } from './db/repos/known-chats.js';
+import { createManagerNotificationsRepo } from './db/repos/manager-notifications.js';
+import { createMessagesRepo } from './db/repos/messages.js';
+import { createOutboundIdsRepo } from './db/repos/outbound-ids.js';
+import { createPairingGuard } from './db/repos/pairing-attempts.js';
+import type { ChatCompaniesRepo } from './domain/company.js';
+import type {
+  AppStateRepo,
+  BacklogRepo,
+  CallBudget,
+  ChatsRepo,
+  Clock,
+  HandoffsRepo,
+  LlmClient,
+  Logger,
+  ManagerNotificationsRepo,
+  MessagesRepo,
+  OutboundIdsRepo,
+  PairingGuard,
+  ProcessLock,
+  UnitOfWork,
+} from './domain/ports.js';
+import type { Jid, PhoneDigits, WaMessageId } from './domain/types.js';
+import type { AnthropicLlmDeps } from './llm/anthropic.js';
+import type { ChatBatcher } from './pipeline/batcher.js';
+import { assembleCompany, type CompanySetup } from './pipeline/company-setup.js';
+import {
+  createInboundRecorder,
+  type IgnoreStats,
+  type InboundRecorder,
+} from './pipeline/recorder.js';
+import { assemblePanel, type Panel, type PanelStarter } from './pipeline/panel-setup.js';
+import { assembleResponder, type Responder } from './pipeline/responder-setup.js';
+import { assembleServices, type Services } from './pipeline/services.js';
+import { handleOwnMessage, type TakeoverDeps, type TakeoverResult } from './pipeline/takeover.js';
+import { assertPanelStartAllowed } from './panel/guard.js';
+import { createSystemClock } from './shared/clock.js';
+import { createLogger, type LogDestination } from './shared/logger.js';
+import { SafeError } from './shared/safe-error.js';
+import {
+  PairingLimitError,
+  startWhatsApp,
+  type WhatsAppConnection,
+  type WhatsAppDeps,
+  type WhatsAppStopReason,
+} from './whatsapp/connection.js';
+import type { WaEvent } from './whatsapp/inbound.js';
+import { createQrPresenter } from './whatsapp/qr.js';
+
+/** Что точка входа передаёт в main. */
+export interface MainOptions {
+  /** Переменные окружения после загрузки .env. Разбирает их только config/env.ts. */
+  readonly env: Readonly<Record<string, string | undefined>>;
+  /** Абсолютный путь к корню проекта: от него считаются пути из .env. */
+  readonly root: string;
+  /** Шов для тестов, в рабочем режиме не передаётся: подключение к WhatsApp (по умолчанию startWhatsApp). */
+  readonly startWhatsApp?: (deps: WhatsAppDeps) => Promise<WhatsAppConnection>;
+  /** Шов для тестов, в рабочем режиме не передаётся: приёмник строк лога (по умолчанию stdout). */
+  readonly logDestination?: LogDestination;
+  /** Шов для тестов, в рабочем режиме не передаётся: часы и паузы (по умолчанию системные). */
+  readonly clock?: Clock;
+  /** Шов для тестов, в рабочем режиме не передаётся: клиент LLM (по умолчанию createAnthropicLlm). */
+  readonly createLlm?: (deps: AnthropicLlmDeps) => LlmClient;
+  /** Шов для тестов, в рабочем режиме не передаётся: запуск панели без занятого порта (по умолчанию startPanel). */
+  readonly startPanel?: PanelStarter;
+}
+
+/** Запущенное приложение. */
+export interface RunningApp {
+  /**
+   * Корректная остановка: WhatsApp, база, замок процесса (очередь сообщений с этапа 3, панель с этапа 6).
+   * Повторный вызов отдаёт тот же промис.
+   */
+  stop(): Promise<void>;
+  /**
+   * Остановка закончилась (база закрыта, замок снят), даже если с ошибкой; не отклоняется. 'requested': по stop(),
+   * иначе причина, по которой WhatsApp остановился сам: cli.ts ставит по ней код выхода 1 для службы этапа 8.
+   */
+  readonly stopped: Promise<AppStopReason>;
+}
+
+/** Почему приложение остановилось: по команде stop() или WhatsApp остановился сам (причина адаптера). */
+export type AppStopReason = 'requested' | WhatsAppStopReason;
+
+/** Уровень лога приложения; у Baileys свой уровень warn (whatsapp/connection.ts). */
+const LOG_LEVEL = 'info';
+/** Замок «бот уже запущен» в папке данных (все пути данных обязаны лежать в data/): один на корень проекта. */
+const PROCESS_LOCK_FILE = join('data', 'process.lock');
+/** Картинка QR привязки: внутри data/ и под qr*.png в .gitignore. */
+const QR_PNG_FILE = join('data', 'qr.png');
+const MS_PER_MINUTE = 60_000;
+const MS_PER_HOUR = 60 * MS_PER_MINUTE;
+/** Весь Казахстан с 01.03.2024 живёт по UTC+5 без летнего времени: смещение Алматы постоянное. */
+const ALMATY_OFFSET_MS = 5 * MS_PER_HOUR;
+/** Сводка пропусков в лог не чаще этого и только если с прошлой сводки что-то изменилось. */
+const IGNORE_SUMMARY_INTERVAL_MS = 10 * MS_PER_MINUTE;
+/** Что владелец читает в логе о своём сообщении с номера бота (pipeline/takeover.ts). */
+const TAKEOVER_MESSAGES: Readonly<Record<TakeoverResult, string>> = {
+  bot_echo: 'Эхо отправки бота',
+  human_took_over: 'Человек написал в чат с телефона: бот в этом чате замолкает',
+  not_client_chat: 'Своё сообщение не в чате клиента: пропущено',
+};
+
+/** Номер менеджера в закрытом списке: classifyUpsert раньше отдаёт manager, и его сообщения не сохраняются. */
+const MANAGER_IN_ALLOWLIST_WARNING =
+  'Номер менеджера есть в TEST_ALLOWLIST: сообщения с него бот считает служебными (причина manager) ' +
+  'и не сохраняет. Для теста укажите другой номер менеджера или оставьте MANAGER_WHATSAPP пустым';
+
+/** Что владелец читает в логе, когда WhatsApp остановился сам (WhatsAppDeps.onStopped). */
+const STOP_MESSAGES: Readonly<Record<WhatsAppStopReason, string>> = {
+  logged_out:
+    'WhatsApp остановлен: сессия отозвана в телефоне (устройство отвязано), нужна новая привязка по QR. ' +
+    'Удалите папку сессии (WHATSAPP_SESSION_DIR, по умолчанию data/whatsapp-session) и запустите бота снова',
+  pairing_timeout:
+    'WhatsApp остановлен: привязка не завершена, QR не отсканирован вовремя или связь оборвалась при привязке. ' +
+    'Попытка засчитана (не больше двух за 24 часа): запустите бота снова вручную, когда будете готовы сканировать QR',
+  replaced:
+    'WhatsApp остановлен: номер подключён в другом месте с этой же сессией (например, запущен второй экземпляр бота). ' +
+    'Остановите лишний экземпляр и запустите бота снова. ' +
+    'Если второго экземпляра нет, отвяжите устройство в телефоне и удалите папку сессии',
+  forbidden:
+    'WhatsApp остановлен: сервер отказал в доступе (код 403), возможна блокировка номера. ' +
+    'Проверьте номер в телефоне; сам бот не переподключается',
+  gave_up:
+    'WhatsApp остановлен: переподключиться не удалось после нескольких попыток. ' +
+    'Проверьте интернет и запустите бота снова',
+  reconnect_failed:
+    'WhatsApp остановлен: сбой при переподключении (подробности выше в логе). Запустите бота снова',
+  version_rejected:
+    'WhatsApp остановлен: сервер WhatsApp отклонил версию клиента (код 405). ' +
+    'Нужно обновить Baileys отдельным коммитом после проверки: передайте разработчику, затем запустите бота снова',
+  session_save_failed:
+    'WhatsApp остановлен: сессия не сохранилась на диск, переподключение прочитало бы устаревшую. ' +
+    'Проверьте свободное место и права на папку сессии (WHATSAPP_SESSION_DIR) и запустите бота снова',
+  link_save_failed:
+    'WhatsApp остановлен: номер привязан, но момент привязки не записался в базу. Проверьте место на диске ' +
+    'и доступ к папке data/, затем удалите папку сессии (WHATSAPP_SESSION_DIR) и привяжите номер заново',
+  handler_failed:
+    'WhatsApp остановлен: несколько сбоев подряд при разборе или записи сообщений (подробности выше в логе). ' +
+    'Проверьте базу и место на диске, затем запустите бота снова',
+};
+
+type Database = ReturnType<typeof openDatabase>;
+
+/** База и всё, что на ней собрано. */
+interface Storage {
+  readonly appState: AppStateRepo;
+  readonly pairingGuard: PairingGuard;
+  readonly backlog: BacklogRepo;
+  readonly recorder: InboundRecorder;
+  readonly chats: ChatsRepo;
+  readonly messages: MessagesRepo;
+  readonly outboundIds: OutboundIdsRepo;
+  readonly unitOfWork: UnitOfWork;
+  /** Дневной предохранитель расходов API (API_DAILY_LIMIT и API_DAILY_LIMIT_PER_CHAT). */
+  readonly budget: CallBudget;
+  /** Передачи чатов менеджеру и уведомления ему (этап 5). */
+  readonly handoffs: HandoffsRepo;
+  readonly notifications: ManagerNotificationsRepo;
+  /** Определение компании клиента по чатам. */
+  readonly chatCompanies: ChatCompaniesRepo;
+  isOpen(): boolean;
+  /** Закрывает базу; повторный вызов ничего не делает. */
+  close(): void;
+}
+
+/** Сводка пропусков с запуска (только ненулевые причины, без номеров и JID). */
+interface IgnoreSummary {
+  /** Сводка в лог сейчас: разбор офлайн-очереди, остановка. */
+  log(): void;
+  /** Снимает таймер сводки; повторный вызов ничего не делает. */
+  stop(): void;
+}
+
+/** Что закрывает остановка, кроме WhatsApp: панель, очередь ответов, повтор уведомлений, таймер сводки, база и замок. */
+interface Resources {
+  readonly storage: Storage;
+  readonly lock: ProcessLock;
+  readonly summary: IgnoreSummary;
+  /** Очередь ответов клиентам; null без ключа Claude (бот только принимает). */
+  readonly batcher: ChatBatcher | null;
+  /** Общие службы этапа 5: таймер повтора уведомлений менеджеру снимается до закрытия базы. */
+  readonly services: Services;
+  /** Веб-панель: закрывается первой, до остановки WhatsApp и закрытия базы. */
+  readonly panel: Panel;
+}
+
+/** Всё, что собрано до подключения к WhatsApp. */
+interface AppContext {
+  readonly config: AppConfig;
+  readonly root: string;
+  readonly logger: Logger;
+  readonly clock: Clock;
+  readonly storage: Storage;
+  readonly summary: IgnoreSummary;
+  readonly batcher: ChatBatcher | null;
+  readonly takeover: TakeoverDeps;
+  readonly services: Services;
+}
+
+/** Подключение к WhatsApp этого запуска: меняется только в main. */
+interface WhatsAppLink {
+  /** Запуск подключения; null, пока WhatsApp не запускали (или он выключен). */
+  started: Promise<WhatsAppConnection> | null;
+}
+
+/** Остановка этого запуска: приложение для cli.ts и остановка по причине для самоостановки WhatsApp. */
+interface Lifecycle {
+  readonly app: RunningApp;
+  /** Остановка по причине; первая причина попадает в app.stopped. */
+  stopWith(reason: AppStopReason): Promise<void>;
+}
+
+/** Тот же отказ PairingLimitError, но текст для владельца: время следующей попытки по Алматы. */
+class PairingLimitExplained extends PairingLimitError {
+  constructor(retryAtMs: number) {
+    super(retryAtMs);
+    this.message = pairingLimitText(retryAtMs);
+  }
+}
+
+/**
+ * Собирает и запускает приложение: здесь создаются все зависимости (composition root).
+ * Порядок этапа 2: логгер, loadConfig (переменные и config/models.json, предупреждения в лог), сводка настроек
+ * в лог (без номеров), замок процесса data/process.lock (второй экземпляр падает ProcessLockBusyError до базы
+ * и WhatsApp), база и миграции, репозитории и запись входящих (pipeline/recorder.ts), затем WhatsApp: onEvent
+ * готов до первого события. WA_ENABLED=false: к WhatsApp не подключаться и QR не показывать, только предупреждение.
+ * В whatsapp/connection.ts уходят: состояние приложения (граница привязки, отметка неполной истории), PairingGuard
+ * (не больше двух привязок по QR за 24 часа, копия счётчика .pairing-attempts.json в корне проекта), список
+ * закрытого режима, порог простоя в мс и показ QR в терминал и в data/qr.png. WhatsApp остановился сам =>
+ * понятный лог владельцу и та же остановка, что у stop(), а причина приходит в RunningApp.stopped.
+ * Ошибка запуска: SafeError (ConfigError, ProcessLockBusyError, LinkBoundaryMissingError, PairingLimitError
+ * со временем следующей попытки по Алматы) пишется в лог своим текстом, прочие без текста в сообщении; база
+ * закрывается, замок снимается, ошибка всплывает в cli.ts.
+ * Этап 3, после базы и до WhatsApp: ответы клиентам собирает pipeline/responder-setup.ts (только с ключом Claude,
+ * иначе предупреждение: бот только принимает и сохраняет, как на этапе 2); подключение WhatsApp они получают после
+ * его запуска. Событие сначала записывает pipeline/recorder.ts, затем новое сообщение клиента уходит в очередь
+ * ответа, а своё сообщение с номера бота в pipeline/takeover.ts (и без ключа Claude: человек с телефона забирает
+ * чат). getSentText отдаёт текст из outbound_ids только при совпадении jid.
+ * stop: очередь ответов (накопленное уходит в обработку, ответы успевают уйти, пока WhatsApp подключён), WhatsApp
+ * (он дожидается своей очереди событий, паузы прерывает AbortSignal), база, затем замок.
+ * Этап 5, общие службы pipeline/services.ts (создаются до WhatsApp, подключение им передаётся после запуска): один outbox,
+ * один notifier и один сервис передачи на всё приложение, им же пользуется перехват человеком. Событие stale пишет
+ * pipeline/recorder.ts; onOfflineQueueDone (после каждого открытия подключения) повторяет неотправленные уведомления
+ * менеджеру, запускает таймер повтора раз в 5 минут и отправляет одно уведомление со списком чатов простоя.
+ * stop снимает таймер повтора до остановки WhatsApp и до закрытия базы.
+ * Этап 6, веб-панель pipeline/panel-setup.ts: запрещённый запуск (слабый пароль не на 127.0.0.1) останавливает бота
+ * сразу после loadConfig, до замка, базы, WhatsApp и QR. Панель собирается на общих службах и начинает слушать порт
+ * после старта WhatsApp (при WA_ENABLED=false сразу); не запустилась (порт занят) => остановка целиком и ошибка.
+ * stop закрывает панель первой, до остановки WhatsApp и до закрытия базы. Пароль панели в логи не попадает.
+ * Определение компании клиента pipeline/company-setup.ts: один сервис до служб этапа 5 (уведомление о передаче),
+ * панели и ответов (конвейер); агент ответов читает логотип, подключение WhatsApp даёт профиль собеседника.
+ * Без INTERNAL_API_TOKEN сервис есть, но выключен. В лог одна строка, включено ли оно, без адреса и токена.
+ * TODO(этап 8): переход TEST_MODE true => false: записать момент перехода в app_state как границу (сообщения чатов не из списка до неё не обрабатывать); до перехода предупредить менеджеров; как не ответить поверх менеджера в живых чатах рабочего номера: вопрос владельцу перед запуском.
+ */
+export async function main(options: MainOptions): Promise<RunningApp> {
+  const logger = createLogger({ level: LOG_LEVEL, destination: options.logDestination });
+  try {
+    return await startApp(options, logger);
+  } catch (error: unknown) {
+    return failStart(logger, error);
+  }
+}
+
+async function startApp(options: MainOptions, logger: Logger): Promise<RunningApp> {
+  const { root } = options;
+  const { config, warnings } = loadConfig(options.env, readModelsJson(root), root);
+  for (const warning of warnings) logger.warn({}, warning);
+  // Запрещённый запуск панели (слабый пароль не на 127.0.0.1) останавливает бота до замка, базы, WhatsApp и QR.
+  assertPanelStartAllowed({ host: config.panel.host, password: config.adminPassword });
+  logStartup(config, logger);
+  warnManagerInAllowlist(config, logger);
+  // Второй экземпляр падает здесь: до базы, сессии WhatsApp и счётчика привязок.
+  const lock = acquireProcessLock(join(root, PROCESS_LOCK_FILE));
+  try {
+    return await startLocked(config, options, logger, lock);
+  } catch (error: unknown) {
+    lock.release();
+    throw error;
+  }
+}
+
+async function startLocked(
+  config: AppConfig,
+  options: MainOptions,
+  logger: Logger,
+  lock: ProcessLock,
+): Promise<RunningApp> {
+  const clock = options.clock ?? createSystemClock();
+  const storage = openStorage(config, logger, clock);
+  const summary = startIgnoreSummary(storage.recorder, logger);
+  try {
+    const link: WhatsAppLink = { started: null };
+    return await launch({ config, options, logger, clock, storage, summary, lock, link });
+  } catch (error: unknown) {
+    summary.stop();
+    storage.close();
+    throw error;
+  }
+}
+
+/** Всё, что нужно запуску после открытия базы. */
+interface Launch {
+  readonly config: AppConfig;
+  readonly options: MainOptions;
+  readonly logger: Logger;
+  readonly clock: Clock;
+  readonly storage: Storage;
+  readonly summary: IgnoreSummary;
+  readonly lock: ProcessLock;
+  readonly link: WhatsAppLink;
+}
+
+/**
+ * Определение компании, службы, ответы клиентам и панель собираются до WhatsApp; WhatsApp запускается, если он
+ * включён; панель начинает слушать порт последней, после старта WhatsApp, а при WA_ENABLED=false сразу.
+ */
+async function launch(run: Launch): Promise<RunningApp> {
+  const { config, options, logger, clock, storage } = run;
+  const company = assembleCompany({ config, logger, clock, repo: storage.chatCompanies });
+  const services = assembleServices({ config, logger, clock, storage, company: company.service });
+  const panel = assemblePanel({
+    config,
+    logger,
+    clock,
+    storage,
+    services,
+    company: company.service,
+    startPanel: options.startPanel,
+  });
+  const responder = await assembleResponder({
+    config,
+    logger,
+    clock,
+    storage,
+    services,
+    company: company.service,
+    createLlm: options.createLlm,
+  });
+  if (responder !== null) company.useLogo(responder.logo);
+  const batcher = responder?.batcher ?? null;
+  const resources: Resources = {
+    storage,
+    lock: run.lock,
+    summary: run.summary,
+    batcher,
+    services,
+    panel,
+  };
+  const lifecycle = createLifecycle(run.link, resources, logger);
+  if (config.waEnabled) {
+    await connectWhatsApp(run, { services, company, responder, batcher, lifecycle });
+  } else {
+    logger.warn({}, 'WhatsApp выключен (WA_ENABLED=false)');
+  }
+  await startPanelOrStop(panel, lifecycle);
+  return lifecycle.app;
+}
+
+/** Что WhatsApp получает от остальной сборки. */
+interface WhatsAppParts {
+  readonly services: Services;
+  readonly company: CompanySetup;
+  readonly responder: Responder | null;
+  readonly batcher: ChatBatcher | null;
+  readonly lifecycle: Lifecycle;
+}
+
+async function connectWhatsApp(run: Launch, parts: WhatsAppParts): Promise<void> {
+  const { config, options, logger, clock, storage, summary, link } = run;
+  const { services, company, responder, batcher, lifecycle } = parts;
+  const context: AppContext = {
+    config,
+    root: options.root,
+    logger,
+    clock,
+    storage,
+    summary,
+    batcher,
+    takeover: takeoverDepsOf(storage, services),
+    services,
+  };
+  const deps = whatsAppDeps(context, onStoppedOf(lifecycle, logger));
+  const start = options.startWhatsApp ?? startWhatsApp;
+  // Ссылка на запуск есть до вызова адаптера: самоостановка во время запуска дождётся его и остановит подключение.
+  link.started = Promise.resolve().then(() => start(deps));
+  const connection = await link.started;
+  services.connect(connection);
+  // До конвейера: первая пачка уже идёт с профилем собеседника из этого подключения.
+  company.connect(connection);
+  responder?.connect(connection);
+}
+
+/** Не удалось запустить панель (например, порт занят): остановка идёт целиком, как по stop(), и ошибка всплывает. */
+async function startPanelOrStop(panel: Panel, lifecycle: Lifecycle): Promise<void> {
+  try {
+    await panel.start();
+  } catch (error: unknown) {
+    await lifecycle.app.stop();
+    throw error;
+  }
+}
+
+/** Почему бот не запустился, в лог: SafeError своим текстом (лимит привязок со временем по Алматы), прочие без. */
+function failStart(logger: Logger, error: unknown): never {
+  const shown =
+    error instanceof PairingLimitError ? new PairingLimitExplained(error.retryAtMs) : error;
+  if (shown instanceof SafeError) {
+    logger.error({ errorName: shown.name }, shown.message);
+  } else {
+    logger.error({ err: shown }, 'Бот не запущен');
+  }
+  throw shown;
+}
+
+/** Сводка настроек при старте: только флаги и число номеров, без самих номеров. */
+function logStartup(config: AppConfig, logger: Logger): void {
+  const allowlist = allowlistOf(config.testMode);
+  const whatsapp = `Запуск: WhatsApp ${config.waEnabled ? 'включён' : 'выключен'}`;
+  if (allowlist === null) {
+    // До этапа 8 сюда не попасть: loadConfig не пропускает TEST_MODE=false.
+    logger.warn({ waEnabled: config.waEnabled }, `${whatsapp}, закрытый режим выключен`);
+    return;
+  }
+  logger.info(
+    { waEnabled: config.waEnabled, allowlistSize: allowlist.size },
+    `${whatsapp}, закрытый режим включён, номеров в TEST_ALLOWLIST: ${allowlist.size}`,
+  );
+}
+
+function allowlistOf(testMode: TestMode): ReadonlySet<PhoneDigits> | null {
+  return testMode.enabled ? testMode.allowlist : null;
+}
+
+/** Номер менеджера в TEST_ALLOWLIST: его сообщения уходят в пропуск manager, владелец видит почему (без номера). */
+function warnManagerInAllowlist(config: AppConfig, logger: Logger): void {
+  const { managerPhone } = config;
+  if (managerPhone !== null && allowlistOf(config.testMode)?.has(managerPhone) === true) {
+    logger.warn({}, MANAGER_IN_ALLOWLIST_WARNING);
+  }
+}
+
+// База.
+
+/** База с миграциями; сбой миграции закрывает её до выхода ошибки. */
+function openStorage(config: AppConfig, logger: Logger, clock: Clock): Storage {
+  const db = openDatabase(config.databasePath);
+  try {
+    runMigrations(db);
+    return assembleStorage(db, config, logger, clock);
+  } catch (error: unknown) {
+    db.close();
+    throw error;
+  }
+}
+
+function assembleStorage(db: Database, config: AppConfig, logger: Logger, clock: Clock): Storage {
+  const backlog = createBacklogRepo(db);
+  const chats = createChatsRepo(db);
+  const messages = createMessagesRepo(db);
+  const unitOfWork = createUnitOfWork(db);
+  const knownChats = createKnownChatsRepo(db);
+  const recorder = createInboundRecorder({
+    chats,
+    messages,
+    backlog,
+    knownChats,
+    unitOfWork,
+    logger,
+    clock,
+  });
+  return {
+    appState: createAppStateRepo(db),
+    pairingGuard: createPairingGuard(db, config.pairingMirrorPath),
+    backlog,
+    recorder,
+    chats,
+    messages,
+    outboundIds: createOutboundIdsRepo(db),
+    unitOfWork,
+    budget: createCallBudget(db, config.limits),
+    handoffs: createHandoffsRepo(db),
+    notifications: createManagerNotificationsRepo(db),
+    chatCompanies: createChatCompaniesRepo(db, logger),
+    isOpen: () => db.open,
+    // close в better-sqlite3 сам ничего не делает с уже закрытой базой.
+    close: () => {
+      db.close();
+    },
+  };
+}
+
+// Ответы клиентам (этап 3): сборка в pipeline/responder-setup.ts; службы этапа 5 в pipeline/services.ts.
+
+/** Перехват человеком пользуется тем же сервисом передачи, что и конвейер ответов. */
+function takeoverDepsOf(storage: Storage, services: Services): TakeoverDeps {
+  const { outboundIds, chats, messages } = storage;
+  return { outboundIds, chats, messages, handoff: services.handoff };
+}
+
+/**
+ * Событие WhatsApp: сначала запись (pipeline/recorder.ts), затем новое сообщение клиента в очередь ответа
+ * (повторная доставка того же waId второго ответа не запускает), своё сообщение в перехват (pipeline/takeover.ts).
+ */
+async function routeEvent(context: AppContext, event: WaEvent): Promise<void> {
+  const recorded = await context.storage.recorder.onEvent(event);
+  if (event.type === 'client' && recorded?.isNew === true) {
+    context.batcher?.push(recorded.chatId, event.message);
+  }
+  if (event.type === 'own') {
+    const result = await handleOwnMessage(context.takeover, event.message);
+    const level = result === 'human_took_over' ? 'info' : 'debug';
+    context.logger[level]({ result }, TAKEOVER_MESSAGES[result]);
+  }
+}
+
+/** Текст отправленного сообщения для повторной отправки Baileys: только при совпадении чата. */
+function sentText(storage: Storage, waId: WaMessageId, jid: Jid): string | null {
+  if (!storage.isOpen()) return null;
+  const sent = storage.outboundIds.find(waId);
+  return sent !== null && sent.jid === jid ? sent.text : null;
+}
+
+// WhatsApp.
+
+/** WhatsApp остановился сам: понятный лог владельцу и та же остановка, что у stop(), с причиной в app.stopped. */
+function onStoppedOf(
+  lifecycle: Lifecycle,
+  logger: Logger,
+): (reason: WhatsAppStopReason) => Promise<void> {
+  return (reason) => {
+    logger.error({ reason }, STOP_MESSAGES[reason]);
+    return lifecycle.stopWith(reason);
+  };
+}
+
+function whatsAppDeps(
+  context: AppContext,
+  onStopped: (reason: WhatsAppStopReason) => Promise<void>,
+): WhatsAppDeps {
+  const { config, root, logger, clock, storage, summary, services } = context;
+  const { recorder } = storage;
+  return {
+    sessionDir: config.waSessionDir,
+    logger,
+    clock,
+    appState: storage.appState,
+    pairingGuard: storage.pairingGuard,
+    managerPhone: config.managerPhone,
+    testAllowlist: allowlistOf(config.testMode),
+    backlogMaxAgeMs: config.backlogMaxAgeHours * MS_PER_HOUR,
+    onEvent: (event) => whileOpen(storage, () => routeEvent(context, event)),
+    onHistoryChats: (chats) =>
+      whileOpen(storage, () => settle(() => recorder.onHistoryChats(chats))),
+    onOfflineQueueDone: () =>
+      whileOpen(storage, async () => {
+        try {
+          await services.onOfflineQueueDone();
+        } finally {
+          summary.log();
+        }
+      }),
+    onStopped,
+    getSentText: (waId, jid) =>
+      new Promise<string | null>((resolve) => {
+        resolve(sentText(storage, waId, jid));
+      }),
+    presenter: createQrPresenter({
+      output: process.stdout,
+      pngPath: join(root, QR_PNG_FILE),
+      logger,
+    }),
+  };
+}
+
+/**
+ * Сводка пропусков с запуска: «manager 1, not_allowlisted 12» (только ненулевые причины, без номеров и JID).
+ * Таймер раз в IGNORE_SUMMARY_INTERVAL_MS пишет её, только если она изменилась; unref: процесс он не держит.
+ */
+function startIgnoreSummary(recorder: InboundRecorder, logger: Logger): IgnoreSummary {
+  let lastText = ignoreSummaryText(recorder.ignoreStats());
+  const log = (): void => {
+    const stats = recorder.ignoreStats();
+    lastText = ignoreSummaryText(stats);
+    logger.info({ ignored: nonZeroStats(stats) }, `Пропущено с запуска: ${lastText}`);
+  };
+  const timer = setInterval(() => {
+    if (ignoreSummaryText(recorder.ignoreStats()) !== lastText) log();
+  }, IGNORE_SUMMARY_INTERVAL_MS);
+  timer.unref();
+  return {
+    log,
+    stop: () => {
+      clearInterval(timer);
+    },
+  };
+}
+
+function nonZeroStats(stats: IgnoreStats): Readonly<Record<string, number>> {
+  return Object.fromEntries(Object.entries(stats).filter(([, count]) => count > 0));
+}
+
+function ignoreSummaryText(stats: IgnoreStats): string {
+  const parts = Object.entries(nonZeroStats(stats)).map(([reason, count]) => `${reason} ${count}`);
+  return parts.length === 0 ? 'ничего' : parts.join(', ');
+}
+
+/** WhatsApp остановился сам и база закрыта: поздние события некуда записать, они пропускаются. */
+function whileOpen(storage: Storage, work: () => Promise<void>): Promise<void> {
+  return storage.isOpen() ? work() : Promise.resolve();
+}
+
+/** Синхронная работа как промис для портов WhatsAppDeps: исключение становится отказом промиса. */
+function settle(work: () => void): Promise<void> {
+  return new Promise<void>((resolve) => {
+    work();
+    resolve();
+  });
+}
+
+// Остановка.
+
+/** Остановка один раз: повторные вызовы и самоостановка WhatsApp получают тот же промис. */
+function createLifecycle(link: WhatsAppLink, resources: Resources, logger: Logger): Lifecycle {
+  let stopping: Promise<void> | null = null;
+  // Исполнитель промиса вызывается сразу: markStopped назначена до первого использования.
+  let markStopped!: (reason: AppStopReason) => void;
+  const stopped = new Promise<AppStopReason>((resolve) => {
+    markStopped = resolve;
+  });
+  const stopWith = (reason: AppStopReason): Promise<void> => {
+    stopping ??= shutdown(link, resources, logger).finally(() => {
+      markStopped(reason);
+    });
+    return stopping;
+  };
+  return { app: { stop: () => stopWith('requested'), stopped }, stopWith };
+}
+
+/**
+ * Панель, очередь ответов, повтор уведомлений менеджеру, WhatsApp, таймер сводки, база, замок, затем итоговая сводка
+ * пропусков. Панель первой: новых действий из неё нет, а идущие доведены, пока WhatsApp подключён. Очередь ответов
+ * следом: ответы и передачи уходят, пока WhatsApp подключён. Повтор уведомлений снимается до остановки WhatsApp:
+ * с закрытым сокетом попытки только тратили бы их лимит. stop() адаптера вызывается и после самоостановки
+ * (повторный вызов безопасен): он дожидается очереди событий, поэтому последние события пишутся в ещё открытую базу.
+ */
+async function shutdown(link: WhatsAppLink, resources: Resources, logger: Logger): Promise<void> {
+  try {
+    await resources.panel.close();
+    await resources.batcher?.drain();
+    await resources.services.stop();
+    const connection = await startedConnection(link);
+    if (connection !== null) await connection.stop();
+  } finally {
+    resources.summary.stop();
+    // Повторный вызов безопасен: нужен, если выше что-то упало раньше остановки служб.
+    await resources.services.stop();
+    closeStorage(resources.storage, resources.lock);
+  }
+  resources.summary.log();
+  logger.info({}, 'Бот остановлен');
+}
+
+/** Подключение, если его запускали и запуск удался; самоостановка во время запуска его дожидается. */
+async function startedConnection(link: WhatsAppLink): Promise<WhatsAppConnection | null> {
+  if (link.started === null) return null;
+  try {
+    return await link.started;
+  } catch {
+    // Запуск не удался: его ошибку разбирает main, останавливать нечего.
+    return null;
+  }
+}
+
+/** Замок снимается после закрытия базы: следующий экземпляр не начнёт, пока эта ещё открыта. */
+function closeStorage(storage: Storage, lock: ProcessLock): void {
+  try {
+    storage.close();
+  } finally {
+    lock.release();
+  }
+}
+
+// Время для владельца.
+
+function pairingLimitText(retryAtMs: number): string {
+  return (
+    'Привязка по QR запрещена: лимит попыток за 24 часа исчерпан. ' +
+    `Следующая попытка не раньше ${formatAlmatyTime(retryAtMs)} по времени Алматы (UTC+5): тогда запустите бота снова`
+  );
+}
+
+/** ДД.ММ.ГГГГ ЧЧ:ММ по Алматы; секунды округляются вверх: раньше этой минуты попытка ещё запрещена. */
+function formatAlmatyTime(ms: number): string {
+  const local = new Date(Math.ceil(ms / MS_PER_MINUTE) * MS_PER_MINUTE + ALMATY_OFFSET_MS);
+  const two = (value: number): string => String(value).padStart(2, '0');
+  const date = `${two(local.getUTCDate())}.${two(local.getUTCMonth() + 1)}.${local.getUTCFullYear()}`;
+  return `${date} ${two(local.getUTCHours())}:${two(local.getUTCMinutes())}`;
+}
