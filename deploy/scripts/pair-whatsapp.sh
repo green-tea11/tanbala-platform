@@ -44,16 +44,23 @@ enable_whatsapp() {
 	env_has 'WA_ENABLED=true' || fail "не удалось поставить WA_ENABLED=true в $APP/.env"
 }
 
+# Держит ли процесс базу бота открытой. Только ссылки в /proc, в папку бота root не заходит.
+holds_db() { ls -l "/proc/$1/fd" 2>/dev/null | grep -qF "$APP/data/tanbala.db"; }
+
 # Бот, запущенный вручную и оставшийся после оборванного окна, держит замок: остановить штатно (SIGINT).
+# После закрытого окна бот доводит остановку, но выйти может не суметь: вывод в потерянный терминал sudo висит.
+# База закрыта — остановка дошла до конца, процесс добивается сразу; иначе через STOP_WAIT_SEC, как у systemd.
 stop_leftover_bot() {
+	local pid waited=0
 	pgrep -u "$BOT" -x node >/dev/null || return 0
 	echo "Бот запущен вручную (прошлое окно?): останавливаю его штатно, до $STOP_WAIT_SEC секунд."
 	pkill -INT -u "$BOT" -x node || true
-	local waited=0
 	while pgrep -u "$BOT" -x node >/dev/null; do
-		((waited < STOP_WAIT_SEC)) || fail "бот не остановился: sudo pkill -INT -u $BOT -x node, затем повторить"
 		sleep 1
 		waited=$((waited + 1))
+		for pid in $(pgrep -u "$BOT" -x node); do
+			if ! holds_db "$pid" || ((waited >= STOP_WAIT_SEC)); then kill -KILL "$pid" 2>/dev/null || true; fi
+		done
 	done
 }
 
