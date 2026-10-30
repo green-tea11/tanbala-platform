@@ -128,7 +128,10 @@ export type SendOrigin =
 export interface ClientProfile {
   /** Чем занимается компания клиента. */
   readonly business: string | null;
-  /** Какие вещи учитывать (решение владельца 29.10.2026: часть минимума для передачи по цене). */
+  /**
+   * Что лежит на хранении и что клиент хочет метить (решение владельца 29.10.2026: часть минимума для передачи по
+   * цене; с 30.10.2026 и для расчёта).
+   */
   readonly items: string | null;
   /** В чём вещи: коробки, паллеты, поштучно. */
   readonly packaging: string | null;
@@ -144,8 +147,14 @@ export interface ClientProfile {
   readonly scope: string | null;
   /** Примерное число вещей (часть минимума). */
   readonly itemCount: string | null;
+  /** Сколько нового товара приходит в месяц (для расчёта меток, решение владельца 30.10.2026). */
+  readonly monthlyIntake: string | null;
   /** Как часто вещи движутся. */
   readonly turnover: string | null;
+  /** Сколько проходов (входов и выходов) нужно учитывать (для расчёта, 30.10.2026). */
+  readonly passages: string | null;
+  /** Нужен ли пересчёт полок ручным сканером, словами клиента (30.10.2026). */
+  readonly shelfRecount: string | null;
   /** Как клиент ведёт учёт сейчас. */
   readonly currentTracking: string | null;
   /** Есть ли 1С. */
@@ -182,7 +191,10 @@ export const PROFILE_FACTS: readonly ProfileFact[] = [
   'area',
   'scope',
   'itemCount',
+  'monthlyIntake',
   'turnover',
+  'passages',
+  'shelfRecount',
   'currentTracking',
   'has1C',
   'oneCName',

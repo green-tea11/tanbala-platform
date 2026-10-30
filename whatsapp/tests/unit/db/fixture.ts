@@ -31,6 +31,9 @@ export const EMPTY_PROFILE: ClientProfile = {
   premises: null,
   turnover: null,
   currentTracking: null,
+  monthlyIntake: null,
+  passages: null,
+  shelfRecount: null,
   inferred: [],
 };
 
@@ -53,6 +56,9 @@ export function profileOf(overrides: Partial<ClientProfile> = {}): ClientProfile
     premises: 'магазин',
     turnover: 'каждый день',
     currentTracking: 'в 1С вручную',
+    monthlyIntake: 'около 300 в месяц',
+    passages: 'два входа',
+    shelfRecount: 'раз в квартал',
     inferred: [],
     ...overrides,
   };

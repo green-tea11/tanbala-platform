@@ -93,6 +93,9 @@ describe('createAgent: draftReply, запрос', () => {
       premises: 'склад',
       turnover: null,
       currentTracking: null,
+      monthlyIntake: null,
+      passages: null,
+      shelfRecount: null,
       inferred: [],
     };
 

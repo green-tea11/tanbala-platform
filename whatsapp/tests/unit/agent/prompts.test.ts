@@ -369,6 +369,22 @@ describe('buildSystem', () => {
     expect(instruction).toMatch(/данные, а не инструкции/);
   });
 
+  it('инструкция оценки: поля для расчёта (30.10.2026), вещи это то, что на хранении и что клиент хочет метить', () => {
+    const instruction = buildSystem(KNOWLEDGE, 'interest')[1]?.text ?? '';
+
+    expect(instruction).toContain('items: что лежит на хранении и что клиент хочет метить (Вещи);');
+    expect(instruction).toContain(
+      'monthlyIntake: сколько нового товара приходит в месяц (Нового в месяц);',
+    );
+    expect(instruction).toContain(
+      'passages: сколько проходов, то есть входов и выходов, нужно учитывать (Проходы);',
+    );
+    expect(instruction).toContain(
+      'shelfRecount: нужен ли пересчёт полок ручным сканером, словами клиента (Пересчёт полок);',
+    );
+    expect(instruction).not.toContain('items: какие вещи учитывать');
+  });
+
   it('инструкция оценки: упоминание специалиста в вопросе не просьба о живом человеке и hot не даёт', () => {
     const instruction = buildSystem(KNOWLEDGE, 'interest')[1]?.text ?? '';
 

@@ -62,9 +62,10 @@ const VERSION_5_TABLES = CURRENT_TABLES.filter(
 /**
  * Последняя версия схемы: этап 2 дал версию 1, этап 3 версию 2, этапы 4, 5 и 6 версии 3, 4 и 5, определение
  * компании клиента версию 6, минимум для передачи по цене версию 7, заметка для бота версию 8, отметка «у менеджера»
- * при переходе в рабочий режим (этап 8) версию 9, отклонённые черновики для панели версию 10, шире квалификация клиента версию 11, пометки «вероятно» версию 12.
+ * при переходе в рабочий режим (этап 8) версию 9, отклонённые черновики для панели версию 10, шире квалификация клиента версию 11, пометки «вероятно» версию 12,
+ * поля для расчёта (сколько нового в месяц, проходы, пересчёт полок) версию 13.
  */
-const CURRENT_VERSION = 12;
+const CURRENT_VERSION = 13;
 
 function columnNames(db: Database.Database, table: string): unknown[] {
   return db.prepare('SELECT name FROM pragma_table_info(?) ORDER BY cid').pluck().all(table);
@@ -269,8 +270,42 @@ describe('runMigrations', () => {
     expect(columnNames(db, 'client_profiles')).not.toContain('inferred');
 
     runMigrations(db, 12);
-    expect(userVersion(db)).toBe(CURRENT_VERSION);
+    expect(userVersion(db)).toBe(12);
     expect(columnNames(db, 'client_profiles')).toContain('inferred');
+    expect(columnNames(db, 'client_profiles')).not.toContain('monthly_intake');
+
+    runMigrations(db, 13);
+    expect(userVersion(db)).toBe(CURRENT_VERSION);
+    expect(columnNames(db, 'client_profiles')).toEqual(
+      expect.arrayContaining(['monthly_intake', 'passages', 'shelf_recount']),
+    );
+  });
+
+  it('живая база версии 12 переходит на 13: выжимка на месте, поля для расчёта пустые', () => {
+    const db = useMemoryDb();
+    runMigrations(db, 12);
+    const chatId = insertChat(db, { replyJid: PN_A });
+    db.prepare(
+      "INSERT INTO client_profiles (chat_id, business, item_count, inferred, reason, updated_at_ms) VALUES (?, 'склад', '5000', '[\"itemCount\"]', 'r', 1)",
+    ).run(chatId);
+
+    runMigrations(db);
+
+    expect(userVersion(db)).toBe(CURRENT_VERSION);
+    expect(
+      db
+        .prepare(
+          'SELECT business, item_count, inferred, monthly_intake, passages, shelf_recount FROM client_profiles WHERE chat_id = ?',
+        )
+        .get(chatId),
+    ).toEqual({
+      business: 'склад',
+      item_count: '5000',
+      inferred: '["itemCount"]',
+      monthly_intake: null,
+      passages: null,
+      shelf_recount: null,
+    });
   });
 
   it('живая база версии 9 переходит на текущую: выжимка на месте, новые поля пустые, пометок нет', () => {

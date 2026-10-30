@@ -53,7 +53,7 @@ function profileRows(db: Database.Database): unknown[] {
   return db
     .prepare(
       `SELECT chat_id, business, area, scope, item_count, has_1c, one_c_name, problem, specifics,
-         problem_agreed, reason, updated_at_ms
+         monthly_intake, passages, shelf_recount, problem_agreed, reason, updated_at_ms
        FROM client_profiles ORDER BY chat_id`,
     )
     .all();
@@ -95,6 +95,9 @@ describe('createChatsRepo: saveAssessment', () => {
         one_c_name: '1С:Управление торговлей',
         problem: 'пересорт при приёмке',
         specifics: 'два склада',
+        monthly_intake: 'около 300 в месяц',
+        passages: 'два входа',
+        shelf_recount: 'раз в квартал',
         problem_agreed: 1,
         reason: 'рассказал о задаче',
         updated_at_ms: T0 + 42,

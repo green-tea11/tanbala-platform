@@ -36,6 +36,9 @@ const PROFILE: ClientProfile = {
   premises: 'магазин',
   turnover: null,
   currentTracking: 'в 1С вручную',
+  monthlyIntake: 'штук 500',
+  passages: 'один вход',
+  shelfRecount: null,
   inferred: [],
 };
 
@@ -56,6 +59,9 @@ const EMPTY_PROFILE: ClientProfile = {
   premises: null,
   turnover: null,
   currentTracking: null,
+  monthlyIntake: null,
+  passages: null,
+  shelfRecount: null,
   inferred: [],
 };
 
@@ -69,10 +75,10 @@ const BASE: ManagerNotificationInput = {
 };
 
 /**
- * Строк в обычном уведомлении: заголовок, имя, номер, чат, уровень, пустая, шапка выжимки, четырнадцать полей, пустая
+ * Строк в обычном уведомлении: заголовок, имя, номер, чат, уровень, пустая, шапка выжимки, семнадцать полей, пустая
  * и две строки о минимуме для оценки цены.
  */
-const NORMAL_LINE_COUNT = 24;
+const NORMAL_LINE_COUNT = 27;
 
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
@@ -113,8 +119,11 @@ describe('formatManagerNotification', () => {
         'Помещение: магазин',
         'Площадь: 300 кв. м',
         'Число вещей: около 5000',
+        'Нового в месяц: штук 500',
         'Как часто движутся: не выяснено',
         'Что отмечать: где лежит каждая вещь',
+        'Проходы: один вход',
+        'Пересчёт полок: не выяснено',
         'Учёт сейчас: в 1С вручную',
         'Что мешает: путаница с остатками',
         '1С: есть, конфигурация не выяснена',
@@ -217,7 +226,7 @@ describe('formatManagerNotification', () => {
     const unknown = formatManagerNotification({ ...BASE, profile: EMPTY_PROFILE });
     const withoutOneC = formatManagerNotification(withProfile({ has1C: false }));
 
-    expect(lines(unknown).slice(7, 21)).toEqual([
+    expect(lines(unknown).slice(7, 24)).toEqual([
       'Бизнес: не выяснено',
       'Вещи: не выяснено',
       'В чём лежат: не выяснено',
@@ -226,8 +235,11 @@ describe('formatManagerNotification', () => {
       'Помещение: не выяснено',
       'Площадь: не выяснено',
       'Число вещей: не выяснено',
+      'Нового в месяц: не выяснено',
       'Как часто движутся: не выяснено',
       'Что отмечать: не выяснено',
+      'Проходы: не выяснено',
+      'Пересчёт полок: не выяснено',
       'Учёт сейчас: не выяснено',
       'Что мешает: не выяснено',
       '1С: не выяснено',
@@ -278,6 +290,9 @@ describe('formatManagerNotification', () => {
           premises: null,
           turnover: null,
           currentTracking: null,
+          monthlyIntake: null,
+          passages: null,
+          shelfRecount: null,
           inferred: [],
         },
       });

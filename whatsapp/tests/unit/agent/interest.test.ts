@@ -33,6 +33,9 @@ const NOTHING_NEW: RawInterest = {
   itemCount: null,
   turnover: null,
   currentTracking: null,
+  monthlyIntake: null,
+  passages: null,
+  shelfRecount: null,
   inferred: [],
   has1C: null,
   problem: null,
@@ -57,6 +60,9 @@ const KNOWN: ClientProfile = {
   premises: null,
   turnover: null,
   currentTracking: null,
+  monthlyIntake: null,
+  passages: null,
+  shelfRecount: null,
   inferred: [],
 };
 
@@ -73,6 +79,9 @@ const FIELD_NAMES = [
   'itemCount',
   'turnover',
   'currentTracking',
+  'monthlyIntake',
+  'passages',
+  'shelfRecount',
   'inferred',
   'has1C',
   'problem',
@@ -107,6 +116,9 @@ const NO_SIGNALS = {
   premises: null,
   turnover: null,
   currentTracking: null,
+  monthlyIntake: null,
+  passages: null,
+  shelfRecount: null,
   inferred: [],
   priceAsked: false,
   refused: false,
@@ -158,7 +170,7 @@ describe('createAgent: assessInterest, запрос', () => {
     expect(last).not.toMatch(/Уровень/);
   });
 
-  it('схема оценки: плоский объект из двадцати пяти полей, все обязательны', async () => {
+  it('схема оценки: плоский объект из двадцати восьми полей, все обязательны', async () => {
     const { requests } = await assess({ ok: true, value: NOTHING_NEW });
     const { schema } = onlyRequest(requests);
 
@@ -192,6 +204,30 @@ describe('createAgent: assessInterest, запрос', () => {
     expect(schema.safeParse({ ...full, reason: undefined }).success).toBe(false);
     expect(schema.safeParse({ ...full, companyAnswer: 'maybe' }).success).toBe(false);
     expect(schema.safeParse({ ...full, confirmedPains: 'теряются вещи' }).success).toBe(false);
+    expect(schema.safeParse({ ...full, monthlyIntake: null }).success).toBe(false);
+  });
+
+  it('схема оценки: новые поля для расчёта (30.10.2026) строками с описанием; вещи это то, что на хранении', async () => {
+    const { requests } = await assess({ ok: true, value: NOTHING_NEW });
+    const json = zodOutputFormat(onlyRequest(requests).schema).schema;
+    const properties = json['properties'] as Record<string, Record<string, unknown>>;
+
+    expect(properties['monthlyIntake']).toMatchObject({
+      type: 'string',
+      description: 'Сколько нового товара приходит в месяц; иначе пустая строка.',
+    });
+    expect(properties['passages']).toMatchObject({
+      type: 'string',
+      description: 'Сколько проходов (входов и выходов) нужно учитывать; иначе пустая строка.',
+    });
+    expect(properties['shelfRecount']).toMatchObject({
+      type: 'string',
+      description: 'Нужен ли пересчёт полок ручным сканером; иначе пустая строка.',
+    });
+    expect(properties['items']).toMatchObject({
+      type: 'string',
+      description: 'Что лежит на хранении и что клиент хочет метить; иначе пустая строка.',
+    });
   });
 });
 
@@ -268,6 +304,32 @@ describe('normalizeInterest', () => {
       itemCount: 'около 8000',
       has1C: false,
     });
+  });
+
+  it('новые поля для расчёта: чистятся как текстовые, пустое не стирает прежнее, вывод с пометкой', () => {
+    const first = normalizeInterest(
+      {
+        ...NOTHING_NEW,
+        monthlyIntake: '  около 500\nв месяц ',
+        passages: 'один вход',
+        shelfRecount: 'да, раз в квартал',
+        inferred: ['shelfRecount'],
+      },
+      EMPTY_PROFILE,
+    ).profile;
+    const second = normalizeInterest(
+      { ...NOTHING_NEW, monthlyIntake: '', passages: '  ', shelfRecount: null },
+      first,
+    ).profile;
+
+    expect(first).toEqual({
+      ...EMPTY_PROFILE,
+      monthlyIntake: 'около 500 в месяц',
+      passages: 'один вход',
+      shelfRecount: 'да, раз в квартал',
+      inferred: ['shelfRecount'],
+    });
+    expect(second).toEqual(first);
   });
 
   it('has1C false не считается пустым и не заменяется прежним true', () => {

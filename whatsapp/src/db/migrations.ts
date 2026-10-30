@@ -273,6 +273,17 @@ ALTER TABLE client_profiles ADD COLUMN inferred TEXT NOT NULL DEFAULT '[]';
 `;
 
 /**
+ * Версия 13 (поля для расчёта, решение владельца 30.10.2026). client_profiles: сколько нового товара приходит в месяц
+ * (monthly_intake), сколько проходов учитывать (passages), нужен ли пересчёт полок ручным сканером (shelf_recount).
+ * Только ADD COLUMN без значения по умолчанию: старые строки получают NULL («не выяснили»).
+ */
+const SCHEMA_V13 = `
+ALTER TABLE client_profiles ADD COLUMN monthly_intake TEXT;
+ALTER TABLE client_profiles ADD COLUMN passages TEXT;
+ALTER TABLE client_profiles ADD COLUMN shelf_recount TEXT;
+`;
+
+/**
  * Миграции по порядку: элемент i переводит схему с версии i на i + 1.
  * Выпущенную миграцию не править: изменения схемы только новой версией в конце списка.
  */
@@ -289,6 +300,7 @@ const MIGRATIONS: readonly string[] = [
   SCHEMA_V10,
   SCHEMA_V11,
   SCHEMA_V12,
+  SCHEMA_V13,
 ];
 
 /**

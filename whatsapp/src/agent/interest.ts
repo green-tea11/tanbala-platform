@@ -34,7 +34,9 @@ const NOTHING_KNOWN = 'В выжимке пока ничего нет: клие�
 export const interestSchema = z.object({
   level: z.enum(['cold', 'warm', 'hot']).describe('Уровень интереса клиента: cold, warm или hot.'),
   business: z.string().describe('Чем занимается компания клиента; иначе пустая строка.'),
-  items: z.string().describe('Какие вещи клиент хочет учитывать; иначе пустая строка.'),
+  items: z
+    .string()
+    .describe('Что лежит на хранении и что клиент хочет метить; иначе пустая строка.'),
   packaging: z.string().describe('В чём вещи: коробки, паллеты, поштучно; иначе пустая строка.'),
   material: z
     .string()
@@ -50,6 +52,15 @@ export const interestSchema = z.object({
   itemCount: z.string().describe('Примерное число вещей; иначе пустая строка.'),
   turnover: z.string().describe('Как часто вещи приходят и уходят; иначе пустая строка.'),
   currentTracking: z.string().describe('Как клиент ведёт учёт сейчас; иначе пустая строка.'),
+  monthlyIntake: z
+    .string()
+    .describe('Сколько нового товара приходит в месяц; иначе пустая строка.'),
+  passages: z
+    .string()
+    .describe('Сколько проходов (входов и выходов) нужно учитывать; иначе пустая строка.'),
+  shelfRecount: z
+    .string()
+    .describe('Нужен ли пересчёт полок ручным сканером; иначе пустая строка.'),
   has1C: z
     .boolean()
     .describe('true или false, если клиент сказал, есть ли у него 1С; иначе null.')
@@ -113,6 +124,9 @@ export interface RawInterest {
   readonly itemCount: string | null;
   readonly turnover?: string | null;
   readonly currentTracking?: string | null;
+  readonly monthlyIntake?: string | null;
+  readonly passages?: string | null;
+  readonly shelfRecount?: string | null;
   readonly has1C: boolean | null;
   readonly problem: string | null;
   readonly specifics: string | null;

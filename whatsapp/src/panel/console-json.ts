@@ -153,7 +153,10 @@ export function messageJson(message: StoredMessage): Record<string, unknown> {
   };
 }
 
-/** Ключи 14 полей выжимки по порядку agent/profile.profileEntries (подписи берутся оттуда же). */
+/**
+ * Ключи 17 полей выжимки по порядку agent/profile.profileEntries (подписи берутся оттуда же). Поля для расчёта
+ * (30.10.2026) добавлены новыми ключами: старые ключи и их подписи не менялись, консоль выводит список как есть.
+ */
 const PROFILE_KEYS = [
   'business',
   'items',
@@ -163,8 +166,11 @@ const PROFILE_KEYS = [
   'premises',
   'area',
   'itemCount',
+  'monthlyIntake',
   'turnover',
   'scope',
+  'passages',
+  'shelfRecount',
   'currentTracking',
   'problem',
   'oneC',

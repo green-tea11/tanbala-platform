@@ -166,6 +166,9 @@ describe('слияние чатов: выжимка клиента', () => {
       premises: null,
       turnover: null,
       currentTracking: null,
+      monthlyIntake: null,
+      passages: null,
+      shelfRecount: null,
       inferred: [],
       has1C: true,
       oneCName: 'УТ 11',
@@ -184,14 +187,28 @@ describe('слияние чатов: выжимка клиента', () => {
     save(
       chats,
       survivor,
-      { ...EMPTY_PROFILE, business: 'Склад', area: '100 м²', problem: 'старая задача' },
+      {
+        ...EMPTY_PROFILE,
+        business: 'Склад',
+        area: '100 м²',
+        problem: 'старая задача',
+        passages: 'один вход',
+        shelfRecount: 'нужен',
+      },
       T0 + 10,
       'старая причина',
     );
     save(
       chats,
       absorbed,
-      { ...EMPTY_PROFILE, area: '200 м²', has1C: true, specifics: 'новое' },
+      {
+        ...EMPTY_PROFILE,
+        area: '200 м²',
+        has1C: true,
+        specifics: 'новое',
+        monthlyIntake: '500 штук',
+        passages: 'два входа',
+      },
       T0 + 20,
       'новая причина',
     );
@@ -215,6 +232,9 @@ describe('слияние чатов: выжимка клиента', () => {
       premises: null,
       turnover: null,
       currentTracking: null,
+      monthlyIntake: '500 штук',
+      passages: 'два входа',
+      shelfRecount: 'нужен',
       inferred: [],
     });
     expect(db.prepare('SELECT reason, updated_at_ms FROM client_profiles').all()).toEqual([

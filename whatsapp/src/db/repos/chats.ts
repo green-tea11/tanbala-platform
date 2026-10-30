@@ -36,6 +36,9 @@ interface ProfileColumns {
   readonly item_count: string | null;
   readonly turnover: string | null;
   readonly current_tracking: string | null;
+  readonly monthly_intake: string | null;
+  readonly passages: string | null;
+  readonly shelf_recount: string | null;
   readonly has_1c: number | null;
   readonly one_c_name: string | null;
   readonly problem: string | null;
@@ -85,6 +88,9 @@ interface AssessmentParams {
   readonly itemCount: string | null;
   readonly turnover: string | null;
   readonly currentTracking: string | null;
+  readonly monthlyIntake: string | null;
+  readonly passages: string | null;
+  readonly shelfRecount: string | null;
   readonly has1c: 0 | 1 | null;
   readonly oneCName: string | null;
   readonly problem: string | null;
@@ -110,8 +116,8 @@ const MANAGER_AUTHORS = ['bot', 'phone', 'panel'] as const;
 const CHAT_COLUMNS = `c.id, c.reply_jid, c.lid_jid, c.pn_jid, c.phone, c.push_name, c.status,
     c.status_by, c.status_changed_at, c.interest_level, c.last_inbound_at, c.created_at,
     p.business, p.items, p.packaging, p.material, p.city, p.premises, p.area, p.scope, p.item_count,
-    p.turnover, p.current_tracking, p.has_1c, p.one_c_name, p.problem, p.specifics, p.problem_agreed,
-    p.inferred`;
+    p.turnover, p.current_tracking, p.monthly_intake, p.passages, p.shelf_recount, p.has_1c,
+    p.one_c_name, p.problem, p.specifics, p.problem_agreed, p.inferred`;
 
 const FROM_CHAT = 'FROM chats AS c LEFT JOIN client_profiles AS p ON p.chat_id = c.id';
 
@@ -137,16 +143,18 @@ const SELECT_PANEL = `SELECT ${CHAT_COLUMNS},
  */
 const UPSERT_PROFILE = `INSERT INTO client_profiles
     (chat_id, business, items, packaging, material, city, premises, area, scope, item_count, turnover,
-     current_tracking, has_1c, one_c_name, problem, specifics, problem_agreed, inferred, reason, updated_at_ms)
+     current_tracking, monthly_intake, passages, shelf_recount, has_1c, one_c_name, problem, specifics,
+     problem_agreed, inferred, reason, updated_at_ms)
   VALUES (@chatId, @business, @items, @packaging, @material, @city, @premises, @area, @scope, @itemCount,
-    @turnover, @currentTracking, @has1c, @oneCName, @problem, @specifics, @problemAgreed, @inferred, @reason,
-    @nowMs)
+    @turnover, @currentTracking, @monthlyIntake, @passages, @shelfRecount, @has1c, @oneCName, @problem,
+    @specifics, @problemAgreed, @inferred, @reason, @nowMs)
   ON CONFLICT (chat_id) DO UPDATE SET
     business = excluded.business, items = excluded.items, packaging = excluded.packaging,
     material = excluded.material, city = excluded.city, premises = excluded.premises,
     area = excluded.area, scope = excluded.scope, item_count = excluded.item_count,
     turnover = excluded.turnover, current_tracking = excluded.current_tracking,
-    has_1c = excluded.has_1c, one_c_name = excluded.one_c_name,
+    monthly_intake = excluded.monthly_intake, passages = excluded.passages,
+    shelf_recount = excluded.shelf_recount, has_1c = excluded.has_1c, one_c_name = excluded.one_c_name,
     problem = excluded.problem, specifics = excluded.specifics,
     problem_agreed = excluded.problem_agreed, inferred = excluded.inferred, reason = excluded.reason,
     updated_at_ms = excluded.updated_at_ms`;
@@ -369,6 +377,9 @@ function toAssessmentParams(
     itemCount: profile.itemCount,
     turnover: profile.turnover,
     currentTracking: profile.currentTracking,
+    monthlyIntake: profile.monthlyIntake,
+    passages: profile.passages,
+    shelfRecount: profile.shelfRecount,
     has1c: profile.has1C === null ? null : profile.has1C ? 1 : 0,
     oneCName: profile.oneCName,
     problem: profile.problem,
@@ -427,6 +438,9 @@ function toProfile(row: ProfileColumns): ClientProfile {
     itemCount: row.item_count,
     turnover: row.turnover,
     currentTracking: row.current_tracking,
+    monthlyIntake: row.monthly_intake,
+    passages: row.passages,
+    shelfRecount: row.shelf_recount,
     has1C: toHas1C(row.has_1c),
     oneCName: row.one_c_name,
     problem: row.problem,

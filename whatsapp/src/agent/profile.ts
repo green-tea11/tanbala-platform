@@ -38,8 +38,9 @@ type ProfileField = readonly [label: string, value: (profile: ClientProfile) => 
 
 /**
  * Поля выжимки по порядку квалификации (решение владельца 29.10.2026): компания и чем занимается, что учитывать (вещи,
- * в чём, материал), где (город, помещение, площадь), сколько и как часто движутся, как учитывают сейчас и что мешает,
- * 1С. Один список на данные вызовов, уведомление менеджеру и карточку в панели.
+ * в чём, материал), где (город, помещение, площадь), сколько, сколько нового в месяц и как часто движутся, что отмечать,
+ * проходы и пересчёт полок (30.10.2026), как учитывают сейчас и что мешает, 1С. Один список на данные вызовов,
+ * уведомление менеджеру и карточку в панели.
  */
 const PROFILE_FIELDS: readonly ProfileField[] = [
   ['Бизнес', (profile) => marked(profile, 'business')],
@@ -50,8 +51,11 @@ const PROFILE_FIELDS: readonly ProfileField[] = [
   ['Помещение', (profile) => marked(profile, 'premises')],
   ['Площадь', (profile) => marked(profile, 'area')],
   ['Число вещей', (profile) => marked(profile, 'itemCount')],
+  ['Нового в месяц', (profile) => marked(profile, 'monthlyIntake')],
   ['Как часто движутся', (profile) => marked(profile, 'turnover')],
   ['Что отмечать', (profile) => marked(profile, 'scope')],
+  ['Проходы', (profile) => marked(profile, 'passages')],
+  ['Пересчёт полок', (profile) => marked(profile, 'shelfRecount')],
   ['Учёт сейчас', (profile) => marked(profile, 'currentTracking')],
   ['Что мешает', (profile) => marked(profile, 'problem')],
   ['1С', oneCText],

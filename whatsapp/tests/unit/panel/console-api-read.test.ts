@@ -353,12 +353,15 @@ const CHAT = makeChat(1, {
     itemCount: '5000',
     turnover: null,
     currentTracking: null,
+    monthlyIntake: '500 в месяц',
+    passages: `два входа${HIDDEN}`,
+    shelfRecount: null,
     has1C: true,
     oneCName: null,
     problem: null,
     specifics: null,
     problemAgreed: true,
-    inferred: ['has1C', 'itemCount'],
+    inferred: ['has1C', 'itemCount', 'passages'],
   },
 });
 
@@ -443,7 +446,7 @@ describe('API консоли: карточка чата', () => {
       string,
       unknown
     >;
-    expect(profile.fields).toHaveLength(14);
+    expect(profile.fields).toHaveLength(17);
     expect(profile.fields.map((field) => field['key'])).toEqual([
       'business',
       'items',
@@ -453,13 +456,35 @@ describe('API консоли: карточка чата', () => {
       'premises',
       'area',
       'itemCount',
+      'monthlyIntake',
       'turnover',
       'scope',
+      'passages',
+      'shelfRecount',
       'currentTracking',
       'problem',
       'oneC',
       'specifics',
     ]);
+    // Поля для расчёта (30.10.2026): новые ключи с подписями старой панели, старые ключи на месте.
+    expect(profile.fields[8]).toEqual({
+      key: 'monthlyIntake',
+      label: 'Нового в месяц',
+      value: '500 в месяц',
+      inferred: false,
+    });
+    expect(profile.fields[11]).toEqual({
+      key: 'passages',
+      label: 'Проходы',
+      value: 'два входа',
+      inferred: true,
+    });
+    expect(profile.fields[12]).toEqual({
+      key: 'shelfRecount',
+      label: 'Пересчёт полок',
+      value: null,
+      inferred: false,
+    });
     expect(profile.fields[4]).toEqual({
       key: 'city',
       label: 'Город',
@@ -472,7 +497,7 @@ describe('API консоли: карточка чата', () => {
       value: '5000',
       inferred: true,
     });
-    expect(profile.fields[12]).toEqual({
+    expect(profile.fields[15]).toEqual({
       key: 'oneC',
       label: '1С',
       value: 'есть, конфигурация не выяснена',

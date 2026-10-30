@@ -42,6 +42,9 @@ function chat(status: 'bot' | 'manager' = 'bot'): Chat {
       premises: null,
       turnover: null,
       currentTracking: null,
+      monthlyIntake: null,
+      passages: null,
+      shelfRecount: null,
       inferred: [],
     },
   };

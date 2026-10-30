@@ -38,6 +38,9 @@ const EMPTY_PROFILE: ClientProfile = {
   premises: null,
   turnover: null,
   currentTracking: null,
+  monthlyIntake: null,
+  passages: null,
+  shelfRecount: null,
   inferred: [],
 };
 const CONTEXT: ConversationContext = {
