@@ -5,7 +5,7 @@ import { securityHeaders } from './http.js';
 
 // HTTP внутреннего API консоли: ошибки по контракту, ответы JSON и проверки запроса до маршрутов.
 
-/** Коды ошибок контракта (contract/CONSOLE_API.md); return_failed и internal добавлены ботом. */
+/** Коды ошибок контракта (contract/CONSOLE_API.md); return_failed, log_too_large и internal добавлены ботом. */
 export type ConsoleErrorCode =
   | 'bad_request'
   | 'unauthorized'
@@ -13,9 +13,11 @@ export type ConsoleErrorCode =
   | 'not_found'
   | 'too_large'
   | 'refused'
+  | 'rate_limited'
   | 'send_failed'
   | 'return_failed'
   | 'db_unavailable'
+  | 'log_too_large'
   | 'internal';
 
 /** Ошибка с кодом и понятным текстом: маршрут бросает её, обработчик ошибок отдаёт JSON. */

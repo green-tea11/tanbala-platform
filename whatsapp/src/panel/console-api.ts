@@ -12,8 +12,10 @@ import {
   installConsoleHooks,
   installJsonParser,
 } from './console-http.js';
+import { createReplyRateLimit } from './console-reply-limit.js';
 import { registerConsoleChatRoutes } from './console-routes-chats.js';
 import { registerConsoleStatusRoutes } from './console-routes-status.js';
+import { createSpendReader } from './console-spend.js';
 
 export type {
   ConsoleApiDeps,
@@ -34,13 +36,19 @@ const REQUEST_TIMEOUT_MS = 30_000;
  * Ответы JSON с no-store и заголовками безопасности, ошибки {"error","message"} без стека. Логи Fastify на уровне warn
  * (журнал запросов на info не пишется), ошибки без адреса и строки запроса; действия пишет журнал (module console-api) с именем пользователя консоли.
  * Чтение — те же репозитории, что у старой панели, и выборки консоли; действия — panel/chat-actions.ts, как у кнопок.
+ * Ответ клиенту из консоли ещё ограничен скользящим часом (panel/console-reply-limit.ts): 20 в чат и 100 всего.
  * Токен не по формату (32–512 видимых ASCII) => ошибка сборки: config/env.ts такой токен не пропускает.
  */
 export function buildConsoleApi(deps: ConsoleApiDeps): FastifyInstance {
   if (!INTERNAL_API_TOKEN_PATTERN.test(deps.token)) {
     throw new RangeError('WA_CONSOLE_TOKEN: от 32 до 512 видимых символов ASCII');
   }
-  const context: ConsoleContext = { deps, audit: deps.logger.child({ module: 'console-api' }) };
+  const context: ConsoleContext = {
+    deps,
+    audit: deps.logger.child({ module: 'console-api' }),
+    replyLimit: createReplyRateLimit(deps.clock),
+    spend: createSpendReader({ tokenLogPath: deps.tokenLogPath, clock: deps.clock }),
+  };
   const app = fastify<RawServerDefault, IncomingMessage, ServerResponse, FastifyBaseLogger>({
     loggerInstance: deps.logger.child({ module: 'console-api-http' }, { level: 'warn' }),
     trustProxy: false,

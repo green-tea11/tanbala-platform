@@ -25,8 +25,17 @@ const REQUIRED_KEYS = [
   'PANEL_PORT',
 ];
 
-/** Закрытый блок связи с почтовым проектом в шаблоне: в .env эти переменные можно раскомментировать. */
-const OPTIONAL_KEYS = ['INTERNAL_API_TOKEN', 'EMAIL_API_URL', 'EMAIL_UI_URL'];
+/**
+ * Закрытые блоки шаблона: связь с почтовым проектом и внутренний API консоли. В .env эти переменные можно
+ * раскомментировать.
+ */
+const OPTIONAL_KEYS = [
+  'INTERNAL_API_TOKEN',
+  'EMAIL_API_URL',
+  'EMAIL_UI_URL',
+  'WA_CONSOLE_TOKEN',
+  'CONSOLE_API_PORT',
+];
 
 /** Разбирает KEY=VALUE. В сообщениях об ошибке только номер строки: в .env лежат секреты. */
 function parseEnvFile(path: URL): Map<string, string> {

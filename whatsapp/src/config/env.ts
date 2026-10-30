@@ -333,7 +333,8 @@ function envSchema(root: string) {
       .string()
       .regex(INTERNAL_API_TOKEN_PATTERN, PROBLEMS.consoleToken)
       .optional(),
-    CONSOLE_API_PORT: integerInRange(1, MAX_PORT, PROBLEMS.port).default(DEFAULTS.consoleApiPort),
+    // Проверяется только при заданном WA_CONSOLE_TOKEN (consolePortOf): без токена порт не нужен.
+    CONSOLE_API_PORT: z.string().optional(),
   });
 }
 
@@ -386,19 +387,37 @@ function proxyProblems(env: EnvVars, token: string | undefined): string[] {
     : [];
 }
 
+/** Порт API консоли: только при заданном WA_CONSOLE_TOKEN. */
+type ConsolePort =
+  | { readonly kind: 'off' }
+  | { readonly kind: 'valid'; readonly port: number }
+  | { readonly kind: 'invalid' };
+
 /**
- * Внутренний API консоли: токен не равен токену почтового проекта (взлом одной стороны не открывает другую), порт не
- * равен порту панели. Без токена проверять нечего. Значения в тексты не попадают.
+ * CONSOLE_API_PORT проверяется, только если WA_CONSOLE_TOKEN задан (непустой, даже не по формату: тогда обе проблемы
+ * видны сразу). Без токена API консоли не запускается, и неверный порт бота не останавливает.
  */
-function consoleProblems(env: EnvValues): string[] {
-  if (env.WA_CONSOLE_TOKEN === undefined) return [];
+function consolePortOf(normalized: Readonly<Record<string, string | undefined>>): ConsolePort {
+  if (normalized['WA_CONSOLE_TOKEN'] === undefined) return { kind: 'off' };
+  const parsed = integerInRange(1, MAX_PORT, PROBLEMS.port)
+    .default(DEFAULTS.consoleApiPort)
+    .safeParse(normalized['CONSOLE_API_PORT']);
+  return parsed.success ? { kind: 'valid', port: parsed.data } : { kind: 'invalid' };
+}
+
+/**
+ * Внутренний API консоли: порт верный, токен не равен токену почтового проекта (взлом одной стороны не открывает
+ * другую), порт не равен порту панели. Без токена проверять нечего. Значения в тексты не попадают.
+ */
+function consoleProblems(env: EnvValues | null, port: ConsolePort): string[] {
+  if (port.kind === 'off') return [];
+  if (port.kind === 'invalid') return [`CONSOLE_API_PORT: ${PROBLEMS.port}`];
+  if (env === null) return [];
   return [
     ...(env.WA_CONSOLE_TOKEN === env.INTERNAL_API_TOKEN
       ? [`WA_CONSOLE_TOKEN: ${PROBLEMS.consoleTokenSame}`]
       : []),
-    ...(env.CONSOLE_API_PORT === env.PANEL_PORT
-      ? [`CONSOLE_API_PORT: ${PROBLEMS.consolePort}`]
-      : []),
+    ...(port.port === env.PANEL_PORT ? [`CONSOLE_API_PORT: ${PROBLEMS.consolePort}`] : []),
   ];
 }
 
@@ -421,7 +440,12 @@ function collectWarnings(env: EnvVars, testMode: TestMode): string[] {
   ];
 }
 
-function buildConfig(env: EnvValues, models: ModelsValues, root: string): AppConfig {
+function buildConfig(
+  env: EnvValues,
+  models: ModelsValues,
+  root: string,
+  consolePort: ConsolePort,
+): AppConfig {
   const { transcribe, ...claudeModels } = models;
   return {
     anthropicKey: env.VENMART_ANTHROPIC_KEY ?? null,
@@ -450,9 +474,9 @@ function buildConfig(env: EnvValues, models: ModelsValues, root: string): AppCon
         ? null
         : { baseUrl: env.EMAIL_API_URL, token: env.INTERNAL_API_TOKEN },
     emailUiUrl: env.EMAIL_UI_URL ?? null,
-    ...(env.WA_CONSOLE_TOKEN === undefined
+    ...(env.WA_CONSOLE_TOKEN === undefined || consolePort.kind !== 'valid'
       ? {}
-      : { consoleApi: { token: env.WA_CONSOLE_TOKEN, port: env.CONSOLE_API_PORT } }),
+      : { consoleApi: { token: env.WA_CONSOLE_TOKEN, port: consolePort.port } }),
   };
 }
 
@@ -474,9 +498,9 @@ function buildConfig(env: EnvValues, models: ModelsValues, root: string): AppCon
  * и хост 127.0.0.1, без логина, пароля, пути, параметров и якоря: токен не должен уйти с этой машины. EMAIL_UI_URL
  * (необязательно): https, а http только для 127.0.0.1 и localhost, без логина, пароля, параметров и якоря, хвостовой
  * «/» убирается.
- * Внутренний API консоли: WA_CONSOLE_TOKEN пуст => consoleApi нет и сервер консоли не запускается; непустой: от 32
- * до 512 видимых символов ASCII без пробелов, не равен INTERNAL_API_TOKEN; CONSOLE_API_PORT (по умолчанию 3101) не
- * равен PANEL_PORT.
+ * Внутренний API консоли: WA_CONSOLE_TOKEN пуст => consoleApi нет, сервер консоли не запускается, а CONSOLE_API_PORT
+ * не проверяется вовсе; непустой: от 32 до 512 видимых символов ASCII без пробелов, не равен INTERNAL_API_TOKEN;
+ * CONSOLE_API_PORT (по умолчанию 3101) целое от 1 до 65535 и не равен PANEL_PORT.
  * TODO(этап 3): стандартную переменную ключа SDK не читать никогда: ключ только из VENMART_ANTHROPIC_KEY.
  */
 export function loadConfig(env: EnvVars, modelsJson: unknown, root: string): LoadedConfig {
@@ -484,16 +508,17 @@ export function loadConfig(env: EnvVars, modelsJson: unknown, root: string): Loa
   const normalized = normalizeEnv(env, Object.keys(schema.shape));
   const parsedEnv = schema.safeParse(normalized);
   const parsedModels = modelsSchema.safeParse(modelsJson);
+  const consolePort = consolePortOf(normalized);
   const problems = [
     ...sdkProblems(env),
     ...proxyProblems(env, normalized['INTERNAL_API_TOKEN']),
-    ...(parsedEnv.success ? consoleProblems(parsedEnv.data) : []),
+    ...consoleProblems(parsedEnv.success ? parsedEnv.data : null, consolePort),
     ...(parsedEnv.success ? [] : describeIssues(parsedEnv.error.issues, [])),
     ...(parsedModels.success ? [] : describeIssues(parsedModels.error.issues, [MODELS_FILE])),
   ];
   if (!parsedEnv.success || !parsedModels.success || problems.length > 0) {
     throw new ConfigError([...new Set(problems)]);
   }
-  const config = buildConfig(parsedEnv.data, parsedModels.data, root);
+  const config = buildConfig(parsedEnv.data, parsedModels.data, root, consolePort);
   return { config, warnings: collectWarnings(env, config.testMode) };
 }

@@ -40,16 +40,31 @@ export const FACTS: ConsoleStatusFacts = {
   apiPerChatLimit: 100,
 };
 
-export type ReadsMocks = { [K in keyof ConsoleReads]: Mock<ConsoleReads[K]> };
+/** Выборки-моки; транзакция чтения просто вызывает work и считает вызовы. */
+export type ReadsMocks = {
+  [K in Exclude<keyof ConsoleReads, 'readTransaction'>]: Mock<ConsoleReads[K]>;
+} & { readonly readTransaction: ConsoleReads['readTransaction']; transactions(): number };
 
 /** Выборки консоли по умолчанию пустые: тест подставляет нужные строки. */
 export function emptyReads(): ReadsMocks {
+  let transactions = 0;
   return {
+    readTransaction: <T>(work: () => T): T => {
+      transactions += 1;
+      return work();
+    },
+    transactions: () => transactions,
     listChats: vi.fn<ConsoleReads['listChats']>(() => []),
     countChats: vi.fn<ConsoleReads['countChats']>(() => 0),
     openHandoffs: vi.fn<ConsoleReads['openHandoffs']>(() => []),
     hotChats: vi.fn<ConsoleReads['hotChats']>(() => []),
     waitingChats: vi.fn<ConsoleReads['waitingChats']>(() => []),
+    attentionCounts: vi.fn<ConsoleReads['attentionCounts']>(() => ({
+      handoffs: 0,
+      hot: 0,
+      waiting: 0,
+      staleWaiting: 0,
+    })),
     pendingBacklogCount: vi.fn<ConsoleReads['pendingBacklogCount']>(() => 0),
     chatMeta: vi.fn<ConsoleReads['chatMeta']>(() => ({
       statusChangedAtMs: null,
@@ -61,6 +76,7 @@ export function emptyReads(): ReadsMocks {
     listNotifications: vi.fn<ConsoleReads['listNotifications']>(() => []),
     countNotifications: vi.fn<ConsoleReads['countNotifications']>(() => 0),
     companyLinks: vi.fn<ConsoleReads['companyLinks']>(() => []),
+    countCompanyLinks: vi.fn<ConsoleReads['countCompanyLinks']>(() => 0),
     apiCallsOn: vi.fn<ConsoleReads['apiCallsOn']>(() => 0),
     pairingAttemptsSince: vi.fn<ConsoleReads['pairingAttemptsSince']>(() => 0),
   };

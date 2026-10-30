@@ -4,7 +4,7 @@ import type { Chat, ChatId } from '../domain/types.js';
 import { panelTextProblem } from '../messaging/outbox.js';
 import {
   normalizeNewlines,
-  replyToChat,
+  replyToClient,
   returnChatById,
   type ChatActionContext,
   type ChatNotFound,
@@ -46,10 +46,20 @@ import { HISTORY_PAGE_SIZE, LIST_PAGE_SIZE, parseChatId } from './params.js';
 export const HANDOFF_HISTORY_LIMIT = 100;
 const CHAT_NOT_FOUND = 'Чата с таким номером нет: он удалён слиянием или ссылка неверна.';
 const ALREADY_BOT = 'Чат уже ведёт бот: заметка не сохранена.';
-/** Ответ не ушёл после передачи чата: бот в нём уже молчит (контракт). */
-const SEND_FAILED_AT_MANAGER = 'Не отправлено. Чат уже у менеджера, бот в нём молчит.';
+/** Ответ не ушёл после передачи чата: бот в нём уже молчит. Дописывается и к отказу отправки после передачи. */
+const AT_MANAGER_NOTE = 'Чат уже у менеджера, бот в нём молчит.';
+/** Сбой отправки после передачи чата (контракт). */
+const SEND_FAILED_AT_MANAGER = `Не отправлено. ${AT_MANAGER_NOTE}`;
 /** Ответ не ушёл, а передача не прошла: статус чата прежний. */
 const SEND_FAILED_UNCHANGED = 'Не отправлено. Статус чата не менялся.';
+
+/** Ответ из консоли упёрся в предел ответов за час (panel/console-reply-limit.ts). */
+interface RateLimited {
+  readonly kind: 'rate_limited';
+  readonly message: string;
+}
+
+const NOT_FOUND: ChatNotFound = { kind: 'not_found' };
 
 interface ChatRoute {
   Params: { id: string };
@@ -163,6 +173,32 @@ function refused(message: string): ConsoleHttpError {
   return new ConsoleHttpError(422, 'refused', message);
 }
 
+/** Текст отказа и ещё одно предложение: точка в конце первого ставится, если её нет. */
+function withSentence(message: string, sentence: string): string {
+  const trimmed = message.trimEnd();
+  return /[.!?…]$/.test(trimmed) ? `${trimmed} ${sentence}` : `${trimmed}. ${sentence}`;
+}
+
+/**
+ * Ответ клиенту из консоли: чат есть (иначе not_found), предел ответов из консоли не исчерпан (иначе rate_limited, ничего
+ * не вызывается), затем общая с кнопкой старой панели логика replyToClient. Место в пределе занимается до отправки и
+ * освобождается, если ответ не ушёл (отказ, сбой, дубль): считаются только отправленные.
+ */
+async function replyFromConsole(
+  context: ConsoleContext,
+  actions: ChatActionContext,
+  chatId: ChatId,
+  text: string,
+): Promise<ReplyOutcome | ChatNotFound | RateLimited> {
+  const chat = context.deps.chats.getById(chatId);
+  if (chat === null) return NOT_FOUND;
+  const place = context.replyLimit.take(chatId);
+  if (place.kind === 'limited') return { kind: 'rate_limited', message: place.message };
+  const outcome = await replyToClient(actions, chat, text);
+  if (outcome.kind !== 'sent') place.slot.release();
+  return outcome;
+}
+
 /**
  * Итог ответа клиенту в JSON. Отказы, которые общая логика не пишет в журнал (текст ответа, нет чата), получают
  * свою строку: действие, пользователь и ID чата, без текста.
@@ -172,7 +208,7 @@ function sendReplyOutcome(
   actions: ChatActionContext,
   reply: FastifyReply,
   request: { readonly chatId: ChatId; readonly text: string },
-  outcome: ReplyOutcome | ChatNotFound,
+  outcome: ReplyOutcome | ChatNotFound | RateLimited,
 ): FastifyReply {
   const { chatId, text } = request;
   switch (outcome.kind) {
@@ -183,7 +219,18 @@ function sendReplyOutcome(
       if (panelTextProblem(normalizeNewlines(text)) !== null) {
         actions.audit.info({ action: 'reply_refused', chatId }, 'API консоли: ответ не принят');
       }
-      return sendError(reply, refused(outcome.message));
+      return sendError(
+        reply,
+        refused(
+          outcome.afterHandoff ? withSentence(outcome.message, AT_MANAGER_NOTE) : outcome.message,
+        ),
+      );
+    case 'rate_limited':
+      actions.audit.warn(
+        { action: 'reply_rate_limited', chatId },
+        'API консоли: предел ответов из консоли за час',
+      );
+      return sendError(reply, new ConsoleHttpError(429, 'rate_limited', outcome.message));
     case 'failed': {
       const atManager = context.deps.chats.getById(chatId)?.control.status === 'manager';
       const message = atManager ? SEND_FAILED_AT_MANAGER : SEND_FAILED_UNCHANGED;
@@ -226,7 +273,7 @@ function registerActionRoutes(app: FastifyInstance, context: ConsoleContext): vo
     const chatId = chatIdOf(request);
     const text = bodyString(request.body, 'text');
     const actions = actionContextOf(context, request);
-    const outcome = await replyToChat(actions, chatId, text);
+    const outcome = await replyFromConsole(context, actions, chatId, text);
     return sendReplyOutcome(context, actions, reply, { chatId, text }, outcome);
   });
   app.post<ChatRoute>(`${PREFIX}/chats/:id/return`, async (request, reply) => {
@@ -244,11 +291,14 @@ export function registerConsoleChatRoutes(app: FastifyInstance, context: Console
     const { reads, clock } = context.deps;
     const filter = parseChatFilter(request.query, clock.now());
     const page = parseConsolePage(request.query);
-    const total = reads.countChats(filter);
-    const rows = reads.listChats(filter, {
-      limit: LIST_PAGE_SIZE,
-      offset: (page - 1) * LIST_PAGE_SIZE,
-    });
+    // Число и страница одной транзакцией чтения: total совпадает со страницей.
+    const { total, rows } = reads.readTransaction(() => ({
+      total: reads.countChats(filter),
+      rows: reads.listChats(filter, {
+        limit: LIST_PAGE_SIZE,
+        offset: (page - 1) * LIST_PAGE_SIZE,
+      }),
+    }));
     return sendJson(reply, 200, pageJson(rows.map(chatRowJson), total, page, LIST_PAGE_SIZE));
   });
   app.get<ChatRoute>(`${PREFIX}/chats/:id`, (request, reply) =>

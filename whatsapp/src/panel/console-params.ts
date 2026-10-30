@@ -1,7 +1,7 @@
 import type { ChatSearch, CompanyLinkState, ConsoleChatFilter } from '../domain/console.js';
 import type { ChatStatus, InterestLevel, ManagerNotificationStatus } from '../domain/types.js';
 import { badRequest } from './console-http.js';
-import { cleanText } from './html.js';
+import { consoleText } from './console-json.js';
 
 // Разбор параметров запросов консоли. В отличие от старой панели неверное значение не игнорируется, а даёт 400:
 // консоль — программа, ошибка в адресе должна быть видна сразу.
@@ -98,7 +98,7 @@ function nameVariantsOf(text: string): readonly string[] {
 export function parseSearch(query: unknown): ChatSearch | undefined {
   const raw = queryValue(query, 'q');
   if (raw === null) return undefined;
-  const text = cleanText(raw).trim();
+  const text = consoleText(raw).trim();
   if ([...text].length > SEARCH_MAX_LENGTH) {
     throw badRequest(`Параметр q: не длиннее ${SEARCH_MAX_LENGTH} символов.`);
   }

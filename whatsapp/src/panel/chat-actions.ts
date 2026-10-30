@@ -37,12 +37,13 @@ export interface ChatActionContext {
 
 /**
  * Итог ответа клиенту. refused: отказ с понятным текстом (пустой или длинный текст, закрытый чат, отказ самой
- * отправки PanelSendError); failed: прочий сбой передачи или отправки, текст общий.
+ * отправки PanelSendError); failed: прочий сбой передачи или отправки, текст общий. afterHandoff: отказ пришёл уже
+ * после передачи чата менеджеру (бот в чате молчит); старая панель его не показывает, консоль дописывает это к тексту.
  */
 export type ReplyOutcome =
   | { readonly kind: 'sent' }
   | { readonly kind: 'duplicate' }
-  | { readonly kind: 'refused'; readonly message: string }
+  | { readonly kind: 'refused'; readonly message: string; readonly afterHandoff: boolean }
   | { readonly kind: 'failed'; readonly message: string };
 
 /** Итог возврата чата боту. resumed: на сколько сообщений клиента бот ответит после возврата. */
@@ -97,7 +98,7 @@ export async function replyToClient(
 ): Promise<ReplyOutcome> {
   const text = normalizeNewlines(typedText);
   const problem = refusalBeforeHandoff(context, chat, text);
-  if (problem !== null) return { kind: 'refused', message: problem };
+  if (problem !== null) return { kind: 'refused', message: problem, afterHandoff: false };
   if (!context.recentReplies.claim(chat.id, text)) {
     context.audit.info(
       { action: 'reply_duplicate', chatId: chat.id },
@@ -105,24 +106,31 @@ export async function replyToClient(
     );
     return { kind: 'duplicate' };
   }
+  let handedOff = false;
   try {
     await context.deps.handoff.handOff(chat.id, { reason: 'human_took_over', by: 'panel' });
+    handedOff = true;
     await context.deps.outbox.sendFromPanel(chat.id, text);
   } catch (error: unknown) {
     context.recentReplies.release(chat.id, text);
-    return replyFailure(context, chat, error);
+    return replyFailure(context, chat, error, handedOff);
   }
   context.audit.info({ action: 'reply', chatId: chat.id }, 'Панель: ответ клиенту отправлен');
   return { kind: 'sent' };
 }
 
-function replyFailure(context: ChatActionContext, chat: Chat, error: unknown): ReplyOutcome {
+function replyFailure(
+  context: ChatActionContext,
+  chat: Chat,
+  error: unknown,
+  afterHandoff: boolean,
+): ReplyOutcome {
   if (error instanceof SafeError) {
     context.audit.warn(
       { action: 'reply_failed', chatId: chat.id },
       'Панель: ответ не отправлен (отказ)',
     );
-    return { kind: 'refused', message: error.message };
+    return { kind: 'refused', message: error.message, afterHandoff };
   }
   context.audit.error(
     { action: 'reply_failed', chatId: chat.id, err: error },
@@ -183,16 +191,6 @@ export async function returnChatToBot(
     'Панель: чат возвращён боту',
   );
   return resumed > 0 ? { kind: 'returned_answering', resumed } : { kind: 'returned', resumed };
-}
-
-/** Ответ клиенту в чат по ID: чата нет => not_found, ничего не вызывается. */
-export function replyToChat(
-  context: ChatActionContext,
-  chatId: ChatId,
-  typedText: string,
-): Promise<ReplyOutcome | ChatNotFound> {
-  const chat = context.deps.chats.getById(chatId);
-  return chat === null ? Promise.resolve(NOT_FOUND) : replyToClient(context, chat, typedText);
 }
 
 /** Возврат боту чата по ID: чата нет => not_found, ничего не вызывается. */

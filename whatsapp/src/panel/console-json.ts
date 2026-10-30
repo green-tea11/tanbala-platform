@@ -31,8 +31,9 @@ import {
   STATUS_LABELS as COMPANY_STATUS_LABELS,
 } from './view-company.js';
 
-// Данные бота в JSON для консоли. Всё, что пришло из WhatsApp, от модели и из почтового проекта, проходит cleanText
-// старой панели (без управляющих символов и символов смены направления) и отдаётся строкой как данные.
+// Данные бота в JSON для консоли. Всё, что пришло из WhatsApp, от модели и из почтового проекта, проходит consoleText:
+// cleanText старой панели (без управляющих символов и символов смены направления) и ещё без невидимых символов
+// CONSOLE_INVISIBLE; отдаётся строкой как данные. Старая панель по-прежнему чистит только cleanText.
 
 /** Весь Казахстан с 01.03.2024 живёт по UTC+5 без летнего времени: сутки Алматы начинаются в 19:00 UTC. */
 const ALMATY_OFFSET_MS = 5 * 60 * 60_000;
@@ -41,6 +42,12 @@ export const LAST_MESSAGE_MAX_LENGTH = 140;
 const ELLIPSIS = '…';
 const NOT_READ_LABEL = 'данные не прочитаны';
 const NO_REMARKS = 'причина не названа';
+/**
+ * Невидимые символы, которые консоль убирает сверх cleanText: нулевой ширины и метки направления (U+200B–U+200F),
+ * арабская метка направления (U+061C), разделители строк и абзацев (U+2028, U+2029), BOM (U+FEFF) и мягкий перенос
+ * (U+00AD). Ими имя или текст можно сделать похожим на другое.
+ */
+const CONSOLE_INVISIBLE = /[\u00AD\u061C\u200B-\u200F\u2028\u2029\uFEFF]/gu;
 
 const REJECTION_SOURCE_LABELS: Readonly<Record<RejectionSource, string>> = {
   code: 'проверка кодом',
@@ -59,10 +66,15 @@ export function almatyDayOf(ms: number): string {
   return new Date(ms + ALMATY_OFFSET_MS).toISOString().slice(0, 10);
 }
 
-/** Недоверенный текст: без скрытых символов; пусто после чистки => null. */
+/** Недоверенный текст для консоли: cleanText старой панели и без невидимых символов CONSOLE_INVISIBLE. */
+export function consoleText(text: string): string {
+  return cleanText(text).replace(CONSOLE_INVISIBLE, '');
+}
+
+/** Недоверенный текст: без скрытых символов (consoleText); пусто после чистки => null. */
 export function cleanOrNull(value: string | null): string | null {
   if (value === null) return null;
-  const text = cleanText(value);
+  const text = consoleText(value);
   return text.trim() === '' ? null : text;
 }
 
@@ -193,7 +205,7 @@ export function profileFieldsJson(profile: ClientProfile): readonly Record<strin
 
 export function noteJson(note: BotNote | null): Record<string, unknown> | null {
   if (note === null) return null;
-  return { text: cleanText(note.text), at: isoOrNull(note.atMs) };
+  return { text: consoleText(note.text), at: isoOrNull(note.atMs) };
 }
 
 export function handoffHistoryJson(row: HandoffHistoryRow): Record<string, unknown> {
@@ -220,18 +232,18 @@ export function notificationJson(item: ManagerNotification): Record<string, unkn
     statusLabel: NOTIFICATION_STATUS_LABELS[item.status],
     attempts: item.attempts,
     chatId: item.chatId,
-    text: cleanText(item.text),
+    text: consoleText(item.text),
   };
 }
 
 export function rejectedJson(item: StoredRejectedDraft): Record<string, unknown> {
-  const remarks = item.remarks.map((remark) => cleanText(remark).trim()).filter((r) => r !== '');
+  const remarks = item.remarks.map((remark) => consoleText(remark).trim()).filter((r) => r !== '');
   return {
     at: isoOrNull(item.atMs),
     attempt: item.attempt,
     source: item.source,
     sourceLabel: REJECTION_SOURCE_LABELS[item.source],
-    draft: cleanText(item.draft),
+    draft: consoleText(item.draft),
     remarks: remarks.length === 0 ? [NO_REMARKS] : remarks,
   };
 }

@@ -102,13 +102,40 @@ describe('config/env: API консоли', () => {
   });
 
   it.each(['0', '65536', 'abc', '3101.5'])(
-    'неверный CONSOLE_API_PORT %s: отказ и без токена',
+    'неверный CONSOLE_API_PORT %s с токеном: отказ',
     (port) => {
-      expect(problemsOf({ CONSOLE_API_PORT: port })).toEqual([
-        expect.stringMatching(/^CONSOLE_API_PORT: /),
+      expect(problemsOf({ WA_CONSOLE_TOKEN: CONSOLE_TOKEN, CONSOLE_API_PORT: port })).toEqual([
+        expect.stringMatching(/^CONSOLE_API_PORT: целое число от 1 до 65535/),
       ]);
     },
   );
+
+  it.each(['0', '65536', 'abc', '3101.5'])(
+    'неверный CONSOLE_API_PORT %s без токена: бот запускается, API консоли нет',
+    (port) => {
+      const config = load({ CONSOLE_API_PORT: port });
+
+      expect(config.consoleApi).toBeUndefined();
+      expect(config.panel.port).toBe(3100);
+    },
+  );
+
+  it('токен консоли не по формату и неверный порт рядом с другими проблемами: все видны сразу', () => {
+    const problems = problemsOf({
+      WA_CONSOLE_TOKEN: 'short',
+      CONSOLE_API_PORT: 'x',
+      PANEL_PORT: '0',
+    });
+
+    expect(problems).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^WA_CONSOLE_TOKEN: /),
+        expect.stringMatching(/^CONSOLE_API_PORT: /),
+        expect.stringMatching(/^PANEL_PORT: /),
+      ]),
+    );
+    expect(problems).toHaveLength(3);
+  });
 
   it('несколько проблем сразу: токен и порт', () => {
     const problems = problemsOf({ WA_CONSOLE_TOKEN: 'short', CONSOLE_API_PORT: '0' });

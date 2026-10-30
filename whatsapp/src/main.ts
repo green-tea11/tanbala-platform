@@ -1,51 +1,13 @@
 import { join } from 'node:path';
 import { loadConfig, type AppConfig, type TestMode } from './config/env.js';
 import { readModelsJson } from './config/models-file.js';
-import { createUnitOfWork, openDatabase } from './db/connection.js';
-import { runMigrations } from './db/migrations.js';
 import { acquireProcessLock } from './db/process-lock.js';
-import { createAppStateRepo } from './db/repos/app-state.js';
-import { createBacklogRepo } from './db/repos/backlog.js';
-import { createCallBudget } from './db/repos/call-budget.js';
-import { createChatCompaniesRepo } from './db/repos/chat-companies.js';
-import { createChatsRepo } from './db/repos/chats.js';
-import { createConsoleReads } from './db/repos/console-details.js';
-import { createHandoffsRepo } from './db/repos/handoffs.js';
-import { createKnownChatsRepo } from './db/repos/known-chats.js';
-import { createManagerNotificationsRepo } from './db/repos/manager-notifications.js';
-import { createMessagesRepo } from './db/repos/messages.js';
-import { createOutboundIdsRepo } from './db/repos/outbound-ids.js';
-import { createPairingGuard } from './db/repos/pairing-attempts.js';
-import { createRejectedDraftsRepo } from './db/repos/rejected-drafts.js';
-import { createWorkingModeRepo } from './db/repos/working-mode.js';
-import type { ChatCompaniesRepo } from './domain/company.js';
-import type { ConsoleReads } from './domain/console.js';
-import type {
-  AppStateRepo,
-  BacklogRepo,
-  CallBudget,
-  ChatsRepo,
-  Clock,
-  HandoffsRepo,
-  LlmClient,
-  Logger,
-  ManagerNotificationsRepo,
-  MessagesRepo,
-  OutboundIdsRepo,
-  PairingGuard,
-  ProcessLock,
-  RejectedDraftsRepo,
-  UnitOfWork,
-} from './domain/ports.js';
-import type { Jid, PhoneDigits, WaMessageId, WorkingMode } from './domain/types.js';
+import type { Clock, LlmClient, Logger, ProcessLock } from './domain/ports.js';
+import type { Jid, PhoneDigits, WaMessageId } from './domain/types.js';
 import type { AnthropicLlmDeps } from './llm/anthropic.js';
 import type { ChatBatcher } from './pipeline/batcher.js';
 import { assembleCompany, type CompanySetup } from './pipeline/company-setup.js';
-import {
-  createInboundRecorder,
-  type IgnoreStats,
-  type InboundRecorder,
-} from './pipeline/recorder.js';
+import type { IgnoreStats, InboundRecorder } from './pipeline/recorder.js';
 import {
   assemblePanel,
   type ConsoleApiStarter,
@@ -54,12 +16,8 @@ import {
 } from './pipeline/panel-setup.js';
 import { assembleResponder, type Responder } from './pipeline/responder-setup.js';
 import { assembleServices, type Services } from './pipeline/services.js';
+import { openStorage, type AppStorage } from './pipeline/storage-setup.js';
 import { handleOwnMessage, type TakeoverDeps, type TakeoverResult } from './pipeline/takeover.js';
-import {
-  createHeldForManagerCheck,
-  createUnseenHold,
-  settleWorkingMode,
-} from './pipeline/working-mode.js';
 import {
   createWhatsAppStateTracker,
   type WhatsAppStateTracker,
@@ -173,36 +131,6 @@ const STOP_MESSAGES: Readonly<Record<WhatsAppStopReason, string>> = {
     'Проверьте базу и место на диске, затем запустите бота снова',
 };
 
-type Database = ReturnType<typeof openDatabase>;
-
-/** База и всё, что на ней собрано. */
-interface Storage {
-  readonly appState: AppStateRepo;
-  readonly pairingGuard: PairingGuard;
-  readonly backlog: BacklogRepo;
-  readonly recorder: InboundRecorder;
-  readonly chats: ChatsRepo;
-  readonly messages: MessagesRepo;
-  readonly outboundIds: OutboundIdsRepo;
-  readonly unitOfWork: UnitOfWork;
-  /** Дневной предохранитель расходов API (API_DAILY_LIMIT и API_DAILY_LIMIT_PER_CHAT). */
-  readonly budget: CallBudget;
-  /** Передачи чатов менеджеру и уведомления ему (этап 5). */
-  readonly handoffs: HandoffsRepo;
-  readonly notifications: ManagerNotificationsRepo;
-  /** Определение компании клиента по чатам. */
-  readonly chatCompanies: ChatCompaniesRepo;
-  /** Отклонённые черновики и замечания проверок для панели (срок 30 дней). */
-  readonly rejectedDrafts: RejectedDraftsRepo;
-  /** Выборки только на чтение для API консоли; запросы готовятся при первом обращении (без консоли никогда). */
-  readonly consoleReads: ConsoleReads;
-  /** Рабочий режим с границей перехода (этап 8); null: закрытый режим. Решается при открытии базы. */
-  readonly workingMode: WorkingMode | null;
-  isOpen(): boolean;
-  /** Закрывает базу; повторный вызов ничего не делает. */
-  close(): void;
-}
-
 /** Сводка пропусков с запуска (только ненулевые причины, без номеров и JID). */
 interface IgnoreSummary {
   /** Сводка в лог сейчас: разбор офлайн-очереди, остановка. */
@@ -213,7 +141,7 @@ interface IgnoreSummary {
 
 /** Что закрывает остановка, кроме WhatsApp: панель, очередь ответов, повтор уведомлений, таймер сводки, база и замок. */
 interface Resources {
-  readonly storage: Storage;
+  readonly storage: AppStorage;
   readonly lock: ProcessLock;
   readonly summary: IgnoreSummary;
   /** Очередь ответов клиентам; null без ключа Claude (бот только принимает). */
@@ -230,7 +158,7 @@ interface AppContext {
   readonly root: string;
   readonly logger: Logger;
   readonly clock: Clock;
-  readonly storage: Storage;
+  readonly storage: AppStorage;
   readonly summary: IgnoreSummary;
   readonly batcher: ChatBatcher | null;
   readonly takeover: TakeoverDeps;
@@ -289,7 +217,9 @@ class PairingLimitExplained extends PairingLimitError {
  * сразу после loadConfig, до замка, базы, WhatsApp и QR. Панель собирается на общих службах и начинает слушать порт
  * после старта WhatsApp (при WA_ENABLED=false сразу); не запустилась (порт занят) => остановка целиком и ошибка.
  * stop закрывает панель первой, до остановки WhatsApp и до закрытия базы. Пароль панели в логи не попадает.
- * С WA_CONSOLE_TOKEN вместе с панелью стартует и закрывается API консоли (там же, в Panel.start и close).
+ * С WA_CONSOLE_TOKEN вместе с панелью стартует и закрывается API консоли (там же, в Panel.start и close); его порт
+ * занят (любой отказ listen) => та же остановка целиком, что при занятом порте панели (ConsoleApiStartError).
+ * База, репозитории, запись входящих и рабочий режим собираются в pipeline/storage-setup.ts.
  * Определение компании клиента pipeline/company-setup.ts: один сервис до служб этапа 5 (уведомление о передаче),
  * панели и ответов (конвейер); агент ответов читает логотип, подключение WhatsApp даёт профиль собеседника.
  * Без INTERNAL_API_TOKEN сервис есть, но выключен. В лог одна строка, включено ли оно, без адреса и токена.
@@ -354,7 +284,7 @@ interface Launch {
   readonly options: MainOptions;
   readonly logger: Logger;
   readonly clock: Clock;
-  readonly storage: Storage;
+  readonly storage: AppStorage;
   readonly summary: IgnoreSummary;
   readonly lock: ProcessLock;
   readonly link: WhatsAppLink;
@@ -509,71 +439,10 @@ function warnManagerInAllowlist(config: AppConfig, logger: Logger): void {
   }
 }
 
-// База.
-
-/** База с миграциями; сбой миграции закрывает её до выхода ошибки. */
-function openStorage(config: AppConfig, logger: Logger, clock: Clock): Storage {
-  const db = openDatabase(config.databasePath);
-  try {
-    runMigrations(db);
-    return assembleStorage(db, config, logger, clock);
-  } catch (error: unknown) {
-    db.close();
-    throw error;
-  }
-}
-
-function assembleStorage(db: Database, config: AppConfig, logger: Logger, clock: Clock): Storage {
-  const appState = createAppStateRepo(db);
-  const backlog = createBacklogRepo(db);
-  const chats = createChatsRepo(db);
-  const messages = createMessagesRepo(db);
-  const unitOfWork = createUnitOfWork(db);
-  const switchRepo = createWorkingModeRepo(db);
-  // До записи входящих и до WhatsApp: отказ перехода останавливает запуск, в базе ничего не записано.
-  const workingMode = settleWorkingMode(
-    { appState, repo: switchRepo, chats, unitOfWork, clock, logger },
-    config.testMode,
-  );
-  const recorder = createInboundRecorder({
-    chats,
-    messages,
-    backlog,
-    knownChats: createKnownChatsRepo(db),
-    unitOfWork,
-    heldForManager: createHeldForManagerCheck(workingMode, switchRepo),
-    holdUnseen: createUnseenHold(workingMode, switchRepo),
-    logger,
-    clock,
-  });
-  return {
-    appState,
-    pairingGuard: createPairingGuard(db, config.pairingMirrorPath),
-    backlog,
-    recorder,
-    chats,
-    messages,
-    outboundIds: createOutboundIdsRepo(db),
-    unitOfWork,
-    budget: createCallBudget(db, config.limits),
-    handoffs: createHandoffsRepo(db),
-    notifications: createManagerNotificationsRepo(db),
-    chatCompanies: createChatCompaniesRepo(db, logger),
-    rejectedDrafts: createRejectedDraftsRepo(db),
-    consoleReads: createConsoleReads(db),
-    workingMode,
-    isOpen: () => db.open,
-    // close в better-sqlite3 сам ничего не делает с уже закрытой базой.
-    close: () => {
-      db.close();
-    },
-  };
-}
-
 // Ответы клиентам (этап 3): сборка в pipeline/responder-setup.ts; службы этапа 5 в pipeline/services.ts.
 
 /** Перехват человеком пользуется тем же сервисом передачи, что и конвейер ответов. */
-function takeoverDepsOf(storage: Storage, services: Services): TakeoverDeps {
+function takeoverDepsOf(storage: AppStorage, services: Services): TakeoverDeps {
   const { outboundIds, chats, messages } = storage;
   return { outboundIds, chats, messages, handoff: services.handoff };
 }
@@ -595,7 +464,7 @@ async function routeEvent(context: AppContext, event: WaEvent): Promise<void> {
 }
 
 /** Текст отправленного сообщения для повторной отправки Baileys: только при совпадении чата. */
-function sentText(storage: Storage, waId: WaMessageId, jid: Jid): string | null {
+function sentText(storage: AppStorage, waId: WaMessageId, jid: Jid): string | null {
   if (!storage.isOpen()) return null;
   const sent = storage.outboundIds.find(waId);
   return sent !== null && sent.jid === jid ? sent.text : null;
@@ -690,7 +559,7 @@ function ignoreSummaryText(stats: IgnoreStats): string {
 }
 
 /** WhatsApp остановился сам и база закрыта: поздние события некуда записать, они пропускаются. */
-function whileOpen(storage: Storage, work: () => Promise<void>): Promise<void> {
+function whileOpen(storage: AppStorage, work: () => Promise<void>): Promise<void> {
   return storage.isOpen() ? work() : Promise.resolve();
 }
 
@@ -757,7 +626,7 @@ async function startedConnection(link: WhatsAppLink): Promise<WhatsAppConnection
 }
 
 /** Замок снимается после закрытия базы: следующий экземпляр не начнёт, пока эта ещё открыта. */
-function closeStorage(storage: Storage, lock: ProcessLock): void {
+function closeStorage(storage: AppStorage, lock: ProcessLock): void {
   try {
     storage.close();
   } finally {

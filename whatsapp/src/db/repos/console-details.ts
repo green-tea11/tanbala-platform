@@ -17,7 +17,7 @@ import type {
 } from '../../domain/types.js';
 import { assertTimeMs } from '../time.js';
 import { assertCount, HANDOFF_REASONS, LEVELS, oneOf } from '../values.js';
-import { createConsoleChatListReads } from './console-chat-list.js';
+import { createConsoleChatListReads, type ConsoleChatListReads } from './console-chat-list.js';
 
 const STATUSES: readonly ChatStatus[] = ['bot', 'manager'];
 const KINDS: readonly ManagerNotificationKind[] = ['handoff', 'limit', 'backlog'];
@@ -76,7 +76,7 @@ LIMIT @limit OFFSET @offset`;
  * Подтверждённые связи чат → компания из JSON записи бота ($.confirmed.id, целое больше нуля). CASE, а не AND:
  * json_type на тексте не JSON бросает ошибку. companyId NULL => все связи.
  */
-const COMPANY_LINKS = `WITH links AS (
+const LINKS_CTE = `links AS (
   SELECT cc.chat_id,
     CASE WHEN json_valid(cc.state) THEN
       CASE WHEN json_type(cc.state, '$.confirmed.id') = 'integer' THEN json_extract(cc.state, '$.confirmed.id') END
@@ -86,28 +86,41 @@ const COMPANY_LINKS = `WITH links AS (
         THEN json_extract(cc.state, '$.confirmed.confirmedAtMs') END
     END AS confirmed_at_ms
   FROM chat_companies AS cc
-)
+)`;
+
+/**
+ * Связи по свежести: последнее сообщение чата, без сообщений — время подтверждения; при равенстве большие companyId и
+ * chatId (новее) сверху. Так при пределе 1000 отбрасываются самые старые, а не самые новые.
+ */
+const COMPANY_LINKS = `WITH ${LINKS_CTE}
 SELECT l.chat_id AS chatId, l.company_id AS companyId, l.confirmed_at_ms AS confirmedAtMs,
   c.push_name AS pushName, c.pn_jid AS pnJid, c.status, c.interest_level AS level,
   (SELECT min(m.ts_ms) FROM messages AS m WHERE m.chat_id = c.id AND m.author = 'client') AS firstClientMessageAtMs,
   (SELECT max(m.ts_ms) FROM messages AS m WHERE m.chat_id = c.id) AS lastMessageAtMs
 FROM links AS l JOIN chats AS c ON c.id = l.chat_id
 WHERE l.company_id > 0 AND (@companyId IS NULL OR l.company_id = @companyId)
-ORDER BY l.company_id, l.chat_id
+ORDER BY coalesce(lastMessageAtMs, l.confirmed_at_ms) DESC, l.company_id DESC, l.chat_id DESC
 LIMIT @limit`;
 
+const COUNT_COMPANY_LINKS = `WITH ${LINKS_CTE}
+SELECT count(*) FROM links AS l JOIN chats AS c ON c.id = l.chat_id
+WHERE l.company_id > 0 AND (@companyId IS NULL OR l.company_id = @companyId)`;
+
 /** Карточка чата, уведомления, связи с компаниями и счётчики для консоли. */
-export type ConsoleDetailReads = Omit<
-  ConsoleReads,
-  'listChats' | 'countChats' | 'openHandoffs' | 'hotChats' | 'waitingChats' | 'pendingBacklogCount'
->;
+export type ConsoleDetailReads = Omit<ConsoleReads, keyof ConsoleChatListReads | 'readTransaction'>;
 
 /**
  * Выборки для консоли в SQLite (src/domain/console.ts): все вместе на одном соединении бота. Только SELECT и только
  * подготовленные запросы, которые готовятся при первом обращении: без консоли запуск бота их не касается.
+ * readTransaction: обычная (DEFERRED) транзакция better-sqlite3, записи в ней нет; внутри другой транзакции —
+ * точка сохранения.
  */
 export function createConsoleReads(db: Database.Database): ConsoleReads {
-  return { ...createConsoleChatListReads(db), ...createConsoleDetailReads(db) };
+  return {
+    ...createConsoleChatListReads(db),
+    ...createConsoleDetailReads(db),
+    readTransaction: <T>(work: () => T): T => db.transaction(work)(),
+  };
 }
 
 /** Карточка чата, уведомления, связи с компаниями и дневные счётчики. */
@@ -148,6 +161,9 @@ export function createConsoleDetailReads(db: Database.Database): ConsoleDetailRe
       const params = { companyId: query.companyId ?? null, limit: query.limit };
       return statements().links.all(params).map(toLink);
     },
+    countCompanyLinks(query: { readonly companyId?: number }): number {
+      return statements().countLinks.get({ companyId: query.companyId ?? null }) ?? 0;
+    },
     apiCallsOn(day: string): number {
       if (!DAY_PATTERN.test(day)) throw new RangeError('day: ожидается дата ГГГГ-ММ-ДД');
       return statements().apiCalls.get(day, GLOBAL_COUNTER) ?? 0;
@@ -184,6 +200,7 @@ function prepareStatements(db: Database.Database) {
       )
       .pluck(),
     links: db.prepare<{ companyId: number | null; limit: number }, LinkRow>(COMPANY_LINKS),
+    countLinks: db.prepare<{ companyId: number | null }, number>(COUNT_COMPANY_LINKS).pluck(),
     apiCalls: db
       .prepare<[string, number], number>(
         'SELECT count FROM api_usage WHERE day = ? AND chat_id = ?',

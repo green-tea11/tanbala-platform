@@ -11,6 +11,8 @@ import type {
   RejectedDraftsRepo,
 } from '../domain/ports.js';
 import type { ChatActionDeps } from './chat-actions.js';
+import type { ReplyRateLimit } from './console-reply-limit.js';
+import type { SpendReader } from './console-spend.js';
 import type { RecentReplies } from './recent-replies.js';
 
 /** Настройки бота для экрана состояния: только флаги и числа, без номеров и токенов. */
@@ -63,8 +65,13 @@ export interface ConsoleApiDeps extends ChatActionDeps {
   readonly logger: Logger;
 }
 
-/** Контекст маршрутов консоли: зависимости и журнал действий (module console-api). */
+/**
+ * Контекст маршрутов консоли: зависимости, журнал действий (module console-api), предел ответов из консоли и чтение
+ * расхода (один расчёт за раз, память на минуту). Последние два живут, пока жив сервер консоли.
+ */
 export interface ConsoleContext {
   readonly deps: ConsoleApiDeps;
   readonly audit: Logger;
+  readonly replyLimit: ReplyRateLimit;
+  readonly spend: SpendReader;
 }

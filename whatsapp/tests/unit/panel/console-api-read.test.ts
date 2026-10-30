@@ -145,6 +145,7 @@ describe('API консоли: «Требует внимания»', () => {
       },
     ]);
     c.reads.pendingBacklogCount.mockReturnValue(4);
+    c.reads.attentionCounts.mockReturnValue({ handoffs: 2, hot: 1, waiting: 1, staleWaiting: 0 });
 
     const body = jsonOf(await c.request({ url: `${BASE}/attention` }));
 
@@ -192,6 +193,11 @@ describe('API консоли: «Требует внимания»', () => {
         },
       ],
       backlog: { pending: 4 },
+      counts: {
+        handoffs: { total: 2, truncated: false },
+        hot: { total: 1, truncated: false },
+        waiting: { total: 1, truncated: false, staleExcluded: 0 },
+      },
     });
     expect(c.reads.waitingChats).toHaveBeenCalledWith(T0, 200);
   });
@@ -804,6 +810,7 @@ describe('API консоли: уведомления и связи с компа
         lastMessageAtMs: null,
       },
     ]);
+    c.reads.countCompanyLinks.mockReturnValue(1);
 
     const all = jsonOf(await c.request({ url: `${BASE}/company-links` }));
     await c.request({ url: `${BASE}/company-links?companyId=42` });
@@ -823,7 +830,11 @@ describe('API консоли: уведомления и связи с компа
           lastMessageAt: null,
         },
       ],
+      total: 1,
+      truncated: false,
     });
+    expect(c.reads.countCompanyLinks).toHaveBeenNthCalledWith(1, {});
+    expect(c.reads.countCompanyLinks).toHaveBeenNthCalledWith(2, { companyId: 42 });
     expect(c.reads.companyLinks).toHaveBeenNthCalledWith(1, { limit: 1000 });
     expect(c.reads.companyLinks).toHaveBeenNthCalledWith(2, { companyId: 42, limit: 1000 });
     expect(bad.statusCode).toBe(400);

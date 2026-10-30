@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { RESEARCH_MAX_STARTS_PER_DAY } from '../company/research.js';
 import type { AttentionHandoffRow, HotChatRow, WaitingChatRow } from '../domain/console.js';
 import type { ConsoleContext } from './console-context.js';
-import { sendJson } from './console-http.js';
+import { ConsoleHttpError, sendJson } from './console-http.js';
 import {
   almatyDayOf,
   cleanOrNull,
@@ -16,8 +16,9 @@ import {
   parseConsolePage,
   parseDayRange,
   parseNotificationStatus,
+  type DayRange,
 } from './console-params.js';
-import { readSpend } from './console-spend.js';
+import { SpendLogTooLargeError, type SpendReport } from './console-spend.js';
 import { HANDOFF_REASON_LABELS, LEVEL_LABELS, NOTIFICATION_STATUS_LABELS } from './format.js';
 import { LIST_PAGE_SIZE } from './params.js';
 import { pageCountOf } from './view-parts.js';
@@ -118,14 +119,40 @@ function waitingJson(row: WaitingChatRow): Record<string, unknown> {
   };
 }
 
-/** «Требует внимания»: открытые передачи, горячие, ждут ответа и чаты простоя без уведомления. */
+/** Сколько строк у списка без предела и обрезан ли он пределом (ATTENTION_LIMIT, COMPANY_LINKS_LIMIT). */
+function listCountJson(total: number, shown: number): { total: number; truncated: boolean } {
+  return { total, truncated: total > shown };
+}
+
+/**
+ * «Требует внимания»: открытые передачи, горячие, ждут ответа (клиент писал за 30 дней, дольше всех ждущие сверху) и
+ * чаты простоя без уведомления. Все выборки одной транзакцией чтения. counts: у каждого списка total (без предела) и
+ * truncated (список обрезан пределом 200), у waiting ещё staleExcluded — ждущие, которых окно 30 дней отбросило.
+ */
 function attentionJson(context: ConsoleContext): Record<string, unknown> {
   const { reads, clock } = context.deps;
+  const now = clock.now();
+  const data = reads.readTransaction(() => ({
+    handoffs: reads.openHandoffs(ATTENTION_LIMIT),
+    hot: reads.hotChats(ATTENTION_LIMIT),
+    waiting: reads.waitingChats(now, ATTENTION_LIMIT),
+    backlog: reads.pendingBacklogCount(),
+    counts: reads.attentionCounts(now),
+  }));
+  const { counts } = data;
   return {
-    handoffs: reads.openHandoffs(ATTENTION_LIMIT).map(attentionHandoffJson),
-    hot: reads.hotChats(ATTENTION_LIMIT).map(hotJson),
-    waiting: reads.waitingChats(clock.now(), ATTENTION_LIMIT).map(waitingJson),
-    backlog: { pending: reads.pendingBacklogCount() },
+    handoffs: data.handoffs.map(attentionHandoffJson),
+    hot: data.hot.map(hotJson),
+    waiting: data.waiting.map(waitingJson),
+    backlog: { pending: data.backlog },
+    counts: {
+      handoffs: listCountJson(counts.handoffs, data.handoffs.length),
+      hot: listCountJson(counts.hot, data.hot.length),
+      waiting: {
+        ...listCountJson(counts.waiting, data.waiting.length),
+        staleExcluded: counts.staleWaiting,
+      },
+    },
   };
 }
 
@@ -142,13 +169,18 @@ function notificationsJson(context: ConsoleContext, query: unknown): Record<stri
   return pageJson(items, total, page, LIST_PAGE_SIZE);
 }
 
-/** Подтверждённые связи чат → компания; companyId задан => только её чаты. */
+/**
+ * Подтверждённые связи чат → компания; companyId задан => только её чаты. Свежие сверху, не больше
+ * COMPANY_LINKS_LIMIT; total — сколько всего, truncated — список обрезан пределом. Строки и число одной транзакцией.
+ */
 function companyLinksJson(context: ConsoleContext, query: unknown): Record<string, unknown> {
   const companyId = parseCompanyId(query);
-  const rows = context.deps.reads.companyLinks({
-    ...(companyId === undefined ? {} : { companyId }),
-    limit: COMPANY_LINKS_LIMIT,
-  });
+  const filter = companyId === undefined ? {} : { companyId };
+  const { reads } = context.deps;
+  const { rows, total } = reads.readTransaction(() => ({
+    rows: reads.companyLinks({ ...filter, limit: COMPANY_LINKS_LIMIT }),
+    total: reads.countCompanyLinks(filter),
+  }));
   return {
     items: rows.map((row) => ({
       chatId: row.chatId,
@@ -161,7 +193,22 @@ function companyLinksJson(context: ConsoleContext, query: unknown): Record<strin
       firstClientMessageAt: isoOrNull(row.firstClientMessageAtMs),
       lastMessageAt: isoOrNull(row.lastMessageAtMs),
     })),
+    ...listCountJson(total, rows.length),
   };
+}
+
+/** Расход за период; лог больше предела => 503 log_too_large с понятным текстом (а не тихие нули), строка в журнал. */
+async function spendReportOf(context: ConsoleContext, range: DayRange): Promise<SpendReport> {
+  try {
+    return await context.spend.read(range);
+  } catch (error: unknown) {
+    if (!(error instanceof SpendLogTooLargeError)) throw error;
+    context.audit.warn(
+      { action: 'spend_log_too_large' },
+      'API консоли: лог расхода больше предела',
+    );
+    throw new ConsoleHttpError(503, 'log_too_large', error.message);
+  }
 }
 
 /** Состояние, «Требует внимания», уведомления, связи с компаниями и расход: только чтение. */
@@ -176,7 +223,7 @@ export function registerConsoleStatusRoutes(app: FastifyInstance, context: Conso
   );
   app.get(`${PREFIX}/spend`, async (request, reply) => {
     const range = parseDayRange(request.query);
-    const report = await readSpend(context.deps.tokenLogPath, range);
+    const report = await spendReportOf(context, range);
     return sendJson(reply, 200, { from: range.from, to: range.to, ...report });
   });
 }

@@ -21,6 +21,7 @@ import {
 import { createRecentReplies, type RecentReplies } from '../panel/recent-replies.js';
 import { buildPanel, startPanel, type PanelStartOptions } from '../panel/server.js';
 import type { ChatId } from '../domain/types.js';
+import { SafeError } from '../shared/safe-error.js';
 import type { Services } from './services.js';
 import type { WhatsAppStateTracker } from './whatsapp-state.js';
 
@@ -101,8 +102,9 @@ export interface Panel {
   /**
    * Запускает панель на PANEL_HOST и PANEL_PORT: сначала guard.assertPanelStartAllowed (слабый пароль только
    * на 127.0.0.1), потом listen. Запрещённый запуск и занятый порт приходят отказом промиса. Затем API консоли на
-   * 127.0.0.1:CONSOLE_API_PORT, если задан WA_CONSOLE_TOKEN; его сбой (порт занят) пишется в лог и бота не
-   * останавливает: бот и старая панель работают, консоль покажет, что бот недоступен.
+   * 127.0.0.1:CONSOLE_API_PORT, если задан WA_CONSOLE_TOKEN; его сбой (порт занят, любой отказ listen) тоже приходит
+   * отказом промиса (ConsoleApiStartError): main останавливает бота целиком, как при занятом порте панели, и служба
+   * его перезапускает. Без токена ничего не меняется.
    */
   start(): Promise<void>;
   /**
@@ -224,17 +226,37 @@ function consolePartOf(
   return { app: buildConsoleApi(deps), port: consoleConfig.port };
 }
 
-/** Запуск API консоли: сбой (порт занят) в лог, бот и панель работают дальше. */
+/**
+ * API консоли не запустился (порт занят или любой другой отказ listen). Бот останавливается, как при занятом порте
+ * панели: иначе консоль слала бы токен тому, кто занял порт. Текст без токена; исходная ошибка только в cause.
+ */
+export class ConsoleApiStartError extends SafeError {
+  override readonly name = 'ConsoleApiStartError';
+
+  constructor(port: number, cause: unknown) {
+    super(
+      `API консоли не запустился на ${CONSOLE_API_HOST}:${port}${codeOf(cause)}: бот остановлен, чтобы токен ` +
+        'консоли не ушёл чужому серверу на этом порту. Освободите порт или смените CONSOLE_API_PORT; ' +
+        'служба перезапустит бота',
+      { cause },
+    );
+  }
+}
+
+/** Код системной ошибки (EADDRINUSE, EACCES) для текста: только код, без адресов и путей. */
+function codeOf(error: unknown): string {
+  const code = error instanceof Error && 'code' in error ? error.code : undefined;
+  return typeof code === 'string' && /^E[A-Z]+$/.test(code) ? ` (${code})` : '';
+}
+
+/** Запуск API консоли: любой сбой => ConsoleApiStartError, Panel.start отклоняется, main останавливает бота. */
 async function startConsole(context: PanelSetupContext, part: ConsolePart): Promise<void> {
   try {
     await (context.startConsoleApi ?? startConsoleApi)(part.app, part.port);
-    context.logger.info({}, `API консоли запущен: ${CONSOLE_API_HOST}:${part.port}`);
   } catch (error: unknown) {
-    context.logger.error(
-      { err: error },
-      'API консоли не запустился: бот и панель работают без него, проверьте CONSOLE_API_PORT',
-    );
+    throw new ConsoleApiStartError(part.port, error);
   }
+  context.logger.info({}, `API консоли запущен: ${CONSOLE_API_HOST}:${part.port}`);
 }
 
 /** Сначала API консоли (новых действий из консоли нет), затем панель; каждый сбой только в лог. */

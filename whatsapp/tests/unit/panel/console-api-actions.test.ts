@@ -121,7 +121,7 @@ describe('API консоли: ответ клиенту', () => {
     );
   });
 
-  it('отказ самой отправки (PanelSendError): 422 с его текстом, после передачи', async () => {
+  it('отказ самой отправки (PanelSendError): 422 с его текстом и тем, что чат уже у менеджера', async () => {
     const c = open();
     c.h.outbox.sendFromPanel.mockRejectedValueOnce(
       new PanelSendError('Закрытый режим: этот чат не из TEST_ALLOWLIST'),
@@ -130,7 +130,9 @@ describe('API консоли: ответ клиенту', () => {
     const response = await reply(c, 2, { text: TEXT });
 
     expect(response.statusCode).toBe(422);
-    expect(jsonOf(response)['message']).toBe('Закрытый режим: этот чат не из TEST_ALLOWLIST');
+    expect(jsonOf(response)['message']).toBe(
+      'Закрытый режим: этот чат не из TEST_ALLOWLIST. Чат уже у менеджера, бот в нём молчит.',
+    );
     expect(c.h.actions()).toEqual(['handOff', 'sendFromPanel']);
   });
 

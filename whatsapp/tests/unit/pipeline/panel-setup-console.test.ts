@@ -13,6 +13,7 @@ import type { HandoffService } from '../../../src/handoff/handoff.js';
 import type { Outbox } from '../../../src/messaging/outbox.js';
 import {
   assemblePanel,
+  ConsoleApiStartError,
   type ConsoleApiApp,
   type ConsoleApiStarter,
   type PanelApp,
@@ -22,6 +23,7 @@ import {
 } from '../../../src/pipeline/panel-setup.js';
 import { createWhatsAppStateTracker } from '../../../src/pipeline/whatsapp-state.js';
 import { createLogger } from '../../../src/shared/logger.js';
+import { SafeError } from '../../../src/shared/safe-error.js';
 import { PN_A, useMigratedDb } from '../db/fixture.js';
 import { csrfOf, OFF_COMPANY, sessionCookieOf } from '../panel/harness.js';
 
@@ -174,23 +176,35 @@ describe('assemblePanel: API консоли', () => {
     expect(log).not.toContain(TOKEN);
   });
 
-  it('API консоли не запустился (порт занят): бот и панель работают, ошибка в логе', async () => {
-    const s = setup(WITH_CONSOLE);
-    s.startConsoleApi.mockRejectedValueOnce(new Error('listen EADDRINUSE'));
-    const panel = assemblePanel(s.context);
+  it.each([
+    [
+      'порт занят',
+      Object.assign(new Error('listen EADDRINUSE'), { code: 'EADDRINUSE' }),
+      ' (EADDRINUSE)',
+    ],
+    ['другой отказ listen', new Error(`отказ ${TOKEN}`), ''],
+  ])(
+    'API консоли не запустился (%s): Panel.start отклоняется ConsoleApiStartError без токена, панель закрывается',
+    async (_label, failure, code) => {
+      const s = setup(WITH_CONSOLE);
+      s.startConsoleApi.mockRejectedValueOnce(failure);
+      const panel = assemblePanel(s.context);
 
-    await expect(panel.start()).resolves.toBeUndefined();
-    await panel.close();
+      const error: unknown = await panel.start().catch((caught: unknown) => caught);
+      await panel.close();
 
-    const errors = s.lines
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
-      .filter((r) => r['level'] === 50);
-    expect(errors).toContainEqual(
-      expect.objectContaining({
-        msg: expect.stringContaining('API консоли не запустился') as string,
-      }),
-    );
-  });
+      expect(error).toBeInstanceOf(ConsoleApiStartError);
+      expect(error).toBeInstanceOf(SafeError);
+      const { message, cause } = error as ConsoleApiStartError;
+      expect(message).toContain(`API консоли не запустился на 127.0.0.1:${CONSOLE_PORT}${code}`);
+      expect(message).toContain('CONSOLE_API_PORT');
+      expect(message).not.toContain(TOKEN);
+      expect(cause).toBe(failure);
+      expect(s.events).toEqual(['panel:start', 'panel:close']);
+      expect(s.lines.join('')).not.toContain('API консоли запущен');
+      expect(s.lines.join('')).not.toContain(TOKEN);
+    },
+  );
 
   it('состояние WhatsApp по событиям сокета; при WA_ENABLED=false — disabled', async () => {
     const enabled = setup(WITH_CONSOLE);
