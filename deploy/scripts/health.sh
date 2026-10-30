@@ -82,7 +82,9 @@ if ((disk < DISK_MAX_PERCENT)); then ok "диск занят на $disk%"; else 
 mem=$(awk '/MemAvailable/ {print int($2 / 1024)}' /proc/meminfo)
 if ((mem >= MEM_MIN_MB)); then ok "свободно памяти $mem МБ"; else bad "свободно памяти всего $mem МБ"; fi
 
-latest=$(find "$BACKUP_ROOT/postgres" -name 'tanbala-*.dump' -mmin -"$BACKUP_MAX_AGE_MIN" 2>/dev/null | head -1)
-if [[ -n $latest ]]; then ok "свежая копия базы: $(basename "$latest")"; else bad "нет копии базы моложе 26 часов (journalctl -u tanbala-backup)"; fi
+# Самая новая из копий моложе 26 часов (по времени файла, а не первая попавшаяся).
+latest=$(find "$BACKUP_ROOT/postgres" -name 'tanbala-*.dump' -mmin -"$BACKUP_MAX_AGE_MIN" -printf '%T@ %f\n' 2>/dev/null |
+	sort -n | tail -n 1 | cut -d' ' -f2-)
+if [[ -n $latest ]]; then ok "свежая копия базы: $latest"; else bad "нет копии базы моложе 26 часов (journalctl -u tanbala-backup)"; fi
 
 exit "$failed"
