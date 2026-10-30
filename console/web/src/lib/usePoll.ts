@@ -41,7 +41,7 @@ export function usePoll<T>(path: string, intervalMs: number): PollState<T> {
         if (STOP_ERRORS.has(result.failure.error)) stopped.current = true;
       }
       setLoading(false);
-      if (stopped.current || document.visibilityState !== 'visible') return;
+      if (stopped.current || intervalMs <= 0 || document.visibilityState !== 'visible') return;
       const delay = result.ok ? intervalMs : Math.min(MAX_BACKOFF_MS, intervalMs * 2 ** failures.current);
       timer.current = window.setTimeout(() => void load(true), delay);
     },
@@ -55,7 +55,7 @@ export function usePoll<T>(path: string, intervalMs: number): PollState<T> {
     setLoading(true);
     void load(false);
     const onVisible = (): void => {
-      if (document.visibilityState === 'visible' && !stopped.current) void load(true);
+      if (document.visibilityState === 'visible' && !stopped.current && intervalMs > 0) void load(true);
       else if (timer.current !== null) window.clearTimeout(timer.current);
     };
     document.addEventListener('visibilitychange', onVisible);

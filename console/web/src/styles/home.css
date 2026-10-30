@@ -57,15 +57,15 @@
 .run { padding: 2px 0 10px; }
 .stages { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 3px; margin: 10px 0 6px; }
 .stage { height: 6px; border-radius: 2px; background: var(--rule); }
-.stage.done { background: var(--text); }
-.stage.running { background: var(--accent); }
+.stage.done { background: var(--accent); }
+.stage.running { background: #8db3ea; }
 .stage.error { background: var(--negative); }
 
 .spend-lead { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
 .spend-figure { font-size: 24px; line-height: 30px; font-weight: 400; }
 .budget { display: block; padding: 2px 0 6px; border-top: 0 !important; }
 .budget-track { position: relative; display: block; height: 6px; border-radius: 3px; background: var(--rule); overflow: hidden; }
-.budget-fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--text); }
+.budget-fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); }
 .budget-track.over .budget-fill { background: var(--negative); }
 .budget-label { display: block; margin-top: 6px; font-size: var(--fs-small); line-height: 16px; }
 .spend-note { margin-top: 8px; font-size: var(--fs-small); line-height: 16px; }

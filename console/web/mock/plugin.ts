@@ -1,6 +1,10 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Plugin } from 'vite';
 import { clientFixture, homeFixture } from './fixtures';
+import {
+  blockedFixture, chatsFixture, companiesFixture, companyFixture, historyFixture, letterFixture, lettersFixture, notificationsFixture,
+  researchFixture, runsFixture, searchOptionsFixture, systemFixtures,
+} from './fixtures-more';
 
 // Заглушка /api для `npm run dev`: отвечает формами docs/API.md, действия принимает и ничего не делает.
 // ?state=… в адресе страницы переключает крайние случаи (wa-down, leads-down, empty) для проверки вида.
@@ -69,6 +73,36 @@ function handle(req: IncomingMessage, res: ServerResponse): boolean {
     send(res, 200, homeFor(stateOf(req)));
     return true;
   }
+  if (method === 'GET') {
+    const now = Date.now();
+    const q = url.searchParams;
+    const id = (re: RegExp): number | null => { const m = re.exec(path); return m ? Number(m[1]) : null; };
+    const sys = systemFixtures(now);
+    const runs = runsFixture(now);
+    const simple: Record<string, () => unknown> = {
+      '/api/chats': () => chatsFixture(now, q),
+      '/api/notifications': () => notificationsFixture(now, q),
+      '/api/companies': () => companiesFixture(now, q),
+      '/api/letters': () => lettersFixture(now, q),
+      '/api/search/options': () => searchOptionsFixture(),
+      '/api/runs': () => runs.list,
+      '/api/runs/active': () => runs.active,
+      '/api/research-jobs': () => researchFixture(now),
+      '/api/history': () => historyFixture(now),
+      '/api/blocked': () => blockedFixture(now),
+      '/api/system': () => sys.status,
+      '/api/system/spend': () => sys.spend,
+      '/api/system/audit': () => sys.audit,
+      '/api/system/users': () => sys.users,
+      '/api/system/sessions': () => sys.sessions,
+    };
+    const make = simple[path];
+    if (make) { send(res, 200, make()); return true; }
+    const companyId = id(/^\/api\/companies\/(\d{1,9})$/);
+    if (companyId !== null) { const c = companyFixture(now, companyId); if (c) send(res, 200, c); else send(res, 404, { error: 'not_found', message: 'Компании нет.' }); return true; }
+    const letterId = id(/^\/api\/letters\/(\d{1,9})$/);
+    if (letterId !== null) { const l = letterFixture(now, letterId); if (l) send(res, 200, l); else send(res, 404, { error: 'not_found', message: 'Письма нет.' }); return true; }
+  }
   const client = /^\/api\/clients\/(\d{1,9})$/.exec(path);
   if (method === 'GET' && client) {
     if (stateOf(req) === 'wa-down') {
@@ -90,6 +124,14 @@ function handle(req: IncomingMessage, res: ServerResponse): boolean {
         send(res, 200, { result: 'sent', message: 'Сообщение отправлено клиенту' });
       } else if (/\/return$/.test(path)) {
         send(res, 200, { result: 'returned_answering', message: 'Чат возвращён боту: бот ответит на сообщения клиента без ответа', resumed: 1 });
+      } else if (/\/(approve|reject|edit|send-test|block|whatsapp-clear)$/.test(path)) {
+        send(res, 200, { result: 'ok', message: 'Готово (заглушка).' });
+      } else if (path === '/api/runs') {
+        send(res, 409, { error: 'conflict', message: 'Идёт запуск №4. Новый можно начать, когда он закончится.', activeRunId: 4 });
+      } else if (path === '/api/history/import') {
+        send(res, 200, { result: 'imported', added: 2, existing: 1, invalid: ['не адрес'], invalidMore: 0, message: 'Добавлено 2, уже были 1.' });
+      } else if (path === '/api/logout') {
+        send(res, 200, { result: 'logged_out', message: 'Вы вышли.' });
       } else if (path === '/api/seen') {
         const ids = (body as { ids?: unknown[] } | null)?.ids ?? [];
         send(res, 200, { result: 'seen', kind: 'handoff', count: ids.length });

@@ -186,7 +186,7 @@ export function clientFixture(now: number, chatId: number) {
           { id: 207, author: 'client', authorLabel: 'Клиент', kind: 'text', text: 'До 40. Сколько это будет стоить?', at: t(31) },
           { id: 208, author: 'bot', authorLabel: 'Бот', kind: 'text', text: 'Цена зависит от объёма и задачи. Что для вас важнее сначала: инвентаризация или приёмка?', at: t(30) },
           { id: 209, author: 'client', authorLabel: 'Клиент', kind: 'text', text: 'Обе. Но хотя бы порядок цен? На 12 тысяч мест', at: t(17) },
-          { id: 210, author: 'bot', authorLabel: 'Бот', kind: 'text', text: 'Цена сильно зависит от объёма. Передал ваш вопрос специалисту, он вам напишет.', at: t(16) },
+          { id: 210, author: 'bot', authorLabel: 'Бот', kind: 'text', text: 'Цена сильно зависит от объёма. Уточню у коллеги и вернусь к вам.', at: t(16) },
           { id: 211, author: 'client', authorLabel: 'Клиент', kind: 'text', text: 'Хорошо, жду. Удобно созвониться после 15:00', at: t(14) },
         ]
       : [

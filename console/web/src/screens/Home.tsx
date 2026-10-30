@@ -223,7 +223,7 @@ function AfterLetterPanel({ home, now }: { readonly home: Home; readonly now: nu
     );
   }
   return (
-    <Panel id="after" title="Писали после письма" count={data.total} aside={<Link to="/chats?company=confirmed" className="text-link">Все</Link>}>
+    <Panel id="after" title="Писали после письма" count={data.total}>
       {data.items.length === 0 ? (
         <p className="empty">Пока никто из тех, кому писали, не написал в WhatsApp.</p>
       ) : (

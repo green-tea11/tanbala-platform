@@ -42,12 +42,12 @@
   line-height: 20px;
   animation: bubble-in var(--t-med) var(--ease-out);
 }
-.bubble.in { align-self: flex-start; background: var(--raised); border-top-left-radius: 4px; }
+.bubble.in { align-self: flex-start; background: #e9eef3; border-top-left-radius: 4px; }
 .bubble.out { align-self: flex-end; border-top-right-radius: 4px; }
 .bubble.bot { background: var(--surface); border: 1px solid var(--border); }
 .bubble.human_panel, .bubble.human_phone { background: var(--accent-soft); }
 .bubble .author { display: block; font-size: var(--fs-small); line-height: 16px; color: var(--muted); }
-.bubble.human_panel .author, .bubble.human_phone .author { color: var(--accent); font-weight: 500; }
+.bubble.human_panel .author, .bubble.human_phone .author { color: var(--accent-ink); font-weight: 600; }
 .bubble .voice-mark { display: block; font-size: 11px; line-height: 14px; color: var(--muted); }
 .bubble p { white-space: pre-wrap; overflow-wrap: anywhere; }
 .bubble p.placeholder { color: var(--muted); }
