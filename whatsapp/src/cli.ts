@@ -21,7 +21,11 @@ function exitWithError(error: unknown): void {
   process.stderr.write(formatFatalError(error), () => process.exit(1));
 }
 
-/** SIGINT и SIGTERM: корректная остановка и выход 0; повторный сигнал: выход сразу, не дожидаясь stop. */
+/**
+ * SIGINT, SIGTERM и SIGHUP: корректная остановка и выход 0; повторный сигнал: выход сразу, не дожидаясь stop.
+ * SIGHUP приходит, когда закрыли окно терминала или оборвалась SSH-сессия (привязка по QR идёт в терминале): без
+ * обработчика Node завершился бы сразу, посреди записи creds.json, и сессию пришлось бы привязывать заново.
+ */
 function stopOnSignals(app: RunningApp): void {
   let stopping = false;
   const onSignal = (): void => {
@@ -33,6 +37,13 @@ function stopOnSignals(app: RunningApp): void {
   };
   process.on('SIGINT', onSignal);
   process.on('SIGTERM', onSignal);
+  process.on('SIGHUP', onSignal);
+}
+
+/** Вывод в закрытый терминал (после SIGHUP) даёт EIO или EPIPE: сообщить об этом некуда, и остановку это не прерывает. */
+function isLostOutput(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === 'EIO' || code === 'EPIPE';
 }
 
 /** WhatsApp остановился сам (не по stop): процесс завершится сам, но с кодом SELF_STOP_EXIT_CODE. */
@@ -43,7 +54,9 @@ function exitCodeOnSelfStop(app: RunningApp): void {
 }
 
 // Необработанные ошибки: иначе Node напечатает их целиком, с текстом и JID, в обход фильтра.
-process.on('uncaughtException', exitWithError);
+process.on('uncaughtException', (error) => {
+  if (!isLostOutput(error)) exitWithError(error);
+});
 process.on('unhandledRejection', exitWithError);
 
 try {
