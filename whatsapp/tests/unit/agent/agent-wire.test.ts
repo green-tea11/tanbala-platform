@@ -27,6 +27,8 @@ const REPLIES = [
     stopRequested: false,
     companyQuestion: 'none',
     aboutPrice: false,
+    stage: 'intro',
+    usedFacts: ['F7', 'F7'],
   },
   { ok: false, problems: ['Назван срок внедрения'] },
   {
@@ -136,7 +138,15 @@ describe('агент с настоящим адаптером Anthropic', () => 
     expect(sent.map((body) => body.output_config.effort)).toEqual(['low', 'low', 'low']);
     expect(sent.map((body) => body.output_config.format.schema)).toEqual([
       expect.objectContaining({
-        required: ['outcome', 'text', 'stopRequested', 'companyQuestion', 'aboutPrice'],
+        required: [
+          'outcome',
+          'text',
+          'stopRequested',
+          'companyQuestion',
+          'aboutPrice',
+          'stage',
+          'usedFacts',
+        ],
       }),
       expect.objectContaining({ required: ['ok', 'problems'] }),
       expect.objectContaining({
@@ -192,10 +202,14 @@ describe('агент с настоящим адаптером Anthropic', () => 
     const { records, agent } = setup();
     const ctx = context({ profile: { ...EMPTY_PROFILE, area: '300 м2' }, level: 'cold' });
 
-    await agent.draftReply(ctx);
+    const drafted = await agent.draftReply(ctx);
     const review = await agent.reviewDraft(ctx, 'Какой у вас бизнес?');
     const interest = await agent.assessInterest(ctx);
 
+    expect(drafted).toEqual({
+      ok: true,
+      value: { outcome: 'answer', text: 'Какой у вас бизнес?', stage: 'intro', usedFacts: ['F7'] },
+    });
     expect(review).toEqual({ ok: true, value: { ok: false, problems: ['Назван срок внедрения'] } });
     expect(interest).toEqual({
       ok: true,

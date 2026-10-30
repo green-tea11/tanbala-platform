@@ -816,6 +816,49 @@ describe('pipeline/handle-inbound: минимум для передачи по �
     expect(h.calls.slice(-3)).toEqual([`reply:${PRICE_ANSWER}:A1`, 'answered:A1', 'turn:price:-']);
   });
 
+  it('ответ модели ушёл: этап и сильные стороны записаны после отправки (30.10.2026)', async () => {
+    const h = setup({
+      drafts: [
+        {
+          ok: true,
+          value: {
+            outcome: 'answer',
+            text: PRICE_ANSWER,
+            stage: 'details',
+            usedFacts: ['F2', 'F4'],
+          },
+        },
+      ],
+      assessment: priceAssessed(),
+    });
+
+    await run(h, batchOf([text('A1')]));
+
+    expect(h.calls.slice(-4)).toEqual([
+      `reply:${PRICE_ANSWER}:A1`,
+      'answered:A1',
+      'turn:price:-',
+      'marks:details:F2,F4',
+    ]);
+  });
+
+  it('ответ не ушёл: этап и сильные стороны не записаны', async () => {
+    const h = setup({
+      drafts: [
+        {
+          ok: true,
+          value: { outcome: 'answer', text: PRICE_ANSWER, stage: 'details', usedFacts: ['F2'] },
+        },
+      ],
+      assessment: priceAssessed(),
+    });
+    h.outbox.sendBotReply.mockResolvedValue('skipped_manager');
+
+    await run(h, batchOf([text('A1')]));
+
+    expect(h.calls.some((call) => call.startsWith('marks:'))).toBe(false);
+  });
+
   it('ответ не ушёл (чат у менеджера): вопрос цены не засчитан', async () => {
     const h = setup({ drafts: [answer(PRICE_ANSWER)], assessment: priceAssessed() });
     h.outbox.sendBotReply.mockResolvedValue('skipped_manager');

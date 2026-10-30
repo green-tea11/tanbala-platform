@@ -162,6 +162,7 @@ function setup(options: SetupOptions = {}): Harness {
     countForPanel: unexpected,
     getProgress: unexpected,
     recordTurn: unexpected,
+    recordReply: unexpected,
     resetProgress: (id) => {
       events.push('chats.resetProgress');
       progressResets.push(id);

@@ -18,6 +18,10 @@ export type ReplyScript =
       readonly companyQuestion?: 'none' | 'confirm' | 'name';
       /** Клиент спрашивал цену или стоимость; по умолчанию false. */
       readonly aboutPrice?: boolean;
+      /** Этап разговора, на котором написан text; по умолчанию details. */
+      readonly stage?: 'intro' | 'hook' | 'explain' | 'details' | 'final';
+      /** Сильные стороны в text; по умолчанию ни одной. */
+      readonly usedFacts?: readonly string[];
     };
 
 /** Ответ оценки интереса: уровень и то, что клиент сказал о своей компании (поля схемы оценки). */
@@ -123,6 +127,8 @@ function rawReply(script: ReplyScript): unknown {
       stopRequested: false,
       companyQuestion: 'none',
       aboutPrice: false,
+      stage: 'details',
+      usedFacts: [],
     };
   }
   return {
@@ -131,6 +137,8 @@ function rawReply(script: ReplyScript): unknown {
     stopRequested: script.stopRequested ?? false,
     companyQuestion: script.companyQuestion ?? 'none',
     aboutPrice: script.aboutPrice ?? false,
+    stage: script.stage ?? 'details',
+    usedFacts: script.usedFacts ?? [],
   };
 }
 

@@ -107,6 +107,7 @@ function setup(options: SetupOptions = {}): Harness {
     countForPanel: unexpected,
     getProgress: unexpected,
     recordTurn: unexpected,
+    recordReply: unexpected,
     resetProgress: unexpected,
     getNote: unexpected,
     setNote: unexpected,

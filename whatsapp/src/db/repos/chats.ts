@@ -1,7 +1,9 @@
 import type Database from 'better-sqlite3';
 import type { ChatsRepo } from '../../domain/ports.js';
 import {
+  CONVERSATION_STAGES,
   PROFILE_FACTS,
+  STRENGTH_IDS,
   type BotNote,
   type Chat,
   type ChatControl,
@@ -16,7 +18,9 @@ import {
   type OpenHandoff,
   type PanelChatRow,
   type ProfileFact,
+  type ReplyMarks,
   type StatusChange,
+  type StrengthId,
   type TurnSignals,
 } from '../../domain/types.js';
 import { assertTimeMs } from '../time.js';
@@ -49,12 +53,16 @@ interface ProfileColumns {
   readonly inferred: string | null;
 }
 
-/** Ход разговора о цене в chats. */
+/** Ход разговора в chats: о цене, рассказанные сильные стороны и этап последнего ответа. */
 interface ProgressRow {
   readonly price_asks: number;
   readonly refused_answers: number;
   /** 1, если у чата есть хоть одна запись в handoffs (открытая или закрытая). */
   readonly handed_off: number;
+  /** JSON-массив номеров сильных сторон. */
+  readonly told_facts: string;
+  /** Этап последнего ответа бота; NULL: ещё не отвечал (CHECK держит список). */
+  readonly last_stage: string | null;
 }
 
 /** Заметка для бота в chats: текст и время есть или нет вместе (CHECK). */
@@ -177,7 +185,9 @@ const UPSERT_PROFILE = `INSERT INTO client_profiles
  * listForPanel и countForPanel: чаты для панели с фильтром по статусу и страницами; limit и offset проверяются
  * (отрицательный LIMIT в SQLite значит «без лимита»), статус только bot или manager.
  * getProgress, recordTurn и resetProgress: ход разговора о цене в колонках chats (price_asks, refused_answers);
- * getProgress ещё говорит, передавался ли чат менеджеру хоть раз (handedOff, только если да: запись в handoffs);
+ * getProgress ещё говорит, передавался ли чат менеджеру хоть раз (handedOff, только если да: запись в handoffs), какие
+ * сильные стороны уже рассказаны (told_facts, только если есть) и этап последнего ответа (last_stage, только если
+ * есть). recordReply: этап заменяется (null не меняет), сильные стороны объединяются; resetProgress их не трогает;
  * getNote и setNote: заметка для бота (bot_note, bot_note_at_ms). Неизвестный чат => явная ошибка.
  */
 export function createChatsRepo(db: Database.Database): ChatsRepo {
@@ -226,6 +236,12 @@ export function createChatsRepo(db: Database.Database): ChatsRepo {
       const params = { id, priceAsked: flag(signals.priceAsked), refused: flag(signals.refused) };
       if (statements.recordTurn.run(params).changes === 0) {
         throw new Error(`Чат #${id} не найден: ход разговора не записан`);
+      }
+    },
+    recordReply(id: ChatId, marks: ReplyMarks): void {
+      const params = { id, stage: marks.stage, facts: JSON.stringify(marks.usedFacts) };
+      if (statements.recordReply.run(params).changes === 0) {
+        throw new Error(`Чат #${id} не найден: этап ответа не записан`);
       }
     },
     resetProgress(id: ChatId): void {
@@ -324,9 +340,17 @@ function prepareStatements(db: Database.Database) {
       )
       .pluck(),
     progress: db.prepare<[number], ProgressRow>(
-      `SELECT c.price_asks, c.refused_answers,
+      `SELECT c.price_asks, c.refused_answers, c.told_facts, c.last_stage,
          EXISTS (SELECT 1 FROM handoffs h WHERE h.chat_id = c.id) AS handed_off
        FROM chats c WHERE c.id = ?`,
+    ),
+    // Объединение без дублей; испорченный JSON в базе считается пустым, неизвестные номера отсеивает чтение.
+    recordReply: db.prepare<{ id: ChatId; stage: string | null; facts: string }>(
+      `UPDATE chats SET last_stage = coalesce(@stage, last_stage),
+         told_facts = (SELECT json_group_array(value) FROM (
+           SELECT value FROM json_each(CASE WHEN json_valid(told_facts) THEN told_facts ELSE '[]' END)
+           UNION SELECT value FROM json_each(@facts)))
+       WHERE id = @id`,
     ),
     recordTurn: db.prepare<{ id: ChatId; priceAsked: 0 | 1; refused: 0 | 1 }>(
       `UPDATE chats SET price_asks = price_asks + @priceAsked,
@@ -450,18 +474,28 @@ function toProfile(row: ProfileColumns): ClientProfile {
   };
 }
 
-/** Пометки «вероятно» из JSON: только известные поля, по порядку PROFILE_FACTS; испорченное значение => пометок нет. */
-function inferredOf(json: string | null): readonly ProfileFact[] {
-  if (json === null) return [];
+/** Значения JSON-массива; не JSON или не массив => пустой набор. */
+function jsonSet(json: string | null): ReadonlySet<unknown> {
+  if (json === null) return new Set();
   let value: unknown;
   try {
     value = JSON.parse(json);
   } catch {
-    return [];
+    return new Set();
   }
-  if (!Array.isArray(value)) return [];
-  const marked = new Set<unknown>(value);
+  return Array.isArray(value) ? new Set<unknown>(value) : new Set();
+}
+
+/** Пометки «вероятно» из JSON: только известные поля, по порядку PROFILE_FACTS; испорченное значение => пометок нет. */
+function inferredOf(json: string | null): readonly ProfileFact[] {
+  const marked = jsonSet(json);
   return PROFILE_FACTS.filter((field) => marked.has(field));
+}
+
+/** Рассказанные сильные стороны из JSON: только известные номера, по порядку F1…F10; испорченное => ни одной. */
+function toldFactsOf(json: string): readonly StrengthId[] {
+  const told = jsonSet(json);
+  return STRENGTH_IDS.filter((id) => told.has(id));
 }
 
 function toNote(row: NoteRow): BotNote | null {
@@ -469,12 +503,26 @@ function toNote(row: NoteRow): BotNote | null {
   return text === null || atMs === null ? null : { text, atMs };
 }
 
+/**
+ * Ход разговора из строки chats: необязательные поля только со значением (передавался, рассказанное, этап), чтобы
+ * новый чат читался как раньше.
+ */
 function toProgress(row: ProgressRow): ChatProgress {
   if (row.refused_answers !== 0 && row.refused_answers !== 1) {
     throw new Error('В chats недопустимое значение отказа отвечать: строка испорчена');
   }
-  const progress = { priceAsks: row.price_asks, refused: row.refused_answers === 1 };
-  return row.handed_off === 1 ? { ...progress, handedOff: true } : progress;
+  const toldFacts = toldFactsOf(row.told_facts);
+  const lastStage =
+    row.last_stage === null
+      ? null
+      : oneOf(CONVERSATION_STAGES, row.last_stage, 'В chats неизвестный этап разговора');
+  return {
+    priceAsks: row.price_asks,
+    refused: row.refused_answers === 1,
+    ...(row.handed_off === 1 ? { handedOff: true } : {}),
+    ...(toldFacts.length === 0 ? {} : { toldFacts }),
+    ...(lastStage === null ? {} : { lastStage }),
+  };
 }
 
 function toHas1C(value: number | null): boolean | null {

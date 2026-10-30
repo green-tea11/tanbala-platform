@@ -99,7 +99,11 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
   it('три вызова разных назначений: черновик и оценка сразу, проверка после; ответ уходит', async () => {
     const { verdict, model, saveAssessment } = await run({ replies: [FIRST] });
 
-    expect(verdict).toEqual({ kind: 'send', text: FIRST as ReviewedText });
+    expect(verdict).toEqual({
+      kind: 'send',
+      text: FIRST as ReviewedText,
+      marks: { stage: 'details', usedFacts: [] },
+    });
     expect(model.purposes()).toEqual(['reply', 'interest', 'review']);
     expect(saveAssessment).toHaveBeenCalledWith(
       CHAT_ID,
@@ -130,7 +134,11 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
   it('оценка интереса hot, а ответ answer: передачи нет, ответ проходит проверку и уходит', async () => {
     const { verdict, model, saveAssessment } = await run({ replies: [FIRST], level: 'hot' });
 
-    expect(verdict).toEqual({ kind: 'send', text: FIRST as ReviewedText });
+    expect(verdict).toEqual({
+      kind: 'send',
+      text: FIRST as ReviewedText,
+      marks: { stage: 'details', usedFacts: [] },
+    });
     expect(model.purposes()).toEqual(['reply', 'interest', 'review']);
     expect(saveAssessment).toHaveBeenCalledTimes(1);
   });
@@ -230,7 +238,11 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
       replies: ['Учёт — это просто. Что вы храните?', SECOND],
     });
 
-    expect(verdict).toEqual({ kind: 'send', text: SECOND as ReviewedText });
+    expect(verdict).toEqual({
+      kind: 'send',
+      text: SECOND as ReviewedText,
+      marks: { stage: 'details', usedFacts: [] },
+    });
     expect(model.purposes()).toEqual(['reply', 'interest', 'reply', 'review']);
     expect(model.requests[2]?.turns.at(-1)?.text).toContain('тире');
   });

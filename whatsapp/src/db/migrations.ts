@@ -284,6 +284,18 @@ ALTER TABLE client_profiles ADD COLUMN shelf_recount TEXT;
 `;
 
 /**
+ * Версия 14 (этап разговора, решение владельца 30.10.2026). chats.told_facts: JSON-массив номеров сильных сторон
+ * (F1…F10 из knowledge/consult.md), уже рассказанных в отправленных ответах бота; по умолчанию '[]'. chats.last_stage:
+ * этап последнего отправленного ответа бота (intro, hook, explain, details, final), NULL: бот ещё не отвечал текстом
+ * модели. Только ADD COLUMN со значениями по умолчанию: живая база версии 13 переходит без переписывания строк.
+ */
+const SCHEMA_V14 = `
+ALTER TABLE chats ADD COLUMN told_facts TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE chats ADD COLUMN last_stage TEXT
+  CHECK (last_stage IN ('intro', 'hook', 'explain', 'details', 'final'));
+`;
+
+/**
  * Миграции по порядку: элемент i переводит схему с версии i на i + 1.
  * Выпущенную миграцию не править: изменения схемы только новой версией в конце списка.
  */
@@ -301,6 +313,7 @@ const MIGRATIONS: readonly string[] = [
   SCHEMA_V11,
   SCHEMA_V12,
   SCHEMA_V13,
+  SCHEMA_V14,
 ];
 
 /**

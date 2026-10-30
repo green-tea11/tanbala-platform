@@ -1,4 +1,9 @@
-import type { NormalizedText, PhoneDigits } from '../domain/types.js';
+import {
+  STRENGTH_IDS,
+  type NormalizedText,
+  type PhoneDigits,
+  type StrengthId,
+} from '../domain/types.js';
 import { amountsOf, priceAmountsOf, sameAmount } from './amounts.js';
 import {
   AI_MENTION_PATTERNS,
@@ -64,7 +69,8 @@ export type CheckCode =
   | 'homoglyph'
   | 'voice'
   | 'estimate_phrase'
-  | 'filler';
+  | 'filler'
+  | 'repeat_fact';
 
 /** Одно нарушение: код и понятное описание с фрагментом текста. */
 export interface CheckFinding {
@@ -96,6 +102,13 @@ export interface CheckOptions {
    * назовёт...» нарушение (решение владельца 29.10.2026 вечером). Нет поля: ход неизвестен, фраза не проверяется.
    */
   readonly priceTurn?: boolean;
+  /**
+   * Номера сильных сторон (consult.md), которые модель отметила в черновике (usedFacts). Вместе с toldFacts включают
+   * проверку повтора (решение владельца 30.10.2026). Нет поля: проверка повтора не идёт.
+   */
+  readonly usedFacts?: readonly StrengthId[];
+  /** Сильные стороны, уже рассказанные в этом чате. Нет поля: проверка повтора не идёт. */
+  readonly toldFacts?: readonly StrengthId[];
 }
 
 /** Чем заменяется название компании клиента перед проверками формы: слово без тире, ссылки, капслока и латиницы. */
@@ -395,6 +408,33 @@ export function checkEstimatePhrase(text: string, priceTurn: boolean): readonly 
 }
 
 /**
+ * В сообщении нет новой сильной стороны (решение владельца 30.10.2026): номера черновика не пусты и все уже рассказаны в
+ * этом чате. Если среди них есть хоть одна новая, нарушения нет: повтор старой рядом с новой допустим. Замечание
+ * называет повторённые номера и те, которых ещё не было.
+ */
+export function checkRepeatedFacts(
+  usedFacts: readonly StrengthId[],
+  toldFacts: readonly StrengthId[],
+): readonly CheckFinding[] {
+  const told = new Set(toldFacts);
+  if (usedFacts.length === 0 || usedFacts.some((id) => !told.has(id))) return [];
+  const used = new Set(usedFacts);
+  const repeated = STRENGTH_IDS.filter((id) => used.has(id));
+  const untold = STRENGTH_IDS.filter((id) => !told.has(id));
+  const verb = repeated.length === 1 ? 'была' : 'были';
+  const advice =
+    untold.length === 0
+      ? 'Все сильные стороны уже рассказаны, не повторяй их'
+      : `Расскажи ту, которой ещё не было: ${untold.join(', ')}`;
+  return [
+    {
+      code: 'repeat_fact',
+      detail: `в сообщении нет новой сильной стороны: ${repeated.join(', ')} уже ${verb} в этом чате. ${advice}`,
+    },
+  ];
+}
+
+/**
  * Пустое вступление в начале ответа (решение владельца 29.10.2026 вечером): «Понятно», «Понятно, у вас…». Узко: только
  * первое слово сообщения; «Понятно ли…» это вопрос, а «понятно» внутри фразы не вступление.
  */
@@ -557,7 +597,9 @@ function maskCompanyName(text: string, name: string | null | undefined): string 
  * Все проверки ответа клиенту. Текст заранее подготовлен normalizeDraft (бренд NormalizedText).
  * Тире, один голос, ссылки, стиль и подмена букв проверяются без названия компании клиента (options.companyName,
  * maskCompanyName), остальное по всему тексту. Цены и стоп-слова с указанием коллеги (options.note) допустимы, только
- * если они есть в нём. Пустой список: ответ можно отдавать на второй вызов (ревью).
+ * если они есть в нём. С номерами сильных сторон черновика и рассказанных в чате (options.usedFacts, toldFacts)
+ * проверяется ещё, есть ли в сообщении новая (checkRepeatedFacts). Пустой список: ответ можно отдавать на второй вызов
+ * (ревью).
  */
 export function runCodeChecks(
   text: NormalizedText,
@@ -582,5 +624,8 @@ export function runCodeChecks(
     ...checkLength(text),
     ...checkFiller(text),
     ...(options.priceTurn === false ? checkEstimatePhrase(text, false) : []),
+    ...(options.usedFacts === undefined || options.toldFacts === undefined
+      ? []
+      : checkRepeatedFacts(options.usedFacts, options.toldFacts)),
   ];
 }

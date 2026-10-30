@@ -63,9 +63,10 @@ const VERSION_5_TABLES = CURRENT_TABLES.filter(
  * Последняя версия схемы: этап 2 дал версию 1, этап 3 версию 2, этапы 4, 5 и 6 версии 3, 4 и 5, определение
  * компании клиента версию 6, минимум для передачи по цене версию 7, заметка для бота версию 8, отметка «у менеджера»
  * при переходе в рабочий режим (этап 8) версию 9, отклонённые черновики для панели версию 10, шире квалификация клиента версию 11, пометки «вероятно» версию 12,
- * поля для расчёта (сколько нового в месяц, проходы, пересчёт полок) версию 13.
+ * поля для расчёта (сколько нового в месяц, проходы, пересчёт полок) версию 13, рассказанные сильные стороны и этап
+ * последнего ответа бота версию 14.
  */
-const CURRENT_VERSION = 13;
+const CURRENT_VERSION = 14;
 
 function columnNames(db: Database.Database, table: string): unknown[] {
   return db.prepare('SELECT name FROM pragma_table_info(?) ORDER BY cid').pluck().all(table);
@@ -275,9 +276,38 @@ describe('runMigrations', () => {
     expect(columnNames(db, 'client_profiles')).not.toContain('monthly_intake');
 
     runMigrations(db, 13);
-    expect(userVersion(db)).toBe(CURRENT_VERSION);
+    expect(userVersion(db)).toBe(13);
     expect(columnNames(db, 'client_profiles')).toEqual(
       expect.arrayContaining(['monthly_intake', 'passages', 'shelf_recount']),
+    );
+  });
+
+  it('живая база версии 13 переходит на 14: чаты на месте, ничего не рассказано, этапа нет', () => {
+    const db = useMemoryDb();
+    runMigrations(db, 13);
+    const chatId = insertChat(db, { replyJid: PN_A });
+    db.prepare('UPDATE chats SET price_asks = 2 WHERE id = ?').run(chatId);
+
+    runMigrations(db);
+
+    expect(userVersion(db)).toBe(CURRENT_VERSION);
+    expect(
+      db.prepare('SELECT price_asks, told_facts, last_stage FROM chats WHERE id = ?').get(chatId),
+    ).toEqual({ price_asks: 2, told_facts: '[]', last_stage: null });
+  });
+
+  it('схема версии 14: этап только из списка, сильные стороны обязательны', () => {
+    const db = useMigratedDb();
+    const chatId = insertChat(db, { replyJid: PN_A });
+
+    for (const stage of ['intro', 'hook', 'explain', 'details', 'final']) {
+      db.prepare('UPDATE chats SET last_stage = ? WHERE id = ?').run(stage, chatId);
+    }
+    expect(() =>
+      db.prepare("UPDATE chats SET last_stage = 'price' WHERE id = ?").run(chatId),
+    ).toThrow(/CHECK/);
+    expect(() => db.prepare('UPDATE chats SET told_facts = NULL WHERE id = ?').run(chatId)).toThrow(
+      /NOT NULL/,
     );
   });
 

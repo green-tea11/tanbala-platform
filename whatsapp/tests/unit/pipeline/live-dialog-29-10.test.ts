@@ -104,7 +104,11 @@ describe('живой тест 29.10.2026: склад 5000 м², ввоз и вы
     expect(second.llm.purposes()).toEqual(['reply', 'interest', 'reply', 'review']);
     // Модель видит вывод о 1С с пометкой: можно уточнить конфигурацию, переспрашивать «есть ли 1С» не нужно.
     expect(second.data('reply')).toContain(INFERRED_1C);
-    expect(s.storage.chats.getProgress(s.chatId())).toEqual({ priceAsks: 2, refused: false });
+    expect(s.storage.chats.getProgress(s.chatId())).toEqual({
+      priceAsks: 2,
+      refused: false,
+      lastStage: 'details',
+    });
   });
 
   it('шаг 2: оба отклонённых черновика с замечаниями в базе для панели, в логе их нет', async () => {

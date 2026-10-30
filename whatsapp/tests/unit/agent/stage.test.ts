@@ -1,0 +1,175 @@
+import { describe, expect, it } from 'vitest';
+import {
+  CALC_FIELDS,
+  calcMissing,
+  recommendStage,
+  stageReplyData,
+  type StageInput,
+} from '../../../src/agent/stage.js';
+import type { ClientProfile, ConversationStage } from '../../../src/domain/types.js';
+import { EMPTY_PROFILE } from './fakes.js';
+
+/** Выжимка, где известно всё для расчёта (решение владельца 30.10.2026). */
+const FULL: ClientProfile = {
+  ...EMPTY_PROFILE,
+  business: 'склад запчастей',
+  items: 'запчасти в коробках',
+  itemCount: 'около 10 тысяч позиций',
+  monthlyIntake: '500 в месяц',
+  passages: 'один вход',
+  has1C: true,
+  city: 'Алматы',
+};
+
+function input(patch: Partial<StageInput> = {}): StageInput {
+  return { profile: FULL, lastStage: null, handedOff: false, ...patch };
+}
+
+describe('agent/stage: всё для расчёта', () => {
+  it('порядок полей: бизнес, что на хранении, сколько, нового в месяц, проходы, 1С, город', () => {
+    expect(CALC_FIELDS).toEqual([
+      'business',
+      'items',
+      'itemCount',
+      'monthlyIntake',
+      'passages',
+      'has1C',
+      'city',
+    ]);
+  });
+
+  it('пустая выжимка: не хватает всего по порядку', () => {
+    expect(calcMissing(EMPTY_PROFILE)).toEqual(CALC_FIELDS);
+  });
+
+  it('пустые и пробельные строки не считаются, has1C false считается выясненным, вывод «вероятно» тоже', () => {
+    const profile: ClientProfile = {
+      ...FULL,
+      items: '  ',
+      city: '',
+      has1C: false,
+      passages: 'два входа',
+      inferred: ['passages'],
+    };
+
+    expect(calcMissing(profile)).toEqual(['items', 'city']);
+  });
+
+  it('остальные поля выжимки (материал, помещение, пересчёт полок) для расчёта не нужны', () => {
+    expect(calcMissing({ ...FULL, material: null, premises: null, shelfRecount: null })).toEqual(
+      [],
+    );
+  });
+});
+
+describe('agent/stage: рекомендуемый этап', () => {
+  it('нет бизнеса: знакомство, при любом прошлом этапе', () => {
+    for (const lastStage of [null, 'intro', 'hook', 'details', 'final'] as const) {
+      expect(recommendStage(input({ profile: { ...FULL, business: null }, lastStage })).stage).toBe(
+        'intro',
+      );
+    }
+  });
+
+  it.each([null, 'intro'] as const)(
+    'бизнес известен, бот ещё не был на крючке (прошлый этап %s): крючок, даже если всё известно',
+    (lastStage) => {
+      expect(recommendStage(input({ lastStage })).stage).toBe('hook');
+    },
+  );
+
+  it('последний ответ бота на крючке: как это работает', () => {
+    expect(recommendStage(input({ lastStage: 'hook' })).stage).toBe('explain');
+    expect(
+      recommendStage(input({ lastStage: 'hook', profile: { ...FULL, city: null } })).stage,
+    ).toBe('explain');
+  });
+
+  it.each(['explain', 'details', 'final'] as const)(
+    'после этапа %s: чего-то не хватает => боли и детали, всё есть => финал',
+    (lastStage: ConversationStage) => {
+      expect(
+        recommendStage(input({ lastStage, profile: { ...FULL, monthlyIntake: null } })).stage,
+      ).toBe('details');
+      expect(recommendStage(input({ lastStage })).stage).toBe('final');
+    },
+  );
+
+  it('чат уже передавался коллеге: финал не предлагается, всё известно => боли и детали', () => {
+    expect(recommendStage(input({ lastStage: 'details', handedOff: true }))).toEqual({
+      stage: 'details',
+      missing: [],
+      missingWords: [],
+    });
+  });
+
+  it('недостающее для расчёта приходит полями и человеческими словами по порядку', () => {
+    const advice = recommendStage(
+      input({ lastStage: 'explain', profile: { ...EMPTY_PROFILE, business: 'банк' } }),
+    );
+
+    expect(advice.missing).toEqual([
+      'items',
+      'itemCount',
+      'monthlyIntake',
+      'passages',
+      'has1C',
+      'city',
+    ]);
+    expect(advice.missingWords).toEqual([
+      'что лежит на хранении и в каком виде',
+      'сколько этого примерно',
+      'сколько нового приходит в месяц',
+      'сколько проходов нужно учитывать',
+      'есть ли 1С и какая',
+      'город',
+    ]);
+  });
+});
+
+describe('agent/stage: строки данных вызова ответа', () => {
+  it('этап по данным системы с номером и названием, недостающее, рассказанное и вопросы цены', () => {
+    const text = stageReplyData({
+      advice: recommendStage(input({ lastStage: 'hook', profile: { ...FULL, city: null } })),
+      toldFacts: ['F2', 'F3'],
+      priceAsks: 2,
+    });
+
+    expect(text.split('\n')).toEqual([
+      'Этап по данным системы: 3 как это работает. Если из последнего сообщения клиента ясно другое (например, он сам знает RFID или уже назвал всё нужное), выбери этап сам и верни его в stage.',
+      'Для расчёта не хватает: город.',
+      'Уже рассказано: F2, F3.',
+      'До этого сообщения клиент спрашивал цену 2 раза.',
+    ]);
+  });
+
+  it.each([
+    ['intro', '1 знакомство'],
+    ['hook', '2 крючок'],
+    ['explain', '3 как это работает'],
+    ['details', '4 боли и детали'],
+    ['final', '5 финал'],
+  ] as const)('этап %s словами: %s', (stage, words) => {
+    const text = stageReplyData({ advice: { stage, missing: [], missingWords: [] } });
+
+    expect(text).toContain(`Этап по данным системы: ${words}.`);
+  });
+
+  it('всё известно, ничего не рассказано, цену не спрашивал: строки «известно всё», без рассказанного и цены', () => {
+    const text = stageReplyData({ advice: recommendStage(input({ lastStage: 'details' })) });
+
+    expect(text).toContain('Для расчёта известно всё.');
+    expect(text).not.toMatch(/Уже рассказано|цену/);
+  });
+
+  it('вопросы цены: «раз» и «раза» по числу, ноль не пишется', () => {
+    const advice = recommendStage(input());
+
+    expect(stageReplyData({ advice, priceAsks: 1 })).toContain('спрашивал цену 1 раз.');
+    expect(stageReplyData({ advice, priceAsks: 3 })).toContain('спрашивал цену 3 раза.');
+    expect(stageReplyData({ advice, priceAsks: 5 })).toContain('спрашивал цену 5 раз.');
+    expect(stageReplyData({ advice, priceAsks: 12 })).toContain('спрашивал цену 12 раз.');
+    expect(stageReplyData({ advice, priceAsks: 22 })).toContain('спрашивал цену 22 раза.');
+    expect(stageReplyData({ advice, priceAsks: 0 })).not.toMatch(/цену/);
+  });
+});

@@ -91,7 +91,8 @@ const TAKE_ABSORBED_NOTE = `bot_note IS NULL AND (status_changed_at IS NULL
       OR (SELECT bot_note_at_ms FROM chats WHERE id = @absorbed) >= status_changed_at)`;
 
 /**
- * Ход разговора о цене: вопросов цены больше из двух, отказ отвечать остаётся, если был у любого чата. Заметка для
+ * Ход разговора о цене: вопросов цены больше из двух, отказ отвечать остаётся, если был у любого чата. Рассказанные
+ * сильные стороны объединяются, этап последнего ответа свой у оставшегося, а если его нет, слитого. Заметка для
  * бота: своя у оставшегося чата, а если её нет, то слитого, но только не старше последней смены статуса оставшегося
  * (TAKE_ABSORBED_NOTE). UPDATE в SQLite читает старые значения строки (CASE видит прежний bot_note и статус
  * оставшегося до записи слитых колонок), поэтому подзапросы видят слитый чат до удаления.
@@ -99,6 +100,11 @@ const TAKE_ABSORBED_NOTE = `bot_note IS NULL AND (status_changed_at IS NULL
 const MERGE_PROGRESS = `UPDATE chats SET
     price_asks = max(price_asks, (SELECT price_asks FROM chats WHERE id = @absorbed)),
     refused_answers = max(refused_answers, (SELECT refused_answers FROM chats WHERE id = @absorbed)),
+    told_facts = (SELECT json_group_array(value) FROM (
+      SELECT value FROM json_each(CASE WHEN json_valid(told_facts) THEN told_facts ELSE '[]' END)
+      UNION SELECT value FROM json_each((SELECT CASE WHEN json_valid(told_facts) THEN told_facts ELSE '[]' END
+        FROM chats WHERE id = @absorbed)))),
+    last_stage = coalesce(last_stage, (SELECT last_stage FROM chats WHERE id = @absorbed)),
     bot_note = CASE WHEN ${TAKE_ABSORBED_NOTE}
       THEN (SELECT bot_note FROM chats WHERE id = @absorbed) ELSE bot_note END,
     bot_note_at_ms = CASE WHEN ${TAKE_ABSORBED_NOTE}

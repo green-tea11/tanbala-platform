@@ -26,6 +26,7 @@ import type {
   PanelChatRow,
   PhoneDigits,
   RejectedDraft,
+  ReplyMarks,
   SendOrigin,
   StatusChange,
   StoredMessage,
@@ -332,6 +333,11 @@ export interface ChatsRepo {
   getProgress(id: ChatId): ChatProgress;
   /** Ответ бота ушёл: вопрос цены в этом ходе прибавляет один, отказ отвечать ставится и остаётся. */
   recordTurn(id: ChatId, signals: TurnSignals): void;
+  /**
+   * Ответ модели ушёл клиенту: этап последнего ответа заменяется (stage null его не меняет), рассказанные сильные
+   * стороны объединяются с прежними (решение владельца 30.10.2026).
+   */
+  recordReply(id: ChatId, marks: ReplyMarks): void;
   /** Возврат чата боту: счётчик вопросов цены и отказ обнуляются. Можно звать внутри UnitOfWork.run. */
   resetProgress(id: ChatId): void;
   /** Заметка для бота (указание коллеги); нет => null. */

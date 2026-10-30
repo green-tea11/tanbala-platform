@@ -13,8 +13,10 @@ import type {
   RejectionSource,
   ReplyDraft,
   ReplyHandoffOutcome,
+  ReplyMarks,
   ReviewedText,
   StoredMessage,
+  StrengthId,
   TurnSignals,
 } from '../domain/types.js';
 import {
@@ -72,12 +74,15 @@ export type HandoffVerdict =
  * Ответ клиенту: проверенный текст и вопрос о компании из того черновика answer, чей текст уходит (нет поля => ни о
  * чём). Вопрос запоминается только после отправки: каждый задаётся один раз. signals: клиент в этом ходе спросил цену
  * или отказался отвечать (нет поля => ни того ни другого); записывается тоже только после отправки (chats.recordTurn).
+ * marks: этап и сильные стороны черновика answer, чей текст уходит (решение владельца 30.10.2026); только у текста
+ * модели, у фиксированных фраз и безопасных вопросов поля нет. Записывается после отправки (chats.recordReply).
  */
 export interface SendVerdict {
   readonly kind: 'send';
   readonly text: ReviewedText;
   readonly companyQuestion?: CompanyQuestion;
   readonly signals?: TurnSignals;
+  readonly marks?: ReplyMarks;
 }
 
 /**
@@ -427,7 +432,9 @@ async function judge(flow: Flow, draft: ReplyDraft, attempt: Attempt): Promise<J
     const empty = { ...draft, text: '' };
     return judgementOf(decideAction({ kind: 'handoff_outcome', draft: empty }), keep);
   }
-  const checked = await checkDraft(flow, draft.outcome, text, attempt, keep);
+  // Повтор сильной стороны проверяется только у ответа: сообщение о передаче её не рассказывает.
+  const usedFacts = draft.outcome === 'answer' ? draft.usedFacts : undefined;
+  const checked = await checkDraft(flow, draft.outcome, text, attempt, keep, usedFacts);
   if (checked.kind === 'failed') return verdictOf(checked.verdict);
   const decision = decideAction({
     kind: 'text',
@@ -436,11 +443,19 @@ async function judge(flow: Flow, draft: ReplyDraft, attempt: Attempt): Promise<J
     attempt,
   });
   logDroppedText(flow, draft, decision);
-  return judgementOf(
-    decision,
-    keep,
-    draft.outcome === 'answer' ? draft.companyQuestion : undefined,
-  );
+  if (draft.outcome !== 'answer') return judgementOf(decision, keep);
+  return judgementOf(decision, keep, draft.companyQuestion, marksOf(draft));
+}
+
+/**
+ * Этап и сильные стороны черновика answer для записи после отправки; черновик не назвал ни того ни другого (подделки
+ * LLM в тестах) => отметок нет.
+ */
+function marksOf(
+  draft: Extract<ReplyDraft, { readonly outcome: 'answer' }>,
+): ReplyMarks | undefined {
+  if (draft.stage === undefined && (draft.usedFacts ?? []).length === 0) return undefined;
+  return { stage: draft.stage ?? null, usedFacts: draft.usedFacts ?? [] };
 }
 
 /**
@@ -570,9 +585,10 @@ async function checkDraft(
   text: NormalizedText,
   attempt: Attempt,
   keep: ReplyVerdict | null,
+  usedFacts?: readonly StrengthId[],
 ): Promise<Checked> {
   const { deps, context } = flow;
-  const codeGate = codeGateOf(flow, text, attempt);
+  const codeGate = codeGateOf(flow, text, attempt, usedFacts);
   if (codeGate !== null) {
     const remarks = codeGate.findings.map((finding) => finding.detail);
     recordRejection(flow, { attempt, source: 'code', draft: text, remarks });
@@ -621,23 +637,28 @@ function recordRejection(flow: Flow, rejection: Rejection): void {
 
 /**
  * Нарушения проверок кодом или null, если их нет. Цена и обещание допустимы, только если они есть в заметке для бота
- * (указание коллеги, context.note). В лог идут только виды нарушений.
+ * (указание коллеги, context.note). С номерами сильных сторон черновика (usedFacts) проверяется и повтор уже
+ * рассказанного в чате (context.progress.toldFacts). В лог идут только виды нарушений.
  */
 function codeGateOf(
   flow: Flow,
   text: NormalizedText,
   attempt: Attempt,
+  usedFacts: readonly StrengthId[] | undefined,
 ): Extract<DraftGate, { readonly kind: 'code_failed' }> | null {
   const { deps, context } = flow;
   const clientText = clientTextOf(context.history);
   const companyName = companyNameOf(context.company);
   const note = context.note?.text ?? null;
+  const facts =
+    usedFacts === undefined ? {} : { usedFacts, toldFacts: context.progress?.toldFacts ?? [] };
   const [first, ...rest] = runCodeChecks(text, {
     ownPhone: NO_OWN_PHONE,
     clientText,
     companyName,
     note,
     priceTurn: flow.price.signals.priceAsked,
+    ...facts,
   });
   if (first === undefined) return null;
   const findings = [first, ...rest] as const;
@@ -696,19 +717,24 @@ function verdictOf(verdict: ReplyVerdict): Judgement {
   return { kind: 'verdict', verdict };
 }
 
-/** Решение decideAction как итог попытки; question: вопрос о компании из черновика answer, он идёт с ответом. */
+/**
+ * Решение decideAction как итог попытки; question и marks: вопрос о компании и отметки (этап, сильные стороны) из
+ * черновика answer, они идут с ответом.
+ */
 function judgementOf(
   decision: Decision,
   keep: ReplyVerdict | null,
   question?: CompanyQuestion,
+  marks?: ReplyMarks,
 ): Judgement {
   switch (decision.kind) {
     case 'send':
-      return verdictOf(
-        question === undefined
-          ? { kind: 'send', text: decision.text }
-          : { kind: 'send', text: decision.text, companyQuestion: question },
-      );
+      return verdictOf({
+        kind: 'send',
+        text: decision.text,
+        ...(question === undefined ? {} : { companyQuestion: question }),
+        ...(marks === undefined ? {} : { marks }),
+      });
     case 'retry':
       return { kind: 'retry', feedback: decision.feedback, keep };
     case 'handoff':

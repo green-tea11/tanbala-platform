@@ -11,6 +11,7 @@ import {
   checkLinks,
   checkMarkup,
   checkPrices,
+  checkRepeatedFacts,
   checkStopWords,
   checkStyle,
   checkVoice,
@@ -20,7 +21,7 @@ import {
   type CheckCode,
   type CheckFinding,
 } from '../../../src/checks/code-checks.js';
-import type { NormalizedText, PhoneDigits } from '../../../src/domain/types.js';
+import type { NormalizedText, PhoneDigits, StrengthId } from '../../../src/domain/types.js';
 import { groupQuestion, QUESTION_GROUPS } from '../../../src/pipeline/safe-questions.js';
 
 // Перенос docs/reference/test_checks.py (B-web-email) на WhatsApp. Номера только фиктивные.
@@ -1443,6 +1444,63 @@ describe('фраза об ориентире только на ходу с во�
     'Ориентир на входе и выходе ставят ридеры.',
   ])('без фразы об ориентире: «%s» не нарушение', (text) => {
     expect(checkEstimatePhrase(text, false)).toEqual([]);
+  });
+});
+
+describe('checkRepeatedFacts: в сообщении нет новой сильной стороны (30.10.2026)', () => {
+  function withFacts(
+    usedFacts: readonly StrengthId[] | undefined,
+    toldFacts: readonly StrengthId[] | undefined,
+  ) {
+    return runCodeChecks(normalizeDraft(NEUTRAL), {
+      ownPhone: OWN_PHONE,
+      clientText: '',
+      ...(usedFacts === undefined ? {} : { usedFacts }),
+      ...(toldFacts === undefined ? {} : { toldFacts }),
+    });
+  }
+
+  it('все номера черновика уже рассказаны в чате: нарушение с замечанием, что рассказать вместо', () => {
+    const findings = checkRepeatedFacts(['F3', 'F2'], ['F2', 'F3', 'F4']);
+
+    expect(codes(findings)).toEqual(new Set(['repeat_fact']));
+    expect(details(findings)).toBe(
+      'в сообщении нет новой сильной стороны: F2, F3 уже были в этом чате. Расскажи ту, которой ещё не было: F1, F5, F6, F7, F8, F9, F10',
+    );
+    expect(codes(withFacts(['F2'], ['F2']))).toEqual(new Set(['repeat_fact']));
+  });
+
+  it('все сильные стороны уже рассказаны: замечание не повторять их', () => {
+    const all: readonly StrengthId[] = [
+      'F1',
+      'F2',
+      'F3',
+      'F4',
+      'F5',
+      'F6',
+      'F7',
+      'F8',
+      'F9',
+      'F10',
+    ];
+
+    expect(details(checkRepeatedFacts(['F6'], all))).toBe(
+      'в сообщении нет новой сильной стороны: F6 уже была в этом чате. Все сильные стороны уже рассказаны, не повторяй их',
+    );
+  });
+
+  it.each([
+    [['F2', 'F5'], ['F2']],
+    [['F1'], []],
+    [[], ['F1', 'F2']],
+  ] as const)('черновик %j, рассказано %j: нарушения нет', (usedFacts, toldFacts) => {
+    expect(checkRepeatedFacts(usedFacts, toldFacts)).toEqual([]);
+    expect(withFacts(usedFacts, toldFacts)).toEqual([]);
+  });
+
+  it('без номеров черновика или рассказанного проверка повтора не идёт', () => {
+    expect(withFacts(undefined, ['F2'])).toEqual([]);
+    expect(withFacts(['F2'], undefined)).toEqual([]);
   });
 });
 

@@ -225,6 +225,7 @@ function createChatsRepo(data: PanelData): Harness['chats'] {
     countForPanel: vi.fn((query) => filtered(query.status).length),
     getProgress: unused('chats.getProgress'),
     recordTurn: unused('chats.recordTurn'),
+    recordReply: unused('chats.recordReply'),
     resetProgress: unused('chats.resetProgress'),
     getNote: vi.fn((id) => data.notes.get(id) ?? null),
     setNote: unused('chats.setNote'),

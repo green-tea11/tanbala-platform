@@ -40,7 +40,13 @@ export { SEND_RETRY_DELAY_MS } from './sending.js';
 export interface PipelineDeps {
   readonly chats: Pick<
     ChatsRepo,
-    'getById' | 'findByJid' | 'saveAssessment' | 'getProgress' | 'recordTurn' | 'getNote'
+    | 'getById'
+    | 'findByJid'
+    | 'saveAssessment'
+    | 'getProgress'
+    | 'recordTurn'
+    | 'recordReply'
+    | 'getNote'
   >;
   readonly messages: Pick<
     MessagesRepo,
@@ -168,7 +174,8 @@ interface Noticed {
  * из сводки (подтверждённое или со слов клиента); перед решением название
  * читается заново, после оценки интереса. Ответ ушёл (sent) и в этом ходе клиент спросил цену или отказался отвечать
  * => chats.recordTurn: вопрос цены засчитывается, только когда бот на него ответил, поэтому перегенерация пачки его не
- * удваивает.
+ * удваивает. Ушёл текст модели с отметками (этап и сильные стороны, решение владельца 30.10.2026) => chats.recordReply,
+ * тоже только после отправки: отклонённые черновики и фиксированные фразы их не меняют.
  * 6. markAnswered один раз в конце пачки и только если что-то ушло (ответ, фраза про голосовое или записанная
  *    передача с фразой): иначе второй ответ пачки получил бы 'skipped_no_inbound'.
  * 7. Итог replied => company.identifyAfterReply (поиск по названию со слов клиента, проверка новой компании, логотип);
@@ -439,6 +446,7 @@ async function sendAnswer(
     const replied = finish(deps, chatId, turn, { kind: 'replied' });
     deps.company.markAsked(chatId, verdict.companyQuestion ?? 'none', text);
     if (verdict.signals !== undefined) deps.chats.recordTurn(chatId, verdict.signals);
+    if (verdict.marks !== undefined) deps.chats.recordReply(chatId, verdict.marks);
     return replied;
   }
   if (result === 'skipped_manager') return SILENT_MANAGER;

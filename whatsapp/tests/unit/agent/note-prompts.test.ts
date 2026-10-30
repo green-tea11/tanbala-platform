@@ -5,6 +5,7 @@ import type { BotNote } from '../../../src/domain/types.js';
 import {
   ANY_DASH,
   context,
+  EMPTY_PROFILE,
   fakeLlm,
   KNOWLEDGE,
   MODELS,
@@ -143,40 +144,30 @@ describe('agent: указание коллеги в системном пром�
     expect(onlyRequest(requests).system).toEqual(buildSystem(KNOWLEDGE, 'reply'));
   });
 
-  it('заметка есть: строки о цене говорят отвечать ориентиром из указания', async () => {
+  it('заметка есть: в данных строки об этапе без финала (чат передавался), строк о цене и текста заметки нет (30.10.2026)', async () => {
     const { requests, agent } = agentWith(ANSWER);
-
-    await agent.draftReply(context({ note: NOTE }));
-
-    expect(onlyRequest(requests).turns.at(-1)?.text).toMatch(
-      /В указании коллеги есть ориентир цены: на вопрос цены отвечай им/,
-    );
-  });
-});
-
-describe('agent: заметка с суммой в строках о цене (ревью 29.10.2026, второй круг)', () => {
-  it('в заметке есть сумма: строки велят назвать её и не передавать чат', async () => {
-    const { requests, agent } = agentWith(ANSWER);
-
-    await agent.draftReply(context({ note: NOTE, progress: { priceAsks: 2, refused: true } }));
-
-    const data = onlyRequest(requests).turns.at(-1)?.text ?? '';
-    expect(data).toMatch(/В указании коллеги есть ориентир цены: на вопрос цены отвечай им/);
-    expect(data).not.toMatch(/передай чат сразу/);
-  });
-
-  it('заметка-задание без суммы: строки о передаче при отказе остаются', async () => {
-    const { requests, agent } = agentWith(ANSWER);
+    const known = {
+      ...EMPTY_PROFILE,
+      business: 'склад',
+      items: 'коробки',
+      itemCount: '3000',
+      monthlyIntake: '200',
+      passages: 'один вход',
+      has1C: true,
+      city: 'Алматы',
+    };
 
     await agent.draftReply(
       context({
-        note: { text: 'Узнай число вещей', atMs: 1 },
-        progress: { priceAsks: 0, refused: true },
+        note: NOTE,
+        profile: known,
+        progress: { priceAsks: 2, refused: true, lastStage: 'details' },
       }),
     );
 
     const data = onlyRequest(requests).turns.at(-1)?.text ?? '';
-    expect(data).toMatch(/передай чат сразу/);
-    expect(data).toMatch(/Если в указании коллеги есть ориентир цены/);
+    expect(data).toContain('Этап по данным системы: 4 боли и детали.');
+    expect(data).toContain('До этого сообщения клиент спрашивал цену 2 раза.');
+    expect(data).not.toMatch(/указании коллеги|передай чат|1 500 000/);
   });
 });

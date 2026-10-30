@@ -473,7 +473,11 @@ describe('сценарии владельца: вопрос цены', () => {
     expect(second.toClient).toEqual([ASK_COUNT]);
     expect(second.toManager).toEqual([]);
     expect(s.storage.chats.getById(s.chatId())?.control.status).toBe('bot');
-    expect(s.storage.chats.getProgress(s.chatId())).toEqual({ priceAsks: 2, refused: false });
+    expect(s.storage.chats.getProgress(s.chatId())).toEqual({
+      priceAsks: 2,
+      refused: false,
+      lastStage: 'details',
+    });
   });
 });
 

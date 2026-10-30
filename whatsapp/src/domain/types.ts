@@ -203,6 +203,47 @@ export const PROFILE_FACTS: readonly ProfileFact[] = [
 ];
 
 /**
+ * Этап разговора (knowledge/consult.md, раздел 5; решение владельца 30.10.2026): знакомство, крючок (боль и плюс, вопрос
+ * о RFID), как это работает, боли и детали для расчёта, финал (сводка и передача коллеге).
+ */
+export type ConversationStage = 'intro' | 'hook' | 'explain' | 'details' | 'final';
+
+/** Этапы по порядку разговора. */
+export const CONVERSATION_STAGES: readonly ConversationStage[] = [
+  'intro',
+  'hook',
+  'explain',
+  'details',
+  'final',
+];
+
+/** Номер сильной стороны Tanbala из knowledge/consult.md (раздел 2): нужен системе, клиенту не пишется. */
+export type StrengthId = 'F1' | 'F2' | 'F3' | 'F4' | 'F5' | 'F6' | 'F7' | 'F8' | 'F9' | 'F10';
+
+/** Номера сильных сторон по порядку: так они хранятся и показываются. */
+export const STRENGTH_IDS: readonly StrengthId[] = [
+  'F1',
+  'F2',
+  'F3',
+  'F4',
+  'F5',
+  'F6',
+  'F7',
+  'F8',
+  'F9',
+  'F10',
+];
+
+/**
+ * Отметки отправленного ответа модели: на каком этапе он написан и какие сильные стороны в нём рассказаны. stage null:
+ * черновик этапа не назвал (подделки LLM в тестах), прежний этап тогда не меняется.
+ */
+export interface ReplyMarks {
+  readonly stage: ConversationStage | null;
+  readonly usedFacts: readonly StrengthId[];
+}
+
+/**
  * Что оценка интереса узнала о последних сообщениях клиента, на которые бот сейчас отвечает (не выжимка):
  * спрашивает ли он цену и отказывается ли отвечать на вопросы бота.
  */
@@ -255,6 +296,13 @@ export interface ChatProgress {
    * вечером). Нет поля => не передавался.
    */
   readonly handedOff?: boolean;
+  /**
+   * Сильные стороны, уже рассказанные в отправленных ответах бота, по порядку F1…F10 (решение владельца 30.10.2026).
+   * Возврат чата боту их не обнуляет. Нет поля => ничего не рассказано.
+   */
+  readonly toldFacts?: readonly StrengthId[];
+  /** Этап последнего отправленного ответа бота (текст модели). Нет поля => бот ещё не отвечал текстом модели. */
+  readonly lastStage?: ConversationStage;
 }
 
 /**
@@ -404,6 +452,10 @@ export type ReplyDraft =
        * пользуется, только если оценка интереса этого хода не вернула сигналов (pipeline/price-gate.ts).
        */
       readonly aboutPrice?: boolean;
+      /** Этап разговора, на котором написан text; нет поля => модель не назвала (подделки LLM в тестах). */
+      readonly stage?: ConversationStage;
+      /** Сильные стороны (consult.md), которые есть в text, без дублей; нет поля => ни одной. */
+      readonly usedFacts?: readonly StrengthId[];
     }
   | {
       readonly outcome: ReplyHandoffOutcome;
@@ -413,6 +465,10 @@ export type ReplyDraft =
        * не пишут). У hot с фиксированной фразой клиенту уходит фраза о цене (HandoffNotice).
        */
       readonly aboutPrice?: boolean;
+      /** Этап разговора, на котором написан text; нет поля => модель не назвала. */
+      readonly stage?: ConversationStage;
+      /** Сильные стороны (consult.md), которые есть в text, без дублей; нет поля => ни одной. */
+      readonly usedFacts?: readonly StrengthId[];
     }
   | { readonly outcome: Extract<HandoffReason, 'complaint'>; readonly stopRequested: boolean };
 

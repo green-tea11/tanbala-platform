@@ -1,29 +1,31 @@
 import { z } from 'zod';
-import { priceAmountsOf } from '../checks/amounts.js';
 import type { ModelsConfig } from '../config/env.js';
 import type { CompanyPrompt, LogoReader } from '../domain/company.js';
 import type { ImageInput, LlmClient, Logger, SystemBlock } from '../domain/ports.js';
-import type {
-  BotNote,
-  ChatId,
-  ChatProgress,
-  ClientProfile,
-  InterestAssessment,
-  InterestLevel,
-  LlmPurpose,
-  LlmResult,
-  ReplyDraft,
-  ReviewResult,
-  StoredMessage,
+import {
+  CONVERSATION_STAGES,
+  STRENGTH_IDS,
+  type BotNote,
+  type ChatId,
+  type ChatProgress,
+  type ClientProfile,
+  type ConversationStage,
+  type InterestAssessment,
+  type InterestLevel,
+  type LlmPurpose,
+  type LlmResult,
+  type ReplyDraft,
+  type ReviewResult,
+  type StoredMessage,
+  type StrengthId,
 } from '../domain/types.js';
-import { ESTIMATE_LATER } from '../handoff/minimum.js';
 import { cleanLine } from './clean-text.js';
 import { companyReplyData, companyReviewData } from './company-data.js';
 import { interestCallData, interestSchema, normalizeInterest } from './interest.js';
 import type { Knowledge } from './knowledge.js';
-import { priceReplyData } from './price-data.js';
 import { profileText } from './profile.js';
 import { buildSystem, buildTurns, noteBlock } from './prompts.js';
+import { recommendStage, stageReplyData } from './stage.js';
 import {
   EMPTY_DRAFT_REVIEW,
   normalizeReview,
@@ -51,8 +53,9 @@ export interface ConversationContext {
    */
   readonly company?: CompanyPrompt;
   /**
-   * Ход разговора о цене (chats.getProgress): вопросы цены с последнего возврата боту и отказ отвечать. Его видит
-   * вызов ответа в строках о цене. Не передан => вопросов цены не было, отказа нет.
+   * Ход разговора (chats.getProgress): вопросы цены с последнего возврата боту, отказ отвечать, передавался ли чат,
+   * рассказанные сильные стороны и этап последнего ответа. Его видит вызов ответа в строках об этапе (agent/stage.ts).
+   * Не передан => вопросов цены не было, ничего не рассказано, бот ещё не отвечал.
    */
   readonly progress?: ChatProgress;
   /**
@@ -66,9 +69,6 @@ export interface ConversationContext {
    */
   readonly note?: BotNote | null;
 }
-
-/** Ход разговора, когда конвейер его не передал: вопросов цены не было, отказа нет. */
-const NO_PROGRESS: ChatProgress = { priceAsks: 0, refused: false };
 
 /**
  * Три отдельных вызова LLM из плана: ответ, проверка черновика, оценка интереса.
@@ -149,6 +149,12 @@ export const replyDraftSchema = z.object({
     .describe(
       'true, если клиент в последних сообщениях спрашивал цену или стоимость; иначе false.',
     ),
+  stage: z
+    .enum(CONVERSATION_STAGES as [ConversationStage, ...ConversationStage[]])
+    .describe('Этап разговора, на котором написан text'),
+  usedFacts: z
+    .array(z.enum(STRENGTH_IDS as [StrengthId, ...StrengthId[]]))
+    .describe('Номера сильных сторон из consult.md, которые есть в text; иначе пустой список'),
 });
 
 type RawReplyDraft = z.infer<typeof replyDraftSchema>;
@@ -168,8 +174,26 @@ const LOGO_TASK = 'Фото профиля клиента в WhatsApp. Како�
 const MAX_LOGO_NAME_CHARS = 200;
 
 /**
+ * Этап и сильные стороны черновика с текстом: этап, если модель его назвала; номера без дублей по порядку F1…F10, если
+ * они есть. Подделки LLM в тестах полей не пишут: тогда их нет и в черновике.
+ */
+function stageMarks(raw: RawReplyDraft): {
+  readonly stage?: ConversationStage;
+  readonly usedFacts?: readonly StrengthId[];
+} {
+  const { stage, usedFacts } = raw as Partial<RawReplyDraft>;
+  const used = new Set(usedFacts ?? []);
+  const facts = STRENGTH_IDS.filter((id) => used.has(id));
+  return {
+    ...(stage === undefined ? {} : { stage }),
+    ...(facts.length === 0 ? {} : { usedFacts: facts }),
+  };
+}
+
+/**
  * Противоречивый ответ модели нормализуется здесь один раз: text берётся у answer, hot, no_answer и asked_human,
- * stopRequested только у complaint, aboutPrice у исходов передачи и у answer (там он запасной сигнал вопроса цены). answer без текста => invalid_output, не
+ * stopRequested только у complaint, aboutPrice у исходов передачи и у answer (там он запасной сигнал вопроса цены),
+ * этап и сильные стороны (stageMarks) у тех же исходов с текстом. answer без текста => invalid_output, не
  * угадывать (fail-closed). У hot, no_answer и asked_human пустой text допустим: чат всё равно уходит менеджеру,
  * клиенту пишется фиксированная фраза.
  */
@@ -184,7 +208,7 @@ function normalizeReplyDraft(raw: RawReplyDraft): LlmResult<ReplyDraft> {
     case 'hot':
     case 'no_answer':
     case 'asked_human': {
-      const draft = { outcome: raw.outcome, text: raw.text.trim() };
+      const draft = { outcome: raw.outcome, text: raw.text.trim(), ...stageMarks(raw) };
       // Подделки LLM в тестах поля не пишут: нет поля => false, и в черновик оно не попадает.
       return { ok: true, value: raw.aboutPrice === true ? { ...draft, aboutPrice: true } : draft };
     }
@@ -200,14 +224,34 @@ function answerDraft(text: string, raw: RawReplyDraft): ReplyDraft {
   const question = (raw as Partial<RawReplyDraft>).companyQuestion;
   const asked = question === 'confirm' || question === 'name' ? { companyQuestion: question } : {};
   const price = raw.aboutPrice === true ? { aboutPrice: true } : {};
-  return { outcome: 'answer', text, ...asked, ...price };
+  return { outcome: 'answer', text, ...asked, ...price, ...stageMarks(raw) };
 }
 
 /**
- * Данные вызова ответа по порядку: строки о цене (priceReplyData: минимум для передачи, вопросы цены, отказ отвечать;
- * они есть всегда), что известно о компании клиента (companyReplyData), выясненное о клиенте (выжимка, подписанная как
- * слова клиента) и непустые замечания проверки. Строки системы идут раньше значений из слов клиента (ревью 29.10.2026):
- * значение выжимки не выдаст себя за строку о минимуме. Блок о компании берёт боли справки после withKnownPains.
+ * Строки об этапе (agent/stage.ts, решение владельца 30.10.2026): рекомендуемый этап по выжимке до этого хода, этапу
+ * последнего ответа бота и тому, передавался ли чат (заметка для бота бывает только после возврата, значит, передавался),
+ * недостающее для расчёта, рассказанные сильные стороны и сколько раз клиент спрашивал цену. Вопрос цены модели
+ * объясняет инструкция, строк о минимуме передачи в данных нет.
+ */
+function stageData(context: ConversationContext): string {
+  const progress = context.progress;
+  const advice = recommendStage({
+    profile: context.profile,
+    lastStage: progress?.lastStage ?? null,
+    handedOff: progress?.handedOff === true || context.note != null,
+  });
+  return stageReplyData({
+    advice,
+    toldFacts: progress?.toldFacts ?? [],
+    priceAsks: progress?.priceAsks ?? 0,
+  });
+}
+
+/**
+ * Данные вызова ответа по порядку: строки системы об этапе (stageData; они есть всегда), что известно о компании
+ * клиента (companyReplyData), выясненное о клиенте (выжимка, подписанная как слова клиента) и непустые замечания
+ * проверки. Строки системы идут раньше значений из слов клиента (ревью 29.10.2026): значение выжимки не выдаст себя за
+ * строку системы. Блок о компании берёт боли справки после withKnownPains.
  */
 function replyCallData(
   context: ConversationContext,
@@ -220,20 +264,12 @@ function replyCallData(
     problems.length === 0
       ? null
       : ['Замечания проверки к прошлому черновику, исправь их:', ...numbered].join('\n');
-  const price = priceReplyData({
-    profile: context.profile,
-    company,
-    companyName: context.companyName ?? null,
-    progress: context.progress ?? NO_PROGRESS,
-    hasNote: context.note != null,
-    notePrice: context.note != null && priceAmountsOf(context.note.text).length > 0,
-    clientMessages: context.history.filter((message) => message.author === 'client').length,
-    estimateSaid: context.history.some(
-      (message) =>
-        message.author === 'bot' && message.text !== null && message.text.includes(ESTIMATE_LATER),
-    ),
-  });
-  const parts = [price, companyReplyData(company), profileText(context.profile), remarks];
+  const parts = [
+    stageData(context),
+    companyReplyData(company),
+    profileText(context.profile),
+    remarks,
+  ];
   return parts.filter((part) => part !== null).join('\n\n');
 }
 
@@ -364,8 +400,9 @@ function createAsk(deps: AgentDeps): Ask {
  * Все вызовы: system = buildSystem(knowledge, purpose) (знания с кэшем, затем инструкция вызова без кэша; блок
  * знаний у трёх вызовов один и тот же, поэтому кэш общий); turns = buildTurns(history, HISTORY_MESSAGES, данные
  * вызова): данные в последней реплике user в блоке «данные». Сбой LLM возвращается как есть, значением.
- * draftReply: модель models.reply, данные вызова: текущая выжимка, блок о компании, строки о цене (минимум для
- * передачи и ход разговора) и замечания проверки (feedback); схема replyDraftSchema, ответ нормализуется в ReplyDraft.
+ * draftReply: модель models.reply, данные вызова: строки об этапе (этап, недостающее для расчёта, рассказанное, вопросы
+ * цены), блок о компании, текущая выжимка и замечания проверки (feedback); схема replyDraftSchema, ответ нормализуется в
+ * ReplyDraft.
  * reviewDraft: модель models.review, данные вызова: что допустимо о компании клиента и текст черновика (не репликой
  * assistant); схема reviewSchema, противоречия снимает normalizeReview. Пустой черновик не проходит и LLM не вызывает.
  * В блоке о компании ответа и проверки боли справки только из списка раздела 5 документа владельца (withKnownPains,

@@ -68,15 +68,18 @@ describe('сценарии владельца 29.10.2026: минимум пер�
     expect(turn.toManager).toEqual([]);
     expect(s.storage.handoffs.findOpen(s.chatId())).toBeNull();
     expect(s.storage.chats.getById(s.chatId())?.control).toEqual({ status: 'bot', by: null });
-    // Черновик пишется параллельно с оценкой этого сообщения: выжимка в данных до него, вопросы даны группами.
+    // Черновик пишется параллельно с оценкой этого сообщения: выжимка в данных до него. С 30.10.2026 в данных этап и
+    // недостающее для расчёта, а не строки о минимуме передачи.
     const data = turn.data('reply');
-    expect(data).toContain('Для передачи по цене собрано: ничего');
-    expect(data).toContain('о котором клиент не сказал в последнем сообщении');
-    expect(data).toMatch(
-      /Недостающее по группам: 1\) из какой клиент компании \(companyQuestion: name\); 2\) какие вещи клиент хочет учитывать/,
-    );
+    expect(data).toContain('Этап по данным системы: 1 знакомство.');
+    expect(data).toMatch(/Для расчёта не хватает: чем занимается клиент, что лежит на хранении/);
+    expect(data).not.toMatch(/Для передачи по цене|Недостающее по группам/);
     // Вопрос цены засчитан: ответ ушёл.
-    expect(s.storage.chats.getProgress(s.chatId())).toEqual({ priceAsks: 1, refused: false });
+    expect(s.storage.chats.getProgress(s.chatId())).toEqual({
+      priceAsks: 1,
+      refused: false,
+      lastStage: 'details',
+    });
   });
 
   it('диалог 28.10, модель по старой привычке отвечает hot: код не передаёт чат, повтор с замечанием даёт вопрос', async () => {
@@ -181,9 +184,7 @@ describe('сценарии владельца 29.10.2026: минимум пер�
     expect(second.outcome).toEqual({ kind: 'replied' });
     expect(third.outcome).toEqual({ kind: 'replied' });
     expect([second.toManager, third.toManager]).toEqual([[], []]);
-    expect(fourth.data('reply')).toMatch(
-      /спрашивал цену 3 раза[^\n]*четвёртый раз: передай чат сразу \(hot\)/,
-    );
+    expect(fourth.data('reply')).toContain('До этого сообщения клиент спрашивал цену 3 раза.');
     expect(fourth.outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
     expect(fourth.toClient).toEqual([PRICE_PHRASE]);
   });
@@ -212,6 +213,7 @@ describe('сценарии владельца 29.10.2026: минимум пер�
       priceAsks: 0,
       refused: false,
       handedOff: true,
+      lastStage: 'details',
     });
   });
 });

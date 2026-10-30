@@ -292,6 +292,9 @@ export function setup(options: Options = {}): Harness {
           `turn:${signals.priceAsked ? 'price' : '-'}:${signals.refused ? 'refused' : '-'}`,
         );
       },
+      recordReply: (_id, marks) => {
+        calls.push(`marks:${marks.stage ?? '-'}:${marks.usedFacts.join(',')}`);
+      },
     },
     messages: {
       recent: () => HISTORY,

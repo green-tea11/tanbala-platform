@@ -460,6 +460,7 @@ function setupWithRealOutbox(managerJid: Jid | null): RealOutboxHarness {
       countForPanel: unexpected,
       getProgress: unexpected,
       recordTurn: unexpected,
+      recordReply: unexpected,
       resetProgress: unexpected,
       getNote: unexpected,
       setNote: unexpected,

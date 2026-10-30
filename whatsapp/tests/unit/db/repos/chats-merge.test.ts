@@ -133,6 +133,27 @@ describe('слияние чатов: ход разговора о цене', () 
     expect(chats.getNote(merge(chats).id)).toEqual({ text: 'свежее указание', atMs });
   });
 
+  it('рассказанные сильные стороны объединяются, этап остаётся у оставшегося, а если его нет, берётся у слитого', () => {
+    const { chats, survivor, absorbed } = pair();
+    chats.recordReply(survivor.id, { stage: null, usedFacts: ['F3'] });
+    chats.recordReply(absorbed.id, { stage: 'explain', usedFacts: ['F1', 'F3'] });
+
+    expect(chats.getProgress(merge(chats).id)).toEqual({
+      priceAsks: 0,
+      refused: false,
+      toldFacts: ['F1', 'F3'],
+      lastStage: 'explain',
+    });
+  });
+
+  it('этап у обоих: остаётся этап оставшегося чата', () => {
+    const { chats, survivor, absorbed } = pair();
+    chats.recordReply(survivor.id, { stage: 'details', usedFacts: [] });
+    chats.recordReply(absorbed.id, { stage: 'hook', usedFacts: [] });
+
+    expect(chats.getProgress(merge(chats).id)).toMatchObject({ lastStage: 'details' });
+  });
+
   it('у слитого чата ничего нет: ход оставшегося не меняется', () => {
     const { chats, survivor } = pair();
     chats.recordTurn(survivor.id, { priceAsked: true, refused: true });
