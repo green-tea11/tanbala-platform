@@ -1,0 +1,6 @@
+dist/
+coverage/
+data/
+web/dist/
+package-lock.json
+**/*.md

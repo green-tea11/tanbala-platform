@@ -1,0 +1,7 @@
+# Единые окончания строк LF: консоль работает на Linux VPS
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary

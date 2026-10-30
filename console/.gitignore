@@ -1,0 +1,38 @@
+# Секреты: токены к почте и боту. Шаблон .env.example коммитится
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Данные: пользователи (хэши паролей), сессии, журнал действий
+data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+
+# Зависимости, сборка (сервер и интерфейс), отчёты тестов
+node_modules/
+dist/
+web/dist/
+coverage/
+*.tsbuildinfo
+
+# Логи
+logs/
+*.log
+
+# Windows и редакторы
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+*.lnk
+.DS_Store
+.idea/
+.vscode/
+
+# Локальные настройки Claude Code
+.claude/settings.local.json
