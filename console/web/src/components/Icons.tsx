@@ -54,3 +54,9 @@ export const IconRefresh = (p: IconProps) => (
 export const IconSend = (p: IconProps) => (
   <Svg {...p}><path d="M2.5 8h10M8.5 4l4 4-4 4" /></Svg>
 );
+export const IconCheck = (p: IconProps) => (
+  <Svg {...p}><path d="m3 8.5 3.2 3L13 4.5" /></Svg>
+);
+export const IconCross = (p: IconProps) => (
+  <Svg {...p}><path d="m4 4 8 8M12 4l-8 8" /></Svg>
+);

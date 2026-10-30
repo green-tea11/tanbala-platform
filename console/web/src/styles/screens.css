@@ -72,7 +72,8 @@
 .split-list { position: sticky; top: 12px; max-height: calc(100dvh - 24px); overflow-y: auto; overscroll-behavior: contain; }
 .list-item { display: block; padding: 12px 16px; border-bottom: 1px solid var(--rule); transition: background-color var(--t-fast) ease; }
 .list-item:hover { background: #f6f9fc; }
-.list-item[aria-current="page"] { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+.list-item { border-left: 3px solid transparent; }
+.list-item[aria-current="page"] { background: var(--accent-soft); border-left-color: var(--accent); }
 .list-item .row-line1 { justify-content: space-between; }
 
 .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--gap); align-items: start; }
@@ -98,7 +99,7 @@
   padding: 20px;
   border-radius: 12px;
   background: var(--surface);
-  box-shadow: 0 12px 32px rgb(18 21 24 / 0.18);
+  box-shadow: 0 12px 32px rgb(18 21 24 / 0.18); /* taste-skill-ignore: окно подтверждения висит над страницей */
   animation: rise-in var(--t-med) var(--ease-out);
 }
 .confirm-sheet h2 { font-size: 18px; line-height: 24px; font-weight: 600; }
@@ -171,7 +172,7 @@
 .letter-actions { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--rule); }
 .checks li { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 8px; padding: 6px 0; border-top: 1px solid var(--rule); line-height: 20px; }
 .checks li:first-child { border-top: 0; }
-.checks .mark { font-weight: 700; }
+.checks .mark { display: inline-flex; padding-top: 2px; }
 .checks .ok .mark { color: var(--positive); }
 .checks .bad .mark { color: var(--negative); }
 .pain-list li { padding: 8px 0; border-top: 1px solid var(--rule); font-size: 13px; line-height: 18px; }

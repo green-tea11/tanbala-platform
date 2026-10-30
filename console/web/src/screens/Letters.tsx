@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Panel, Unavailable } from '../components/Bits';
-import { IconExternal } from '../components/Icons';
+import { IconCheck, IconCross, IconExternal } from '../components/Icons';
 import { Chips, ConfirmSheet, OutcomeLine, Pager, PageTitle, useAction, useQueryParams, type ConfirmRequest } from '../components/Ui';
 import { apiGet } from '../lib/api';
 import { clockTime, safeExternalUrl } from '../lib/format';
@@ -165,7 +165,7 @@ function LetterView({ letter, owner, onDone }: { readonly letter: Letter; readon
 
       <Panel id="letter-checks" title={letter.checksFailed ? `Проверки: не прошло ${letter.checksFailed} из ${letter.checksTotal}` : `Проверки: все ${letter.checksTotal} пройдены`}>
         {letter.checks.length === 0 ? <p className="empty">Проверки ещё не запускались.</p> : (
-          <ul className="checks">{letter.checks.map((check) => <li key={check.code} className={check.passed ? 'ok' : 'bad'}><span className="mark" aria-hidden="true">{check.passed ? '✓' : '✕'}</span><span>{check.label}<span className="visually-hidden">{check.passed ? ': пройдена' : ': не пройдена'}</span>{check.details.length ? <span className="muted"> · {check.details.join('; ')}</span> : null}</span></li>)}</ul>
+          <ul className="checks">{letter.checks.map((check) => <li key={check.code} className={check.passed ? 'ok' : 'bad'}><span className="mark" aria-hidden="true">{check.passed ? <IconCheck /> : <IconCross />}</span><span>{check.label}<span className="visually-hidden">{check.passed ? ': пройдена' : ': не пройдена'}</span>{check.details.length ? <span className="muted"> · {check.details.join('; ')}</span> : null}</span></li>)}</ul>
         )}
         {letter.testSends.length ? (
           <ul className="rows" style={{ marginTop: 12 }}>{letter.testSends.map((t) => <li key={t.id} className="history-row"><span className="num">{clockTime(t.createdAt, now)}</span><span>{t.ok ? 'тест ушёл' : <span className="bad-text">тест не ушёл</span>} на {t.sentTo}</span>{t.error ? <span className="muted">{t.error}</span> : null}</li>)}</ul>

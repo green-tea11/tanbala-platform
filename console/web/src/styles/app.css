@@ -115,7 +115,7 @@ a { color: inherit; text-decoration: none; }
 }
 .nav a svg { flex: none; color: var(--muted); }
 .nav a:hover { background: #dbe3eb; }
-.nav a[aria-current="page"] { background: var(--active); color: var(--text); font-weight: 600; box-shadow: inset 0 0 0 1px var(--border); }
+.nav a[aria-current="page"] { background: var(--active); color: var(--text); font-weight: 600; outline: 1px solid var(--border); outline-offset: -1px; }
 .nav a[aria-current="page"] svg { color: var(--accent); }
 .nav .count {
   margin-left: auto;
