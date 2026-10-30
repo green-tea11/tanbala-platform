@@ -5,9 +5,12 @@ Jinja экранирует всё, ссылки выводятся только 
 каждый POST требует CSRF-токен и своё Origin. Отправки писем здесь нет.
 На сервере интерфейс открывают через Caddy по имени из PUBLIC_UI_HOST (HTTPS и пароль в Caddy); внутренний API
 по этому имени недоступен.
+Порты разные (serve, PortSplit): на --port (8000) только /internal (бот и консоль), на --ui-port (8001) только
+интерфейс. Так процесс, которому можно ходить на 8000 (бот), не нажмёт кнопки интерфейса.
 
 Модули: labels (подписи и лимиты), format (форматирование), queries (чтение из базы),
-views (данные для шаблонов), internal (API для WhatsApp-бота по токену), этот файл: безопасность, маршруты и запуск.
+views (данные для шаблонов), actions (действия кнопок, общие с API консоли), internal (API для WhatsApp-бота
+по токену), console (API для единой панели по своему токену), этот файл: безопасность, маршруты и запуск.
 """
 
 from __future__ import annotations
@@ -21,12 +24,14 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import psycopg
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -37,18 +42,16 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from tanbala_leads import __version__, browsers, contact_policy, db, pipeline
-from tanbala_leads.internal import brief, research
-from tanbala_leads.settings import load_settings
-from tanbala_leads.steps import approve as approve_step
+from tanbala_leads import __version__, browsers, db, pipeline
+from tanbala_leads.internal import research
+from tanbala_leads.settings import Settings, load_settings
 from tanbala_leads.steps import collect
 from tanbala_leads.steps import send as send_step
-from tanbala_leads.web import internal
+from tanbala_leads.web import actions, console, internal
 from tanbala_leads.web import queries as q
 from tanbala_leads.web import views
 from tanbala_leads.web.format import (
     Cost,
-    decode_upload,
     fmt_date,
     fmt_dt,
     fmt_int,
@@ -56,17 +59,13 @@ from tanbala_leads.web.format import (
     letters_url,
     parse_id,
     plural,
-    prepare_import_text,
 )
 from tanbala_leads.web.labels import (
-    BLOCKED_MESSAGE,
     COMPANY_SEARCH_MAX_LENGTH,
     COMPANY_STATUSES,
     DB_ERROR_MESSAGE,
     DONE_MESSAGES,
     ERROR_MESSAGES,
-    IMPORT_INVALID_SHOWN,
-    IMPORT_KINDS,
     LETTER_FORMS,
     MAX_DB_ID,
     MAX_FORM_BYTES,
@@ -77,6 +76,7 @@ from tanbala_leads.web.labels import (
     TEST_OFF_TEXT,
     TOKEN_FORMS,
 )
+from tanbala_leads.web.ports import PortSplit, bind_sockets, check_ports, make_server, run_server
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +85,7 @@ TEMPLATES_DIR = WEB_DIR / "templates"
 STATIC_DIR = WEB_DIR / "static"
 
 BIND_HOST = "127.0.0.1"
+DEFAULT_API_PORT = 8000  # /internal: бот и консоль; интерфейс на --ui-port (cli: 8001)
 # Защита от DNS rebinding: чужое имя хоста в запросе получает 400. Порт не сравнивается:
 # «127.0.0.1:8000» и «localhost:8000» проходят (так их шлют браузер и HTTP-клиент бота).
 ALLOWED_HOSTS = ("127.0.0.1", "localhost")
@@ -99,7 +100,6 @@ CSP = (
     "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
     "form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
 )
-REJECTED_MESSAGE = "Письмо уже отклонено. Новый черновик напишет следующий запуск."
 # После одобрения или отклонения в очереди дальше идёт следующее письмо, ждущее проверки.
 NEXT_LETTER_FILTERS = frozenset({"pending", "all"})
 
@@ -135,6 +135,17 @@ async def _security_headers(request: Request, call_next: Callable) -> Response:
 
 def _redirect(url: str) -> RedirectResponse:
     return RedirectResponse(url, status_code=303)
+
+
+T = TypeVar("T")
+
+
+def page_action(action: Callable[[], T]) -> T:
+    """Действие из web/actions.py для страницы: отказ — страница ошибки с прежним статусом и текстом."""
+    try:
+        return action()
+    except actions.ActionError as exc:
+        raise HTTPException(exc.page_status, exc.page_message) from exc
 
 
 def parse_public_host(value: str) -> str | None:
@@ -175,7 +186,12 @@ class HostRules:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] in ("http", "websocket") and self.refused(scope):
-            await PlainTextResponse("Invalid host header", status_code=400)(scope, receive, send)
+            # API консоли отвечает ошибками своего вида {"error", "message"}; остальное как раньше.
+            if console.is_console_path(scope["path"]):
+                response: Response = console.error(400, "bad_request", console.HOST_MESSAGE)
+            else:
+                response = PlainTextResponse("Invalid host header", status_code=400)
+            await response(scope, receive, send)
             return
         await self.app(scope, receive, send)
 
@@ -184,7 +200,9 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
                csrf_token: str | None = None, daily_budget_usd: float | None = None,
                send_test: Callable[[psycopg.Connection, int], send_step.TestSendResult] | None = None,
                test_address: str | None = None, internal_token: str | None = None,
-               research_queue: research.ResearchQueue | None = None, public_host: str | None = None) -> FastAPI:
+               research_queue: research.ResearchQueue | None = None, public_host: str | None = None,
+               console_token: str | None = None, api_port: int | None = None,
+               ui_port: int | None = None) -> FastAPI:
     """Собрать приложение. connect открывает соединение на запрос, start_run запускает поиск в фоне.
 
     daily_budget_usd: суточный лимит расходов на API для сводки на странице поиска (None: не показывать).
@@ -194,7 +212,13 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
     research_queue: очередь проверок новых компаний для бота (internal/research.py).
     public_host: имя интерфейса за Caddy (parse_public_host). Пускается только к интерфейсу, своё Origin у него
     https://имя: Caddy принимает HTTPS, а сюда приходит по HTTP.
+    console_token: токен API консоли (web/console.py, LEADS_CONSOLE_TOKEN); пустой или неверного вида выключает его.
+    С токеном бота он совпадать не может: иначе бот получил бы права консоли.
+    api_port и ui_port: порты API и интерфейса (PortSplit); без api_port всё на одном порту (тесты, ui_demo).
     """
+    check_tokens(internal_token, console_token)
+    if api_port is None and ui_port is not None:
+        raise ValueError("ui_port без api_port: порт API обязателен")
     token = csrf_token or secrets.token_urlsafe(32)
     # Компаниям здесь не отправляется ничего: только тест, и только на зашитый в send.py адрес владельца.
     test_to = test_address if send_test is not None and test_address in send_step.TEST_RECIPIENTS else None
@@ -206,6 +230,8 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=[*ALLOWED_HOSTS, *([public_host] if public_host else [])],
                        www_redirect=False)
     app.add_middleware(HostRules, public_host=public_host)
+    if api_port is not None:
+        app.add_middleware(PortSplit, api_port=api_port, ui_port=ui_port)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @contextmanager
@@ -221,6 +247,10 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
             yield conn
 
     app.include_router(internal.make_router(open_conn, internal_token, research_queue))
+    # Отдельно от роутера бота: свой токен на всех путях /internal/console, свои ошибки.
+    app.include_router(console.make_router(console.ConsoleDeps(
+        open_conn=open_conn, token=console_token, start_run=start_run, send_test=send_test, test_to=test_to,
+        daily_budget_usd=daily_budget_usd, research_per_day=research_queue.per_day if research_queue else None)))
 
     def make_csrf_form(max_bytes: int) -> Callable:
         async def csrf_form(request: Request) -> dict[str, Any]:
@@ -314,6 +344,9 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
 
     @app.exception_handler(StarletteHTTPException)
     async def http_error(request: Request, exc: StarletteHTTPException) -> Response:
+        # Токен по пути: /internal/console — токен консоли, остальной /internal — токен бота, как раньше.
+        if console.is_console_path(request.url.path):
+            return console.framework_error(request, exc.status_code, console_token)
         if internal.is_internal(request):
             return internal.framework_error(request, exc.status_code, internal_token)
         detail = exc.detail if isinstance(exc.detail, str) else ""
@@ -328,10 +361,33 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
     async def internal_api_error(request: Request, exc: internal.InternalError) -> Response:
         return internal.error(exc.status_code, exc.code)
 
+    @app.exception_handler(console.ConsoleError)
+    async def console_api_error(request: Request, exc: console.ConsoleError) -> Response:
+        return exc.response()
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError) -> Response:
+        if console.is_console_path(request.url.path):
+            return console.framework_error(request, 400, console_token)
+        return await request_validation_exception_handler(request, exc)
+
+    @app.exception_handler(Exception)
+    async def unexpected_error(request: Request, exc: Exception) -> Response:
+        """Необработанная ошибка: API консоли получает JSON без текста исключения, остальное как у Starlette."""
+        if console.is_console_path(request.url.path):
+            try:  # и здесь сначала токен: 500 видит только тот, кому можно в API консоли
+                console.check_access(request, console_token)
+            except console.ConsoleError as denied:
+                return denied.response()
+            return console.error(500, "internal", console.INTERNAL_MESSAGE)
+        return PlainTextResponse("Internal Server Error", status_code=500)
+
     @app.exception_handler(psycopg.Error)
     async def db_error(request: Request, exc: psycopg.Error) -> Response:
         # Текст ошибки не пишем: в нём бывают адрес сервера и имя пользователя базы.
         logger.error("Ошибка базы данных: %s, sqlstate=%s", type(exc).__name__, getattr(exc, "sqlstate", None))
+        if console.is_console_path(request.url.path):
+            return console.error(503, "db_unavailable", DB_ERROR_MESSAGE)
         if internal.is_internal(request):
             return internal.error(503, "db_unavailable")
         if request.url.path.startswith("/api/"):
@@ -350,15 +406,10 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
     def create_run(request: Request, form: dict[str, str] = Depends(csrf_form)) -> Response:
         city, query, count_text = form.get("city", ""), form.get("query", "").strip(), form.get("max_companies", "")
         values = views.search_form(city, query, count_text.strip())
-        count = parse_id(count_text)
         try:
-            if count is None:
-                raise ValueError(f"Число компаний должно быть от 1 до {pipeline.MAX_COMPANIES_LIMIT}")
-            run_id = start_run(city, query, count)
-        except pipeline.RunAlreadyActive as exc:
-            message, status_code = str(exc), 409
-        except ValueError as exc:  # в том числе BudgetExceeded: суточный лимит расходов
-            message, status_code = str(exc), 400
+            run_id = actions.start_search(start_run, city, query, parse_id(count_text))
+        except actions.ActionError as exc:  # в том числе суточный лимит расходов: здесь 400, как раньше
+            message, status_code = exc.page_message, exc.page_status
         else:
             return _redirect(f"/?run={int(run_id)}")
         with open_conn() as conn:
@@ -386,18 +437,14 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
     def block_company(company_id: int, form: dict[str, Any] = Depends(csrf_form),
                       conn: psycopg.Connection = Depends(get_conn)) -> Response:
         """«Больше не писать»: компания и её корпоративный домен в do_not_contact."""
-        if q.fetch_company(conn, company_id) is None:
-            raise HTTPException(404, "Компания не найдена.")
-        contact_policy.block_company(conn, company_id, note="кнопка «Больше не писать»")
+        page_action(lambda: actions.block_company(conn, company_id))
         return _redirect(f"/companies/{company_id}?done=blocked")
 
     @app.post("/companies/{company_id:int}/whatsapp-clear")
     def clear_whatsapp(company_id: int, form: dict[str, Any] = Depends(csrf_form),
                        conn: psycopg.Connection = Depends(get_conn)) -> Response:
         """«Снять отметку WhatsApp»: собеседник бота назвал чужую компанию. Снимаются обе пометки."""
-        if q.fetch_company(conn, company_id) is None:
-            raise HTTPException(404, "Компания не найдена.")
-        brief.clear_whatsapp_marks(conn, company_id)
+        page_action(lambda: actions.clear_whatsapp(conn, company_id))
         logger.info("Компания %s: отметки WhatsApp сняты кнопкой в карточке", company_id)
         return _redirect(f"/companies/{company_id}?done=whatsapp_cleared")
 
@@ -420,37 +467,29 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
         """Текст из файла списка и ошибка для владельца. Нет файла: пустая строка."""
         if upload is None or not upload.filename:
             return "", None
-        data = upload.file.read(MAX_UPLOAD_BYTES + 1)
-        if len(data) > MAX_UPLOAD_BYTES:
-            return "", "Файл больше 1 МБ. Разделите список на части."
-        text = decode_upload(data)
-        if text is None:
-            return "", "Файл не в кодировке UTF-8. Сохраните его как UTF-8 и загрузите снова."
-        return text, None
+        try:
+            return actions.decode_list_file(upload.file.read(MAX_UPLOAD_BYTES + 1)), None
+        except actions.ActionError as exc:
+            return "", exc.page_message
 
     @app.post("/history/import")
     def import_history(request: Request, form: dict[str, Any] = Depends(csrf_upload),
                        conn: psycopg.Connection = Depends(get_conn)) -> HTMLResponse:
         """Импорт «Уже писали раньше» (адреса) или «Не писать» (адреса и домены): текст и/или файл."""
         kind = form.get("kind")
-        if kind not in IMPORT_KINDS:
-            raise HTTPException(400, "Неизвестный список.")
+        refused = page_action(lambda: actions.import_refused(kind))
         typed = form.get("text", "")
         file_text, error = read_upload(form["_files"].get("file"))
-        items = prepare_import_text(typed + "\n" + file_text)
-        if error is None and not items:
-            error = "Список пуст: вставьте адреса или выберите файл."
+        if error is None:
+            try:
+                outcome = actions.import_list(conn, refused, typed + "\n" + file_text)
+            except actions.ActionError as exc:
+                error = exc.page_message
         if error:
             return render_history(request, conn, result={"kind": kind, "error": error}, form_text={kind: typed},
                                   status_code=400)
-        try:
-            outcome = contact_policy.import_contacts(conn, items, refused=IMPORT_KINDS[kind])
-        except ValueError as exc:
-            return render_history(request, conn, result={"kind": kind, "error": str(exc)}, form_text={kind: typed},
-                                  status_code=400)
         result = {"kind": kind, "error": None, "added": outcome.added, "skipped": outcome.skipped,
-                  "invalid": outcome.invalid[:IMPORT_INVALID_SHOWN],
-                  "invalid_more": max(0, len(outcome.invalid) - IMPORT_INVALID_SHOWN)}
+                  "invalid": outcome.invalid, "invalid_more": outcome.invalid_more}
         return render_history(request, conn, result=result)
 
     # ---------- письма ----------
@@ -467,23 +506,6 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
         return render_letters(request, conn, status=status, run=run, draft_id=draft_id, done=done,
                               edit_requested=edit == "1")
 
-    def draft_ref(conn, draft_id: int) -> dict[str, Any]:
-        ref = q.fetch_draft_ref(conn, draft_id)
-        if ref is None:
-            raise HTTPException(404, "Письмо не найдено.")
-        # Кнопки отклонённого письма скрыты; старая вкладка или повтор запроса не должны его вернуть.
-        if ref["review_status"] == "rejected":
-            raise HTTPException(409, REJECTED_MESSAGE)
-        return ref
-
-    def run_action(action: Callable[[], Any]) -> None:
-        try:
-            action()
-        except approve_step.DraftNotFound as exc:
-            raise HTTPException(409, "Письмо уже отправлено или отклонено.") from exc
-        except psycopg.errors.IntegrityError as exc:
-            raise HTTPException(409, "У компании уже есть другое активное письмо.") from exc
-
     def after_decision(conn, ref: dict[str, Any], form: dict[str, str], done: str) -> RedirectResponse:
         """Из очереди: к следующему письму на проверку (или к пустой очереди). С карточки: обратно в карточку."""
         if form.get("back") != "letters":
@@ -496,33 +518,32 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
     @app.post("/drafts/{draft_id:int}/approve")
     def approve_draft(draft_id: int, form: dict[str, str] = Depends(csrf_form),
                       conn: psycopg.Connection = Depends(get_conn)) -> Response:
-        ref = draft_ref(conn, draft_id)
-        # Кнопка у такой компании выключена; сервер не полагается на то, что её не нажали.
-        if ref["blocked"]:
-            raise HTTPException(409, BLOCKED_MESSAGE)
-        run_action(lambda: approve_step.approve(conn, draft_id, REVIEWER))
+        ref = page_action(lambda: actions.draft_ref(conn, draft_id))
+        page_action(lambda: actions.approve(conn, ref, REVIEWER))
         return after_decision(conn, ref, form, "approved")
 
     @app.post("/drafts/{draft_id:int}/reject")
     def reject_draft(draft_id: int, form: dict[str, str] = Depends(csrf_form),
                      conn: psycopg.Connection = Depends(get_conn)) -> Response:
-        ref = draft_ref(conn, draft_id)
-        run_action(lambda: approve_step.reject(conn, draft_id, REVIEWER))
+        ref = page_action(lambda: actions.draft_ref(conn, draft_id))
+        page_action(lambda: actions.reject(conn, ref, REVIEWER))
         return after_decision(conn, ref, form, "rejected")
 
     @app.post("/drafts/{draft_id:int}/edit")
     def edit_draft(request: Request, draft_id: int, form: dict[str, str] = Depends(csrf_form),
                    conn: psycopg.Connection = Depends(get_conn)) -> Response:
-        ref = draft_ref(conn, draft_id)
-        subject, body, error = views.validate_draft_edit(form.get("subject", ""), form.get("body", ""))
+        ref = page_action(lambda: actions.draft_ref(conn, draft_id))
         from_queue = form.get("back") == "letters"
-        if error:
-            edit = {"subject": subject, "body": body, "error": error}
+        try:
+            actions.edit(conn, ref, form.get("subject", ""), form.get("body", ""))
+        except actions.EditRefused as exc:  # форма открывается снова с введённым текстом
+            edit = {"subject": exc.subject, "body": exc.body, "error": exc.page_message}
             if from_queue:
                 return render_letters(request, conn, status=form.get("status"), run=form.get("run"),
-                                      draft_id=draft_id, edit=edit, status_code=400)
-            return render_company(request, conn, ref["company_id"], edit=edit, status_code=400)
-        run_action(lambda: approve_step.update_draft(conn, draft_id, subject, body))
+                                      draft_id=draft_id, edit=edit, status_code=exc.page_status)
+            return render_company(request, conn, ref["company_id"], edit=edit, status_code=exc.page_status)
+        except actions.ActionError as exc:
+            raise HTTPException(exc.page_status, exc.page_message) from exc
         if from_queue:
             status = views.letter_filter(form.get("status"), "pending")
             return _redirect(letters_url(draft_id, status=status, run_id=parse_id(form.get("run")), done="saved"))
@@ -532,9 +553,7 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
     def send_test_draft(request: Request, draft_id: int, form: dict[str, Any] = Depends(csrf_form),
                         conn: psycopg.Connection = Depends(get_conn)) -> Response:
         """«Отправить тест»: письмо уходит только на адрес владельца, компании ничего не отправляется."""
-        ref = q.fetch_draft_ref(conn, draft_id)
-        if ref is None:
-            raise HTTPException(404, "Письмо не найдено.")
+        ref = page_action(lambda: actions.draft_for_test_send(conn, draft_id))
         from_queue = form.get("back") == "letters"
         status, run = form.get("status"), form.get("run")
 
@@ -544,16 +563,10 @@ def create_app(connect: Callable[[], psycopg.Connection], start_run: Callable[[s
                                       send_error=message, status_code=status_code)
             return render_company(request, conn, ref["company_id"], send_error=message, status_code=status_code)
 
-        if test_to is None:
-            return show_error(TEST_OFF_TEXT + ".", 409)
-        if ref["review_status"] == "rejected":
-            return show_error(REJECTED_TEST_TEXT, 409)
         try:
-            send_test(conn, draft_id)
-        except send_step.SendBlocked as exc:
-            return show_error(str(exc), 409)
-        except send_step.SendFailed as exc:
-            return show_error(str(exc), 502)
+            actions.send_test(conn, ref, test_to=test_to, sender=send_test)
+        except actions.ActionError as exc:
+            return show_error(exc.page_message, exc.page_status)
         if from_queue:
             filter_code = views.letter_filter(status, ref["review_status"])
             return _redirect(letters_url(draft_id, status=filter_code, run_id=parse_id(run), done="test_sent"))
@@ -604,11 +617,44 @@ def server_options(host: str, port: int) -> dict[str, Any]:
     return {"host": host, "port": port, "proxy_headers": False, "server_header": False, "log_config": log_config()}
 
 
-def serve(host: str = BIND_HOST, port: int = 8000) -> None:
-    """Настоящее приложение: миграции, пометить прерванные запуски и проверки, uvicorn только на 127.0.0.1."""
+def check_tokens(internal_token: str | None, console_token: str | None) -> None:
+    """Токен консоли не может совпадать с токеном бота: бот получил бы права одобрять письма и запускать поиск.
+
+    Текст ошибки без значений токенов.
+    """
+    if console_token and console_token == internal_token:
+        raise ValueError("LEADS_CONSOLE_TOKEN совпадает с INTERNAL_API_TOKEN: у консоли и бота должны быть"
+                         " разные токены")
+
+
+def log_startup(settings: Settings, public_host: str | None, port: int, ui_port: int | None) -> None:
+    logger.info("Внутренний API (бот и консоль): http://%s:%s/internal", BIND_HOST, port)
+    if ui_port is not None:
+        logger.info("Интерфейс: http://%s:%s", BIND_HOST, ui_port)
+    else:
+        logger.info("Интерфейса нет: порт --ui-port не задан")
+    if public_host:
+        logger.info("Интерфейс открыт и по имени %s (через Caddy, HTTPS); внутренний API по нему недоступен",
+                    public_host)
+    if not internal.token_ok(settings.internal_api_token, settings.internal_api_token):
+        logger.warning("Внутренний API выключен: INTERNAL_API_TOKEN пустой или короче %s символов",
+                       internal.MIN_TOKEN_CHARS)
+    if not console.token_valid(settings.leads_console_token):
+        logger.warning("API консоли выключен: LEADS_CONSOLE_TOKEN пустой или не от 32 до 512 видимых символов ASCII")
+
+
+def serve(host: str = BIND_HOST, port: int = DEFAULT_API_PORT, ui_port: int | None = None) -> None:
+    """Настоящее приложение: миграции, пометить прерванные запуски и проверки, uvicorn только на 127.0.0.1.
+
+    port: внутренний API (/internal: бот и консоль), больше ничего. ui_port: старый интерфейс на своём порту;
+    без него интерфейса нет (python -m tanbala_leads web передаёт --ui-port всегда, по умолчанию 8001).
+    Оба сокета занимаются до базы: если порт занят, прерванные запуски не помечаются и сервер не стартует.
+    """
     if host != BIND_HOST:
         raise ValueError(f"Интерфейс слушает только {BIND_HOST}: он может тратить деньги на API")
+    check_ports(port, ui_port)
     settings = load_settings()
+    check_tokens(settings.internal_api_token, settings.leads_console_token)
     dsn = settings.require("database_url")
     budget = pipeline.daily_budget(settings)
     per_day = research.per_day_limit(settings)
@@ -623,31 +669,40 @@ def serve(host: str = BIND_HOST, port: int = 8000) -> None:
         test_address = send_step.test_recipient(settings)
     except send_step.SendBlocked:
         test_address = None  # баннер «Тестовая отправка выключена», кнопка неактивна
-    with db.connect(dsn) as conn:
-        db.migrate(conn)
-        pipeline.recover_stale_runs(conn)
-        research.recover_stale_jobs(conn)
-    research_queue = research.ResearchQueue(
-        connect=lambda: db.connect(dsn),
-        deps_factory=lambda: pipeline.default_deps(load_settings(), limits, urgent=True),
-        per_day=per_day,
-        budget_usd=budget,
-    )
-    app = create_app(
-        connect=lambda: db.connect(dsn),
-        start_run=lambda city, query, n: pipeline.start_run(dsn, city, query, n, limits=limits),
-        daily_budget_usd=budget,
-        send_test=lambda conn, draft_id: send_step.send_test(conn, draft_id, load_settings()),
-        test_address=test_address,
-        internal_token=settings.internal_api_token,
-        research_queue=research_queue,
-        public_host=public_host,
-    )
-    if public_host:
-        logger.info("Интерфейс открыт и по имени %s (через Caddy, HTTPS); внутренний API по нему недоступен",
-                    public_host)
-    if not internal.token_ok(settings.internal_api_token, settings.internal_api_token):
-        logger.warning("Внутренний API выключен: INTERNAL_API_TOKEN пустой или короче %s символов",
-                       internal.MIN_TOKEN_CHARS)
-    research_queue.kick()  # задачи, оставшиеся в очереди до перезапуска
-    uvicorn.run(app, **server_options(host, port))
+    sockets = bind_sockets(host, (port, ui_port)) if ui_port is not None else []
+    try:
+        with db.connect(dsn) as conn:
+            db.migrate(conn)
+            pipeline.recover_stale_runs(conn)
+            research.recover_stale_jobs(conn)
+        research_queue = research.ResearchQueue(
+            connect=lambda: db.connect(dsn),
+            deps_factory=lambda: pipeline.default_deps(load_settings(), limits, urgent=True),
+            per_day=per_day,
+            budget_usd=budget,
+        )
+        app = create_app(
+            connect=lambda: db.connect(dsn),
+            start_run=lambda city, query, n: pipeline.start_run(dsn, city, query, n, limits=limits),
+            daily_budget_usd=budget,
+            send_test=lambda conn, draft_id: send_step.send_test(conn, draft_id, load_settings()),
+            test_address=test_address,
+            internal_token=settings.internal_api_token,
+            research_queue=research_queue,
+            public_host=public_host,
+            console_token=settings.leads_console_token,
+            api_port=port,
+            ui_port=ui_port,
+        )
+        research_queue.kick()  # задачи, оставшиеся в очереди до перезапуска
+        options = server_options(host, port)
+        if not sockets:  # только API: порт занимает сам uvicorn
+            log_startup(settings, public_host, port, ui_port)
+            uvicorn.run(app, **options)
+            return
+        server = make_server(app, options)
+        log_startup(settings, public_host, port, ui_port)
+        run_server(server, sockets)
+    finally:
+        for sock in sockets:
+            sock.close()

@@ -1,7 +1,7 @@
 """Командная строка: `python -m tanbala_leads <команда>`.
 
     migrate                         создать или обновить таблицы
-    web [--port 8000]               интерфейс на http://127.0.0.1:8000
+    web [--port 8000] [--ui-port 8001]   API для бота и консоли на :8000 (/internal), интерфейс на :8001
     search --query склад [--city almaty] [--limit 5]   запуск поиска без интерфейса
 """
 
@@ -18,8 +18,10 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m tanbala_leads", description="Tanbala: поиск клиентов")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("migrate", help="создать или обновить таблицы")
-    web = commands.add_parser("web", help="интерфейс на http://127.0.0.1:<port>")
-    web.add_argument("--port", type=int, default=8000)
+    web = commands.add_parser("web", help="API на 127.0.0.1:<port>, интерфейс на 127.0.0.1:<ui-port>")
+    web.add_argument("--port", type=int, default=8000, help="внутренний API /internal для бота и консоли")
+    web.add_argument("--ui-port", type=int, default=8001,
+                     help="интерфейс с кнопками; на сервере к нему пускается только Caddy")
     search = commands.add_parser("search", help="запуск поиска без интерфейса")
     search.add_argument("--query", required=True, help="что искать в 2ГИС, например «склад»")
     search.add_argument("--city", default="almaty", choices=sorted(CITIES))
@@ -46,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "web":
         from tanbala_leads.web.app import serve
 
-        serve(port=args.port)
+        serve(port=args.port, ui_port=args.ui_port)
         return 0
     try:
         settings = load_settings()

@@ -128,6 +128,7 @@ TEST_SENDS_SHOWN = 10
 TEST_OFF_TEXT = "Тестовая отправка выключена: DRY_RUN_TO не настроен"
 REJECTED_TEST_TEXT = "Отклонённое письмо не отправляется даже в тест."
 TEST_SEND_STATUSES = {"sent": ("отправлено", "pos"), "failed": ("не ушло", "neg")}
+TEST_NOT_SENDABLE_TEXT = "Письмо уже отправлено."
 BLOCKED_LABEL = "В списке «не писать»"
 BLOCKED_MESSAGE = "Компания в списке «не писать»: письмо нельзя одобрить."
 DONE_MESSAGES = {
@@ -146,3 +147,20 @@ ERROR_MESSAGES = {
     413: "Слишком большой запрос.",
 }
 DB_ERROR_MESSAGE = "База данных недоступна или вернула ошибку. Проверьте, что Docker запущен, и обновите страницу."
+
+# API консоли (web/console.py): страницы списков и проверки из WhatsApp (research_jobs).
+RUNS_PER_PAGE = 20
+CONSOLE_COMPANIES_PER_PAGE = COMPANIES_PER_PAGE
+CONSOLE_LETTERS_PER_PAGE = LETTERS_IN_LIST
+RESEARCH_PER_PAGE = 50
+DIGEST_MAX_IDS = 100
+SPEND_MAX_DAYS = 62
+COMPANY_SORTS = ("new", "score", "letter")
+COMPANY_VIA = ("whatsapp", "regular")
+RESEARCH_STATUSES = {"queued": "В очереди", "running": "Идёт", "done": "Готово", "failed": "Не удалось"}
+RESEARCH_REASONS = {
+    "not_in_2gis": "В 2ГИС не нашлась",
+    "city_unsupported": "Город не поддерживается",
+    "budget_exhausted": "Дневной бюджет API исчерпан",
+    "error": "Ошибка при проверке",
+}

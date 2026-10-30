@@ -34,6 +34,11 @@ ACCESS_LOG_ARGS = 5
 # Путь, похожий на /internal (в любом регистре, с //, ./, http://хост, %3F вместо ?), пишется как есть только
 # для известных маршрутов. Иначе вместо него INTERNAL_LOG_HIDDEN: в самом пути могли быть данные клиента бота.
 INTERNAL_LOG_ROUTES_RE = re.compile(r"/internal(/lookup|/research(/[0-9a-fA-F-]{1,36})?|/companies/\d{1,19}/brief)?")
+# Маршруты API консоли (web/console.py): в пути только слова и номера, данных клиентов бота там нет.
+CONSOLE_LOG_ROUTES_RE = re.compile(
+    r"/internal/console(/(summary|spend|search/options|history(/import)?|blocked|research-jobs"
+    r"|companies(/digest|/\d{1,19}(/block|/whatsapp-clear)?)?|letters(/\d{1,19})?|runs(/active|/\d{1,19})?"
+    r"|drafts/\d{1,19}/(approve|reject|edit|send-test)))?")
 INTERNAL_LOG_HIDDEN = "/internal/[скрыто]"
 LOG_QUERY_RE = re.compile(r"\?[^\s\"]*")
 
@@ -63,7 +68,8 @@ def is_internal(request: Request) -> bool:
 def log_path(path: str) -> str:
     """Путь для access-лога: без строки запроса; похожий на /internal только если это известный маршрут."""
     path = path.split("?", 1)[0]
-    if "internal" not in path.lower() or INTERNAL_LOG_ROUTES_RE.fullmatch(path):
+    known = INTERNAL_LOG_ROUTES_RE.fullmatch(path) or CONSOLE_LOG_ROUTES_RE.fullmatch(path)
+    if "internal" not in path.lower() or known:
         return path
     return INTERNAL_LOG_HIDDEN
 

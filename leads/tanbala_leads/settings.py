@@ -29,6 +29,7 @@ ENV_NAMES: dict[str, str] = {
     "max_2gis_browsers": "MAX_2GIS_BROWSERS",
     "max_site_browsers": "MAX_SITE_BROWSERS",
     "public_ui_host": "PUBLIC_UI_HOST",
+    "leads_console_token": "LEADS_CONSOLE_TOKEN",
 }
 
 DEFAULTS: dict[str, str] = {
@@ -70,6 +71,7 @@ class Settings:
     max_2gis_browsers: str = ""
     max_site_browsers: str = ""
     public_ui_host: str = ""
+    leads_console_token: str = field(default="", repr=False)
 
     def require(self, name: str) -> str:
         """Вернуть значение поля или остановиться с понятной ошибкой, если оно пустое."""

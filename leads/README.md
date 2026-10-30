@@ -15,7 +15,8 @@ tanbala_leads/
   cli.py                    python -m tanbala_leads migrate | web | search
   pipeline.py               запуск по кнопке: все шаги в фоне, прогресс в runs
   sites.py                  обход сайта crawl4ai, почты, защита от SSRF
-  web/                      интерфейс FastAPI: поиск, компании, письма
+  web/                      интерфейс FastAPI (порт 8001): поиск, компании, письма;
+                            API для бота и единой панели (порт 8000, /internal, /internal/console)
   settings.py               переменные окружения и .env
   db.py                     схема Postgres и миграции
   llm.py                    вызовы Claude: модель из конфига, кэш, лог токенов, цены

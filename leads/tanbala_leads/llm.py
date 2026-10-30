@@ -27,6 +27,7 @@ MODEL_PRICES_USD_PER_MTOK: dict[str, dict[str, float]] = {
     "claude-haiku-5-5": {"input": 0.10, "output": 0.50, "cache_read": 0.01, "cache_write": 0.125},
     "claude-sonnet-5-5": {"input": 2.00, "output": 10.00, "cache_read": 0.20, "cache_write": 2.50},
 }
+MODEL_PRICES_AS_OF = "2026-10-06"  # дата таблицы выше; API консоли отдаёт её вместе с ценами
 TOKENS_PER_MTOK = 1_000_000
 
 

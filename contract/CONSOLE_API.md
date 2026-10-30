@@ -191,6 +191,297 @@ status, reason, reasonLabel, companyId, createdAt, startedAt, finishedAt`. По�
 Действия вызывают ту же логику, что кнопки старого интерфейса (общий модуль для обоих), со всеми проверками и
 триггерами базы. `approved_by` и `reviewer` — `X-Console-User`. Ошибки настроек SMTP — 503, а не голый 500.
 
+### Реализация почты (30.10.2026): уточнения и отличия
+
+Код: `leads/tanbala_leads/web/console.py` (маршруты и проверки), `console_views.py` (ответы), `console_queries.py`
+(SQL), `actions.py` (действия, общие со старыми кнопками), `ports.py` (порты). Тесты: `leads/tests/test_console_api.py`,
+`test_console_actions.py`, `test_ports.py`.
+
+Отличия от текста выше (поля только добавлены, ни одно не убрано и не переименовано):
+
+- Ошибка 500 `internal` («Внутренняя ошибка почты. Подробности в журнале сервера.») на любое непойманное исключение,
+  без текста исключения. В таблице раздела 1 её нет.
+- Неверный метод (405 фреймворка) отвечает 400 `bad_request`, как у API бота; нет пути — 404 `not_found`. Оба после
+  токена и проверки браузера.
+- Текст 409 на триггер базы — ровно «Компания пришла из WhatsApp: письмо ей одобрить нельзя» (без точки, как в
+  контракте). Старый интерфейс по-прежнему пишет «У компании уже есть другое активное письмо.».
+- `reviewer` при «Отклонить» ядро не хранит (`steps/approve.reject` его не записывает, так было и раньше); в журнал
+  пользователь попадает.
+- Предел тела у `POST /drafts/{id}/edit` — 32 КБ (32 768 байт), а не 16: письмо до 10 000 символов, кириллица в UTF-8
+  по 2 байта, тема 200 и текст 10 000 символов — около 20,6 КБ. Остальные действия — 16 КБ, импорт — 1.5 МБ. Текст
+  слать как есть в UTF-8 (так делает `JSON.stringify`); с экранированием `\uXXXX` письмо в 32 КБ не войдёт.
+- Повторное «Одобрить» уже одобренного письма из консоли — 409 «Письмо уже одобрено.», чтобы не перезаписать, кто и
+  когда одобрил. Старая кнопка повтор допускает, как раньше.
+- 503 `not_configured` — только на ошибку настроек (`SettingsError`: нет `SMTP_*`, `AGENT_*`, `SMTP_PORT` не число).
+  Любая другая ошибка при тестовой отправке — 500 `internal`.
+- Номер в пути (`/companies/{id}`, `/letters/{id}`, `/runs/{id}`, `/drafts/{id}/…`) — до 19 цифр; длиннее — 404
+  `not_found` после токена. Номер больше 9223372036854775807 — тоже 404.
+
+Уточнения:
+
+- Порядок проверок: Host и заголовки прокси (400 `bad_request`, JSON) → токен (401) → `Origin` или `Sec-Fetch-Site`
+  с любым значением (403) → у `POST` `X-Console-User` (400) → `Content-Type: application/json` и тело потоком до 16 КБ
+  (правка письма до 32 КБ, импорт до 1.5 МБ = 1 572 864 байт; 413 и по `Content-Length`, и по факту) → JSON-объект
+  (400) → поля (лишние и
+  неверного типа — 400) → база. `Sec-Fetch-Mode` (его шлёт fetch из Node) не мешает.
+- Действия без полей принимают ровно `{}`; пустое тело — 400.
+- Время — ISO 8601 в UTC с секундами: `"2026-10-30T07:37:41+00:00"`.
+- Страница: целое от 1, иначе 400; за последней — пустой `items`. `pages` не меньше 1.
+- Неизвестные значения фильтров (`status`, `via`, `sort`, `wa`, `blocked`, `letter`, `run`) — 400, а не тихий сброс,
+  как в старом списке. `q` (до 100) и `query` (до 60) чистятся как в старом списке. `wa`, `blocked`, `letter`:
+  `1` — фильтр, `0` или пусто — без фильтра.
+- `blocked` у строки списка, в `digest` и в карточке — одно правило: сама компания или её домен в «не писать», либо
+  адрес или домен получателя последнего письма компании.
+- `letter=1` — у компании есть хоть одно письмо (и отклонённое). `sort=score` — оценка последней квалификации, без
+  оценки в конце; `sort=letter` — дата последнего письма, без письма в конце; при равенстве новые сверху.
+- `facets.cards[].code`: `all`, `drafted`, `approved`, `rejected`. Числа у карточек и статусов — при всех фильтрах,
+  кроме статуса; у отраслей — при всех, кроме отрасли.
+- `spend`: `from` и `to` обязательны, включительно, годы 2000–2100, сутки по UTC+5 (постоянный сдвиг, как у бота); ответ ещё отдаёт
+  `from` и `to`. Модель без цены в `prices` отсутствует. `summary.budget.spentTodayUsd` — ровно `spent_today_usd`
+  (сутки Postgres `Asia/Almaty`, сейчас тоже +05:00), модель без цены там считается по самой дорогой.
+- `summary.budget.over` = `dailyUsd` задан и `spentTodayUsd >= dailyUsd` (при бюджете 0 тоже `true`: запуск всё
+  равно откажет). `research.perDay` и `budget.dailyUsd` — `null`, если не настроены (на сервере всегда заданы).
+- `GET /runs/active` — `200` и тело `null`, если ничего не идёт.
+- `POST /runs` 409: `message` «Идёт запуск №N. Новый можно начать, когда он закончится.» и поле `activeRunId`.
+  Неверный `count` (не целое, `true`) — 400 «Число компаний должно быть от 1 до 20», как у формы.
+- `canApprove` — `false` и у компании из WhatsApp (одобрить не даст триггер базы). `approveBlocked` — письмо ждёт
+  решения, но одобрить нельзя; причина в новом поле `approveBlockedReason`: «Компания в списке «не писать»: письмо
+  нельзя одобрить.» или «Компания пришла из WhatsApp: письмо ей одобрить нельзя»; иначе `null`.
+- `canSendTest` = письмо можно отправить в тест и `testAddress` не `null`. `sendTestBlockedReason`: «Тестовая отправка
+  выключена: DRY_RUN_TO не настроен.», «Отклонённое письмо не отправляется даже в тест.» или «Письмо уже
+  отправлено.». 429 `test_limit` — «Дневной лимит тестовых отправок 30 исчерпан».
+- `wasRequestedVia` — прежнее значение `requested_via`: `"whatsapp"` или `null`.
+- Импорт: `invalid` — до 20 строк по 100 символов, остальные числом в `invalidMore`; `fileBase64` не base64 — 400;
+  пустой список — 400 «Список пуст: вставьте адреса или выберите файл.»; неизвестный `kind` — 400 «Неизвестный
+  список.».
+- `digest`: id без повторов, в порядке запроса; больше 100 — 400.
+- Лог действия — одна строка INFO: `Консоль: approve, письмо 12, пользователь ivan: ok` (при отказе вместо `ok` код
+  ошибки; у импорта ещё числа). В access-логе путь консоли без строки запроса; неизвестный путь `/internal/[скрыто]`.
+
+### Примеры ответов почты (точные, тестовая схема)
+
+Ошибки:
+
+```json
+{"error": "unauthorized", "message": "Нужен верный токен консоли в заголовке X-Console-Token."}
+{"error": "not_found", "message": "Такого адреса нет."}
+{"error": "bad_request", "message": "Нужен заголовок X-Console-User: строчная латиница, цифры, «.», «_» или «-», от 1 до 32 символов."}
+{"error": "conflict", "message": "Компания в списке «не писать»: письмо нельзя одобрить."}
+{"error": "conflict", "message": "Идёт запуск №7. Новый можно начать, когда он закончится.", "activeRunId": 7}
+{"error": "refused", "message": "Тема и текст письма не должны быть пустыми."}
+```
+
+`GET /internal/console/summary`
+
+```json
+{"testMode": {"testAddress": "bogdansm2000@gmail.com"},
+ "budget": {"dailyUsd": 1.0, "spentTodayUsd": 0.003263, "over": false},
+ "spend": {"totalUsd": 0.003263, "totalTokens": 38300, "unpricedTokens": 0},
+ "overview": {"companiesFound": 1, "companiesFit": 1, "avgScoreFit": 86, "lettersPending": 1, "lettersApproved": 0,
+              "whatsappCompanies": 1},
+ "activeRun": null,
+ "research": {"today": 1, "perDay": 20, "active": []},
+ "testSends": {"today": 0, "perDay": 30}}
+```
+
+Элемент `research.active` — как строка `GET /research-jobs` (ниже).
+
+`GET /internal/console/spend?from=2026-10-30&to=2026-10-30`
+
+```json
+{"from": "2026-10-30", "to": "2026-10-30",
+ "rows": [{"day": "2026-10-30", "model": "claude-haiku-5-5", "task": "first_email", "calls": 1, "input": 3500,
+           "output": 2250, "cacheRead": 9500, "cacheWrite": 9500},
+          {"day": "2026-10-30", "model": "claude-haiku-5-5", "task": "qualify", "calls": 1, "input": 3300,
+           "output": 150, "cacheRead": 10100, "cacheWrite": 0}],
+ "prices": {"claude-haiku-5-5": {"input": 0.1, "output": 0.5, "cacheRead": 0.01, "cacheWrite": 0.125},
+            "claude-sonnet-5-5": {"input": 2.0, "output": 10.0, "cacheRead": 0.2, "cacheWrite": 2.5}},
+ "pricesAsOf": "2026-10-06"}
+```
+
+`GET /internal/console/companies?sort=score` (статусы сокращены: всегда 9, в порядке старого фильтра)
+
+```json
+{"items": [
+   {"id": 1, "name": "ТОО «Степь Склад»", "rubric": "Складские услуги", "city": "almaty", "cityName": "Алматы",
+    "searchQuery": "склад", "status": "drafted", "statusLabel": "Письмо готово", "statusTone": "accent",
+    "hadError": false, "fit": "yes", "fitLabel": "подходит", "score": 86, "segment": "склады 3PL",
+    "contact": {"email": "info@step-sklad.kz", "verifyResult": "safe", "verifyLabel": "Существует",
+                "isCatchAll": null, "isRole": true},
+    "draft": {"id": 1, "subject": "Инвентаризация 12 000 паллетомест за часы", "reviewStatus": "pending",
+              "reviewLabel": "Ждёт проверки", "checksTotal": 2, "checksFailed": 1},
+    "requestedVia": null, "whatsappContactedAt": null, "blocked": false, "createdAt": "2026-10-30T07:37:41+00:00"},
+   {"id": 2, "name": "ТОО «Рахат»", "rubric": "Оптовая торговля", "city": "almaty", "cityName": "Алматы",
+    "searchQuery": null, "status": "qualified", "statusLabel": "Подходит", "statusTone": "neutral",
+    "hadError": false, "fit": null, "fitLabel": null, "score": null, "segment": null, "contact": null, "draft": null,
+    "requestedVia": "whatsapp", "whatsappContactedAt": "2026-10-28T12:00:00+00:00", "blocked": false,
+    "createdAt": "2026-10-30T07:37:41+00:00"}],
+ "total": 2, "page": 1, "pages": 1, "pageSize": 50,
+ "facets": {
+   "cards": [{"code": "all", "label": "Все", "count": 2}, {"code": "drafted", "label": "Письмо готово", "count": 1},
+             {"code": "approved", "label": "Одобрено", "count": 0}, {"code": "rejected", "label": "Не подходит", "count": 0}],
+   "statuses": [{"code": "new", "label": "Найдена", "count": 0}, {"code": "qualified", "label": "Подходит", "count": 1},
+                {"code": "drafted", "label": "Письмо готово", "count": 1}, "…"],
+   "industries": [{"query": "склад", "count": 1}],
+   "runs": [{"id": 1, "city": "almaty", "cityName": "Алматы", "query": "склад, логистика",
+             "createdAt": "2026-10-30T07:37:41+00:00"}],
+   "run": null}}
+```
+
+`GET /internal/console/companies/1`
+
+```json
+{"company": {"id": 1, "name": "ТОО «Степь Склад»", "rubric": "Складские услуги", "city": "almaty",
+             "cityName": "Алматы", "address": "Алматы, ул. Рыскулова, 57", "phones": ["+7 727 355 10 20"],
+             "website": "https://step-sklad.kz", "websiteDomain": "step-sklad.kz",
+             "sourceUrl": "https://2gis.kz/almaty/firm/70000001", "branchesCount": 3, "status": "drafted",
+             "statusLabel": "Письмо готово", "statusTone": "accent", "lastError": null, "requestedVia": null,
+             "whatsappContactedAt": null, "runId": 1, "searchQuery": "склад", "createdAt": "2026-10-30T07:37:41+00:00"},
+ "qualification": {"fit": "yes", "fitLabel": "подходит", "score": 86, "segment": "склады 3PL",
+                   "reason": "Склад на 12 000 паллетомест, инвентаризация вручную.", "model": "claude-haiku-5-5",
+                   "createdAt": "2026-10-30T07:37:41+00:00"},
+ "pains": [{"pain": "Инвентаризация занимает дни", "evidence": "пересчёт раз в квартал", "source": "site",
+            "sourceLabel": "сайт", "verified": true}],
+ "contacts": [{"id": 1, "email": "info@step-sklad.kz", "sourcePage": "https://step-sklad.kz/kontakty",
+               "verifyResult": "safe", "verifyLabel": "Существует", "isCatchAll": null, "isRole": true,
+               "verifiedAt": null}],
+ "draft": "… как GET /letters/1 …",
+ "history": [{"id": 1, "occurredAt": "2026-10-30T07:37:41+00:00", "email": "director@step-sklad.kz",
+              "direction": "out", "directionLabel": "отправлено", "kind": "first_email", "kindLabel": "первое письмо",
+              "whatLabel": "отправлено, первое письмо", "source": "import", "sourceLabel": "импорт", "subject": null,
+              "note": "импорт прошлых писем", "draftId": null}],
+ "blocked": false,
+ "testSends": [{"id": 1, "sentTo": "bogdansm2000@gmail.com", "status": "failed", "statusLabel": "не ушло",
+                "ok": false, "error": "SMTP: SMTPAuthenticationError", "createdAt": "2026-10-30T07:37:41+00:00"}],
+ "siteText": {"text": "Ответственное хранение, 12 000 паллетомест.", "length": 43, "truncated": false},
+ "cost": {"usd": 0.003263, "tokens": 38300, "unpricedTokens": 0}}
+```
+
+`GET /internal/console/companies/digest?ids=1,2,999`
+
+```json
+{"items": [
+   {"id": 1, "name": "ТОО «Степь Склад»", "city": "almaty", "cityName": "Алматы", "rubric": "Складские услуги",
+    "fit": "yes", "score": 86, "segment": "склады 3PL", "status": "drafted", "requestedVia": null,
+    "whatsappContactedAt": null, "blocked": false, "emailed": true, "firstLetterAt": "2026-10-30T07:37:41+00:00",
+    "lastLetterAt": "2026-10-30T07:37:41+00:00"},
+   {"id": 2, "name": "ТОО «Рахат»", "city": "almaty", "cityName": "Алматы", "rubric": "Оптовая торговля",
+    "fit": null, "score": null, "segment": null, "status": "qualified", "requestedVia": "whatsapp",
+    "whatsappContactedAt": "2026-10-28T12:00:00+00:00", "blocked": false, "emailed": false, "firstLetterAt": null,
+    "lastLetterAt": null}]}
+```
+
+`GET /internal/console/letters`
+
+```json
+{"items": [{"id": 1, "companyId": 1, "companyName": "ТОО «Степь Склад»", "kind": "first_email",
+            "subject": "Инвентаризация 12 000 паллетомест за часы", "reviewStatus": "pending",
+            "reviewLabel": "Ждёт проверки", "checksTotal": 2, "checksFailed": 1, "score": 86, "verifiedPains": 1,
+            "searchQuery": "склад", "blocked": false, "createdAt": "2026-10-30T07:37:41+00:00",
+            "updatedAt": "2026-10-30T07:37:41+00:00", "sentAt": null}],
+ "total": 1, "page": 1, "pages": 1, "pageSize": 100, "status": "pending",
+ "filters": [{"code": "pending", "label": "Ждут проверки", "count": 1}, {"code": "approved", "label": "Одобрены", "count": 0},
+             {"code": "rejected", "label": "Отклонены", "count": 0}, {"code": "all", "label": "Все", "count": 1}],
+ "run": null}
+```
+
+`run` при фильтре — `{"id", "city", "cityName", "query", "createdAt"}`, как `facets.run` у компаний.
+
+`GET /internal/console/letters/1`
+
+```json
+{"id": 1, "companyId": 1, "kind": "first_email", "subject": "Инвентаризация 12 000 паллетомест за часы",
+ "body": "[Проверить: число паллетомест с сайта]\nЗдравствуйте!\n\nПишу по поводу склада.\n\nАрман",
+ "notes": [{"kind": "Проверить", "text": "число паллетомест с сайта"}],
+ "textLines": [{"text": "Здравствуйте!", "note": false}, {"text": "", "note": false},
+               {"text": "Пишу по поводу склада.", "note": false}, {"text": "", "note": false},
+               {"text": "Арман", "note": false}],
+ "model": "claude-haiku-5-5", "createdAt": "2026-10-30T07:37:41+00:00", "updatedAt": "2026-10-30T07:37:41+00:00",
+ "sentAt": null, "reviewStatus": "pending", "reviewLabel": "Ждёт проверки", "approvedBy": null, "approvedAt": null,
+ "checks": [{"code": "length", "label": "Длина", "passed": false, "details": ["длиннее 120 слов"]},
+            {"code": "dashes", "label": "Тире", "passed": true, "details": []}],
+ "checksTotal": 2, "checksFailed": 1,
+ "contact": {"email": "info@step-sklad.kz", "verifyResult": "safe", "verifyLabel": "Существует", "isCatchAll": null,
+             "isRole": true},
+ "testAddress": "bogdansm2000@gmail.com", "canApprove": true, "approveBlocked": false,
+ "approveBlockedReason": null, "canReject": true,
+ "canEdit": true, "canSendTest": true, "sendTestBlockedReason": null, "blocked": false,
+ "testSends": [{"id": 1, "sentTo": "bogdansm2000@gmail.com", "status": "failed", "statusLabel": "не ушло",
+                "ok": false, "error": "SMTP: SMTPAuthenticationError", "createdAt": "2026-10-30T07:37:41+00:00"}],
+ "company": {"id": 1, "name": "ТОО «Степь Склад»", "rubric": "Складские услуги", "city": "almaty",
+             "cityName": "Алматы", "fit": "yes", "fitLabel": "подходит", "score": 86, "segment": "склады 3PL",
+             "reason": "Склад на 12 000 паллетомест, инвентаризация вручную.",
+             "pains": [{"pain": "Инвентаризация занимает дни", "evidence": "пересчёт раз в квартал", "source": "site",
+                        "sourceLabel": "сайт", "verified": true}],
+             "sourceUrl": "https://2gis.kz/almaty/firm/70000001", "whatsappContactedAt": null, "requestedVia": null,
+             "searchQuery": "склад"}}
+```
+
+`body` — текст как в базе (для правки), `notes` и `textLines` — как показывает старая страница (`textLines[].note` —
+заметка посреди текста, она уйдёт клиенту).
+
+`GET /internal/console/runs/1` (элемент `GET /runs` и `summary.activeRun` — то же)
+
+```json
+{"id": 1, "city": "almaty", "cityName": "Алматы", "query": "склад, логистика", "industries": ["склад", "логистика"],
+ "maxCompanies": 5, "status": "done", "statusLabel": "Готово", "statusTone": "pos", "stage": "Готово",
+ "stageLabel": "Готово", "stageDetail": null, "found": 10, "newCompanies": 8, "crawled": 8, "qualified": 3,
+ "rejected": 5, "verified": 3, "drafted": 2, "errors": 1, "error": null, "createdAt": "2026-10-30T07:37:41+00:00",
+ "startedAt": "2026-10-30T07:17:41+00:00", "finishedAt": "2026-10-30T07:32:41+00:00",
+ "cost": {"usd": 0.003263, "tokens": 38300, "unpricedTokens": 0, "priced": true, "text": "≈ $0,0033"},
+ "stages": [{"code": "collect", "label": "Поиск в 2ГИС", "state": "done", "stateLabel": "готово",
+             "hint": "компании по запросу", "counters": [{"field": "found", "label": "найдено", "value": 10},
+                                                       {"field": "new_companies", "label": "новых", "value": 8}]},
+            "… crawl, qualify, verify, draft …"],
+ "finished": true, "lettersPending": 1, "pendingTotal": 1, "showReview": true}
+```
+
+`GET /internal/console/runs` — `{"items": [как выше], "total": 1, "page": 1, "pages": 1, "pageSize": 20}`.
+
+`GET /internal/console/search/options`
+
+```json
+{"cities": [{"code": "almaty", "name": "Алматы"}, {"code": "astana", "name": "Астана"}, "… всего 8 …"],
+ "quickQueries": ["склад", "логистика", "производство", "магазин одежды", "оборотная тара", "строительная компания"],
+ "limits": {"maxQueries": 10, "maxQueryLength": 60, "maxQueryTextLength": 620, "maxPerIndustry": 20, "maxTotal": 60},
+ "defaults": {"city": "almaty", "count": 5}, "usdPerCompany": 0.003311, "usdFirstRun": 0.00245}
+```
+
+`GET /internal/console/history`, `GET /internal/console/blocked`, `GET /internal/console/research-jobs`
+
+```json
+{"items": [{"id": 1, "occurredAt": "2026-10-30T07:37:41+00:00", "email": "director@step-sklad.kz", "direction": "out",
+            "directionLabel": "отправлено", "kind": "first_email", "kindLabel": "первое письмо",
+            "whatLabel": "отправлено, первое письмо", "source": "import", "sourceLabel": "импорт", "subject": null,
+            "note": "импорт прошлых писем", "draftId": null, "companyId": null, "companyName": null}],
+ "total": 1, "page": 1, "pages": 1, "pageSize": 50}
+{"items": [{"id": 1, "email": null, "domain": "spam.example.kz", "companyId": null, "companyName": null,
+            "reason": "refused", "reasonLabel": "отказ", "note": "импорт", "createdAt": "2026-10-30T07:37:41+00:00"}],
+ "total": 1, "page": 1, "pages": 1, "pageSize": 50}
+{"items": [{"id": "3f2c9e0a-0000-4000-8000-000000000001", "name": "Рахат", "city": "almaty", "cityName": "Алматы",
+            "domain": "rahat.kz", "status": "done", "statusLabel": "Готово", "reason": null, "reasonLabel": null,
+            "companyId": 2, "createdAt": "2026-10-30T05:00:00+00:00", "startedAt": "2026-10-30T05:00:01+00:00",
+            "finishedAt": "2026-10-30T05:00:40+00:00"}],
+ "total": 1, "page": 1, "pages": 1, "pageSize": 50}
+```
+
+`reasonLabel`: `not_in_2gis` «В 2ГИС не нашлась», `city_unsupported` «Город не поддерживается», `budget_exhausted`
+«Дневной бюджет API исчерпан», `error` «Ошибка при проверке». `statusLabel`: «В очереди», «Идёт», «Готово»,
+«Не удалось». Телефон клиента бота не отдаётся.
+
+Действия (успех):
+
+```json
+{"runId": 2}
+{"result": "approved"}
+{"result": "rejected"}
+{"result": "saved", "checksTotal": 10, "checksFailed": 1}
+{"result": "sent", "sentTo": "bogdansm2000@gmail.com", "at": "2026-10-30T07:37:42+00:00"}
+{"result": "blocked"}
+{"result": "cleared", "wasRequestedVia": "whatsapp"}
+{"added": 2, "existing": 0, "invalid": ["не адрес"], "invalidMore": 0}
+```
+
 ## 3. Бот (whatsapp)
 
 - Отдельный fastify в процессе бота на `127.0.0.1:${CONSOLE_API_PORT}` (по умолчанию 3101), стартует и
@@ -266,3 +557,210 @@ OpenRouter не учитывается.
 - `already_bot`: заметка не сохранена, `message` это говорит.
 - «Вернуть боту» с двумя полями склеивает консоль: `Ответ клиенту: …` и `Задание боту: …` через пустую строку,
   пустые части пропускаются. Предел 1000 символов — у итоговой заметки.
+
+### Реализация бота (30.10.2026): точные примеры и отличия
+
+Код: `whatsapp/src/panel/console-*.ts`, действия `whatsapp/src/panel/chat-actions.ts` (их же зовут кнопки старой панели),
+выборки `whatsapp/src/db/repos/console-*.ts`. Примеры ниже сняты с работающего кода (тестовый стенд), время в UTC.
+
+**Запуск и настройки.** `WA_CONSOLE_TOKEN` пуст — сервер 3101 не собирается и не слушает. Токен не по формату
+(не 32–512 видимых ASCII), равен `INTERNAL_API_TOKEN` или `CONSOLE_API_PORT` равен `PANEL_PORT` — бот не стартует
+(ошибка конфигурации без значений), как с неверным `INTERNAL_API_TOKEN`. Сервер стартует после панели (внутри
+`Panel.start`) и закрывается перед ней; если порт занят, ошибка пишется в лог, а бот и старая панель работают.
+
+**Порядок проверок** на любом пути и методе: сокет не 127.0.0.1/::1 → 403 `forbidden`; токен → 401 `unauthorized`;
+Host не `127.0.0.1:<порт>`/`localhost:<порт>` → 400; `X-Forwarded-*`, `Forwarded`, `Via` → 400; `Origin` или
+`Sec-Fetch-Site` → 403; у POST `X-Console-User` → 400. Потом тело (только `application/json`, объект, до 16 КБ:
+больше → 413 `too_large`, другой тип или не объект → 400), потом параметры (неверное значение → 400, пустое
+`status=` — «не задано»), потом база. Неизвестный путь или метод с верным токеном → 404 `not_found` (405 у Fastify
+нет). Ошибка SQLite → 503 `db_unavailable`, прочая → 500 `internal`.
+
+**Отличия и добавления к тексту выше** (ничего не убрано и не переименовано):
+
+- Новые коды ошибок: `return_failed` (502, возврат боту не прошёл: «Не удалось вернуть чат боту. Подробности записаны
+  в лог бота.») и `internal` (500).
+- Ответ клиенту, 502 `send_failed`: текст по настоящему статусу после сбоя — «Не отправлено. Чат уже у менеджера, бот
+  в нём молчит.» или, если не прошла сама передача, «Не отправлено. Статус чата не менялся.».
+- 422 `refused` у ответа: тексты старой панели (пустой, длиннее 4096, закрытый режим или WhatsApp не подключён,
+  отказ `PanelSendError`). Поле `text` не строка или его нет → 400. У возврата поле `note` необязательно (нет → без
+  заметки), не строка → 400.
+- Добавлены поля: `levelLabel` рядом с каждым `level`; `phoneHidden` в строке списка и в `chat`;
+  `statusChangedAt`; `resumed` в ответе возврата; `message` у `already_bot`; `from`, `to`, `skippedLines` у расхода;
+  `lastNotification` — уведомление целиком (ещё `id`, `updatedAt`, `chatId`); у компании `stateLabel`, `cardUrl`
+  (только http/https), `research {status, reason?, label, startedAt, finishedAt}`.
+- `name` — имя из профиля WhatsApp без скрытых символов, нет имени → `null` (подпись «без имени» ставит консоль).
+  `phone` — цифры без «+», только `@lid` → `null`.
+- Выжимка: `value` — слова клиента без пометки «вероятно», `inferred: true` — значение выведено, консоль пишет
+  «вероятно». Ключи по порядку старой карточки: `business, items, packaging, material, city, premises, area,
+  itemCount, turnover, scope, currentTracking, problem, oneC, specifics`. `refusedAnswers` — `true`/`false`.
+- Сообщения: `text: null` у голосового без расшифровки, у «другого вида» и у пустого; текст не обрезается.
+  В списке чатов `lastMessage.text` до 140 символов, длиннее — 139 и «…».
+- «Ждут ответа» (`waitingSince`, `attention.waiting`, `waiting=1`): `manager` — после последнего ответа (человека или
+  бота, кроме фразы о передаче) клиент написал, ждёт с первого такого сообщения; `bot` — после последнего сообщения
+  не клиента клиент написал, и первое такое сообщение старше 5 минут (а не последнее, как в черновом SQL
+  `data-sources.md`).
+- `attention`: каждый список не длиннее 200, `handoffs` и `hot` свежие сверху, `waiting` — дольше всех ждущие сверху.
+- `company` в строке списка и фильтр `company=` — по записи бота (`$.confirmed.id`, иначе `$.candidate.id`;
+  испорченная запись — `none`), `name` — как записал бот. `company-links` — по `companyId`, затем `chatId`, до 1000.
+- Поиск `q` (до 64 символов): имя (кириллица без учёта регистра: как набрано, строчными, ПРОПИСНЫМИ, С заглавной)
+  или цифры номера (от 3, без пробелов, `+`, скобок, дефисов, точек).
+- Расход: `from` и `to` обязательны, до 62 дней включительно; читаются `TOKEN_LOG_PATH.1` и `TOKEN_LOG_PATH`;
+  строки по дню, провайдеру, модели, виду вызова; неразобранные строки считаются в `skippedLines`.
+- Журнал действий: строки старой панели (`reply`, `reply_duplicate`, `reply_blocked`, `reply_failed`,
+  `return_to_bot`, `return_to_bot_failed`, `resume_failed`) с `module: "console-api"`, `user` и `chatId`; отказы,
+  которые старая панель не пишет, — `reply_refused`, `return_refused`, `return_already_bot`, `chat_not_found`.
+  Отказы проверок — `peer_rejected`, `token_rejected`, `host_rejected`, `proxy_rejected`, `browser_rejected`,
+  `user_rejected`. Без текстов, имён, номеров, токена и строки запроса.
+
+#### Примеры
+
+`GET /internal/console/status` → 200
+
+```json
+{
+  "whatsapp": {"enabled": true, "state": "open", "since": "2026-10-26T10:00:00.000Z"},
+  "testMode": true, "allowlistSize": 2, "managerConfigured": true, "companyFeature": true, "llmConfigured": true,
+  "apiCalls": {"today": 12, "dailyLimit": 500, "perChatLimit": 100},
+  "research24h": {"count": 0, "limit": 10},
+  "pairingAttempts24h": 0, "linkedAt": "2026-10-25T10:00:00.000Z", "workingSince": null, "historyIncomplete": false
+}
+```
+
+При `WA_ENABLED=false`: `"whatsapp": {"enabled": false, "state": "disabled", "since": null}`.
+
+`GET /internal/console/attention` → 200
+
+```json
+{
+  "handoffs": [{"id": 7, "chatId": 12, "name": "Алия", "phone": "77010000001", "reason": "hot",
+    "reasonLabel": "горячий клиент", "level": "hot", "levelLabel": "горячий", "openedAt": "2026-10-26T10:03:00.000Z",
+    "notification": {"status": "no_manager", "statusLabel": "номер менеджера не задан, только в панели", "attempts": 1}}],
+  "hot": [{"chatId": 12, "name": "Алия", "phone": "77010000001", "status": "manager",
+    "levelReason": "Спросил цену после рассказа о складе", "levelUpdatedAt": "2026-10-26T10:02:50.000Z",
+    "lastMessageAt": "2026-10-26T10:02:00.000Z"}],
+  "waiting": [{"chatId": 12, "name": "Алия", "phone": "77010000001", "status": "manager", "group": "manager",
+    "waitingSince": "2026-10-26T10:02:00.000Z", "lastClientAt": "2026-10-26T10:02:00.000Z", "complaint": false}],
+  "backlog": {"pending": 0}
+}
+```
+
+`GET /internal/console/chats?status=manager&page=1` → 200
+
+```json
+{
+  "items": [{"id": 12, "name": "Алия", "phone": "77010000001", "phoneHidden": false, "status": "manager",
+    "statusBy": "bot", "statusLabel": "Ведёт менеджер (передал бот)", "level": "hot", "levelLabel": "горячий",
+    "lastMessageAt": "2026-10-26T10:02:00.000Z", "lastMessage": {"author": "client", "kind": "voice", "text": null},
+    "openHandoff": {"reason": "hot", "reasonLabel": "горячий клиент", "level": "hot", "levelLabel": "горячий",
+      "openedAt": "2026-10-26T10:03:00.000Z"},
+    "company": {"state": "confirmed", "id": 345, "name": "ТОО Склад-Сервис"},
+    "waitingSince": "2026-10-26T10:02:00.000Z"}],
+  "total": 1, "page": 1, "pages": 1, "pageSize": 30
+}
+```
+
+`GET /internal/console/chats/12` → 200 (404 `not_found`, если чата нет или ID не число)
+
+```json
+{
+  "chat": {"id": 12, "name": "Алия", "phone": "77010000001", "phoneHidden": false, "status": "manager",
+    "statusBy": "bot", "statusLabel": "Ведёт менеджер (передал бот)", "statusChangedAt": "2026-10-26T10:03:00.000Z",
+    "level": "hot", "levelLabel": "горячий", "createdAt": "2026-10-26T09:59:00.000Z", "priceAsks": 1,
+    "refusedAnswers": false, "handedOff": true},
+  "profile": {
+    "fields": [
+      {"key": "business", "label": "Бизнес", "value": "Магазин одежды", "inferred": false},
+      {"key": "items", "label": "Вещи", "value": "одежда", "inferred": false},
+      {"key": "packaging", "label": "В чём лежат", "value": null, "inferred": false},
+      {"key": "material", "label": "Материал", "value": "ткань", "inferred": false},
+      {"key": "city", "label": "Город", "value": "Алматы", "inferred": false},
+      {"key": "premises", "label": "Помещение", "value": "склад", "inferred": false},
+      {"key": "area", "label": "Площадь", "value": null, "inferred": false},
+      {"key": "itemCount", "label": "Число вещей", "value": "около 5000", "inferred": false},
+      {"key": "turnover", "label": "Как часто движутся", "value": null, "inferred": false},
+      {"key": "scope", "label": "Что отмечать", "value": null, "inferred": false},
+      {"key": "currentTracking", "label": "Учёт сейчас", "value": null, "inferred": false},
+      {"key": "problem", "label": "Что мешает", "value": "пересорт", "inferred": false},
+      {"key": "oneC", "label": "1С", "value": "есть, конфигурация не выяснена", "inferred": true},
+      {"key": "specifics", "label": "Особенности", "value": null, "inferred": false}
+    ],
+    "problemAgreed": true, "levelReason": "Спросил цену после рассказа о складе",
+    "updatedAt": "2026-10-26T10:02:50.000Z"
+  },
+  "note": null,
+  "openHandoff": {"reason": "hot", "reasonLabel": "горячий клиент", "level": "hot", "levelLabel": "горячий",
+    "openedAt": "2026-10-26T10:03:00.000Z"},
+  "handoffs": [{"id": 7, "reason": "hot", "reasonLabel": "горячий клиент", "level": "hot", "levelLabel": "горячий",
+    "openedAt": "2026-10-26T10:03:00.000Z", "resolvedAt": null}],
+  "lastNotification": {"id": 55, "at": "2026-10-26T10:03:00.000Z", "updatedAt": "2026-10-26T10:03:00.000Z",
+    "kind": "handoff", "kindLabel": "передача чата", "status": "no_manager",
+    "statusLabel": "номер менеджера не задан, только в панели", "attempts": 1, "chatId": 12,
+    "text": "Передача чата: Алия, +77010000001..."},
+  "company": {"state": "confirmed", "stateLabel": "подтверждена клиентом", "candidate": null,
+    "confirmed": {"id": 345, "name": "ТОО Склад-Сервис", "city": "Алматы", "rubric": "Склады", "emailed": true,
+      "pains": [{"pain": "учёт вручную", "evidence": "ведём остатки в Excel", "source": "site", "sourceLabel": "сайт"}]},
+    "research": null, "confirmedPains": ["пересорт при приёмке"], "statedName": null,
+    "cardUrl": "https://leads.tanbala.kz/companies/345"},
+  "rejected": {"items": [{"at": "2026-10-26T10:00:50.000Z", "attempt": 1, "source": "code",
+    "sourceLabel": "проверка кодом", "draft": "Понятно. Сколько у вас вещей?",
+    "remarks": ["ответ начинается с «Понятно»"]}], "total": 1},
+  "messages": {"items": [
+    {"id": 101, "author": "client", "authorLabel": "Клиент", "kind": "text",
+      "text": "Здравствуйте, нужен учёт на складе", "at": "2026-10-26T10:00:00.000Z"},
+    {"id": 102, "author": "bot", "authorLabel": "Бот", "kind": "text",
+      "text": "Здравствуйте! Что вы храните на складе?", "at": "2026-10-26T10:01:00.000Z"},
+    {"id": 103, "author": "client", "authorLabel": "Клиент", "kind": "voice", "text": null,
+      "at": "2026-10-26T10:02:00.000Z"}], "earlierBefore": null}
+}
+```
+
+Другие виды `company`: кандидат — `"state": "candidate", "stateLabel": "кандидат, клиент не подтвердил",
+"candidate": {"id": 7, "name": "ИП Кандидат", "city": null, "source": "phone", "sourceLabel": "по номеру"}`;
+не определена — `"unknown"`, «не определена»; функция выключена — `"off"`, «функция выключена»; сводка не прочитана —
+`"not_read"`, «данные не прочитаны». Проверка новой компании: `{"status": "running", "label": "идёт", "startedAt":
+"…", "finishedAt": null}`, `{"status": "done", "label": "завершена, компания найдена", …}`, `{"status": "failed",
+"reason": "not_in_2gis", "label": "не найдена в 2ГИС", …}`.
+
+`GET /internal/console/chats/12/messages?before=103` → 200: `{"items": [{"id": 101, …}, {"id": 102, …}],
+"earlierBefore": null}` (по 50, старые сверху; `earlierBefore` — ID для следующего `before`).
+
+`GET /internal/console/notifications?status=no_manager` → 200
+
+```json
+{"items": [{"id": 55, "at": "2026-10-26T10:03:00.000Z", "updatedAt": "2026-10-26T10:03:00.000Z", "kind": "handoff",
+  "kindLabel": "передача чата", "status": "no_manager", "statusLabel": "номер менеджера не задан, только в панели",
+  "attempts": 1, "chatId": 12, "text": "Передача чата: Алия, +77010000001...", "chatName": "Алия"}],
+ "total": 1, "page": 1, "pages": 1, "pageSize": 30}
+```
+
+`GET /internal/console/company-links?companyId=345` → 200
+
+```json
+{"items": [{"chatId": 12, "companyId": 345, "name": "Алия", "phone": "77010000001", "status": "manager",
+  "level": "hot", "confirmedAt": "2026-10-26T10:01:30.000Z", "firstClientMessageAt": "2026-10-26T10:00:00.000Z",
+  "lastMessageAt": "2026-10-26T10:02:00.000Z"}]}
+```
+
+`GET /internal/console/spend?from=2026-10-30&to=2026-10-30` → 200
+
+```json
+{"from": "2026-10-30", "to": "2026-10-30", "rows": [
+  {"day": "2026-10-30", "provider": "anthropic", "model": "claude-sonnet-5-5", "purpose": "reply", "calls": 1,
+   "failed": 0, "input": 3200, "output": 410, "cacheRead": 18000, "cacheWrite": 0},
+  {"day": "2026-10-30", "provider": "anthropic", "model": "claude-sonnet-5-5", "purpose": "review", "calls": 1,
+   "failed": 1, "input": 2100, "output": 90, "cacheRead": 0, "cacheWrite": 0}], "skippedLines": 0}
+```
+
+`POST /internal/console/chats/12/reply` с `{"text": "Добрый день"}`: 200 `{"result": "sent"}`; тот же текст в тот же
+чат в течение 10 с (из консоли или из старой панели) — 200 `{"result": "duplicate"}`; `{"text": ""}` — 422
+`{"error": "refused", "message": "Пустое сообщение не отправляется"}`; сбой отправки после передачи — 502
+`{"error": "send_failed", "message": "Не отправлено. Чат уже у менеджера, бот в нём молчит."}`.
+
+`POST /internal/console/chats/12/return` с `{"note": "Ответ клиенту: ориентир от X\n\nЗадание боту: узнай 1С"}`: 200
+`{"result": "returned", "resumed": 0}` (бот ответит на неотвеченное — `{"result": "returned_answering", "resumed": 2}`);
+чат уже у бота — 200 `{"result": "already_bot", "message": "Чат уже ведёт бот: заметка не сохранена."}`; заметка
+длиннее 1000 — 422 `{"error": "refused", "message": "Заметка длиннее 1000 символов: сократите её"}`.
+
+Ошибки: без токена на любом пути — 401 `{"error": "unauthorized", "message": "Нет доступа: токен консоли не
+передан или неверен."}`; неизвестный путь с токеном — 404 `{"error": "not_found", "message": "Такого адреса в API бота
+нет."}`.

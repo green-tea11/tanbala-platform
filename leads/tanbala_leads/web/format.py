@@ -284,6 +284,7 @@ def parse_pains(raw: Any) -> list[dict[str, Any]]:
         pains.append({
             "label": item["pain"].strip(),
             "evidence": evidence.strip() if isinstance(evidence, str) else "",
+            "source": source if isinstance(source, str) and source else None,
             "source_label": PAIN_SOURCES.get(source, str(source) if source else "источник не указан"),
             "verified": item.get("verified") is True,
         })

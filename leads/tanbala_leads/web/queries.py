@@ -82,13 +82,13 @@ SELECT d.id, d.kind, d.subject, d.review_status, d.check_result, d.sent_at, d.cr
 {LETTER_FROM}
 {{where}}
 ORDER BY {{order}}
-LIMIT %s
+LIMIT %s OFFSET %s
 """
 LETTER_SQL = f"""
 SELECT d.id, d.kind, d.subject, d.body, d.model, d.check_result, d.review_status, d.approved_by, d.approved_at,
        d.sent_at, d.created_at, d.updated_at,
        c.id AS company_id, c.name AS company_name, c.rubric, c.city, c.website, c.source_url, c.run_id,
-       c.search_query, c.whatsapp_contacted_at,
+       c.search_query, c.whatsapp_contacted_at, c.requested_via,
        ct.email AS to_email, ct.verify_result, ct.is_catch_all, ct.is_role,
        q.score, q.fit, q.reason, q.segment, q.pains, {LETTER_BLOCKED} AS blocked
 {LETTER_FROM}
@@ -220,7 +220,7 @@ def fetch_history_page(conn, page: int, per_page: int) -> tuple[list[dict[str, A
     """Кому писали: все записи contact_history, новые сверху, с компанией, если она известна."""
     total = _row(conn, "SELECT count(*) AS n FROM contact_history")["n"]
     rows = _rows(conn, (
-        "SELECT h.id, h.occurred_at, h.email, h.direction, h.kind, h.source, h.note, h.company_id,"
+        "SELECT h.id, h.occurred_at, h.email, h.direction, h.kind, h.source, h.note, h.subject, h.draft_id, h.company_id,"
         " c.name AS company_name FROM contact_history h LEFT JOIN companies c ON c.id = h.company_id"
         " ORDER BY h.occurred_at DESC, h.id DESC LIMIT %s OFFSET %s"), (per_page, (page - 1) * per_page))
     return rows, total
@@ -286,11 +286,12 @@ def letter_blocked(conn, draft_id: int) -> bool:
     return bool(row and row["blocked"])
 
 
-def fetch_letters(conn, filter_code: str, run_id: int | None) -> list[dict[str, Any]]:
+def fetch_letters(conn, filter_code: str, run_id: int | None, *, limit: int = LETTERS_IN_LIST,
+                  offset: int = 0) -> list[dict[str, Any]]:
     clauses, params = _letter_where(run_id, LETTER_REVIEW[filter_code])
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
     sql = LETTER_LIST_SQL.format(where=where, order=LETTER_ORDER[filter_code])
-    return _rows(conn, sql, [*params, LETTERS_IN_LIST])
+    return _rows(conn, sql, [*params, limit, offset])
 
 
 def fetch_letter(conn, draft_id: int) -> dict[str, Any] | None:

@@ -17,7 +17,7 @@ from email.utils import formataddr, make_msgid
 import psycopg
 from psycopg.rows import dict_row
 
-from tanbala_leads.settings import Settings
+from tanbala_leads.settings import Settings, SettingsError
 
 # Единственный адрес, куда сейчас можно отправлять. Расширять только по решению владельца.
 TEST_RECIPIENTS = frozenset({"bogdansm2000@gmail.com"})
@@ -34,6 +34,10 @@ WHERE status = 'sent'
 
 class SendBlocked(RuntimeError):
     """Отправка запрещена правилами тестового режима."""
+
+
+class SendLimitReached(SendBlocked):
+    """Дневной лимит тестовых отправок исчерпан (для API консоли это 429, а не 409)."""
 
 
 class SendFailed(RuntimeError):
@@ -92,6 +96,14 @@ def build_test_message(*, subject: str, body: str, real_to: str, test_to: str, f
     return message
 
 
+def _smtp_port(settings: Settings) -> int:
+    """SMTP_PORT числом. Не число — ошибка настроек, как и пустая переменная."""
+    value = settings.require("smtp_port")
+    if not (value.isascii() and value.isdigit()):
+        raise SettingsError("SMTP_PORT должен быть числом, например 465. Исправьте его в .env.")
+    return int(value)
+
+
 def _envelope(message: EmailMessage) -> list[str]:
     return [address for header in ("To", "Cc", "Bcc") for address in message.get_all(header, [])]
 
@@ -110,7 +122,7 @@ def send_test(conn: psycopg.Connection, draft_id: int, settings: Settings,
     if draft["review_status"] == "rejected":
         raise SendBlocked("Отклонённое письмо не отправляется даже в тест")
     if conn.execute(TODAY_SENDS_SQL).fetchone()[0] >= MAX_TEST_SENDS_PER_DAY:
-        raise SendBlocked(f"Дневной лимит тестовых отправок {MAX_TEST_SENDS_PER_DAY} исчерпан")
+        raise SendLimitReached(f"Дневной лимит тестовых отправок {MAX_TEST_SENDS_PER_DAY} исчерпан")
 
     from_addr = settings.require("agent_email")
     message = build_test_message(subject=draft["subject"], body=draft["body"], real_to=draft["email"],
@@ -119,7 +131,7 @@ def send_test(conn: psycopg.Connection, draft_id: int, settings: Settings,
     assert_test_only(envelope)
     assert_test_only(_envelope(message))
     try:
-        with smtp_factory(settings.require("smtp_host"), int(settings.require("smtp_port")),
+        with smtp_factory(settings.require("smtp_host"), _smtp_port(settings),
                           timeout=SMTP_TIMEOUT_SECONDS, context=ssl.create_default_context()) as smtp:
             smtp.login(settings.require("smtp_user"), settings.require("smtp_password"))
             smtp.send_message(message, from_addr=from_addr, to_addrs=envelope)

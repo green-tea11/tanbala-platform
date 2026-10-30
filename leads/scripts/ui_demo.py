@@ -1,4 +1,4 @@
-"""Показ интерфейса на выдуманных данных: схема ui_demo, порт 8001, поддельный запуск.
+"""Показ интерфейса на выдуманных данных: схема ui_demo, порт 8002, поддельный запуск.
 
     .venv/Scripts/python.exe scripts/ui_demo.py
 
@@ -29,7 +29,7 @@ from tanbala_leads.web.app import create_app  # noqa: E402
 
 SCHEMA = "ui_demo"
 HOST = "127.0.0.1"
-PORT = 8001
+PORT = 8002  # 8000 и 8001 заняты настоящим сервером: API и интерфейс
 FAKE_STEP_SECONDS = 3.0
 
 SIGNATURE = "С уважением,\nАрман\nTanbala, направление ТОО «VenMart»\nWhatsApp: +7 747 959 72 38"
