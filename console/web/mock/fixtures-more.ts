@@ -43,13 +43,24 @@ export function companiesFixture(now: number, q: URLSearchParams) {
   const items = COMPANY_NAMES.map((name, i) => ({
     id: [345, 101, 118, 412, 87, 331, 77, 60][i] ?? i, name, rubric: ['Складские услуги', 'Складские услуги', 'Тара и упаковка', 'Склады', 'Грузоперевозки', 'Магазины одежды', 'Упаковочные материалы', 'Сервисные центры'][i] ?? null,
     city: 'almaty', cityName: i === 3 ? 'Шымкент' : 'Алматы', searchQuery: ['склад', 'склад', 'оборотная тара', null, 'логистика', 'магазин одежды', 'оборотная тара', 'склад'][i] ?? null,
-    status: i === 0 ? 'approved' : i < 3 ? 'drafted' : 'qualified', statusLabel: i === 0 ? 'Одобрено' : i < 3 ? 'Письмо готово' : i === 4 ? 'Не подходит' : 'Подходит', statusTone: 'neutral', hadError: i === 6,
+    status: i === 0 ? 'approved' : i < 3 ? 'drafted' : i === 4 ? 'rejected' : 'qualified', statusLabel: i === 0 ? 'Одобрено' : i < 3 ? 'Письмо готово' : i === 4 ? 'Не подходит' : 'Подходит', statusTone: 'neutral', hadError: i === 6,
     fit: i === 4 ? 'no' : 'yes', fitLabel: i === 4 ? 'не подходит' : i === 5 ? 'возможно' : 'подходит', score: [86, 82, 78, 71, 34, 58, 66, 74][i] ?? null, segment: 'Склад, логистика, дистрибуция',
     contact: i === 3 ? null : { email: ['info@alhub.kz', 'info@step-sklad.kz', 'sales@kazpromtara.kz', '', 'office@eurasia-trade-logistics-terminal.kz', 'mzhumabaev@mail.ru', 'zakaz@nurpak.kz', 'info@megaservice.kz'][i], verifyResult: 'safe', verifyLabel: i === 4 ? 'Рискованная' : 'Существует', isCatchAll: i === 4, isRole: i !== 5 },
     draft: i < 3 ? { id: [41, 42, 43][i], subject: ['Инвентаризация 12 000 паллетомест за часы, а не за дни', 'Пересчёт склада без остановки отгрузок', 'Сколько ящиков возвращается от клиентов'][i], reviewStatus: i === 0 ? 'approved' : 'pending', reviewLabel: i === 0 ? 'Одобрено' : 'Ждёт проверки', checksTotal: 10, checksFailed: i === 1 ? 1 : 0 } : null,
     requestedVia: i === 3 ? 'whatsapp' : null, whatsappContactedAt: i === 0 || i === 2 ? iso(now - 3 * 60 * MIN) : null, blocked: i === 7, createdAt: iso(now - (9 - i) * DAY),
   }));
-  const filtered = items.filter((c) => !q.get('q') || c.name.toLowerCase().includes((q.get('q') ?? '').toLowerCase()));
+  // Фильтры как у почты: статус, отрасль, признаки, поиск по названию или рубрике; порядок.
+  const text = (q.get('q') ?? '').toLowerCase();
+  const filtered = items
+    .filter((c) => !q.get('status') || c.status === q.get('status'))
+    .filter((c) => !q.get('query') || c.searchQuery === q.get('query'))
+    .filter((c) => q.get('via') !== 'whatsapp' || c.requestedVia === 'whatsapp')
+    .filter((c) => q.get('via') !== 'regular' || c.requestedVia === null)
+    .filter((c) => q.get('wa') !== '1' || c.whatsappContactedAt !== null)
+    .filter((c) => q.get('blocked') !== '1' || c.blocked)
+    .filter((c) => q.get('letter') !== '1' || c.draft !== null)
+    .filter((c) => !text || c.name.toLowerCase().includes(text) || (c.rubric ?? '').toLowerCase().includes(text))
+    .sort((a, b) => (q.get('sort') === 'score' ? (b.score ?? -1) - (a.score ?? -1) : q.get('sort') === 'letter' ? Number(b.draft !== null) - Number(a.draft !== null) : 0));
   return {
     ...page(filtered, Number(q.get('page') ?? 1), 50),
     facets: {
