@@ -105,7 +105,7 @@ export function homeFixture(now: number) {
       testMode: { testAddress: 'owner@example.kz' },
       budget: { dailyUsd: budget, spentTodayUsd: leadsToday, over: false },
       spend: { totalUsd: 2.41, totalTokens: 1_284_000, unpricedTokens: 0 },
-      overview: { companiesFound: 120, companiesFit: 40, avgScoreFit: 78, lettersPending: 5, lettersApproved: 3, whatsappCompanies: 2 },
+      overview: { companiesFound: 7, companiesFit: 6, avgScoreFit: 75, lettersPending: 2, lettersApproved: 1, whatsappCompanies: 1 },
       activeRun: {
         id: 4, city: 'almaty', cityName: 'Алматы', query: 'склад, логистика, оборотная тара',
         industries: ['склад', 'логистика', 'оборотная тара'], maxCompanies: 5, status: 'running', statusLabel: 'Идёт',
