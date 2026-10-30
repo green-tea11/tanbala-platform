@@ -1,0 +1,157 @@
+/* Карточка клиента: переписка слева (липкая, поле ответа внизу), справа — что знают бот и почта.
+   1156 = переписка 732 + 24 + правая колонка 400. На узком экране — одна область за раз (вкладки). */
+
+.client-head { margin-bottom: 20px; }
+.crumbs { display: flex; gap: 6px; color: var(--muted); font-size: 13px; line-height: 18px; margin-bottom: 2px; }
+.crumbs a:hover { color: var(--text); }
+.client-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 6px; font-size: 13px; line-height: 20px; }
+.client-company { min-width: 0; }
+
+.client-tabs.segmented { display: none; }
+
+.client-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 400px;
+  gap: var(--gap);
+  align-items: start;
+}
+.client-side, .region-client, .region-company { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
+
+/* переписка */
+.conversation {
+  position: sticky; top: 12px;
+  display: flex; flex-direction: column;
+  /* С первого экрана видно поле ответа: высота — от места, где начинается переписка, до низа окна. */
+  height: calc(100dvh - 250px);
+  min-height: 480px;
+  overflow: hidden;
+}
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 12px 20px 16px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.message-item { display: flex; flex-direction: column; }
+.day { align-self: center; margin: 12px 0 6px; color: var(--muted); font-size: var(--fs-small); }
+.bubble {
+  max-width: min(76%, 560px);
+  padding: 8px 12px 6px;
+  border-radius: 12px;
+  line-height: 20px;
+  animation: bubble-in var(--t-med) var(--ease-out);
+}
+.bubble.in { align-self: flex-start; background: var(--raised); border-top-left-radius: 4px; }
+.bubble.out { align-self: flex-end; border-top-right-radius: 4px; }
+.bubble.bot { background: var(--surface); border: 1px solid var(--border); }
+.bubble.human_panel, .bubble.human_phone { background: var(--accent-soft); }
+.bubble .author { display: block; font-size: var(--fs-small); line-height: 16px; color: var(--muted); }
+.bubble.human_panel .author, .bubble.human_phone .author { color: var(--accent); font-weight: 500; }
+.bubble .voice-mark { display: block; font-size: 11px; line-height: 14px; color: var(--muted); }
+.bubble p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.bubble p.placeholder { color: var(--muted); }
+.bubble time { display: block; margin-top: 2px; text-align: right; font-size: 11px; line-height: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+@keyframes bubble-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* поле ответа и «Вернуть боту» */
+.composer { border-top: 1px solid var(--border); padding: 12px 16px 14px; background: var(--surface); }
+.segmented { display: inline-flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--raised); }
+.segmented button {
+  height: 28px; padding: 0 12px;
+  border: 1px solid transparent; border-radius: 6px;
+  background: transparent; color: var(--muted);
+  font-weight: 500; cursor: pointer;
+  transition: background-color var(--t-fast) ease, color var(--t-fast) ease;
+}
+.segmented button[aria-selected="true"] { background: var(--surface); border-color: var(--border); color: var(--text); }
+.composer-form { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.composer textarea {
+  width: 100%; min-height: 60px; resize: vertical;
+  padding: 8px 10px;
+  border: 1px solid var(--control); border-radius: var(--radius-control);
+  background: var(--surface);
+  line-height: 20px;
+}
+.composer textarea::placeholder { color: #6b6b6b; }
+.composer textarea:disabled { background: var(--raised); }
+.field label { display: block; margin-bottom: 4px; font-size: 13px; font-weight: 500; }
+.composer-bar { display: flex; align-items: center; gap: 12px; }
+.composer-hint { flex: 1; color: var(--muted); font-size: var(--fs-small); line-height: 16px; }
+.note-count { color: var(--muted); font-size: var(--fs-small); white-space: nowrap; }
+.note-count.over { color: var(--negative); font-weight: 500; }
+.confirm { display: flex; gap: 8px; }
+.outcome { margin-top: 8px; font-size: 13px; line-height: 18px; }
+.outcome.ok { color: var(--positive); }
+.outcome.bad { color: var(--negative); }
+
+/* что выяснил бот */
+.level-line { display: flex; align-items: baseline; gap: 8px; line-height: 20px; }
+.facts-inline { margin-top: 10px; font-size: 13px; line-height: 18px; }
+.kv { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; margin-top: 14px; }
+.kv dt { color: var(--muted); font-size: var(--fs-small); line-height: 16px; }
+.kv dd { line-height: 20px; overflow-wrap: anywhere; }
+.bot-note { margin-top: 12px; padding: 10px 12px; border-radius: var(--radius-control); background: var(--raised); font-size: 13px; line-height: 18px; white-space: pre-wrap; }
+
+/* компания */
+.company-name { font-size: 16px; line-height: 22px; font-weight: 500; }
+.company-meta { color: var(--muted); font-size: 13px; line-height: 18px; margin-bottom: 12px; }
+.fit { display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: baseline; gap: 4px 8px; }
+.fit-score { font-size: 22px; line-height: 28px; }
+.fit-of { color: var(--muted); font-size: var(--fs-small); }
+.fit-text { min-width: 0; }
+.fit-text p { margin-top: 4px; font-size: 13px; line-height: 18px; }
+.wrap-pill { display: block; height: auto; margin-top: 12px; padding: 6px 10px; border-radius: var(--radius-control); white-space: normal; line-height: 16px; }
+.links { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 12px; font-size: 13px; }
+.links a { display: inline-flex; align-items: center; gap: 4px; }
+
+.pains { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--rule); }
+.pains h3 { margin-bottom: 6px; color: var(--muted); font-size: var(--fs-small); font-weight: 500; line-height: 16px; }
+.pains li { margin-bottom: 10px; font-size: 13px; line-height: 18px; }
+.pains b { display: block; font-weight: 500; }
+.pains .evidence { display: block; color: var(--muted); }
+.pains q { quotes: "«" "»"; }
+
+/* письма и передачи */
+.history-row { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 2px 12px; padding: 8px 0; font-size: 13px; line-height: 18px; }
+.history-row > .muted { grid-column: 2; overflow-wrap: anywhere; }
+.rejected summary { margin-top: 12px; font-size: 13px; font-weight: 500; cursor: pointer; }
+.rejected li { margin-top: 10px; font-size: 13px; line-height: 18px; }
+.rejected .remarks { color: var(--negative); }
+
+@media (max-width: 1100px) {
+  .client-tabs.segmented { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; margin: 0 0 12px; }
+  .client-tabs button { height: 36px; }
+  .client-grid { grid-template-columns: minmax(0, 1fr); }
+  .client[data-tab="chat"] .client-side { display: none; }
+  .client[data-tab="client"] .region-chat, .client[data-tab="client"] .region-company { display: none; }
+  .client[data-tab="company"] .region-chat, .client[data-tab="company"] .region-client { display: none; }
+  .conversation { position: static; height: calc(100dvh - var(--topbar) - 196px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); min-height: 400px; }
+  .client .sheet-inner, .sheet-inner.client { padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
+}
+
+@media (max-width: 640px) {
+  .client .mode { display: none; }
+  .client-head { margin: 8px 0 12px; }
+  .client-head .title-actions { display: none; }
+  .messages { padding: 8px 12px 12px; }
+  .bubble { max-width: 86%; }
+  .composer { padding: 10px 12px 12px; }
+  .composer textarea { font-size: 16px; }
+  .segmented { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+  .client-tabs.segmented { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .segmented button { height: 36px; }
+  .crumbs { display: none; }
+  .client-sub { gap: 4px 10px; margin-top: 4px; }
+  .composer textarea { min-height: 44px; }
+  .composer-form { gap: 6px; margin-top: 8px; }
+  .composer .segmented button { height: 34px; }
+  .kv { grid-template-columns: minmax(0, 1fr); gap: 0; margin-top: 10px; }
+  .kv > div { display: grid; grid-template-columns: 38% minmax(0, 1fr); gap: 12px; padding: 7px 0; border-top: 1px solid var(--rule); }
+  .kv dt { font-size: 13px; line-height: 20px; }
+  .pains { grid-template-columns: minmax(0, 1fr); }
+}

@@ -36,3 +36,6 @@ $RECYCLE.BIN/
 
 # Локальные настройки Claude Code
 .claude/settings.local.json
+
+# Рабочие файлы taste-skill (снимки, замеры)
+.taste-skill/
