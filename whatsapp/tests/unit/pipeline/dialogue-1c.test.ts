@@ -72,7 +72,7 @@ type Storage = ResponderStorage & ServicesStorage & { readonly chatCompanies: Ch
 function configOfProject(): AppConfig {
   const root = useTempDir().path;
   mkdirSync(join(root, 'knowledge'));
-  for (const name of ['tanbala-agent.md', 'whatsapp.md']) {
+  for (const name of ['tanbala-agent.md', 'whatsapp.md', 'consult.md']) {
     copyFileSync(join(PROJECT_ROOT, 'knowledge', name), join(root, 'knowledge', name));
   }
   const env = {

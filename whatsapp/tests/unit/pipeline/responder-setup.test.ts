@@ -77,6 +77,7 @@ function configWith(env: Readonly<Record<string, string>>): AppConfig {
   mkdirSync(join(root, 'knowledge'));
   writeFileSync(join(root, 'knowledge', 'tanbala-agent.md'), 'Учёт вещей на RFID-метках.');
   writeFileSync(join(root, 'knowledge', 'whatsapp.md'), 'Отвечай коротко.');
+  writeFileSync(join(root, 'knowledge', 'consult.md'), 'Сначала боль, потом плюс.');
   const base = { TEST_MODE: 'true', TEST_ALLOWLIST: PHONE };
   return loadConfig({ ...base, ...env }, MODELS, root).config;
 }

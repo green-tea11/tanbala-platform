@@ -22,7 +22,12 @@ const HOT_TEXT =
   'Да, мы проводим интеграцию с вашей 1С, детали решаем по вашей конфигурации. Стоимость зависит от вашей задачи, уточню у коллеги и вернусь к вам.';
 const FIRST = 'Учёт подбираем под задачу. Что вы храните?';
 const SECOND = 'Решение подбирает коллега. Что вы хотите учитывать?';
-const KNOWLEDGE: Knowledge = { owner: 'Документ', whatsapp: 'Правила', version: 'v1' };
+const KNOWLEDGE: Knowledge = {
+  owner: 'Документ',
+  whatsapp: 'Правила',
+  consult: 'Разговор',
+  version: 'v1',
+};
 // Модели из config/models.json: ответ, проверка и оценка интереса на Sonnet.
 const MODELS_FILE = JSON.parse(
   readFileSync(new URL('../../../config/models.json', import.meta.url), 'utf8'),

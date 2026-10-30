@@ -1,6 +1,6 @@
 # C-WhatsApp: WhatsApp-консультант Tanbala
 
-Перед работой прочитай: `docs/PLAN.md` (план; для WhatsApp он главнее документа владельца), `knowledge/tanbala-agent.md`, `knowledge/whatsapp.md` и решения в `docs/adr/`.
+Перед работой прочитай: `docs/PLAN.md` (план; для WhatsApp он главнее документа владельца), `knowledge/tanbala-agent.md`, `knowledge/whatsapp.md`, `knowledge/consult.md` (как вести разговор, с 30.10.2026 главнее whatsapp.md в этом) и решения в `docs/adr/`.
 
 ## Правила владельца
 

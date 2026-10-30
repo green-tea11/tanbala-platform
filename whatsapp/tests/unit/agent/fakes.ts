@@ -8,6 +8,7 @@ import type { ChatId, ClientProfile, LlmResult, StoredMessage } from '../../../s
 export const KNOWLEDGE: Knowledge = {
   owner: '# Tanbala: что должен знать агент\n',
   whatsapp: '# Tanbala в WhatsApp\n',
+  consult: '# Tanbala в WhatsApp: как консультировать\n',
   version: 'v1',
 };
 

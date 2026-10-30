@@ -14,6 +14,7 @@ import { ANY_DASH } from './fakes.js';
 const KNOWLEDGE: Knowledge = {
   owner: '# Tanbala: что должен знать агент\n\nЦены не называй.\n',
   whatsapp: '# Tanbala в WhatsApp\n\nОдна или две фразы.\n',
+  consult: '# Tanbala в WhatsApp: как консультировать\n\nСначала боль, потом плюс.\n',
   version: 'v1',
 };
 
@@ -36,7 +37,7 @@ function notViolations(instruction: string): string {
 }
 
 describe('buildSystem', () => {
-  it('знания одним блоком с кэшем (tanbala-agent.md, затем whatsapp.md), затем инструкция ответа без кэша', () => {
+  it('знания одним блоком с кэшем (tanbala-agent.md, whatsapp.md, затем consult.md), затем инструкция ответа без кэша', () => {
     const system = buildSystem(KNOWLEDGE, 'reply');
 
     expect(system).toHaveLength(2);
@@ -47,9 +48,28 @@ describe('buildSystem', () => {
     expect(text).toContain(KNOWLEDGE.owner);
     expect(text).toContain(KNOWLEDGE.whatsapp);
     expect(text.indexOf(KNOWLEDGE.owner)).toBeLessThan(text.indexOf(KNOWLEDGE.whatsapp));
+    expect(text).toContain(KNOWLEDGE.consult);
+    expect(text.indexOf(KNOWLEDGE.whatsapp)).toBeLessThan(text.indexOf(KNOWLEDGE.consult));
     expect(text.indexOf('tanbala-agent.md')).toBeLessThan(text.indexOf('whatsapp.md'));
+    expect(text.indexOf('<document name="whatsapp.md">')).toBeLessThan(
+      text.indexOf('<document name="consult.md">'),
+    );
     expect(text).not.toContain(KNOWLEDGE.version);
   });
+
+  it.each(['reply', 'review'] as const)(
+    '%s: в том, как вести разговор, consult.md главнее whatsapp.md',
+    (purpose) => {
+      const instruction = buildSystem(KNOWLEDGE, purpose)[1]?.text ?? '';
+
+      expect(instruction).toContain(
+        'Если whatsapp.md расходится с tanbala-agent.md, прав whatsapp.md.',
+      );
+      expect(instruction).toContain(
+        'В том, как вести разговор (что рассказывать, в каком порядке, о чём спрашивать и каким тоном), consult.md главнее обоих.',
+      );
+    },
+  );
 
   it('блок знаний байт в байт одинаковый при каждом вызове: кэш промпта не сбрасывается', () => {
     expect(buildSystem(KNOWLEDGE, 'reply')).toEqual(buildSystem(KNOWLEDGE, 'reply'));

@@ -6,6 +6,7 @@ import { buildSystem } from '../../../src/agent/prompts.js';
 const KNOWLEDGE: Knowledge = {
   owner: '# Tanbala: что должен знать агент\n\nЦены не называй.\n',
   whatsapp: '# Tanbala в WhatsApp\n\nОдна или две фразы.\n',
+  consult: '# Tanbala в WhatsApp: как консультировать\n',
   version: 'v1',
 };
 

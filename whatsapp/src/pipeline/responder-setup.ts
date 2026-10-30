@@ -1,7 +1,7 @@
 import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { createAgent, type Agent } from '../agent/agent.js';
-import { loadKnowledge, type Knowledge } from '../agent/knowledge.js';
+import { loadKnowledge, type Knowledge, type KnowledgePaths } from '../agent/knowledge.js';
 import type { AppConfig } from '../config/env.js';
 import type { LogoReader } from '../domain/company.js';
 import type {
@@ -37,8 +37,12 @@ export const NO_CLAUDE_KEY_WARNING =
 
 const HOUR_MS = 60 * 60 * 1000;
 
-/** Файлы знаний в папке knowledge/: документ владельца и правила WhatsApp. */
-const KNOWLEDGE_FILES = { owner: 'tanbala-agent.md', whatsapp: 'whatsapp.md' } as const;
+/** Файлы знаний в папке knowledge/: документ владельца, правила WhatsApp и как вести разговор. */
+const KNOWLEDGE_FILES = {
+  owner: 'tanbala-agent.md',
+  whatsapp: 'whatsapp.md',
+  consult: 'consult.md',
+} as const;
 
 /** Подключение WhatsApp для конвейера: «печатает», прочтение и голосовые (отправку ведёт общий outbox). */
 export type ResponderConnection = MessageSender & Pick<WhatsAppInbox, 'markRead' | 'downloadAudio'>;
@@ -205,8 +209,12 @@ function allowlistOf(config: AppConfig): ReadonlySet<PhoneDigits> | null {
   return config.testMode.enabled ? config.testMode.allowlist : null;
 }
 
-function knowledgePaths(dir: string): { readonly owner: string; readonly whatsapp: string } {
-  return { owner: join(dir, KNOWLEDGE_FILES.owner), whatsapp: join(dir, KNOWLEDGE_FILES.whatsapp) };
+function knowledgePaths(dir: string): KnowledgePaths {
+  return {
+    owner: join(dir, KNOWLEDGE_FILES.owner),
+    whatsapp: join(dir, KNOWLEDGE_FILES.whatsapp),
+    consult: join(dir, KNOWLEDGE_FILES.consult),
+  };
 }
 
 /** Строка лога расхода (уже с переводом строки) в конец файла; папка создаётся при первой записи. */
