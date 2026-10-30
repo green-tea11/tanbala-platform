@@ -155,3 +155,6 @@
   .kv dt { font-size: 13px; line-height: 20px; }
   .pains { grid-template-columns: minmax(0, 1fr); }
 }
+
+.messages .older { align-self: center; margin: 4px 0 8px; }
+.bubble.human_phone { background: #e9f2e6; }

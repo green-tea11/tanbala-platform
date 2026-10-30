@@ -102,16 +102,19 @@ export interface ConfirmRequest {
 /** Подтверждение листом снизу (на ноутбуке — окно по центру). Esc и фон закрывают; фокус на кнопке отмены. */
 export function ConfirmSheet({ request, onClose }: { readonly request: ConfirmRequest | null; readonly onClose: () => void }) {
   const cancelRef = useRef<HTMLButtonElement>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   const [busy, setBusy] = useState(false);
+  // Фокус ставится один раз на открытие листа, а не на каждый опрос родителя.
   useEffect(() => {
     if (request === null) return;
     cancelRef.current?.focus();
     const onKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') onClose();
+      if (event.key === 'Escape') closeRef.current();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [request, onClose]);
+  }, [request]);
   if (request === null) return null;
   const confirm = async (): Promise<void> => {
     setBusy(true);

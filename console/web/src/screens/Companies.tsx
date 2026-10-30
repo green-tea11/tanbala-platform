@@ -148,6 +148,7 @@ export function CompanyScreen({ id, owner }: { readonly id: number; readonly own
   const now = poll.updatedAt ?? Date.now();
   if (poll.error?.error === 'not_found') return <div className="sheet-inner"><PageTitle title="Компания не найдена" sub={<Link to="/companies" className="text-link">К списку компаний</Link>} /></div>;
   if (data === null) return <div className="sheet-inner"><PageTitle title="Компания" sub="Загрузка…" /></div>;
+  if ((data as { unavailable?: boolean }).unavailable === true) return <div className="sheet-inner"><PageTitle title="Компания" /><Unavailable source="leads" /></div>;
   const section = data.company;
   if ('unavailable' in section) return <div className="sheet-inner"><PageTitle title="Компания" /><Unavailable source="leads" /></div>;
   const card = section;

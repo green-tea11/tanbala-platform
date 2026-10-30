@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { apiPost } from '../lib/api';
+import { apiGet, apiPost } from '../lib/api';
 import { clockTime } from '../lib/format';
 import { composeNote, NOTE_MAX, noteLength } from '../lib/note';
 import type { BotStatus, ChatCard, Message } from '../lib/types';
@@ -18,12 +18,31 @@ function messageText(message: Message): { text: string; placeholder: boolean } {
     return message.text ? { text: message.text, placeholder: false } : { text: 'Голосовое, расшифровки нет', placeholder: true };
   }
   if (message.kind === 'other') return { text: 'Сообщение другого вида: фото, файл или стикер', placeholder: true };
-  return { text: message.text ?? '', placeholder: message.text === null };
+  return message.text ? { text: message.text, placeholder: false } : { text: 'Пустое сообщение', placeholder: true };
 }
 
 export function Messages({ card, now }: { readonly card: ChatCard; readonly now: number }) {
   const listRef = useRef<HTMLOListElement>(null);
   const lastId = card.messages.items.at(-1)?.id;
+  // «Показать раньше»: подгруженные старые сообщения живут до смены чата, опрос их не стирает.
+  const [older, setOlder] = useState<readonly Message[]>([]);
+  const [cursor, setCursor] = useState<number | null>(card.messages.earlierBefore);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  useEffect(() => {
+    setOlder([]);
+    setCursor(card.messages.earlierBefore);
+  }, [card.chat.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const loadOlder = async (): Promise<void> => {
+    if (cursor === null) return;
+    setLoadingOlder(true);
+    const result = await apiGet<{ items: readonly Message[]; earlierBefore: number | null }>(`/api/chats/${card.chat.id}/messages?before=${cursor}`);
+    setLoadingOlder(false);
+    if (result.ok) {
+      setOlder((prev) => [...result.data.items, ...prev]);
+      setCursor(result.data.earlierBefore);
+    }
+  };
+  const items = [...older, ...card.messages.items];
 
   // К последнему сообщению: при открытии и когда пришло новое (если человек не листает вверх).
   useLayoutEffect(() => {
@@ -39,7 +58,11 @@ export function Messages({ card, now }: { readonly card: ChatCard; readonly now:
   let previousDay = '';
   return (
     <ol className="messages" ref={listRef} aria-label="Переписка">
-      {card.messages.items.map((message) => {
+      {cursor !== null ? (
+        <li className="older"><button type="button" className="btn small" disabled={loadingOlder} onClick={() => void loadOlder()}>Показать раньше</button></li>
+      ) : null}
+      {items.length === 0 ? <li className="day">Сообщений пока нет.</li> : null}
+      {items.map((message) => {
         const day = dayLabel(message.at, now);
         const showDay = day !== previousDay;
         previousDay = day;
@@ -90,13 +113,17 @@ export function Composer({ card, botStatus, onDone }: ComposerProps) {
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
+  const [returnHint, setReturnHint] = useState(false);
   const chatId = card.chat.id;
   const botLeads = card.chat.status === 'bot';
 
   useEffect(() => {
-    setOutcome(null);
     setConfirming(false);
-  }, [mode, chatId]);
+  }, [mode]);
+  useEffect(() => {
+    setOutcome(null);
+    setReturnHint(false);
+  }, [chatId]);
 
   const blocked = replyBlockedReason(botStatus);
   const replyLength = text.trim().length;
@@ -118,7 +145,9 @@ export function Composer({ card, botStatus, onDone }: ComposerProps) {
       onDone();
     } else {
       setOutcome({ tone: 'bad', text: result.failure.message });
-      if (result.failure.error === 'send_failed') setMode('reply');
+      // Ответ мог не уйти, а чат уже у менеджера: свежий статус и сразу «Вернуть боту».
+      onDone();
+      if (result.failure.error === 'send_failed' || result.failure.message.includes('Чат уже у менеджера')) setReturnHint(true);
     }
   };
 
@@ -135,6 +164,7 @@ export function Composer({ card, botStatus, onDone }: ComposerProps) {
       onDone();
     } else {
       setOutcome({ tone: 'bad', text: result.failure.message });
+      onDone();
     }
   };
 
@@ -212,6 +242,9 @@ export function Composer({ card, botStatus, onDone }: ComposerProps) {
       {outcome ? (
         <p className={`outcome ${outcome.tone}`} role={outcome.tone === 'bad' ? 'alert' : 'status'}>
           {outcome.text}
+          {returnHint && mode === 'reply' ? (
+            <button type="button" className="btn small" style={{ marginLeft: 8 }} onClick={() => { setReturnHint(false); setMode('return'); }}>Вернуть боту</button>
+          ) : null}
         </p>
       ) : null}
     </div>

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Initial, LevelPill, ModeBanner, Panel, Skeleton, Unavailable } from '../components/Bits';
+import { Initial, LevelPill, Panel, Skeleton, Unavailable } from '../components/Bits';
 import { IconRefresh } from '../components/Icons';
 import { apiPost } from '../lib/api';
 import { clockTime, minutesSince, nameOf, relativeTime, waitDuration } from '../lib/format';
@@ -267,7 +267,6 @@ export function HomeScreen({ poll }: { readonly poll: PollState<Home> }) {
   const now = poll.updatedAt ?? Date.now();
   return (
     <div className="sheet-inner">
-      {home ? <ModeBanner mode={home.mode} /> : null}
       <div className="title-row">
         <div className="title-main">
           <h1>Требует внимания</h1>
@@ -303,7 +302,7 @@ export function HomeScreen({ poll }: { readonly poll: PollState<Home> }) {
             {isUnavailable(home.attention) ? <Panel id="hot" title="Горячие"><Unavailable source="wa" /></Panel> : <HotPanel attention={home.attention} now={now} />}
             <AfterLetterPanel home={home} now={now} />
             <LeadsNow summary={home.leadsSummary as LeadsSummary | { unavailable: true }} now={now} />
-            <SpendPanel spend={home.spend} />
+            <SpendPanel spend={home.spend} totalUsd={isUnavailable(home.leadsSummary) ? null : (home.leadsSummary as LeadsSummary & { spend?: { totalUsd?: number } }).spend?.totalUsd ?? null} />
           </div>
         </>
       )}

@@ -47,11 +47,11 @@ interface ShellProps {
   readonly back?: { readonly to: string; readonly label: string } | undefined;
   /** Детальные экраны на телефоне прячут нижнюю панель: внизу их собственное поле ответа. */
   readonly hideTabbar?: boolean;
-  readonly stamp?: string | null;
+  readonly onLogout: () => void;
   readonly children: ReactNode;
 }
 
-export function Shell({ session, counts, phoneTitle, back, hideTabbar, stamp, children }: ShellProps) {
+export function Shell({ session, counts, phoneTitle, back, hideTabbar, onLogout, children }: ShellProps) {
   const { path } = useRouter();
   const items = NAV.filter((item) => !item.ownerOnly || session.user.role === 'owner');
   const roleLabel = session.user.role === 'owner' ? 'владелец' : 'менеджер';
@@ -86,6 +86,7 @@ export function Shell({ session, counts, phoneTitle, back, hideTabbar, stamp, ch
             <b>{session.user.name}</b>
             <span>{roleLabel}</span>
           </div>
+          <button type="button" className="btn ghost small logout" onClick={onLogout}>Выйти</button>
         </div>
       </aside>
 
@@ -96,7 +97,6 @@ export function Shell({ session, counts, phoneTitle, back, hideTabbar, stamp, ch
           <input id="global-search" name="q" type="search" placeholder="Клиент по имени или номеру" autoComplete="off" />
           <kbd>/</kbd>
         </form>
-        {stamp ? <span className="topbar-stamp">{stamp}</span> : null}
       </header>
 
       <div className="phone-bar">
@@ -109,7 +109,6 @@ export function Shell({ session, counts, phoneTitle, back, hideTabbar, stamp, ch
           <Mark size={22} />
         )}
         {back ? null : <span className="title">{phoneTitle}</span>}
-        <div className="end">{stamp && !back ? <span className="topbar-stamp">{stamp}</span> : null}</div>
       </div>
 
       <main className="sheet" id="main">

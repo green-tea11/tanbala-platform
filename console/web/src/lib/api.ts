@@ -62,7 +62,13 @@ export async function apiPost<T>(path: string, body: Readonly<Record<string, unk
       body: JSON.stringify(body),
     });
   const first = await send();
-  if (first.ok || first.failure.error !== 'csrf') return first;
+  if (first.ok || first.failure.error !== 'csrf') return asActionResult(first);
   await loadSession();
-  return send();
+  return asActionResult(await send());
+}
+
+/** У действия обрыв связи — «итог неизвестен»: ответ клиенту или одобрение могли выполниться, сами не повторяем. */
+function asActionResult<T>(result: ApiResult<T>): ApiResult<T> {
+  if (result.ok || result.failure.error !== 'network') return result;
+  return { ok: false, failure: { status: 0, error: 'unknown_outcome', message: 'Связь оборвалась: действие могло выполниться. Обновите страницу и проверьте, прежде чем повторять.' } };
 }

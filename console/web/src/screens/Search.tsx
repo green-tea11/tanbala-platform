@@ -60,6 +60,8 @@ export function SearchScreen({ owner }: { readonly owner: boolean }) {
   const tab = params.get('tab') === 'research' ? 'research' : 'runs';
   const options = usePoll<Section<SearchOptions>>('/api/search/options', 0);
   const active = usePoll<Section<RunRow | null>>('/api/runs/active', 2_000);
+  const selectedRunId = Number(params.get('run') ?? '0') || null;
+  const selected = usePoll<Section<RunRow>>(selectedRunId ? `/api/runs/${selectedRunId}` : '/api/runs/active', selectedRunId ? 0 : -1);
   const runs = usePoll<Section<Page<RunRow>>>(`/api/runs?page=${params.get('page') ?? '1'}`, 30_000);
   const research = usePoll<Section<Page<ResearchRow>>>(`/api/research-jobs?page=${params.get('page') ?? '1'}`, tab === 'research' ? 15_000 : 0);
   const action = useAction();
@@ -115,8 +117,8 @@ export function SearchScreen({ owner }: { readonly owner: boolean }) {
             </form>
           )}
         </Panel>
-        <Panel id="active-run" title="Сейчас">
-          {active.data && isUnavailable(active.data) ? <Unavailable source="leads" /> : activeRun ? <RunCard run={activeRun} now={now} /> : <p className="empty">Поиск сейчас не идёт.</p>}
+        <Panel id="active-run" title={selectedRunId ? `Запуск №${selectedRunId}` : 'Сейчас'} aside={selectedRunId ? <button type="button" className="btn small ghost" onClick={() => set({ run: null })}>К идущему</button> : null}>
+          {selectedRunId && selected.error ? <p className="empty">Запуск №{selectedRunId} не найден.</p> : selectedRunId && selected.data && !isUnavailable(selected.data) && selected.data !== null ? <RunCard run={selected.data} now={now} /> : active.data && isUnavailable(active.data) ? <Unavailable source="leads" /> : activeRun ? <RunCard run={activeRun} now={now} /> : <p className="empty">Поиск сейчас не идёт.</p>}
           {active.error && active.error.error === 'network' ? <p className="hint">{active.error.message}</p> : null}
         </Panel>
       </div>
@@ -133,7 +135,7 @@ export function SearchScreen({ owner }: { readonly owner: boolean }) {
                   <thead><tr><th>Запуск</th><th>Отрасли</th><th className="num-col">Найдено</th><th className="num-col">Подходят</th><th className="num-col">Писем</th><th>Статус</th><th className="num-col">Расход</th></tr></thead>
                   <tbody>{runs.data.items.map((r) => (
                     <tr key={r.id}>
-                      <td><b>№{r.id}</b><div className="cell-sub">{clockTime(r.createdAt, now)} · {r.cityName}</div></td>
+                      <td><button type="button" className="link-button" onClick={() => { set({ run: String(r.id) }); window.scrollTo(0, 0); }}><b>№{r.id}</b> ход</button><div className="cell-sub">{clockTime(r.createdAt, now)} · {r.cityName}</div></td>
                       <td data-label="Отрасли"><Link to={`/companies?run=${r.id}`} className="text-link">{r.industries.join(', ')}</Link><div className="cell-sub">до {r.maxCompanies} на отрасль</div></td>
                       <td className="num-col" data-label="Найдено">{r.found}<div className="cell-sub">новых {r.newCompanies}</div></td>
                       <td className="num-col" data-label="Подходят">{r.qualified}</td>

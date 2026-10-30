@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { Component, useCallback, useEffect, useState, type ReactNode } from 'react';
+import { ModeBanner } from './components/Bits';
+import { apiPost } from './lib/api';
 import { Shell, type NavCounts } from './components/Shell';
 import { loadSession } from './lib/api';
 import { matchPath, useRouter } from './lib/router';
@@ -43,6 +45,21 @@ interface Route {
   readonly element: ReactNode;
 }
 
+/** Сбой одного экрана не роняет всю панель: остальное меню и данные работают. */
+class ScreenBoundary extends Component<{ readonly children: ReactNode; readonly path: string }, { readonly failed: boolean; readonly path: string }> {
+  override state = { failed: false, path: this.props.path };
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+  static getDerivedStateFromProps(props: { path: string }, state: { failed: boolean; path: string }) {
+    return props.path === state.path ? null : { failed: false, path: props.path };
+  }
+  override render(): ReactNode {
+    if (!this.state.failed) return this.props.children;
+    return <div className="sheet-inner"><div className="title-row"><div><h1>Экран не открылся</h1><p className="finding muted">Обновите страницу. Остальные разделы работают.</p></div></div></div>;
+  }
+}
+
 function NotFound({ text }: { readonly text: string }) {
   return <div className="sheet-inner"><div className="title-row"><div><h1>{text}</h1></div></div></div>;
 }
@@ -50,7 +67,7 @@ function NotFound({ text }: { readonly text: string }) {
 function routeFor(path: string, session: Session, home: PollState<Home>, onLogout: () => void): Route {
   const owner = session.user.role === 'owner';
   const chat = matchPath('/chats/:id', path);
-  if (chat) return { title: 'Клиент', back: { to: '/chats', label: 'Чаты' }, detail: true, element: <ClientScreen chatId={Number(chat['id'])} home={home.data} /> };
+  if (chat) return { title: 'Клиент', back: { to: '/chats', label: 'Чаты' }, detail: true, element: <ClientScreen key={chat['id']} chatId={Number(chat['id'])} home={home.data} /> };
   const company = matchPath('/companies/:id', path);
   if (company) return { title: 'Компания', back: { to: '/companies', label: 'Компании' }, detail: true, element: <CompanyScreen id={Number(company['id'])} owner={owner} /> };
   const letter = matchPath('/letters/:id', path);
@@ -70,7 +87,7 @@ function routeFor(path: string, session: Session, home: PollState<Home>, onLogou
   }
 }
 
-function Workspace({ session, onLogout }: { readonly session: Session; readonly onLogout: () => void }) {
+function Workspace({ session, onLogout, onExpired }: { readonly session: Session; readonly onLogout: () => void; readonly onExpired: () => void }) {
   const { path } = useRouter();
   const onHome = path === '/';
   const home = usePoll<Home>('/api/home', onHome ? HOME_POLL_MS : BACKGROUND_POLL_MS);
@@ -81,12 +98,17 @@ function Workspace({ session, onLogout }: { readonly session: Session; readonly 
   }, [route.title]);
 
   useEffect(() => {
-    if (home.error?.error === 'no_session') onLogout();
-  }, [home.error, onLogout]);
+    if (home.error?.error === 'no_session') onExpired();
+  }, [home.error, onExpired]);
+
+  const logout = useCallback(() => {
+    void apiPost('/api/logout').then(onLogout);
+  }, [onLogout]);
 
   return (
-    <Shell session={session} counts={countsOf(home.data)} phoneTitle={onHome ? 'Tanbala' : route.title} back={route.back} hideTabbar={route.detail} stamp={null}>
-      {route.element}
+    <Shell session={session} counts={countsOf(home.data)} phoneTitle={onHome ? 'Tanbala' : route.title} back={route.back} hideTabbar={route.detail} onLogout={logout}>
+      {home.data ? <div className={`mode-wrap${route.detail ? ' on-detail' : ''}`}><ModeBanner mode={home.data.mode} /></div> : null}
+      <ScreenBoundary path={path}>{route.element}</ScreenBoundary>
     </Shell>
   );
 }
@@ -117,9 +139,15 @@ export function App() {
     setSession(null);
     setState('login');
   }, []);
+  // Сессия кончилась посреди работы: вход слоем поверх, экран под ним не размонтируется — набранный текст цел.
+  const expired = useCallback(() => setState('login'), []);
 
-  if (state === 'login') return <LoginScreen onLogin={refresh} />;
   if (state === 'error') return <p className="boot">{message} <button type="button" className="btn small" onClick={refresh}>Повторить</button></p>;
-  if (session === null) return <p className="boot muted">Загрузка…</p>;
-  return <Workspace session={session} onLogout={logout} />;
+  if (session === null) return state === 'login' ? <LoginScreen onLogin={refresh} /> : <p className="boot muted">Загрузка…</p>;
+  return (
+    <>
+      <div inert={state === 'login'}><Workspace session={session} onLogout={logout} onExpired={expired} /></div>
+      {state === 'login' ? <div className="login-overlay"><LoginScreen onLogin={refresh} /></div> : null}
+    </>
+  );
 }

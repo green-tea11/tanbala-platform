@@ -38,7 +38,8 @@ export function usePoll<T>(path: string, intervalMs: number): PollState<T> {
       } else {
         failures.current += 1;
         setError(result.failure);
-        if (STOP_ERRORS.has(result.failure.error)) stopped.current = true;
+        // Любой 401/403 (в том числе пароль Caddy) — стоп: повторы набрали бы бан fail2ban на весь адрес офиса.
+        if (STOP_ERRORS.has(result.failure.error) || result.failure.status === 401 || result.failure.status === 403) stopped.current = true;
       }
       setLoading(false);
       if (stopped.current || intervalMs <= 0 || document.visibilityState !== 'visible') return;

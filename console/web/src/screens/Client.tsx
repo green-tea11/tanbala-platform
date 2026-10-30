@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { LevelPill, ModeBanner, Skeleton, Unavailable } from '../components/Bits';
+import { LevelPill, Skeleton, Unavailable } from '../components/Bits';
 import { IconPhone } from '../components/Icons';
 import { nameOf, phoneLabel, telHref, waHref } from '../lib/format';
 import { Link } from '../lib/router';
@@ -61,7 +61,6 @@ export function ClientScreen({ chatId, home }: ClientScreenProps) {
 
   return (
     <div className="sheet-inner client" data-tab={tab}>
-      {home ? <ModeBanner mode={home.mode} /> : null}
       <div className="title-row client-head">
         <div className="client-id">
           <nav className="crumbs" aria-label="Путь"><Link to="/chats">Чаты</Link><span aria-hidden="true">/</span></nav>

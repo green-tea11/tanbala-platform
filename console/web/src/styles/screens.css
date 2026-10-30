@@ -210,3 +210,6 @@
   .letter-actions { flex-direction: column; }
   .letter-actions .actions .btn { flex: 1 1 45%; }
 }
+
+.link-button { padding: 0; border: 0; background: none; color: var(--accent); cursor: pointer; font: inherit; }
+.link-button:hover { text-decoration: underline; text-underline-offset: 3px; }

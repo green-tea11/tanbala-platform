@@ -14,7 +14,7 @@ function part(section: HomeSpend['bot']): { today: SpendTotal; month: SpendTotal
   return isUnavailable(section) ? null : section;
 }
 
-export function SpendPanel({ spend }: { readonly spend: HomeSpend }) {
+export function SpendPanel({ spend, totalUsd }: { readonly spend: HomeSpend; readonly totalUsd?: number | null }) {
   const bot = part(spend.bot);
   const leads = part(spend.leads);
   const budget = isUnavailable(spend.leadsBudget) ? null : spend.leadsBudget;
@@ -31,7 +31,7 @@ export function SpendPanel({ spend }: { readonly spend: HomeSpend }) {
       id="spend"
       title="Расход Claude API"
       aside={<span>по Алматы</span>}
-      foot={<span>{monthName.charAt(0).toUpperCase() + monthName.slice(1)}: {usd(month)}{bot && leads ? ` (бот ${usd(bot.month.usd)}, почта ${usd(leads.month.usd)})` : ''}</span>}
+      foot={<span>{monthName.charAt(0).toUpperCase() + monthName.slice(1)}: {usd(month)}{bot && leads ? ` (бот ${usd(bot.month.usd)}, почта ${usd(leads.month.usd)})` : ''}{totalUsd != null ? `. Почта за всё время: ${usd(totalUsd)}` : ''}</span>}
     >
       <div className="spend-lead">
         <span className="num spend-figure">{usd(today)}</span>

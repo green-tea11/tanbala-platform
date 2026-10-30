@@ -110,9 +110,21 @@ function LetterView({ letter, owner, onDone }: { readonly letter: Letter; readon
     confirmLabel: 'Отправить тест',
     run: async () => { await action.run(`/api/letters/${letter.id}/send-test`); onDone(false); },
   });
-  const save = async (): Promise<void> => {
+  const [saving, setSaving] = useState(false);
+  const doSave = async (): Promise<void> => {
+    setSaving(true);
     const result = await action.run(`/api/letters/${letter.id}/edit`, { subject, body });
+    setSaving(false);
     if (result.ok) { setEditing(false); onDone(false); }
+  };
+  const save = (): void => {
+    if (letter.reviewStatus !== 'approved') { void doSave(); return; }
+    setConfirm({
+      title: 'Сохранить правку?',
+      body: <p>Письмо уже одобрено. После правки одобрение снимется, проверки пройдут заново.</p>,
+      confirmLabel: 'Сохранить',
+      run: doSave,
+    });
   };
   const copy = async (): Promise<void> => {
     try { await navigator.clipboard.writeText(`${letter.subject}\n\n${text}`); action.setOutcome({ tone: 'ok', text: 'Тема и текст скопированы.' }); }
@@ -142,7 +154,7 @@ function LetterView({ letter, owner, onDone }: { readonly letter: Letter; readon
             <label><span>Тема</span><input type="text" value={subject} maxLength={200} onChange={(e) => setSubject(e.target.value)} /></label>
             <label><span>Текст</span><textarea rows={14} value={body} maxLength={10000} onChange={(e) => setBody(e.target.value)} /></label>
             <p className="hint">Строки «[Проверить: …]» и «[Ответить лично: …]» в начале — заметки для вас, клиенту не уходят.{letter.reviewStatus === 'approved' ? ' Правка снимет одобрение.' : ''}</p>
-            <div className="actions"><button type="button" className="btn primary" onClick={() => void save()}>Сохранить и проверить</button><button type="button" className="btn" onClick={() => setEditing(false)}>Отмена</button></div>
+            <div className="actions"><button type="button" className="btn primary" disabled={saving} onClick={save}>Сохранить и проверить</button><button type="button" className="btn" onClick={() => setEditing(false)}>Отмена</button></div>
           </div>
         ) : (
           <div className="letter-body">{letter.textLines.map((line, i) => <p key={i} className={line.note ? 'note-line' : undefined}>{line.text || ' '}</p>)}</div>
