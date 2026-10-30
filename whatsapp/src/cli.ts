@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url';
 import { loadEnvironment } from './config/dotenv.js';
 import { formatFatalError } from './config/errors.js';
 import { main, type RunningApp } from './main.js';
+import { createOutputGuard, createStdoutDestination } from './shared/terminal-output.js';
 
 // Точка входа: единственный модуль, который что-то запускает при импорте.
 // Корень проекта считается от этого файла (src/ или dist/), а не от текущей папки процесса.
@@ -28,6 +29,7 @@ function exitWithError(error: unknown): void {
  */
 function stopOnSignals(app: RunningApp): void {
   let stopping = false;
+  process.on('SIGHUP', output.hangUp);
   const onSignal = (): void => {
     if (stopping) {
       process.exit(FORCED_EXIT_CODE);
@@ -40,11 +42,20 @@ function stopOnSignals(app: RunningApp): void {
   process.on('SIGHUP', onSignal);
 }
 
-/** Вывод в закрытый терминал (после SIGHUP) даёт EIO или EPIPE: сообщить об этом некуда, и остановку это не прерывает. */
+/**
+ * Вывод в закрытый терминал (после SIGHUP) даёт EIO или EPIPE, брошенная строка лога (terminal-output.ts) EAGAIN или
+ * EBUSY: сообщить об этом некуда, и остановку это не прерывает.
+ */
 function isLostOutput(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException | null)?.code;
-  return code === 'EIO' || code === 'EPIPE';
+  return code === 'EIO' || code === 'EPIPE' || code === 'EAGAIN' || code === 'EBUSY';
 }
+
+/** stdout лога: занятый вывод ждётся не дольше MAX_BLOCKED_OUTPUT_MS, после SIGHUP не ждётся вовсе. */
+const output = createOutputGuard();
+const logDestination = createStdoutDestination(output, (error) => {
+  if (!isLostOutput(error)) exitWithError(error);
+});
 
 /** WhatsApp остановился сам (не по stop): процесс завершится сам, но с кодом SELF_STOP_EXIT_CODE. */
 function exitCodeOnSelfStop(app: RunningApp): void {
@@ -61,7 +72,7 @@ process.on('unhandledRejection', exitWithError);
 
 try {
   // .env из корня проекта, переменные процесса главнее; сам process.env не меняется.
-  const app = await main({ env: loadEnvironment(root, process.env), root });
+  const app = await main({ env: loadEnvironment(root, process.env), root, logDestination });
   stopOnSignals(app);
   exitCodeOnSelfStop(app);
 } catch (error: unknown) {

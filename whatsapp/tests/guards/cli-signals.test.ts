@@ -15,8 +15,17 @@ describe('cli.ts: корректная остановка по сигналам'
     },
   );
 
-  it('ошибки вывода в закрытый терминал (EIO, EPIPE) не прерывают остановку', () => {
-    expect(CLI).toMatch(/code === 'EIO' \|\| code === 'EPIPE'/);
+  it('ошибки вывода в закрытый терминал (EIO, EPIPE) и брошенная строка лога (EAGAIN, EBUSY) не прерывают остановку', () => {
+    expect(CLI).toMatch(
+      /code === 'EIO' \|\| code === 'EPIPE' \|\| code === 'EAGAIN' \|\| code === 'EBUSY'/,
+    );
     expect(CLI).toMatch(/if \(!isLostOutput\(error\)\) exitWithError\(error\)/);
+  });
+
+  it('лог пишет в stdout с ограниченным ожиданием, SIGHUP снимает ожидание вывода (проверка на сервере 30.10.2026)', () => {
+    expect(CLI).toContain("process.on('SIGHUP', output.hangUp);");
+    expect(CLI).toMatch(
+      /main\(\{ env: loadEnvironment\(root, process\.env\), root, logDestination \}\)/,
+    );
   });
 });
