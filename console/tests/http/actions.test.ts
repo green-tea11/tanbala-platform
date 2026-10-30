@@ -35,6 +35,16 @@ describe('ответ клиенту', () => {
     expect(audit).not.toContain('Секретная');
   });
 
+  it('сбой записи журнала после ушедшего ответа не превращает успех в ошибку', async () => {
+    const harness = await start();
+    harness.backends.on('POST wa:/chats/12/reply', { result: 'sent' });
+    const session = await harness.signIn('aigerim', 'manager');
+    harness.db.exec("CREATE TRIGGER audit_fail BEFORE INSERT ON audit_log BEGIN SELECT RAISE(ABORT, 'disk full'); END;");
+    const response = await harness.request('POST', '/api/chats/12/reply', { session, body: { text: 'Добрый день' } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ result: 'sent', message: 'Сообщение отправлено клиенту' });
+  });
+
   it('пустой или длинный текст: 422 до вызова бота', async () => {
     const harness = await start();
     const session = await harness.signIn('owner', 'owner');

@@ -157,8 +157,8 @@ export function LoginScreen({ onLogin }: { readonly onLogin: () => void }) {
     <main className="login">
       <form className="login-card form-grid" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
         <h1>Вход в панель Tanbala</h1>
-        <label><span>Имя</span><input type="text" autoComplete="username" autoCapitalize="none" value={name} onChange={(e) => setName(e.target.value)} required /></label>
-        <label><span>Пароль</span><input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required /></label>
+        <label><span>Имя</span><input type="text" name="username" autoComplete="username" autoCapitalize="none" value={name} onChange={(e) => setName(e.target.value)} required /></label>
+        <label><span>Пароль</span><input type="password" name="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required /></label>
         {error ? <p className="notice bad" role="alert">{error}</p> : null}
         <button type="submit" className="btn primary" disabled={busy || !name || !password}>Войти</button>
       </form>

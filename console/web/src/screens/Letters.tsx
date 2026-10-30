@@ -85,7 +85,7 @@ function LetterQueue({ list, selected, query }: { readonly list: LetterList; rea
   );
 }
 
-function LetterView({ letter, owner, onDone }: { readonly letter: Letter; readonly owner: boolean; readonly onDone: (decided: boolean) => void }) {
+function LetterView({ letter, owner, onDone }: { readonly letter: Letter; readonly owner: boolean; readonly onDone: (decided: boolean, message?: string) => void }) {
   const action = useAction();
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
   const [editing, setEditing] = useState(false);
@@ -102,7 +102,7 @@ function LetterView({ letter, owner, onDone }: { readonly letter: Letter; readon
     body: kind === 'approve' ? <p>Письмо уйдёт в «Одобренные». Компаниям письма пока не отправляются.</p> : <p>Компания вернётся к статусу «Почта проверена». Новое письмо этой компании само не появится.</p>,
     confirmLabel: kind === 'approve' ? 'Одобрить' : 'Отклонить',
     danger: kind === 'reject',
-    run: async () => { const result = await action.run(`/api/letters/${letter.id}/${kind}`); if (result.ok) onDone(true); },
+    run: async () => { const result = await action.run<{ message?: string }>(`/api/letters/${letter.id}/${kind}`); if (result.ok) onDone(true, result.data.message); },
   });
   const sendTest = (): void => setConfirm({
     title: 'Отправить тест?',
@@ -182,6 +182,7 @@ export function LettersScreen({ selectedId, owner }: { readonly selectedId: numb
   const query = params.toString();
   const listPoll = usePoll<Section<LetterList>>(`/api/letters${query ? `?${query}` : ''}`, 30_000);
   const [letter, setLetter] = useState<Section<Letter> | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const list = listPoll.data && !isUnavailable(listPoll.data) ? listPoll.data : null;
   const firstId = list?.items[0]?.id ?? null;
   const shownId = selectedId ?? firstId;
@@ -193,8 +194,9 @@ export function LettersScreen({ selectedId, owner }: { readonly selectedId: numb
     return () => { live = false; };
   }, [shownId]);
 
-  const onDone = (decided: boolean): void => {
+  const onDone = (decided: boolean, message?: string): void => {
     listPoll.refresh();
+    setNotice(decided ? (message ?? null) : null);
     if (decided && list) {
       const next = list.items.find((row) => row.id !== shownId);
       if (next) navigate(`/letters/${next.id}${query ? `?${query}` : ''}`);
@@ -215,6 +217,7 @@ export function LettersScreen({ selectedId, owner }: { readonly selectedId: numb
             <Pager page={list.page} pages={list.pages} total={list.total} pageSize={list.pageSize} noun="писем" onPage={(page) => set({ page: String(page) })} />
           </div>
           <div className="letters-detail">
+            {notice ? <OutcomeLine outcome={{ tone: 'ok', text: notice }} /> : null}
             {letter && !isUnavailable(letter) ? <LetterView letter={letter} owner={owner} onDone={onDone} /> : letter ? <Unavailable source="leads" /> : list.items.length ? <p className="muted">Загрузка письма…</p> : null}
           </div>
         </div>

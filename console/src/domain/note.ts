@@ -15,10 +15,22 @@ export type NoteComposition =
  * «Задание боту: …» через пустую строку; пустые части пропускаются (обе пустые — пустая заметка). Предел 1000
  * символов у итоговой заметки, проверяется до вызова бота.
  */
+/** Управляющие, невидимые (Cf), суррогаты, частные и неназначенные символы, кроме перевода строки. */
+const HIDDEN = /[^\P{C}\n]/gu;
+
+/** Та же чистка, что cleanBotNote бота (whatsapp/src/handoff/bot-note.ts): длина считается так же, как у бота. */
+export function cleanNote(raw: string): string {
+  return normalizeNewlines(raw.normalize('NFC'))
+    .replace(/\t/g, ' ')
+    .replace(HIDDEN, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 export function composeNote(answer: string, task: string): NoteComposition {
   const parts = [
-    { label: ANSWER_LABEL, text: normalizeNewlines(answer).trim() },
-    { label: TASK_LABEL, text: normalizeNewlines(task).trim() },
+    { label: ANSWER_LABEL, text: cleanNote(answer) },
+    { label: TASK_LABEL, text: cleanNote(task) },
   ]
     .filter((part) => part.text !== '')
     .map((part) => `${part.label}${part.text}`);

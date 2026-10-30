@@ -111,6 +111,13 @@ describe('заметка «Вернуть боту»', () => {
     expect(composeNote(' ', '\n')).toEqual({ ok: true, note: '', length: 0 });
   });
 
+  it('чистка как у бота: невидимые символы убираются, NFC, не больше одной пустой строки', () => {
+    const zeroWidth = 'Ответ​ клиенту‏';
+    const nfd = 'ёлка'; // «ё», разложенная на «е» и знак
+    const expected = 'Ответ клиенту: Ответ клиенту\n\nконец\n\nЗадание боту: ёлка';
+    expect(composeNote(`${zeroWidth}\n\n\n\nконец`, nfd)).toEqual({ ok: true, note: expected, length: [...expected].length });
+  });
+
   it('предел 1000 символов Unicode у итоговой заметки (эмодзи = 1)', () => {
     const label = 'Ответ клиенту: '.length;
     expect(composeNote('😀'.repeat(NOTE_MAX_LENGTH - label), '')).toMatchObject({

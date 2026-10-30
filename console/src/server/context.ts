@@ -71,6 +71,17 @@ export function createAppContext(deps: AppDeps): AppContext {
     audit,
     seen: createSeenRepo(deps.db),
     login,
-    record: (entry) => audit.write(entry, deps.clock.now()),
+    // Журнал не должен менять итог уже выполненного действия: сбой записи (база занята, диск полон) — только в лог,
+    // иначе менеджер увидел бы «ошибку» после ушедшего клиенту ответа и отправил бы его ещё раз.
+    record: (entry) => {
+      try {
+        audit.write(entry, deps.clock.now());
+      } catch (error: unknown) {
+        deps.logger.error(
+          { action: entry.action, errorName: error instanceof Error ? error.name : typeof error },
+          'Журнал действий: запись не удалась',
+        );
+      }
+    },
   };
 }
