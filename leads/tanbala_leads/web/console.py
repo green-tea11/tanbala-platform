@@ -261,8 +261,11 @@ def param_flag(params: Mapping[str, str], name: str) -> bool:
 
 
 def param_text(params: Mapping[str, str], name: str, limit: int) -> str:
-    """Текст фильтра как в старом списке: пробелы схлопываются, длина обрезается."""
-    return " ".join((params.get(name) or "").split())[:limit]
+    """Текст фильтра как в старом списке: пробелы схлопываются, длина обрезается. NUL — 400, а не «база недоступна»."""
+    value = params.get(name) or ""
+    if "\x00" in value:
+        raise ConsoleError(400, "bad_request", f"Неверный параметр {name}.")
+    return " ".join(value.split())[:limit]
 
 
 def param_period(params: Mapping[str, str]) -> tuple[date, date]:

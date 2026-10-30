@@ -848,3 +848,11 @@ def test_contract_names_match_routes():
                                                 "/companies/{company_id:dbid}/whatsapp-clear", "/history/import")}
     assert expected <= routes
     assert not [path for _, path in routes if path.startswith(PREFIX) and not re.fullmatch(r"[/a-z{}:_-]+", path)]
+
+
+def test_nul_in_company_filter_is_bad_request_not_db_unavailable():
+    """NUL в тексте фильтра: 400 до базы, а не psycopg DataError → 503 «база недоступна»."""
+    client = make_client()
+    response = get(client, "/companies", params={"q": "склад\x00"})
+    assert response.status_code == 400
+    assert response.json()["error"] == "bad_request"
