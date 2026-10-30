@@ -97,7 +97,10 @@ describe('pipeline/safe-questions: тексты', () => {
   });
 
   it('на ходу с вопросом цены: сначала фраза об ориентире, затем вопрос', () => {
-    expect(questionText('items', true)).toBe(`${ESTIMATE_LATER} ${TEXTS.items}`);
+    expect(ESTIMATE_LATER).toBe('Ориентир коллега назовёт, когда поймём вашу задачу.');
+    expect(questionText('items', true)).toBe(
+      `Ориентир коллега назовёт, когда поймём вашу задачу. ${TEXTS.items}`,
+    );
   });
 
   it.each(QUESTION_KEYS)('вопрос %s проходит проверки кодом, без двоеточий и тире', (key) => {
