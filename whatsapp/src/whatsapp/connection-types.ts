@@ -7,6 +7,7 @@ import type {
   WAMessageKey,
   WAVersion,
 } from 'baileys';
+import type { WhatsAppLinkState } from '../domain/console.js';
 import type {
   AppStateRepo,
   Clock,
@@ -151,6 +152,12 @@ export interface WhatsAppDeps {
    * Отдаёт текст, только если jid совпадает с outbound_ids.jid: по угаданному ID чужой чат его не получит.
    */
   getSentText(waId: WaMessageId, jid: Jid): Promise<string | null>;
+  /**
+   * Наблюдатель состояния сокета для консоли (необязательно): open, connecting и closed по событиям connection.update
+   * сразу при получении, closed ещё и при остановке адаптера. Только сообщает: исключение наблюдателя пишется в лог
+   * и на подключение не влияет.
+   */
+  onConnectionUpdate?: (state: WhatsAppLinkState) => void;
   /**
    * Швы для тестов ниже: в рабочем режиме не передаются. main не может импортировать Baileys (границы модулей),
    * поэтому сокет, сессию и версию создаёт сам адаптер. Фабрика сокета; по умолчанию makeWASocket.

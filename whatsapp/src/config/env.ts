@@ -43,6 +43,17 @@ export interface CompanyApiConfig {
   readonly token: string;
 }
 
+/**
+ * Внутренний API для единой панели (консоли): отдельный сервер на 127.0.0.1 (src/panel/console-api.ts).
+ * Токен в логи и тексты ошибок не попадает.
+ */
+export interface ConsoleApiConfig {
+  /** WA_CONSOLE_TOKEN: от 32 до 512 видимых символов ASCII, не равен INTERNAL_API_TOKEN. */
+  readonly token: string;
+  /** CONSOLE_API_PORT: порт на 127.0.0.1, по умолчанию 3101, не равен PANEL_PORT. */
+  readonly port: number;
+}
+
 /** Проверенные настройки приложения. Все пути абсолютные, от корня проекта. */
 export interface AppConfig {
   /** VENMART_ANTHROPIC_KEY. null: ключ не задан, LLM выключен. */
@@ -88,6 +99,8 @@ export interface AppConfig {
   readonly companyApi: CompanyApiConfig | null;
   /** EMAIL_UI_URL без хвостового «/»: адрес интерфейса почтового проекта для ссылок менеджеру; null: не задан. */
   readonly emailUiUrl: string | null;
+  /** WA_CONSOLE_TOKEN и CONSOLE_API_PORT. Нет поля: токен не задан, внутренний API консоли не запускается. */
+  readonly consoleApi?: ConsoleApiConfig;
 }
 
 /** Итог loadConfig: настройки и предупреждения для лога (без значений переменных). */
@@ -115,6 +128,7 @@ const DEFAULTS = {
   panelHost: '127.0.0.1',
   panelPort: 3100,
   emailApiUrl: EMAIL_API_DEFAULT_URL,
+  consoleApiPort: 3101,
 } as const;
 
 /** Потолок порога простоя: год. Больше не нужно, и перевод в мс остаётся точным. */
@@ -149,6 +163,10 @@ const PROBLEMS = {
   customHeaders:
     'уберите переменную из окружения: SDK Anthropic подмешивает эти заголовки к запросам и может подменить ключ',
   internalApiToken: 'от 32 до 512 видимых символов ASCII без пробелов',
+  consoleToken: 'от 32 до 512 видимых символов ASCII без пробелов',
+  consoleTokenSame:
+    'должен отличаться от INTERNAL_API_TOKEN: у консоли и у почтового проекта разные токены',
+  consolePort: 'должен отличаться от PANEL_PORT',
   emailApiUrl:
     'адрес только по http, хост только 127.0.0.1 (localhost нельзя: он может указать на ::1), без логина, пароля, пути, параметров и якоря',
   emailUiUrl:
@@ -310,6 +328,12 @@ function envSchema(root: string) {
       DEFAULTS.emailApiUrl,
     ),
     EMAIL_UI_URL: normalizedUrl(parseEmailUiUrl, PROBLEMS.emailUiUrl).optional(),
+    // Пусто: внутренний API консоли выключен. Токен не показывается ни в проблемах, ни в логе.
+    WA_CONSOLE_TOKEN: z
+      .string()
+      .regex(INTERNAL_API_TOKEN_PATTERN, PROBLEMS.consoleToken)
+      .optional(),
+    CONSOLE_API_PORT: integerInRange(1, MAX_PORT, PROBLEMS.port).default(DEFAULTS.consoleApiPort),
   });
 }
 
@@ -362,6 +386,22 @@ function proxyProblems(env: EnvVars, token: string | undefined): string[] {
     : [];
 }
 
+/**
+ * Внутренний API консоли: токен не равен токену почтового проекта (взлом одной стороны не открывает другую), порт не
+ * равен порту панели. Без токена проверять нечего. Значения в тексты не попадают.
+ */
+function consoleProblems(env: EnvValues): string[] {
+  if (env.WA_CONSOLE_TOKEN === undefined) return [];
+  return [
+    ...(env.WA_CONSOLE_TOKEN === env.INTERNAL_API_TOKEN
+      ? [`WA_CONSOLE_TOKEN: ${PROBLEMS.consoleTokenSame}`]
+      : []),
+    ...(env.CONSOLE_API_PORT === env.PANEL_PORT
+      ? [`CONSOLE_API_PORT: ${PROBLEMS.consolePort}`]
+      : []),
+  ];
+}
+
 /** SDK подмешивает ANTHROPIC_CUSTOM_HEADERS после ключа и может его подменить: с ней запуск запрещён. */
 function sdkProblems(env: EnvVars): string[] {
   return isSetForSdk(env, SDK_CUSTOM_HEADERS)
@@ -410,6 +450,9 @@ function buildConfig(env: EnvValues, models: ModelsValues, root: string): AppCon
         ? null
         : { baseUrl: env.EMAIL_API_URL, token: env.INTERNAL_API_TOKEN },
     emailUiUrl: env.EMAIL_UI_URL ?? null,
+    ...(env.WA_CONSOLE_TOKEN === undefined
+      ? {}
+      : { consoleApi: { token: env.WA_CONSOLE_TOKEN, port: env.CONSOLE_API_PORT } }),
   };
 }
 
@@ -431,6 +474,9 @@ function buildConfig(env: EnvValues, models: ModelsValues, root: string): AppCon
  * и хост 127.0.0.1, без логина, пароля, пути, параметров и якоря: токен не должен уйти с этой машины. EMAIL_UI_URL
  * (необязательно): https, а http только для 127.0.0.1 и localhost, без логина, пароля, параметров и якоря, хвостовой
  * «/» убирается.
+ * Внутренний API консоли: WA_CONSOLE_TOKEN пуст => consoleApi нет и сервер консоли не запускается; непустой: от 32
+ * до 512 видимых символов ASCII без пробелов, не равен INTERNAL_API_TOKEN; CONSOLE_API_PORT (по умолчанию 3101) не
+ * равен PANEL_PORT.
  * TODO(этап 3): стандартную переменную ключа SDK не читать никогда: ключ только из VENMART_ANTHROPIC_KEY.
  */
 export function loadConfig(env: EnvVars, modelsJson: unknown, root: string): LoadedConfig {
@@ -441,6 +487,7 @@ export function loadConfig(env: EnvVars, modelsJson: unknown, root: string): Loa
   const problems = [
     ...sdkProblems(env),
     ...proxyProblems(env, normalized['INTERNAL_API_TOKEN']),
+    ...(parsedEnv.success ? consoleProblems(parsedEnv.data) : []),
     ...(parsedEnv.success ? [] : describeIssues(parsedEnv.error.issues, [])),
     ...(parsedModels.success ? [] : describeIssues(parsedModels.error.issues, [MODELS_FILE])),
   ];

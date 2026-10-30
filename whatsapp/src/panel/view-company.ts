@@ -11,7 +11,7 @@ import { timeTag } from './view-parts.js';
 /** Что о компании клиента не удалось прочитать: подробности только в логе. */
 const NOT_READ = 'Данные о компании не прочитаны. Подробности записаны в лог бота.';
 
-const STATUS_LABELS: Readonly<Record<CompanySummary['status'], string>> = {
+export const STATUS_LABELS: Readonly<Record<CompanySummary['status'], string>> = {
   confirmed: 'подтверждена клиентом',
   candidate: 'кандидат, клиент не подтвердил',
   unknown: 'не определена',
@@ -19,7 +19,7 @@ const STATUS_LABELS: Readonly<Record<CompanySummary['status'], string>> = {
 };
 
 /** Как найден кандидат: шаги определения компании и проверка в почтовом проекте. */
-const SOURCE_LABELS: Readonly<Record<CandidateSource, string>> = {
+export const SOURCE_LABELS: Readonly<Record<CandidateSource, string>> = {
   profile_domain: 'по сайту или почте из бизнес-профиля',
   phone: 'по номеру',
   profile_name: 'по имени профиля',
@@ -31,7 +31,7 @@ const SOURCE_LABELS: Readonly<Record<CandidateSource, string>> = {
 type FailReason = Extract<ResearchState, { readonly status: 'failed' }>['reason'];
 
 /** Почему проверка новой компании не удалась; null и not_found (проект B не знает задачу) это ошибка. */
-const FAIL_LABELS: Readonly<Record<NonNullable<FailReason>, string>> = {
+export const FAIL_LABELS: Readonly<Record<NonNullable<FailReason>, string>> = {
   not_in_2gis: 'не найдена в 2ГИС',
   city_unsupported: 'город не поддерживается',
   rate_limited: 'дневной лимит проверок',
@@ -41,7 +41,7 @@ const FAIL_LABELS: Readonly<Record<NonNullable<FailReason>, string>> = {
   error: 'ошибка',
 };
 
-const PAIN_SOURCE_LABELS: Readonly<Record<NonNullable<CompanyPain['source']>, string>> = {
+export const PAIN_SOURCE_LABELS: Readonly<Record<NonNullable<CompanyPain['source']>, string>> = {
   site: 'сайт',
   '2gis': '2ГИС',
 };

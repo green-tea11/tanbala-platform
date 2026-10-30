@@ -7,6 +7,7 @@ import {
   useMultiFileAuthState,
   type BaileysEventMap,
   type ConnectionState,
+  type WAConnectionState,
   type WAVersion,
 } from 'baileys';
 import type { PairingDecision } from '../domain/ports.js';
@@ -369,6 +370,8 @@ function receive(
 ): void {
   if (events['creds.update'] !== undefined) saveCredsInOrder(session, auth);
   if (events['messages.upsert']?.type === 'append') link.offline.appended();
+  const connection = events['connection.update']?.connection;
+  if (connection !== undefined) reportLinkState(session, connection);
   if (events['connection.update']?.connection === 'close') flushBuffer(session, link);
   enqueue(session, () => handleEvents(session, link, events));
 }
@@ -383,6 +386,23 @@ function saveCredsInOrder(session: Session, auth: LoadedAuthState): void {
       session.deps.logger.error({ err: error }, 'Не удалось сохранить сессию WhatsApp');
     }
   });
+}
+
+/**
+ * Состояние сокета наблюдателю консоли (WhatsAppDeps.onConnectionUpdate): только сообщение наружу, без влияния на
+ * подключение; исключение наблюдателя в лог именем ошибки.
+ */
+function reportLinkState(session: Session, connection: WAConnectionState): void {
+  const observer = session.deps.onConnectionUpdate;
+  if (observer === undefined) return;
+  try {
+    observer(connection === 'close' ? 'closed' : connection);
+  } catch (error: unknown) {
+    session.deps.logger.warn(
+      { errorName: error instanceof Error ? error.name : typeof error },
+      'Наблюдатель состояния WhatsApp упал: на подключение это не влияет',
+    );
+  }
 }
 
 /** Выдаёт накопленные Baileys события в очередь: end() и закрытие уничтожают буфер без выдачи. */
@@ -563,6 +583,7 @@ function markStopped(session: Session): void {
   session.stopped = true;
   session.abort.abort();
   session.link?.abort.abort();
+  reportLinkState(session, 'close');
 }
 
 /** Остановка по решению адаптера: идёт внутри очереди, поэтому очередь не ждёт. */

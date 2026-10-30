@@ -9,6 +9,7 @@ import { createBacklogRepo } from './db/repos/backlog.js';
 import { createCallBudget } from './db/repos/call-budget.js';
 import { createChatCompaniesRepo } from './db/repos/chat-companies.js';
 import { createChatsRepo } from './db/repos/chats.js';
+import { createConsoleReads } from './db/repos/console-details.js';
 import { createHandoffsRepo } from './db/repos/handoffs.js';
 import { createKnownChatsRepo } from './db/repos/known-chats.js';
 import { createManagerNotificationsRepo } from './db/repos/manager-notifications.js';
@@ -18,6 +19,7 @@ import { createPairingGuard } from './db/repos/pairing-attempts.js';
 import { createRejectedDraftsRepo } from './db/repos/rejected-drafts.js';
 import { createWorkingModeRepo } from './db/repos/working-mode.js';
 import type { ChatCompaniesRepo } from './domain/company.js';
+import type { ConsoleReads } from './domain/console.js';
 import type {
   AppStateRepo,
   BacklogRepo,
@@ -44,7 +46,12 @@ import {
   type IgnoreStats,
   type InboundRecorder,
 } from './pipeline/recorder.js';
-import { assemblePanel, type Panel, type PanelStarter } from './pipeline/panel-setup.js';
+import {
+  assemblePanel,
+  type ConsoleApiStarter,
+  type Panel,
+  type PanelStarter,
+} from './pipeline/panel-setup.js';
 import { assembleResponder, type Responder } from './pipeline/responder-setup.js';
 import { assembleServices, type Services } from './pipeline/services.js';
 import { handleOwnMessage, type TakeoverDeps, type TakeoverResult } from './pipeline/takeover.js';
@@ -53,6 +60,10 @@ import {
   createUnseenHold,
   settleWorkingMode,
 } from './pipeline/working-mode.js';
+import {
+  createWhatsAppStateTracker,
+  type WhatsAppStateTracker,
+} from './pipeline/whatsapp-state.js';
 import { assertPanelStartAllowed } from './panel/guard.js';
 import { createSystemClock } from './shared/clock.js';
 import { createLogger, type LogDestination } from './shared/logger.js';
@@ -83,6 +94,8 @@ export interface MainOptions {
   readonly createLlm?: (deps: AnthropicLlmDeps) => LlmClient;
   /** Шов для тестов, в рабочем режиме не передаётся: запуск панели без занятого порта (по умолчанию startPanel). */
   readonly startPanel?: PanelStarter;
+  /** Шов для тестов, в рабочем режиме не передаётся: запуск API консоли без занятого порта (по умолчанию listen). */
+  readonly startConsoleApi?: ConsoleApiStarter;
 }
 
 /** Запущенное приложение. */
@@ -181,6 +194,8 @@ interface Storage {
   readonly chatCompanies: ChatCompaniesRepo;
   /** Отклонённые черновики и замечания проверок для панели (срок 30 дней). */
   readonly rejectedDrafts: RejectedDraftsRepo;
+  /** Выборки только на чтение для API консоли; запросы готовятся при первом обращении (без консоли никогда). */
+  readonly consoleReads: ConsoleReads;
   /** Рабочий режим с границей перехода (этап 8); null: закрытый режим. Решается при открытии базы. */
   readonly workingMode: WorkingMode | null;
   isOpen(): boolean;
@@ -220,6 +235,8 @@ interface AppContext {
   readonly batcher: ChatBatcher | null;
   readonly takeover: TakeoverDeps;
   readonly services: Services;
+  /** Состояние сокета WhatsApp для консоли: только наблюдение. */
+  readonly whatsappState: WhatsAppStateTracker;
 }
 
 /** Подключение к WhatsApp этого запуска: меняется только в main. */
@@ -272,6 +289,7 @@ class PairingLimitExplained extends PairingLimitError {
  * сразу после loadConfig, до замка, базы, WhatsApp и QR. Панель собирается на общих службах и начинает слушать порт
  * после старта WhatsApp (при WA_ENABLED=false сразу); не запустилась (порт занят) => остановка целиком и ошибка.
  * stop закрывает панель первой, до остановки WhatsApp и до закрытия базы. Пароль панели в логи не попадает.
+ * С WA_CONSOLE_TOKEN вместе с панелью стартует и закрывается API консоли (там же, в Panel.start и close).
  * Определение компании клиента pipeline/company-setup.ts: один сервис до служб этапа 5 (уведомление о передаче),
  * панели и ответов (конвейер); агент ответов читает логотип, подключение WhatsApp даёт профиль собеседника.
  * Без INTERNAL_API_TOKEN сервис есть, но выключен. В лог одна строка, включено ли оно, без адреса и токена.
@@ -362,6 +380,8 @@ async function launch(run: Launch): Promise<RunningApp> {
     workingMode: storage.workingMode,
   });
   if (responder !== null) company.useLogo(responder.logo);
+  // Только наблюдение за сокетом для экрана состояния консоли: на работу бота не влияет.
+  const whatsappState = createWhatsAppStateTracker(clock);
   const panel = assemblePanel({
     config,
     logger,
@@ -372,6 +392,8 @@ async function launch(run: Launch): Promise<RunningApp> {
     // Возврат чата боту из панели: бот отвечает на сообщения клиента без ответа (решение владельца 29.10.2026).
     resume: responder === null ? undefined : (chatId) => responder.resume(chatId),
     startPanel: options.startPanel,
+    whatsappState,
+    startConsoleApi: options.startConsoleApi,
   });
   const batcher = responder?.batcher ?? null;
   const resources: Resources = {
@@ -384,7 +406,14 @@ async function launch(run: Launch): Promise<RunningApp> {
   };
   const lifecycle = createLifecycle(run.link, resources, logger);
   if (config.waEnabled) {
-    await connectWhatsApp(run, { services, company, responder, batcher, lifecycle });
+    await connectWhatsApp(run, {
+      services,
+      company,
+      responder,
+      batcher,
+      lifecycle,
+      whatsappState,
+    });
   } else {
     logger.warn({}, 'WhatsApp выключен (WA_ENABLED=false)');
   }
@@ -399,11 +428,12 @@ interface WhatsAppParts {
   readonly responder: Responder | null;
   readonly batcher: ChatBatcher | null;
   readonly lifecycle: Lifecycle;
+  readonly whatsappState: WhatsAppStateTracker;
 }
 
 async function connectWhatsApp(run: Launch, parts: WhatsAppParts): Promise<void> {
   const { config, options, logger, clock, storage, summary, link } = run;
-  const { services, company, responder, batcher, lifecycle } = parts;
+  const { services, company, responder, batcher, lifecycle, whatsappState } = parts;
   const context: AppContext = {
     config,
     root: options.root,
@@ -414,6 +444,7 @@ async function connectWhatsApp(run: Launch, parts: WhatsAppParts): Promise<void>
     batcher,
     takeover: takeoverDepsOf(storage, services),
     services,
+    whatsappState,
   };
   const deps = whatsAppDeps(context, onStoppedOf(lifecycle, logger));
   const start = options.startWhatsApp ?? startWhatsApp;
@@ -529,6 +560,7 @@ function assembleStorage(db: Database, config: AppConfig, logger: Logger, clock:
     notifications: createManagerNotificationsRepo(db),
     chatCompanies: createChatCompaniesRepo(db, logger),
     rejectedDrafts: createRejectedDraftsRepo(db),
+    consoleReads: createConsoleReads(db),
     workingMode,
     isOpen: () => db.open,
     // close в better-sqlite3 сам ничего не делает с уже закрытой базой.
@@ -610,6 +642,9 @@ function whatsAppDeps(
         }
       }),
     onStopped,
+    onConnectionUpdate: (state) => {
+      context.whatsappState.update(state);
+    },
     getSentText: (waId, jid) =>
       new Promise<string | null>((resolve) => {
         resolve(sentText(storage, waId, jid));

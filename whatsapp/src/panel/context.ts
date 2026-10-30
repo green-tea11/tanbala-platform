@@ -27,7 +27,7 @@ export function createPanelContext(deps: PanelDeps): PanelContext {
     deps,
     sessions: createSessionStore(),
     limiter: createLoginLimiter(),
-    recentReplies: createRecentReplies(deps.clock),
+    recentReplies: deps.recentReplies ?? createRecentReplies(deps.clock),
     audit: deps.logger.child({ module: 'panel' }),
   };
 }

@@ -1,8 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Chat } from '../domain/types.js';
-import { botNoteProblem, cleanBotNote } from '../handoff/bot-note.js';
-import { panelTextProblem } from '../messaging/outbox.js';
-import { SafeError } from '../shared/safe-error.js';
+import { normalizeNewlines, replyToClient, returnChatToBot } from './chat-actions.js';
 import { loadChatPage } from './chat-model.js';
 import { redirectTo, sendHtml, withSession, type PanelContext } from './context.js';
 import { formField } from './http.js';
@@ -35,19 +33,8 @@ function chatNotFound(reply: FastifyReply): FastifyReply {
   );
 }
 
-/** Что менеджер видит, если сбой не из тех, чей текст можно показать: подробности только в логе. */
-const SEND_FAILED = 'Не удалось отправить сообщение. Подробности записаны в лог бота.';
-const RETURN_FAILED = 'Не удалось вернуть чат боту. Подробности записаны в лог бота.';
-/** Чат закрыт для ответа из панели: закрытый режим или WhatsApp не подключён (outbox.canSendFromPanel вернул false). */
-const CHAT_CLOSED_FOR_REPLY =
-  'Ответ не отправлен, статус чата не менялся: чат не из TEST_ALLOWLIST (закрытый режим) или WhatsApp не подключён.';
 const BAD_STATUS = 422;
 const BAD_GATEWAY = 502;
-
-/** Браузер шлёт переводы строк формы как CRLF; в WhatsApp уходит LF. */
-function normalizeNewlines(text: string): string {
-  return text.replace(/\r\n?/g, '\n');
-}
 
 /**
  * Страница чата с ошибкой над формой и сохранённым текстом ответа. Чат читается заново: передача могла
@@ -73,29 +60,9 @@ function failurePage(
 }
 
 /**
- * Что мешает ответу ещё до передачи чата менеджеру: пустой или слишком длинный текст, а также чат, в который из
- * панели писать нельзя (закрытый режим, WhatsApp не подключён). После передачи бот в чате уже молчит, поэтому
- * заведомо несостоявшаяся отправка не должна её запускать. null: можно передавать и отправлять.
- */
-function refusalBeforeHandoff(context: PanelContext, chat: Chat, text: string): string | null {
-  const textProblem = panelTextProblem(text);
-  if (textProblem !== null) return textProblem;
-  if (context.deps.outbox.canSendFromPanel(chat.id)) return null;
-  context.audit.warn(
-    { action: 'reply_blocked', chatId: chat.id },
-    'Панель: ответ не отправлен, чат закрыт для отправки из панели',
-  );
-  return CHAT_CLOSED_FOR_REPLY;
-}
-
-/**
- * Ответ от имени номера. Порядок из плана: сначала чат уходит менеджеру (бот в нём замолкает), потом сообщение
- * уходит клиенту. Проверки идут до передачи (refusalBeforeHandoff): пустой или слишком длинный ответ и чат, в который
- * отправка заведомо не пройдёт, не должны отключать бота. Затем ответ занимается в recentReplies: двойная отправка
- * формы (тот же текст в тот же чат в течение 10 секунд) получает пометку duplicate, без передачи и без отправки.
- * Занятие синхронное и стоит до первого await, поэтому из двух одновременных одинаковых запросов проходит один.
- * Сбой передачи или отправки снимает отметку: ответ не ушёл, и менеджер может повторить сразу. Отказ с понятным
- * текстом (SafeError) показывается как есть, прочие сбои скрыты за общей фразой.
+ * Ответ от имени номера (логика и порядок вызовов в panel/chat-actions.replyToClient, общей с консолью). Отказ
+ * с понятным текстом: 422 и страница чата с ошибкой и набранным текстом; сбой: 502 с общей фразой; повтор той же
+ * формы: пометка duplicate; успех: пометка sent.
  */
 async function handleReply(
   context: PanelContext,
@@ -105,89 +72,30 @@ async function handleReply(
   reply: FastifyReply,
 ): Promise<FastifyReply> {
   const text = normalizeNewlines(formField(request.body, 'text') ?? '');
-  const problem = refusalBeforeHandoff(context, chat, text);
-  if (problem !== null) {
-    return sendHtml(
-      reply,
-      BAD_STATUS,
-      failurePage(context, chat, session, { error: problem, draft: text }),
-    );
-  }
-  if (!context.recentReplies.claim(chat.id, text)) {
-    context.audit.info(
-      { action: 'reply_duplicate', chatId: chat.id },
-      'Панель: повтор того же ответа отклонён',
-    );
-    return redirectTo(reply, `/chats/${chat.id}?notice=duplicate`);
-  }
-  try {
-    await context.deps.handoff.handOff(chat.id, { reason: 'human_took_over', by: 'panel' });
-    await context.deps.outbox.sendFromPanel(chat.id, text);
-  } catch (error: unknown) {
-    context.recentReplies.release(chat.id, text);
-    return replyFailed(context, chat, session, { error, draft: text }, reply);
-  }
-  context.audit.info({ action: 'reply', chatId: chat.id }, 'Панель: ответ клиенту отправлен');
-  return redirectTo(reply, `/chats/${chat.id}?notice=sent`);
-}
-
-function replyFailed(
-  context: PanelContext,
-  chat: Chat,
-  session: Session,
-  failure: { readonly error: unknown; readonly draft: string },
-  reply: FastifyReply,
-): FastifyReply {
-  const { error, draft } = failure;
-  if (error instanceof SafeError) {
-    context.audit.warn(
-      { action: 'reply_failed', chatId: chat.id },
-      'Панель: ответ не отправлен (отказ)',
-    );
-    return sendHtml(
-      reply,
-      BAD_STATUS,
-      failurePage(context, chat, session, { error: error.message, draft }),
-    );
-  }
-  context.audit.error(
-    { action: 'reply_failed', chatId: chat.id, err: error },
-    'Панель: ответ не отправлен (сбой)',
-  );
-  return sendHtml(
-    reply,
-    BAD_GATEWAY,
-    failurePage(context, chat, session, { error: SEND_FAILED, draft }),
-  );
-}
-
-/**
- * Ответ бота на сообщения клиента без ответа после возврата (решение владельца 29.10.2026). Чат уже возвращён, поэтому
- * сбой здесь возврат не отменяет: ошибка в аудит только именем, бот ответит на следующее сообщение клиента. Нет
- * ответов клиентам (deps.resume не задан): 0.
- */
-function resumeSafely(context: PanelContext, chat: Chat): number {
-  try {
-    return context.deps.resume?.(chat.id) ?? 0;
-  } catch (error: unknown) {
-    context.audit.error(
-      {
-        action: 'resume_failed',
-        chatId: chat.id,
-        errorName: error instanceof Error ? error.name : typeof error,
-      },
-      'Панель: бот не взял неотвеченные сообщения после возврата',
-    );
-    return 0;
+  const outcome = await replyToClient(context, chat, text);
+  switch (outcome.kind) {
+    case 'sent':
+    case 'duplicate':
+      return redirectTo(reply, `/chats/${chat.id}?notice=${outcome.kind}`);
+    case 'refused':
+      return sendHtml(
+        reply,
+        BAD_STATUS,
+        failurePage(context, chat, session, { error: outcome.message, draft: text }),
+      );
+    case 'failed':
+      return sendHtml(
+        reply,
+        BAD_GATEWAY,
+        failurePage(context, chat, session, { error: outcome.message, draft: text }),
+      );
   }
 }
 
 /**
- * Возврат чата боту. Чат уже у бота (страница устарела): ничего не вызывается, пометка already_bot.
- * Вернуть чат боту можно только отсюда: сам бот себе чат не возвращает. Необязательная заметка для бота (поле note)
- * чистится (cleanBotNote) и проверяется до возврата: длиннее BOT_NOTE_MAX_LENGTH => 422, чат остаётся у менеджера,
- * набранный текст в форме. В аудит только то, есть ли заметка, без текста. После возврата бот отвечает на сообщения
- * клиента без ответа (resumeSafely); есть такие => пометка returned_answering.
+ * Возврат чата боту (логика и порядок в panel/chat-actions.returnChatToBot, общей с консолью). Чат уже у бота:
+ * пометка already_bot. Заметка длиннее предела: 422, чат остаётся у менеджера, набранный текст в форме. Сбой
+ * возврата: 502. Успех: пометка returned или returned_answering (бот ответит на неотвеченное).
  */
 async function handleReturn(
   context: PanelContext,
@@ -196,39 +104,28 @@ async function handleReturn(
   request: FastifyRequest,
   reply: FastifyReply,
 ): Promise<FastifyReply> {
-  if (chat.control.status === 'bot')
-    return redirectTo(reply, `/chats/${chat.id}?notice=already_bot`);
   const typed = normalizeNewlines(formField(request.body, 'note') ?? '');
-  const note = cleanBotNote(typed);
-  const problem = botNoteProblem(note);
-  if (problem !== null) {
-    const page = failurePage(context, chat, session, {
-      error: problem,
-      draft: '',
-      noteDraft: typed,
-    });
-    return sendHtml(reply, BAD_STATUS, page);
+  const outcome = await returnChatToBot(context, chat, typed);
+  switch (outcome.kind) {
+    case 'already_bot':
+    case 'returned':
+    case 'returned_answering':
+      return redirectTo(reply, `/chats/${chat.id}?notice=${outcome.kind}`);
+    case 'note_too_long': {
+      const page = failurePage(context, chat, session, {
+        error: outcome.message,
+        draft: '',
+        noteDraft: typed,
+      });
+      return sendHtml(reply, BAD_STATUS, page);
+    }
+    case 'failed':
+      return sendHtml(
+        reply,
+        BAD_GATEWAY,
+        failurePage(context, chat, session, { error: outcome.message, draft: '' }),
+      );
   }
-  try {
-    await context.deps.handoff.returnToBot(chat.id, note === '' ? null : note);
-  } catch (error: unknown) {
-    context.audit.error(
-      { action: 'return_to_bot_failed', chatId: chat.id, err: error },
-      'Панель: чат не возвращён боту',
-    );
-    return sendHtml(
-      reply,
-      BAD_GATEWAY,
-      failurePage(context, chat, session, { error: RETURN_FAILED, draft: '' }),
-    );
-  }
-  const resumed = resumeSafely(context, chat);
-  context.audit.info(
-    { action: 'return_to_bot', chatId: chat.id, resumed, note: note !== '' },
-    'Панель: чат возвращён боту',
-  );
-  const notice = resumed > 0 ? 'returned_answering' : 'returned';
-  return redirectTo(reply, `/chats/${chat.id}?notice=${notice}`);
 }
 
 /** Параметры маршрутов /chats/:id. */

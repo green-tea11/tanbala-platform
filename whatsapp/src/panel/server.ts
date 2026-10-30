@@ -22,6 +22,7 @@ import { installErrorPages, respondToFrameworkError } from './error-pages.js';
 import { assertPanelStartAllowed } from './guard.js';
 import { installPanelHooks } from './hooks.js';
 import { parseForm } from './http.js';
+import type { RecentReplies } from './recent-replies.js';
 import { registerAuthRoutes } from './routes-auth.js';
 import { registerChatRoutes } from './routes-chats.js';
 import { registerNotificationRoutes } from './routes-notifications.js';
@@ -58,6 +59,11 @@ export interface PanelDeps {
    * принимается только по HTTPS (Caddy присылает X-Forwarded-Proto: https), по обычному HTTP это 403. По умолчанию пусто.
    */
   allowedHosts?: readonly string[];
+  /**
+   * Недавние ответы клиентам (окно дубля 10 секунд), общие с внутренним API консоли (panel/console-api.ts): двойная
+   * отправка из старой и новой панели ловится одинаково. Нет поля: своя память панели.
+   */
+  recentReplies?: RecentReplies;
 }
 
 /** Параметры запуска: те же, что проверяет guard.assertPanelStartAllowed. */
