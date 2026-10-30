@@ -244,9 +244,11 @@ export async function decideReply(
 
 /**
  * Ответ дважды не прошёл проверки (пункт 2 задания 29.10.2026): чат не уходит менеджеру. Клиент спрашивает цену и
- * минимум собран => передача по цене с фразой о цене (так велит правило цены). Иначе фиксированный безопасный вопрос о
- * следующей группе с невыясненным, не о той, о которой бот спросил прошлым сообщением (safe-questions.nextSafeQuestion);
- * при вопросе цены перед ним фраза об ориентире. Спросить нечего => check_failed. В лог только ID чата и коды полей.
+ * минимум собран => передача по цене с фразой о цене (так велит правило цены). Иначе один открытый вопрос по
+ * рекомендуемому этапу и первому недостающему для расчёта, который бот ещё не задавал в чате (решение владельца
+ * 30.10.2026, safe-questions.nextSafeQuestion: выжимка этого хода, этап последнего ответа, передавался ли чат, все
+ * прошлые ответы бота в окне истории); при вопросе цены перед ним фраза об ориентире. Спросить нечего => check_failed.
+ * В лог только ID чата и код вопроса.
  */
 function afterCheckFailed(flow: Flow): ReplyVerdict {
   const { context, price, deps } = flow;
@@ -259,7 +261,14 @@ function afterCheckFailed(flow: Flow): ReplyVerdict {
     return FORCED_PRICE_HANDOFF;
   }
   const question = nextSafeQuestion(
-    { profile: price.profile, minimum: price.minimum, lastBotText: lastBotTextOf(context.history) },
+    {
+      profile: price.profile,
+      minimum: price.minimum,
+      lastBotText: lastBotTextOf(context.history),
+      botTexts: botTextsOf(context.history),
+      lastStage: context.progress?.lastStage ?? null,
+      handedOff: context.progress?.handedOff === true || context.note != null,
+    },
     price.signals.priceAsked,
   );
   if (question === null) {
@@ -269,9 +278,9 @@ function afterCheckFailed(flow: Flow): ReplyVerdict {
     );
     return CHECK_FAILED;
   }
-  const { fields, text, companyQuestion } = question;
+  const { key, text, companyQuestion } = question;
   deps.logger.info(
-    { chatId, fields: [...fields], aboutPrice: price.signals.priceAsked },
+    { chatId, question: key, aboutPrice: price.signals.priceAsked },
     `Черновик дважды не прошёл проверки, клиенту уходит безопасный вопрос: чат #${chatId}`,
   );
   return companyQuestion === undefined
@@ -299,6 +308,13 @@ function autoText(flow: Flow): ReviewedText {
 function lastBotTextOf(history: readonly StoredMessage[]): string | null {
   const sorted = [...history].sort((a, b) => a.tsMs - b.tsMs || a.id - b.id);
   return sorted.findLast((message) => message.author === 'bot')?.text ?? null;
+}
+
+/** Тексты всех сообщений бота клиенту в окне истории: по ним видно, о чём бот уже спрашивал. */
+function botTextsOf(history: readonly StoredMessage[]): readonly string[] {
+  return history.flatMap((message) =>
+    message.author === 'bot' && message.text !== null ? [message.text] : [],
+  );
 }
 
 /** Ответ уходит: сигналы хода идут с ним, если клиент спросил цену или отказался отвечать. */

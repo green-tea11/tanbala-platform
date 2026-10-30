@@ -13,10 +13,11 @@ import type {
   TurnSignals,
 } from '../../../src/domain/types.js';
 import { decideReply, requestDraft, type ReplyFlowDeps } from '../../../src/pipeline/reply-flow.js';
-import { groupQuestion } from '../../../src/pipeline/safe-questions.js';
+import { questionText } from '../../../src/pipeline/safe-questions.js';
 
 // Два провала проверок (пункт 2 задания 29.10.2026): чат не уходит менеджеру, клиенту уходит фиксированный безопасный
-// вопрос о следующем невыясненном, не тот, что бот задал прошлым сообщением. check_failed только когда спросить нечего.
+// вопрос (с 30.10.2026 один открытый по этапу и первому недостающему для расчёта), не тот, что бот уже задавал.
+// check_failed только когда спросить нечего.
 
 const NOW = Date.UTC(2026, 9, 29, 9, 0, 0);
 const CHAT_ID = 1 as ChatId;
@@ -57,12 +58,17 @@ const EVERYTHING: ClientProfile = {
   premises: 'склад',
   area: '5000 м²',
   itemCount: 'около 3000',
+  monthlyIntake: 'около 200',
   turnover: 'каждый день',
+  passages: 'один вход',
   currentTracking: 'Excel',
   problem: 'пересорт',
   has1C: true,
   oneCName: 'УТ 11',
 };
+
+/** Бот уже на этапе деталей: безопасный вопрос о недостающем для расчёта. */
+const ON_DETAILS: ChatProgress = { priceAsks: 0, refused: false, lastStage: 'details' };
 
 interface Case {
   readonly drafts?: readonly string[];
@@ -157,29 +163,33 @@ function run(c: Case) {
 }
 
 describe('pipeline/reply-flow: два провала проверок дают безопасный вопрос, а не передачу', () => {
-  it('проверка кодом дважды: вопрос о первой группе с невыясненным, чат у бота', async () => {
+  it('проверка кодом дважды: вопрос знакомства (бизнес неизвестен), чат у бота', async () => {
     const r = await run({ drafts: [PRICED, PRICED] });
 
-    expect(r.verdict).toEqual({ kind: 'send', text: groupQuestion(['business'], false) });
+    expect(r.verdict).toEqual({ kind: 'send', text: questionText('intro', false) });
   });
 
   it('ревью дважды: тот же безопасный вопрос; сам вопрос второй раз не проверяется', async () => {
     const r = await run({ drafts: [CLEAN, CLEAN], problems: ['Утверждение не из документов'] });
 
-    expect(r.verdict).toEqual({ kind: 'send', text: groupQuestion(['business'], false) });
+    expect(r.verdict).toEqual({ kind: 'send', text: questionText('intro', false) });
     expect(r.reviews()).toBe(2);
   });
 
-  it('прошлым сообщением бот спросил о вещах: спрашивает о следующей группе', async () => {
+  it('бизнес известен, бот ещё не был на крючке: вопрос, знает ли клиент RFID', async () => {
+    const r = await run({ profile: { ...EMPTY, business: 'склад' } });
+
+    expect(r.verdict).toEqual({ kind: 'send', text: questionText('hook', false) });
+  });
+
+  it('прошлым сообщением бот спросил, что на хранении: этот вопрос второй раз не задаётся', async () => {
     const r = await run({
-      lastBot: 'Подскажите, какие вещи нужно учитывать?',
+      lastBot: 'Расскажите, что у вас лежит на хранении и в каком виде?',
       profile: { ...EMPTY, business: 'склад' },
+      progress: ON_DETAILS,
     });
 
-    expect(r.verdict).toEqual({
-      kind: 'send',
-      text: groupQuestion(['city', 'premises', 'itemCount'], false),
-    });
+    expect(r.verdict).toEqual({ kind: 'send', text: questionText('itemCount', false) });
   });
 
   it('клиент спросил цену: перед вопросом фраза об ориентире, сигналы хода записываются', async () => {
@@ -187,24 +197,18 @@ describe('pipeline/reply-flow: два провала проверок дают �
     const r = await run({
       signals,
       profile: { ...EMPTY, business: 'склад', itemCount: 'около 3000', has1C: true },
+      progress: ON_DETAILS,
     });
 
-    expect(r.verdict).toEqual({
-      kind: 'send',
-      text: groupQuestion(['items', 'packaging', 'material'], true),
-      signals,
-    });
+    expect(r.verdict).toEqual({ kind: 'send', text: questionText('items', true), signals });
   });
 
-  it('о компании: вопрос о названии отмечается как вопрос о компании', async () => {
-    const r = await run({
-      profile: { ...EVERYTHING },
-      company: { kind: 'unknown', askName: true },
-    });
+  it('о компании можно спросить: вопрос знакомства отмечается как вопрос о названии', async () => {
+    const r = await run({ company: { kind: 'unknown', askName: true } });
 
     expect(r.verdict).toEqual({
       kind: 'send',
-      text: groupQuestion(['company'], false),
+      text: questionText('intro', false),
       companyQuestion: 'name',
     });
   });
@@ -212,7 +216,7 @@ describe('pipeline/reply-flow: два провала проверок дают �
   it('спросить нечего (всё выяснено), чат уже передавался: передача check_failed', async () => {
     const r = await run({
       profile: EVERYTHING,
-      progress: { priceAsks: 0, refused: false, handedOff: true },
+      progress: { priceAsks: 0, refused: false, handedOff: true, lastStage: 'details' },
     });
 
     expect(r.verdict).toEqual({ kind: 'handoff', notice: { reason: 'check_failed' } });
@@ -229,12 +233,12 @@ describe('pipeline/reply-flow: два провала проверок дают �
     expect(r.verdict).toEqual({ kind: 'handoff', notice: { reason: 'hot', aboutPrice: true } });
   });
 
-  it('в лог поля вопроса и коды, без текста черновика и вопроса', async () => {
+  it('в лог код вопроса, без текста черновика и вопроса', async () => {
     const r = await run({});
 
     const dump = JSON.stringify(r.logs);
-    expect(dump).toContain('"fields":["business"]');
+    expect(dump).toContain('"question":"intro"');
     expect(dump).not.toContain('500 000');
-    expect(dump).not.toContain('Подскажите');
+    expect(dump).not.toContain('Расскажите');
   });
 });

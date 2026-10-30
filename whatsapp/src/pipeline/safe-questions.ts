@@ -1,196 +1,189 @@
+import { calcMissing, recommendStage, type CalcField } from '../agent/stage.js';
 import type { CompanyQuestion } from '../domain/company.js';
-import type { ClientProfile, ReviewedText } from '../domain/types.js';
-import { ESTIMATE_LATER, type HandoffMinimum, type MinimumField } from '../handoff/minimum.js';
+import type { ClientProfile, ConversationStage, ReviewedText } from '../domain/types.js';
+import { ESTIMATE_LATER, type HandoffMinimum } from '../handoff/minimum.js';
 
 export { ESTIMATE_LATER } from '../handoff/minimum.js';
 
-/** Поля квалификации, о которых бот спрашивает фиксированным вопросом: минимум и то, что входит в его группы. */
-export type QuestionField = MinimumField | 'business' | 'packaging' | 'oneCName';
-
 /**
- * Группы вопросов по порядку (решение владельца 29.10.2026 вечером): компания и чем занимается; что учитывать; где и
- * сколько; 1С. Площадь, движение вещей, нынешний учёт и боли в фиксированные вопросы не входят: отдельным сообщением
- * ради них бот не спрашивает.
+ * Готовый открытый вопрос (решение владельца 30.10.2026): знакомство, крючок (знает ли клиент RFID) и по вопросу на
+ * каждое поле для расчёта, кроме бизнеса (его спрашивает знакомство).
  */
-export const QUESTION_GROUPS: readonly (readonly QuestionField[])[] = [
-  ['company', 'business'],
-  ['items', 'packaging', 'material'],
-  ['city', 'premises', 'itemCount'],
-  ['has1C', 'oneCName'],
+export type QuestionKey = 'intro' | 'hook' | Exclude<CalcField, 'business'>;
+
+/** Вопросы по порядку разговора. */
+export const QUESTION_KEYS: readonly QuestionKey[] = [
+  'intro',
+  'hook',
+  'items',
+  'itemCount',
+  'monthlyIntake',
+  'passages',
+  'has1C',
+  'city',
 ];
 
-/** Все поля с вопросами, по порядку групп. */
-export const QUESTION_FIELDS: readonly QuestionField[] = QUESTION_GROUPS.flat();
-
-/**
- * Часть вопроса о поле: first, если часть идёт первой в вопросе, next, если перед ней уже есть другая (там вещи и
- * компания названы местоимением). Без фактов о Tanbala, цен, сроков и обещаний.
- */
-interface QuestionPart {
-  readonly first: string;
-  readonly next: string;
-}
-
-function part(first: string, next: string = first): QuestionPart {
-  return { first, next };
-}
-
-const PARTS: Readonly<Record<QuestionField, QuestionPart>> = {
-  company: part('как называется ваша компания'),
-  business: part('чем занимается ваша компания', 'чем она занимается'),
-  items: part('какие вещи нужно учитывать'),
-  packaging: part(
-    'в чём лежат вещи (коробки, паллеты или поштучно)',
-    'в чём они лежат (коробки, паллеты или поштучно)',
-  ),
-  material: part(
-    'есть ли среди вещей металл или жидкости',
-    'есть ли среди них металл или жидкости',
-  ),
-  city: part('в каком городе ваш объект'),
-  premises: part('какое у вас помещение (склад, открытая площадка или магазин)'),
-  itemCount: part('сколько примерно вещей нужно учитывать'),
-  has1C: part('есть ли у вас 1С и какая'),
-  oneCName: part('какая у вас конфигурация 1С'),
+/** Тексты владельца, без двоеточий и тире, без фактов о Tanbala, цен и обещаний. */
+const QUESTIONS: Readonly<Record<QuestionKey, string>> = {
+  intro: 'Расскажите, из какой вы компании и чем она занимается?',
+  hook: 'Вы уже знаете, как работает RFID и что мы предлагаем?',
+  items: 'Расскажите, что у вас лежит на хранении и в каком виде?',
+  itemCount: 'Расскажите, сколько примерно позиций у вас на хранении?',
+  monthlyIntake: 'Расскажите, сколько нового товара приходит к вам за месяц?',
+  passages: 'Расскажите, сколько проходов нужно учитывать?',
+  has1C: 'Расскажите, в какой 1С вы ведёте учёт или учёта в 1С пока нет?',
+  city: 'Подскажите, в каком городе всё это находится?',
 };
 
-/** «а», «а и б», «а, б и в». */
-function joinParts(parts: readonly string[]): string {
-  if (parts.length < 2) return parts.join('');
-  return `${parts.slice(0, -1).join(', ')} и ${parts.at(-1) ?? ''}`;
-}
-
 /**
- * Фиксированный вопрос о полях одной группы одним предложением (решение 29.10.2026 вечером): «Подскажите, какие вещи
- * нужно учитывать, в чём они лежат (коробки, паллеты или поштучно) и есть ли среди них металл или жидкости?». Поля
- * идут в порядке QUESTION_FIELDS; при вопросе «есть ли 1С и какая» конфигурация отдельно не спрашивается. На ходу с вопросом цены перед ним фраза об ориентире. Проходит проверки кодом (это
- * проверяют тесты), поэтому к ReviewedText приводится здесь, как проверенный текст модели. Пусто => RangeError.
+ * Готовый вопрос; на ходу с вопросом цены перед ним фраза об ориентире. Проходит проверки кодом (это проверяют тесты),
+ * поэтому к ReviewedText приводится здесь, как проверенный текст модели.
  */
-export function groupQuestion(fields: readonly QuestionField[], aboutPrice: boolean): ReviewedText {
-  // «Есть ли у вас 1С и какая» уже спрашивает и конфигурацию.
-  const asks1C = fields.includes('has1C');
-  const ordered = QUESTION_FIELDS.filter(
-    (field) => fields.includes(field) && !(asks1C && field === 'oneCName'),
-  );
-  if (ordered.length === 0) throw new RangeError('Вопрос без полей: спросить не о чем');
-  const parts = ordered.map((field, index) =>
-    index === 0 ? PARTS[field].first : PARTS[field].next,
-  );
-  const question = `Подскажите, ${joinParts(parts)}?`;
+export function questionText(key: QuestionKey, aboutPrice: boolean): ReviewedText {
+  const question = QUESTIONS[key];
   return (aboutPrice ? `${ESTIMATE_LATER} ${question}` : question) as ReviewedText;
 }
 
+const ONE_C = String.raw`1\s?[сc](?!\p{L})`;
+
 /**
- * Признаки вопроса о поле в тексте бота: по ним выбирается группа, о которой бот не спрашивал прошлым сообщением.
- * Фиксированные вопросы узнаются своими словами (это проверяют тесты); вопрос модели узнаётся, если в нём те же слова.
+ * Признаки вопроса в тексте бота: по ним не задаётся вопрос, который бот уже задавал. Готовые вопросы узнаются своими
+ * словами (это проверяют тесты); вопрос модели узнаётся, если в нём те же слова. exclude: вопрос о другом поле с похожими
+ * словами («сколько нового товара» не вопрос о числе позиций).
  */
-const ASKED: Readonly<Record<QuestionField, RegExp>> = {
-  items:
-    /какие вещи|что (?:именно )?(?:нужно |хотите |вы хотите |будете )?учитывать|какой товар|какие товары|что храните|что за (?:вещи|товар)/iu,
-  material: /материал|металл|жидкост|из чего сделан/iu,
-  itemCount:
-    /сколько[^?]{0,40}(?:вещей|позиций|товар|единиц|штук|наименований|sku|меток|предметов|паллет|коробок)/iu,
-  premises: /помещени|площадк|где хранятся|где лежат|склад или|магазин или/iu,
-  city: /город/iu,
-  has1C: /(?:есть|используете|работаете|ведёте|ведете)[^?]{0,20}1\s?[сc](?!\p{L})/iu,
-  oneCName: /конфигурац|какая[^?]{0,20}1\s?[сc](?!\p{L})|1\s?[сc] и какая/iu,
-  company:
-    /компани(?:я|и|ю)?[^?]{0,30}(?:называ|правильно|верно)|из какой[^?]{0,20}компани|из компании|как называется ваша/iu,
-  business: /чем[^?]{0,10}занимает|какой у вас бизнес|чем вы занимаетесь/iu,
-  packaging: /коробк|паллет|поштучн|упаков|как лежат|в ч[её]м[^?]{0,10}лежат/iu,
-};
+const ASKED: Readonly<Record<QuestionKey, { readonly match: RegExp; readonly exclude?: RegExp }>> =
+  {
+    intro: {
+      match:
+        /из какой[^?]{0,20}компани|из компании|как называется ваша|чем[^?]{0,15}занимает|какой у вас бизнес/iu,
+    },
+    hook: { match: /знаете[^?]{0,30}(?:rfid|работает)|(?:знакомы|слышали)[^?]{0,20}rfid/iu },
+    items: {
+      match:
+        /какие вещи|что[^?]{0,20}(?:лежит|храните|хранится)|что (?:именно )?(?:нужно |хотите |будете )?(?:учитывать|метить)|какой товар|какие товары/iu,
+    },
+    itemCount: {
+      match:
+        /сколько[^?]{0,40}(?:вещей|позиций|товар|единиц|штук|наименований|sku|меток|предметов|паллет|коробок)/iu,
+      exclude: /нового|(?:в|за)\s{1,3}месяц/iu,
+    },
+    monthlyIntake: { match: /сколько нового|(?:в|за)\s{1,3}месяц|поступа/iu },
+    passages: { match: /проход|сколько[^?]{0,20}(?:входов|выходов|ворот|дверей)/iu },
+    has1C: {
+      match: new RegExp(
+        String.raw`(?:есть|используете|работаете|ведёте|ведете)[^?]{0,20}${ONE_C}|как(?:ая|ой|ую)[^?]{0,20}${ONE_C}|конфигурац`,
+        'iu',
+      ),
+    },
+    city: { match: /город/iu },
+  };
 
 /** Предложения-вопросы текста: только они спрашивают. */
 function questionsOf(text: string): readonly string[] {
   return text.split(/(?<=[.!?])\s+/u).filter((sentence) => sentence.includes('?'));
 }
 
-/** О каких полях спрашивает текст бота (только его предложения с вопросом). */
-export function askedFields(text: string): ReadonlySet<QuestionField> {
+function asks(key: QuestionKey, question: string): boolean {
+  const { match, exclude } = ASKED[key];
+  return match.test(question) && !(exclude?.test(question) ?? false);
+}
+
+/** О чём спрашивает текст бота (только его предложения с вопросом). */
+export function askedKeys(text: string): ReadonlySet<QuestionKey> {
   const questions = questionsOf(text);
-  return new Set(
-    QUESTION_FIELDS.filter((field) => questions.some((question) => ASKED[field].test(question))),
-  );
+  return new Set(QUESTION_KEYS.filter((key) => questions.some((question) => asks(key, question))));
 }
 
 /** Что известно для выбора безопасного вопроса. */
 export interface SafeQuestionInput {
+  /** Выжимка после оценки этого хода (если она есть). */
   readonly profile: ClientProfile;
   /** Минимум по той же выжимке: компания в нём недостающая, только если о ней можно спросить. */
   readonly minimum: HandoffMinimum;
-  /** Прошлое сообщение бота клиенту; null: бот ещё не писал. */
+  /** Прошлое сообщение бота клиенту; null: бот ещё не писал. Учитывается, если нет botTexts. */
   readonly lastBotText: string | null;
+  /** Все прошлые ответы бота в окне истории; нет поля => только lastBotText. */
+  readonly botTexts?: readonly string[];
+  /** Этап последнего отправленного ответа бота; нет поля => бот ещё не отвечал текстом модели. */
+  readonly lastStage?: ConversationStage | null;
+  /** Чат уже передавался коллеге; нет поля => нет. */
+  readonly handedOff?: boolean;
 }
 
-/** Фиксированный вопрос о группе: поля, текст и вопрос о названии компании, если он в тексте. */
+/** Готовый вопрос: какой, текст и вопрос о названии компании, если он в тексте. */
 export interface SafeQuestion {
-  readonly fields: readonly QuestionField[];
+  readonly key: QuestionKey;
   readonly text: ReviewedText;
   readonly companyQuestion?: CompanyQuestion;
 }
 
-/**
- * Не выяснено ли поле: поле минимума по минимуму (компания, только если о ней можно спросить); бизнес и упаковка по
- * выжимке; конфигурацию 1С спрашивают, только если 1С есть. Выводы «вероятно» выяснены.
- */
-function isMissing(field: QuestionField, input: SafeQuestionInput): boolean {
-  switch (field) {
-    case 'business':
-    case 'packaging':
-      return input.profile[field] === null;
-    case 'oneCName':
-      return input.profile.has1C === true && input.profile.oneCName === null;
-    default:
-      return input.minimum.missing.includes(field);
-  }
+/** Вопросы, которые бот уже задавал в чате: по всем прошлым ответам, без них по прошлому сообщению. */
+function alreadyAsked(input: SafeQuestionInput): ReadonlySet<QuestionKey> {
+  const texts = input.botTexts ?? (input.lastBotText === null ? [] : [input.lastBotText]);
+  return new Set(texts.flatMap((text) => [...askedKeys(text)]));
 }
 
-/** Группы по порядку, в каждой только невыясненные поля; группы, где всё выяснено, пропущены. */
-export function missingGroups(input: SafeQuestionInput): readonly (readonly QuestionField[])[] {
-  return QUESTION_GROUPS.map((group) => group.filter((field) => isMissing(field, input))).filter(
-    (fields) => fields.length > 0,
-  );
+/** Вопросы о недостающем для расчёта по порядку; бизнес спрашивает знакомство. */
+function calcQuestions(profile: ClientProfile): readonly QuestionKey[] {
+  return calcMissing(profile).map((field) => (field === 'business' ? 'intro' : field));
 }
 
-/** Спрашивал ли прошлый вопрос бота о группе (о любом её поле, а не только о невыясненном). */
-function askedGroup(fields: readonly QuestionField[], asked: ReadonlySet<QuestionField>): boolean {
-  const group = QUESTION_GROUPS.find((candidate) => candidate.includes(fields[0] ?? 'company'));
-  return (group ?? fields).some((field) => asked.has(field));
-}
-
-/** Фиксированный вопрос о полях группы; вопрос о компании отмечается как вопрос о названии. */
-export function safeQuestionOf(
-  fields: readonly QuestionField[],
+/** Вопрос знакомства спрашивает и название компании: отметка, если о компании сейчас можно спросить. */
+function safeQuestionOf(
+  key: QuestionKey,
   aboutPrice: boolean,
+  input: SafeQuestionInput,
 ): SafeQuestion {
-  const text = groupQuestion(fields, aboutPrice);
-  return fields.includes('company') ? { fields, text, companyQuestion: 'name' } : { fields, text };
+  const text = questionText(key, aboutPrice);
+  return key === 'intro' && input.minimum.missing.includes('company')
+    ? { key, text, companyQuestion: 'name' }
+    : { key, text };
 }
 
+/** Этапы, на которых бот ещё не спросил, знает ли клиент RFID. */
+const BEFORE_HOOK: readonly (ConversationStage | null)[] = [null, 'intro'];
+
 /**
- * Вопрос вместо ранней передачи по цене: первая группа с недостающим из минимума, о которой бот не спрашивал прошлым
- * сообщением (все спрошены => первая такая группа), её невыясненные поля, с фразой об ориентире или без.
+ * Вопросы по рекомендуемому этапу (agent/stage.ts): на знакомстве знакомство, на знакомстве и крючке вопрос о RFID,
+ * если бот ещё не был на крючке, затем недостающее для расчёта по порядку. Финал: спрашивать нечего.
  */
-export function minimumSafeQuestion(input: SafeQuestionInput, aboutPrice: boolean): SafeQuestion {
-  const asked =
-    input.lastBotText === null ? new Set<QuestionField>() : askedFields(input.lastBotText);
-  const minimum = new Set<QuestionField>(input.minimum.missing);
-  const groups = missingGroups(input).filter((group) => group.some((field) => minimum.has(field)));
-  const fields = groups.find((group) => !askedGroup(group, asked)) ?? groups[0] ?? ['items'];
-  return safeQuestionOf(fields, aboutPrice);
+function stageQuestions(input: SafeQuestionInput): readonly QuestionKey[] {
+  const lastStage = input.lastStage ?? null;
+  const { stage } = recommendStage({
+    profile: input.profile,
+    lastStage,
+    handedOff: input.handedOff === true,
+  });
+  if (stage === 'final') return [];
+  const calc = calcQuestions(input.profile);
+  const hook = (stage === 'intro' || stage === 'hook') && BEFORE_HOOK.includes(lastStage);
+  if (!hook) return calc;
+  // Знакомство (если бизнес неизвестен) первым, крючок сразу после него.
+  return calc[0] === 'intro' ? ['intro', 'hook', ...calc.slice(1)] : ['hook', ...calc];
 }
 
 /**
- * Безопасный вопрос вместо черновика, который не прошёл проверки (решение 29.10.2026, группы с вечера): первая группа
- * с невыясненным, о которой бот не спрашивал прошлым сообщением, только её невыясненные поля. Спросить нечего => null
- * (тогда передача check_failed). aboutPrice: перед вопросом фраза об ориентире.
+ * Безопасный вопрос вместо черновика, который дважды не прошёл проверки (решение владельца 30.10.2026): один открытый
+ * вопрос по рекомендуемому этапу и первому недостающему для расчёта, который бот ещё не задавал в чате. Спросить нечего
+ * => null (тогда передача check_failed). aboutPrice: перед вопросом фраза об ориентире.
  */
 export function nextSafeQuestion(
   input: SafeQuestionInput,
   aboutPrice: boolean,
 ): SafeQuestion | null {
-  const asked =
-    input.lastBotText === null ? new Set<QuestionField>() : askedFields(input.lastBotText);
-  const fields = missingGroups(input).find((group) => !askedGroup(group, asked));
-  return fields === undefined ? null : safeQuestionOf(fields, aboutPrice);
+  const asked = alreadyAsked(input);
+  const key = stageQuestions(input).find((candidate) => !asked.has(candidate));
+  return key === undefined ? null : safeQuestionOf(key, aboutPrice, input);
+}
+
+/**
+ * Вопрос вместо ранней передачи по цене (pipeline/price-gate.ts): первое недостающее для расчёта (бизнес спрашивает
+ * знакомство), без вопроса о RFID, которого бот ещё не задавал; всё спрошено => первое недостающее; всё известно =>
+ * вопрос о том, что лежит на хранении. С фразой об ориентире или без.
+ */
+export function minimumSafeQuestion(input: SafeQuestionInput, aboutPrice: boolean): SafeQuestion {
+  const asked = alreadyAsked(input);
+  const candidates = calcQuestions(input.profile);
+  const key = candidates.find((candidate) => !asked.has(candidate)) ?? candidates[0] ?? 'items';
+  return safeQuestionOf(key, aboutPrice, input);
 }

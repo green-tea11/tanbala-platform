@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ClientProfile } from '../../../src/domain/types.js';
-import { groupQuestion } from '../../../src/pipeline/safe-questions.js';
+import { questionText } from '../../../src/pipeline/safe-questions.js';
 import { createScenario, dataOf } from './company-scenarios-harness.js';
 import type { LlmScript } from './scripted-llm.js';
 
@@ -101,13 +101,13 @@ describe('сценарии владельца 29.10.2026: минимум пер�
     expect(s.storage.handoffs.findOpen(s.chatId())).toBeNull();
   });
 
-  it('диалог 28.10, модель дважды хочет передать: уходит фиксированный вопрос первой группы (компания)', async () => {
+  it('диалог 28.10, модель дважды хочет передать: уходит фиксированный вопрос о первом недостающем для расчёта', async () => {
     const s = createScenario();
 
     const turn = await s.say(CLIENT_28_10, priceTurn({ replies: [hotPrice(OLD_HOT)] }));
 
     expect(turn.outcome).toEqual({ kind: 'replied' });
-    expect(turn.toClient).toEqual([groupQuestion(['company'], true)]);
+    expect(turn.toClient).toEqual([questionText('items', true)]);
     expect(turn.toManager).toEqual([]);
   });
 

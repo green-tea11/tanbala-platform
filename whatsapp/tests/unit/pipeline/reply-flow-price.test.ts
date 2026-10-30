@@ -12,7 +12,7 @@ import type {
   ReviewedText,
   TurnSignals,
 } from '../../../src/domain/types.js';
-import { groupQuestion } from '../../../src/pipeline/safe-questions.js';
+import { questionText } from '../../../src/pipeline/safe-questions.js';
 import { minimumFallback, priceSituation } from '../../../src/pipeline/price-gate.js';
 import {
   decideReply,
@@ -244,29 +244,35 @@ describe('pipeline/reply-flow: передача по цене без миним�
   it('повтор снова hot: уходит фиксированный вопрос о первом недостающем, чат у бота', async () => {
     const r = await run({ drafts: [hot(), hot()] });
 
-    expect(r.verdict).toEqual(
-      sentWith(groupQuestion(['items', 'packaging', 'material'], true), { signals: PRICE_NOW }),
-    );
+    expect(r.verdict).toEqual(sentWith(questionText('items', true), { signals: PRICE_NOW }));
     expect(r.calls).toEqual(['draft', 'assess', 'save', 'draft:retry']);
   });
 
   it('повтор не получился (сбой LLM): тот же фиксированный вопрос, а не передача', async () => {
     const r = await run({ drafts: [hot(), { ok: false, failure: 'unavailable' }] });
 
-    expect(r.verdict).toEqual(
-      sentWith(groupQuestion(['items', 'packaging', 'material'], true), { signals: PRICE_NOW }),
-    );
+    expect(r.verdict).toEqual(sentWith(questionText('items', true), { signals: PRICE_NOW }));
   });
 
   it('ответ повтора не прошёл проверку: фиксированный вопрос вместо check_failed', async () => {
     const r = await run({ drafts: [hot(), answer()], problems: ['Назван срок'] });
 
+    expect(r.verdict).toEqual(sentWith(questionText('items', true), { signals: PRICE_NOW }));
+  });
+
+  it('бизнес неизвестен, о компании можно спросить: вопрос знакомства отмечает вопрос о названии', async () => {
+    const r = await run({
+      drafts: [hot(), hot()],
+      profile: { ...FULL, business: null },
+      company: { kind: 'unknown', askName: true },
+    });
+
     expect(r.verdict).toEqual(
-      sentWith(groupQuestion(['items', 'packaging', 'material'], true), { signals: PRICE_NOW }),
+      sentWith(questionText('intro', true), { companyQuestion: 'name', signals: PRICE_NOW }),
     );
   });
 
-  it('не хватает только компании: фиксированный вопрос о названии отмечает вопрос о компании', async () => {
+  it('не хватает только компании: отдельного вопроса о названии нет (30.10.2026), вопрос о первом недостающем для расчёта', async () => {
     const r = await run({
       drafts: [hot(), hot()],
       profile: FULL,
@@ -274,7 +280,7 @@ describe('pipeline/reply-flow: передача по цене без миним�
     });
 
     expect(r.verdict).toEqual(
-      sentWith(groupQuestion(['company'], true), { companyQuestion: 'name', signals: PRICE_NOW }),
+      sentWith(questionText('monthlyIntake', true), { signals: PRICE_NOW }),
     );
   });
 });
@@ -448,15 +454,16 @@ describe('pipeline/reply-flow: что записать после ответа',
 });
 
 describe('pipeline/price-gate: защитные ветки', () => {
-  it('минимум собран, а фиксированный вопрос всё же нужен: вопрос о вещах', () => {
+  it('минимум и всё для расчёта собраны, а фиксированный вопрос всё же нужен: вопрос о том, что на хранении', () => {
+    const profile = { ...FULL, monthlyIntake: 'около 200', passages: 'один вход' };
     const situation = priceSituation(
-      { chatId: CHAT_ID, history: [], profile: FULL, companyName: 'ТОО Склад' },
+      { chatId: CHAT_ID, history: [], profile, companyName: 'ТОО Склад' },
       null,
       answer(),
     );
 
     expect(situation.minimum.missing).toEqual([]);
-    expect(minimumFallback(situation).text).toBe(groupQuestion(['items'], true));
+    expect(minimumFallback(situation).text).toBe(questionText('items', true));
   });
 });
 
@@ -558,23 +565,21 @@ describe('pipeline/reply-flow: ранняя передача при заметк
 });
 
 describe('pipeline/price-gate: фиксированный вопрос не повторяет прошлый вопрос бота', () => {
-  it('прошлым сообщением бот спросил о вещах: вопрос о следующей группе недостающего', () => {
-    const situation = priceSituation({ chatId: CHAT_ID, history: [], profile: EMPTY }, null, hot());
+  it('прошлым сообщением бот спросил о вещах: вопрос о следующем недостающем для расчёта', () => {
+    const profile = { ...EMPTY, business: 'склад' };
+    const situation = priceSituation({ chatId: CHAT_ID, history: [], profile }, null, hot());
 
     expect(minimumFallback(situation, 'Подскажите, какие вещи нужно учитывать?').text).toBe(
-      groupQuestion(['city', 'premises', 'itemCount'], true),
+      questionText('itemCount', true),
     );
   });
 
   it('недостающее только то, о чём уже спросили: вопрос повторяется, а не передача', () => {
-    const situation = priceSituation(
-      { chatId: CHAT_ID, history: [], profile: { ...FULL, city: null } },
-      null,
-      hot(),
-    );
+    const profile = { ...FULL, monthlyIntake: 'около 200', passages: 'один вход', city: null };
+    const situation = priceSituation({ chatId: CHAT_ID, history: [], profile }, null, hot());
 
-    expect(minimumFallback(situation, groupQuestion(['city'], true)).text).toBe(
-      groupQuestion(['city'], true),
+    expect(minimumFallback(situation, questionText('city', true)).text).toBe(
+      questionText('city', true),
     );
   });
 });

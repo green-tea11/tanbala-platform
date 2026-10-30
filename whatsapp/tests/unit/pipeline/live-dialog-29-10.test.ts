@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { profileEntries } from '../../../src/agent/profile.js';
 import type { ClientProfile } from '../../../src/domain/types.js';
-import { groupQuestion } from '../../../src/pipeline/safe-questions.js';
+import { questionText } from '../../../src/pipeline/safe-questions.js';
 import { createScenario, type Scenario } from './company-scenarios-harness.js';
 import type { LlmScript } from './scripted-llm.js';
 
@@ -95,9 +95,9 @@ describe('живой тест 29.10.2026: склад 5000 м², ввоз и вы
     );
 
     expect(second.outcome).toEqual({ kind: 'replied' });
-    // Прошлым сообщением бот спросил о числе вещей: оно теперь известно. Группы по порядку: первая компания, бизнес
-    // известен, поэтому вопрос только о названии.
-    expect(second.toClient).toEqual([groupQuestion(['company'], true)]);
+    // Прошлым сообщением бот спросил о числе вещей: оно теперь известно. С 30.10.2026 один открытый вопрос о первом
+    // недостающем для расчёта: что лежит на хранении.
+    expect(second.toClient).toEqual([questionText('items', true)]);
     expect(second.toManager).toEqual([]);
     expect(s.storage.handoffs.findOpen(s.chatId())).toBeNull();
     expect(s.storage.chats.getById(s.chatId())?.control).toEqual({ status: 'bot', by: null });
@@ -163,7 +163,7 @@ describe('живой тест 29.10.2026: склад 5000 м², ввоз и вы
 
     expect(third.outcome).toEqual({ kind: 'replied' });
     expect(third.toManager).toEqual([]);
-    expect(third.toClient).toEqual([groupQuestion(['company'], true)]);
+    expect(third.toClient).toEqual([questionText('monthlyIntake', true)]);
     expect(fourth.outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
     expect(fourth.toClient).toEqual([PRICE_PHRASE]);
     const notice = fourth.toManager[0] ?? '';
