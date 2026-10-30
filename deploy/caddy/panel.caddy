@@ -1,0 +1,23 @@
+# Единая панель panel.tanbala.kz открыта: пароль Caddy, затем свой вход консоли (имя и пароль, сессия).
+# install.sh (шаг caddy) кладёт этот файл в /etc/caddy/panel-site.caddy, когда /etc/caddy/auth/panel.caddy готов
+# (строка «имя хэш-bcrypt» на каждого человека, root:caddy 640); иначе там panel.closed.caddy (503).
+# Строки паролей: sudo /opt/tanbala/deploy/scripts/open-panels.sh panel add|remove <имя> (deploy/env.md).
+# Импортируют оба Caddyfile после common.caddy: (common) уже определён.
+panel.tanbala.kz {
+	import common
+	route {
+		# Служебные пути приложений снаружи не видны: 404 ещё до пароля и до консоли.
+		@internal path_regexp internal (?i)(^|/)internal([/;]|$)
+		respond @internal 404
+		basic_auth {
+			import /etc/caddy/auth/panel.caddy
+		}
+		# 127.0.0.1, а не localhost: консоль слушает только IPv4. Пароль Caddy (Authorization) консоли не передаём.
+		# Host всегда имя консоли; X-Forwarded-For и X-Forwarded-Proto Caddy ставит сам, консоль верит им только
+		# от 127.0.0.1 (trusted_proxies в Caddy не включать: caddy/common.caddy).
+		reverse_proxy 127.0.0.1:3200 {
+			header_up Host panel.tanbala.kz
+			header_up -Authorization
+		}
+	}
+}

@@ -1,8 +1,8 @@
-# Резервная копия баз: Postgres почты и SQLite бота, хранение 7 дней (deploy/scripts/backup.sh).
+# Резервная копия баз: Postgres почты, SQLite бота и консоли, хранение 7 дней (deploy/scripts/backup.sh).
 # Запускает таймер tanbala-backup.timer; вручную: systemctl start tanbala-backup, журнал: journalctl -u tanbala-backup.
 
 [Unit]
-Description=Tanbala: резервная копия баз (Postgres и SQLite бота)
+Description=Tanbala: резервная копия баз (Postgres, SQLite бота и консоли)
 After=docker.service
 
 [Service]
@@ -13,6 +13,10 @@ TimeoutStartSec=1h
 UMask=0077
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/var/backups/tanbala
+# Папки баз SQLite открыты на запись только ради файлов -wal и -shm. База в режиме WAL на файловой системе только
+# для чтения открывается, лишь если эти файлы уже есть; у остановленной службы их нет, и копия падала бы. Пишет туда
+# не root, а sqlite3 от имени пользователя службы (backup.sh), права обычные. Нет папки (бот или консоль ещё не
+# поставлены) — пропуск.
+ReadWritePaths=/var/backups/tanbala -/opt/tanbala/whatsapp/data -/opt/tanbala/console/data
 Nice=10
 IOSchedulingClass=idle

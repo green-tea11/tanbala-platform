@@ -1,10 +1,11 @@
 # Правила nftables (deploy/nftables/tanbala-guard.nft): куда пользователям служб можно ходить внутри сервера.
-# Службы почты и бота без этих правил не стартуют (Requires). Проверить: nft list table inet tanbala_guard
-# Загружать после установки Caddy и создания пользователей tanbala-leads и tanbala-wa: nft ищет их по имени.
+# Службы почты, бота и консоли без этих правил не стартуют (Requires). Проверить: nft list table inet tanbala_guard
+# Загружать после установки Caddy и создания пользователей tanbala-leads, tanbala-wa, tanbala-console и
+# tanbala-build: nft ищет их по имени.
 
 [Unit]
 Description=Tanbala: правила nftables для служб (локальные порты, браузеры почты)
-Before=tanbala-leads.service tanbala-whatsapp.service caddy.service
+Before=tanbala-leads.service tanbala-whatsapp.service tanbala-console.service caddy.service
 
 [Service]
 Type=oneshot

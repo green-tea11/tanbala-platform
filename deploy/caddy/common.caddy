@@ -1,5 +1,6 @@
 # Общее для deploy/Caddyfile и deploy/Caddyfile.closed: оба начинаются с import этого файла
-# (/opt/tanbala/deploy/caddy/common.caddy), поэтому глобальные опции здесь первым блоком.
+# (/opt/tanbala/deploy/caddy/common.caddy), поэтому глобальные опции здесь первым блоком. Сниппет (common) берут и
+# сайты из site.caddy, panel.caddy и panel.closed.caddy.
 # После правки: sudo /opt/tanbala/deploy/scripts/install.sh caddy (проверка и reload).
 {
 	# Почту для Let's Encrypt не указываем (решение владельца 29.10.2026).
@@ -9,12 +10,15 @@
 	# Без HTTP/3 (UDP 443): fail2ban блокирует только TCP, по QUIC подбор пароля шёл бы дальше.
 	servers {
 		protocols h1 h2
+		# trusted_proxies не включать никогда. Без него Caddy сам переписывает X-Forwarded-For настоящим адресом
+		# клиента, и консоль с панелью бота (они верят этому заголовку только от 127.0.0.1) считают попытки входа
+		# по этому адресу. С ним подставной X-Forwarded-For из интернета обходил бы ограничение попыток входа.
 	}
 }
 
 # Общее для сайтов: предел тела запроса, сжатие, HSTS, без заголовка Server, журнал без строк запроса.
 (common) {
-	# Самое большое у приложений: файл «Кому писали» до 1 МБ (у панели бота до 64 КБ).
+	# Самое большое у приложений: файл «Кому писали» до 1 МБ (в консоли импорт до 1.5 МБ, у панели бота до 64 КБ).
 	request_body {
 		max_size 2MB
 	}
@@ -23,7 +27,7 @@
 		Strict-Transport-Security "max-age=31536000"
 		-Server
 	}
-	# Этот журнал читает fail2ban (ответы 401 на пароль Caddy).
+	# Этот журнал читает fail2ban: ответы 401 на пароль Caddy и неудачные входы в консоль (POST /api/login).
 	log {
 		output file /var/log/caddy/access.log {
 			roll_size 20MiB
@@ -34,6 +38,8 @@
 		format filter {
 			request>uri regexp "\?.*" ""
 			request>headers>Referer delete
+			# Токен CSRF консоли в журнал не пишем.
+			request>headers>X-Csrf-Token delete
 			resp_headers>Location delete
 			wrap json
 		}

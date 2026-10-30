@@ -1,0 +1,78 @@
+# Служба: единая панель panel.tanbala.kz (проект console), только 127.0.0.1:3200. Копия: /etc/systemd/system/.
+# Консоль — посредник: данные и действия берёт из API почты (127.0.0.1:8000) и бота (127.0.0.1:3101) со своими
+# токенами. Секретов здесь нет: консоль сама читает /opt/tanbala/console/.env. Комментарии только на отдельных
+# строках: после значения systemd счёл бы их частью значения.
+
+[Unit]
+Description=Tanbala console: единая панель (127.0.0.1:3200)
+# Без почты и бота консоль работает, их разделы пишут «недоступно»: зависимости нет, только порядок запуска.
+After=network-online.target tanbala-firewall.service tanbala-leads.service tanbala-whatsapp.service
+Wants=network-online.target
+# Без правил nftables служба не стартует: они не пускают консоль никуда, кроме API почты и бота.
+Requires=tanbala-firewall.service
+# Без .env (токены, deploy/env.md) не запускается вовсе, а не падает по кругу.
+ConditionPathExists=/opt/tanbala/console/.env
+# Не больше 5 запусков за 10 минут, дальше failed (start-limit-hit): читать журнал, затем
+# systemctl reset-failed tanbala-console && systemctl start tanbala-console.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=tanbala-console
+Group=tanbala-console
+WorkingDirectory=/opt/tanbala/console
+Environment=NODE_ENV=production
+Environment=HOME=/opt/tanbala/console/data
+ExecStart=/usr/local/bin/node /opt/tanbala/console/dist/server.js
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=15
+UMask=0077
+
+# Память: консоль ≈ 50–80 МБ, проверка пароля при входе (scrypt) до 32 МБ, не больше двух сразу. Первые 48 МБ ядро
+# у неё не отнимает и не уводит в swap, пока браузеры почты ищут компании; при общей нехватке памяти она уходит
+# после почты, но раньше бота.
+MemoryLow=48M
+MemoryHigh=200M
+MemoryMax=300M
+OOMScoreAdjust=-100
+
+# Песочница по образцу почты: у консоли токены к обоим приложениям, поэтому её код принадлежит root и только
+# читается, писать она может только в data/ (база пользователей, сессий и журнала действий).
+# MemoryDenyWriteExecute не ставить: JIT V8 в Node не запустится.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/tanbala/console
+ReadWritePaths=/opt/tanbala/console/data
+# Чужое (почта и бот с их .env, копии баз, пароли и API Caddy, compose.env) служба не видит вовсе. D-Bus и
+# systemd-resolved тоже: шина ей не нужна, а DNS ей запрещён и в nftables.
+InaccessiblePaths=-/opt/tanbala/leads -/opt/tanbala/whatsapp -/var/backups/tanbala -/etc/caddy/auth -/etc/tanbala -/var/lib/caddy -/run/dbus -/run/systemd/resolve
+PrivateDevices=true
+ProtectProc=invisible
+SystemCallArchitectures=native
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+# Привязка портов: только свои. Пока другая служба перезапускается, эта не займёт её порт и не получит токен
+# консоли или вход владельца через Caddy. Порты от 32768 (свободный порт по bind(0), отладка Chrome) и UDP
+# не ограничены. SocketBindAllow главнее SocketBindDeny; без BPF в ядре systemd пропустит правило с предупреждением.
+SocketBindDeny=tcp:1-32767
+SocketBindAllow=tcp:3200
+# Сетевой замок systemd вдобавок к nftables: только петля (127.0.0.0/8 и ::1), в обе стороны.
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target

@@ -1,11 +1,13 @@
 # РЕЖИМ: закрыто до паролей Caddy (эту строку ищет health.sh).
-# Caddy, пока нет паролей basic auth: оба имени отвечают 503, до приложений запрос не доходит. Сертификаты Caddy
-# получает и продлевает уже сейчас. Ставит этот файл в /etc/caddy/Caddyfile install.sh (шаг caddy), пока в
-# /etc/caddy/auth нет обоих файлов паролей. Открыть панели: sudo /opt/tanbala/deploy/scripts/open-panels.sh
+# Caddy, пока нет паролей basic auth для wa и leads: оба имени отвечают 503, до приложений запрос не доходит.
+# Сертификаты Caddy получает и продлевает уже сейчас. Ставит этот файл в /etc/caddy/Caddyfile install.sh (шаг caddy),
+# пока в /etc/caddy/auth нет обоих файлов паролей. Открыть панели: sudo /opt/tanbala/deploy/scripts/open-panels.sh
 # (deploy/env.md), он поставит рабочий deploy/Caddyfile. Общие настройки в caddy/common.caddy, как у рабочего.
 import /opt/tanbala/deploy/caddy/common.caddy
 # Сайт tanbala.kz и www: открыт всем, пароли панелей его не касаются.
 import /opt/tanbala/deploy/caddy/site.caddy
+# Единая панель panel.tanbala.kz: режим свой (caddy/panel.caddy или caddy/panel.closed.caddy), как в рабочем.
+import /etc/caddy/panel-site.caddy
 
 wa.tanbala.kz, leads.tanbala.kz {
 	import common

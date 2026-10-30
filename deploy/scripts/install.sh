@@ -5,13 +5,15 @@
 # Шаги:
 #   system    пакеты (Python venv, sqlite3, Docker, Caddy, Google Chrome, Node) и пользователи служб
 #   configs   /opt/tanbala/deploy и contract, Caddy, nftables, службы и таймеры systemd, fail2ban, журналы, apt
-#   caddy     Caddyfile: закрытый (503), пока нет паролей Caddy, иначе рабочий. Его зовёт open-panels.sh
+#   caddy     Caddyfile: wa. и leads. закрыты (503), пока нет обоих их паролей Caddy, иначе открыты; panel. — свой
+#             режим (открыт, когда есть его файл паролей), wa. и leads. не закрывает. Его зовёт open-panels.sh
 #   db        Postgres и Reacher в Docker; нужен /opt/tanbala/leads/.env (deploy/env.md)
 #   leads     код почты, .venv и .venv-2gis, Chromium для crawl4ai; .env, data/, logs/ не трогает
 #   whatsapp  код бота, npm ci и сборка; .env, data/ и счётчик привязок по QR не трогает
-#   all       system configs leads whatsapp
-# Секретов скрипт не печатает. .env переносит владелец (deploy/env.md). Служба почты стартует, если есть её .env.
-# Бот включается только на этапе 4 (привязка по QR): здесь он перезапускается, только если уже работал.
+#   console   консоль, собранная на ПК (build-release.sh), и её зависимости для работы; .env и data/ не трогает
+#   all       system configs leads whatsapp console
+# Секретов скрипт не печатает. .env переносит владелец (deploy/env.md). Службы почты и консоли стартуют, если есть
+# их .env. Бот включается только на этапе 4 (привязка по QR): здесь он перезапускается, только если уже работал.
 # open-panels.sh подключает этот файл (source) ради шага caddy и проверки паролей; тогда шаги сами не запускаются.
 set -euo pipefail
 
@@ -24,8 +26,14 @@ CADDY_KEY=65760C51EDEA2017CEA2CA15155B6D79CA56EA34
 GOOGLE_KEY=EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796
 ROOT=/opt/tanbala
 SRC=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# Блок panel.tanbala.kz, его импортируют оба Caddyfile: копия caddy/panel.caddy или caddy/panel.closed.caddy.
+PANEL_SITE=/etc/caddy/panel-site.caddy
+# Строка файла паролей Caddy: «имя хэш-bcrypt».
+AUTH_LINE_RE='[A-Za-z0-9._-]{1,64} \$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}'
 COMPOSE=(docker compose -f "$ROOT/deploy/docker/compose.yml" --env-file /etc/tanbala/compose.env)
 WA_STOPPED=0
+# Временная папка npm ci консоли: удаляется и при сбое шага (on_exit).
+CONSOLE_WORK=
 export DEBIAN_FRONTEND=noninteractive
 
 log() { printf '\n== %s\n' "$*"; }
@@ -103,6 +111,7 @@ step_system() {
 	# Caddy с первой секунды на закрытом Caddyfile (с его import): стандартный показал бы свою страницу на :80.
 	if [[ ! -f /etc/caddy/Caddyfile ]]; then
 		install -D -m 644 -t "$ROOT/deploy/caddy" "$SRC"/deploy/caddy/*.caddy
+		install -D -m 644 "$SRC/deploy/caddy/panel.closed.caddy" "$PANEL_SITE"
 		install -D -m 644 "$SRC/deploy/Caddyfile.closed" /etc/caddy/Caddyfile
 	fi
 	apt-get install -y -q -o Dpkg::Options::=--force-confold \
@@ -112,6 +121,9 @@ step_system() {
 	log "пользователи служб"
 	add_user tanbala-leads
 	add_user tanbala-wa
+	add_user tanbala-console
+	# Только для npm ci консоли (шаг console): у tanbala-console нет выхода в интернет, root чужие пакеты не ставит.
+	add_user tanbala-build
 	id caddy
 }
 
@@ -120,6 +132,8 @@ step_configs() {
 	need_user caddy
 	need_user tanbala-leads
 	need_user tanbala-wa
+	need_user tanbala-console
+	need_user tanbala-build
 	# Caddyfile из архива проверяется до того, как он и его import в $ROOT/deploy/caddy станут рабочими.
 	validate_caddy "$SRC/deploy"
 	log "deploy и contract в $ROOT"
@@ -142,10 +156,14 @@ step_configs() {
 	log "fail2ban"
 	# Без файла журнала jail не поднимется, а с ним и весь fail2ban (вместе с защитой SSH).
 	[[ -e /var/log/caddy/access.log ]] || install -m 600 -o caddy -g caddy /dev/null /var/log/caddy/access.log
-	install -m 644 "$ROOT/deploy/fail2ban/filter.d/tanbala-caddy-auth.conf" /etc/fail2ban/filter.d/
-	install -m 644 "$ROOT/deploy/fail2ban/jail.d/tanbala-caddy-auth.conf" /etc/fail2ban/jail.d/
+	# Пароль Caddy на всех именах и неудачные входы в консоль: оба читают журнал Caddy.
+	local jails=(tanbala-caddy-auth tanbala-console-login) jail
+	for jail in "${jails[@]}"; do
+		install -m 644 "$ROOT/deploy/fail2ban/filter.d/$jail.conf" /etc/fail2ban/filter.d/
+		install -m 644 "$ROOT/deploy/fail2ban/jail.d/$jail.conf" /etc/fail2ban/jail.d/
+	done
 	systemctl reload-or-restart fail2ban
-	fail2ban-client status tanbala-caddy-auth | head -3
+	for jail in "${jails[@]}"; do fail2ban-client status "$jail" | head -3; done
 
 	log "службы и таймеры systemd"
 	install -m 644 "$ROOT"/deploy/systemd/*.service "$ROOT"/deploy/systemd/*.timer /etc/systemd/system/
@@ -158,28 +176,48 @@ step_configs() {
 	systemctl enable tanbala-leads.service
 }
 
-# Файл пароля Caddy готов: одна строка «имя хэш-bcrypt», владелец root:caddy, права 640.
+# Файл паролей Caddy готов: владелец root:caddy, права 640, только строки «имя хэш-bcrypt» с разными именами и без
+# имени import (его Caddy счёл бы своей командой). У wa и leads строка ровно одна, у panel — по строке на человека
+# (open-panels.sh panel add|remove).
 auth_ready() {
-	local file=/etc/caddy/auth/$1.caddy
-	[[ -f $file && ! -L $file && $(stat -c '%U:%G %a' "$file") == 'root:caddy 640' && $(wc -l <"$file") -eq 1 ]] &&
-		grep -qxE '[A-Za-z0-9._-]{1,64} \$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}' "$file"
+	local file=/etc/caddy/auth/$1.caddy lines
+	[[ -f $file && ! -L $file && $(stat -c '%U:%G %a' "$file") == 'root:caddy 640' ]] || return 1
+	lines=$(wc -l <"$file")
+	if [[ $1 == panel ]]; then ((lines >= 1)) || return 1; else ((lines == 1)) || return 1; fi
+	! grep -qvxE "$AUTH_LINE_RE" "$file" && ! grep -qiE '^import ' "$file" &&
+		[[ -z $(cut -d' ' -f1 "$file" | sort | uniq -d) ]]
 }
 
-# Режим Caddy: рабочий Caddyfile, только если готовы оба файла паролей.
+# Режим wa. и leads.: рабочий Caddyfile, только если готовы оба их файла паролей.
 caddy_file() {
 	if auth_ready wa && auth_ready leads; then echo Caddyfile; else echo Caddyfile.closed; fi
 }
 
+# Режим panel. отдельно от wa. и leads.: открыт, только если готов его файл паролей. Пароль panel не закрывает
+# старые панели, и наоборот.
+panel_file() {
+	if auth_ready panel; then echo panel.caddy; else echo panel.closed.caddy; fi
+}
+
 # Проверка Caddyfile из папки deploy (архива или $ROOT/deploy): копия во временной папке, её import ведёт на
-# копию caddy/, проверяет пользователь caddy. Рабочие файлы Caddy до этой проверки не меняются.
+# копию caddy/ и на копию нужного файла panel (вместо $PANEL_SITE), проверяет пользователь caddy. Рабочие файлы
+# Caddy до этой проверки не меняются.
 validate_caddy() {
-	local deploy=$1 file tmp out
+	local deploy=$1 file panel tmp out
 	file=$(caddy_file)
+	panel=$(panel_file)
 	[[ -f $deploy/$file ]] || fail "нет $deploy/$file"
+	[[ -f $deploy/caddy/$panel ]] || fail "нет $deploy/caddy/$panel"
 	tmp=$(mktemp -d)
 	cp "$deploy/$file" "$tmp/Caddyfile"
 	cp -r "$deploy/caddy" "$tmp/caddy"
-	sed -i "s#^import $ROOT/deploy/caddy/#import $tmp/caddy/#" "$tmp/Caddyfile"
+	cp "$deploy/caddy/$panel" "$tmp/panel-site.caddy"
+	sed -i -e "s#^import $ROOT/deploy/caddy/#import $tmp/caddy/#" \
+		-e "s#^import $PANEL_SITE\$#import $tmp/panel-site.caddy#" "$tmp/Caddyfile"
+	if ! grep -qxF "import $tmp/panel-site.caddy" "$tmp/Caddyfile"; then
+		rm -rf "$tmp"
+		fail "в $deploy/$file нет строки import $PANEL_SITE: panel.tanbala.kz не подключён"
+	fi
 	chmod -R a+rX "$tmp"
 	if ! out=$(runuser -u caddy -- caddy validate --adapter caddyfile --config "$tmp/Caddyfile" 2>&1); then
 		rm -rf "$tmp"
@@ -191,17 +229,25 @@ validate_caddy() {
 
 step_caddy() {
 	need_user caddy
-	local file
+	local file panel
 	file=$(caddy_file)
+	panel=$(panel_file)
 	validate_caddy "$ROOT/deploy"
+	# Сначала блок panel, потом Caddyfile с его import: перезапуск Caddy в любой момент найдёт оба файла.
+	install -m 644 "$ROOT/deploy/caddy/$panel" "$PANEL_SITE"
 	install -m 644 "$ROOT/deploy/$file" /etc/caddy/Caddyfile
 	systemctl enable caddy
 	# reload идёт через сокет API из Caddyfile; если Caddy ещё на старом адресе API, нужен restart.
 	systemctl reload caddy || systemctl restart caddy
 	if [[ $file == Caddyfile ]]; then
-		echo "Caddy открыт: пароли Caddy на месте"
+		echo "Caddy: wa. и leads. открыты, пароли Caddy на месте"
 	else
-		echo "Caddy закрыт: wa. и leads. отвечают 503, пока нет обоих паролей Caddy"
+		echo "Caddy: wa. и leads. закрыты (503), пока нет обоих их паролей Caddy (open-panels.sh)"
+	fi
+	if [[ $panel == panel.caddy ]]; then
+		echo "Caddy: panel. открыт, строк паролей Caddy: $(wc -l </etc/caddy/auth/panel.caddy)"
+	else
+		echo "Caddy: panel. закрыт (503), пока нет его паролей Caddy (open-panels.sh panel add <имя>)"
 	fi
 }
 
@@ -311,8 +357,74 @@ step_whatsapp() {
 	fi
 }
 
+# Консоль держит токены к почте и боту, поэтому права как у почты: код и зависимости принадлежат root, служба их
+# только читает, писать может только в data/ (пользователи, сессии, журнал действий). Сама папка root: служба не
+# подменит в ней data или .env ссылкой. Собирается на ПК (build-release.sh кладёт console/dist и console/web/dist
+# в архив), здесь только зависимости для работы: npm ci без инструментов разработки во временной папке от имени
+# tanbala-build (у tanbala-console по nftables нет выхода в интернет, а root чужие пакеты не распаковывает).
+# Install-скрипты пакетов не запускаются, суммы пакетов npm сверяет с package-lock.json.
+step_console() {
+	from_release console
+	need_user tanbala-console
+	need_user tanbala-build
+	local dir=$ROOT/console
+	[[ -f $SRC/console/dist/server.js && -f $SRC/console/dist/cli.js && -f $SRC/console/package-lock.json ]] ||
+		fail "в архиве нет собранной консоли (console/dist, package-lock.json): архив собирает build-release.sh"
+	[[ -f $SRC/console/web/dist/index.html ]] ||
+		echo "ВНИМАНИЕ: в архиве нет интерфейса консоли (console/web/dist): будет только API"
+	install -d -m 750 -o root -g tanbala-console "$dir"
+	CONSOLE_WORK=$(mktemp -d)
+	rsync -a --exclude=/node_modules/ --exclude=/.env --exclude=/data/ "$SRC/console/" "$CONSOLE_WORK/src/"
+	chown -R tanbala-build:tanbala-build "$CONSOLE_WORK"
+	log "зависимости консоли: npm ci без инструментов разработки (пользователь tanbala-build)"
+	runuser -u tanbala-build -- env HOME="$CONSOLE_WORK" npm_config_cache="$CONSOLE_WORK/npm" bash -ec '
+		umask 022
+		cd "$1/src"
+		npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+	' _ "$CONSOLE_WORK"
+	# Дальше папку читает root: ни один процесс tanbala-build не должен успеть подменить в ней что-то ссылкой.
+	pkill -KILL -u tanbala-build || true
+	chown -R root:root "$CONSOLE_WORK"
+	log "код консоли в $dir"
+	# Код меняется не под работающей службой: старый и новый код вперемешку не загрузятся. Старт — в start_console.
+	systemctl stop tanbala-console 2>/dev/null || true
+	# --safe-links: ссылки, ведущие за пределы папки, не копируются.
+	sync_tree "$CONSOLE_WORK/src" "$dir" --safe-links --exclude=/.env --exclude=/data/
+	rm -rf "$CONSOLE_WORK"
+	CONSOLE_WORK=
+	log "права"
+	# Без записи для группы и остальных и без setuid/setgid из пакетов.
+	find "$dir" -mindepth 1 -maxdepth 1 ! -name .env ! -name data -exec chown -R root:root {} + \
+		-exec chmod -R go-w,u-s,g-s {} +
+	chown root:tanbala-console "$dir"
+	chmod 750 "$dir"
+	install -d -m 700 -o tanbala-console -g tanbala-console "$dir/data"
+	# Native-модуль SQLite приезжает готовым бинарником (install-скрипты выключены): проверка от имени службы,
+	# заодно видно, что служба читает код и зависимости.
+	if [[ -d $dir/node_modules/better-sqlite3 ]]; then
+		runuser -u tanbala-console -- bash -c 'cd "$1" && exec node -e "$2"' _ "$dir" \
+			'require("better-sqlite3")(":memory:").close(); console.log("better-sqlite3 работает")'
+	fi
+	start_console "$dir"
+}
+
+start_console() {
+	local dir=$1
+	if [[ ! -f $dir/.env ]]; then
+		echo "нет $dir/.env: служба консоли не запущена (deploy/env.md)"
+		return
+	fi
+	# Служба .env только читает: root владелец, группа службы.
+	chown root:tanbala-console "$dir/.env"
+	chmod 640 "$dir/.env"
+	systemctl enable tanbala-console.service
+	systemctl restart tanbala-console.service
+	echo "служба tanbala-console перезапущена"
+}
+
 on_exit() {
 	local code=$?
+	[[ -z $CONSOLE_WORK ]] || rm -rf "$CONSOLE_WORK"
 	if ((code != 0 && WA_STOPPED)); then
 		echo "ВНИМАНИЕ: бот остановлен для обновления и не запущен. После исправления: sudo systemctl start tanbala-whatsapp" >&2
 	fi
@@ -322,12 +434,13 @@ on_exit() {
 [[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
 
 [[ $EUID -eq 0 ]] || fail "запускать от root: sudo bash $0 <шаг>"
-(($# > 0)) || fail "укажите шаги: system configs caddy db leads whatsapp или all (описание в начале файла)"
+(($# > 0)) || fail "укажите шаги: system configs caddy db leads whatsapp console или all (описание в начале файла)"
 steps=("$@")
-[[ ${steps[*]} != all ]] || steps=(system configs leads whatsapp)
+# Консоль последней: её API в почте и боте появляются в шагах leads и whatsapp.
+[[ ${steps[*]} != all ]] || steps=(system configs leads whatsapp console)
 for step in "${steps[@]}"; do
 	case $step in
-	system | configs | caddy | db | leads | whatsapp) ;;
+	system | configs | caddy | db | leads | whatsapp | console) ;;
 	*) fail "неизвестный шаг: $step" ;;
 	esac
 done

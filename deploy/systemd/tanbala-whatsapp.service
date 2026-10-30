@@ -1,9 +1,10 @@
-# Служба: WhatsApp-бот и его панель (проект whatsapp), панель только 127.0.0.1:3100. Копия: /etc/systemd/system/.
+# Служба: WhatsApp-бот и его панель (проект whatsapp): панель только 127.0.0.1:3100, API для консоли только
+# 127.0.0.1:3101 (CONSOLE_API_PORT, к нему nftables пускает только консоль). Копия: /etc/systemd/system/.
 # Основа: whatsapp/deploy/tanbala.service, пути и пользователь под общий сервер. Секретов здесь нет: бот сам читает
 # /opt/tanbala/whatsapp/.env. Комментарии только на отдельных строках.
 
 [Unit]
-Description=Tanbala WhatsApp: бот и панель (127.0.0.1:3100)
+Description=Tanbala WhatsApp: бот, панель (127.0.0.1:3100) и API для консоли (127.0.0.1:3101)
 # Без внутреннего API бот работает, только без данных о компании: зависимости нет, только порядок запуска.
 After=network-online.target tanbala-leads.service tanbala-firewall.service
 Wants=network-online.target
@@ -51,8 +52,8 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/opt/tanbala/whatsapp
-# Чужое (почта с её .env, копии баз, пароли и API Caddy) служба не видит вовсе.
-InaccessiblePaths=-/opt/tanbala/leads -/var/backups/tanbala -/etc/caddy/auth -/etc/tanbala -/var/lib/caddy
+# Чужое (почта и консоль с их .env, копии баз, пароли и API Caddy) служба не видит вовсе.
+InaccessiblePaths=-/opt/tanbala/leads -/opt/tanbala/console -/var/backups/tanbala -/etc/caddy/auth -/etc/tanbala -/var/lib/caddy
 PrivateDevices=true
 ProtectProc=invisible
 SystemCallArchitectures=native
@@ -68,6 +69,12 @@ RestrictNamespaces=true
 LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 CapabilityBoundingSet=
+# Привязка портов: только свои. Пока другая служба перезапускается, эта не займёт её порт и не получит токен
+# консоли или вход владельца через Caddy. Порты от 32768 (свободный порт по bind(0), отладка Chrome) и UDP
+# не ограничены. SocketBindAllow главнее SocketBindDeny; без BPF в ядре systemd пропустит правило с предупреждением.
+SocketBindDeny=tcp:1-32767
+SocketBindAllow=tcp:3100
+SocketBindAllow=tcp:3101
 
 [Install]
 WantedBy=multi-user.target

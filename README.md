@@ -4,7 +4,8 @@
 | --- | --- | --- |
 | `leads/` | поиск компаний, письма, внутренний API (проект B) | `leads/HANDOVER.md`, `leads/docs/SETUP.md` |
 | `whatsapp/` | WhatsApp-бот и его панель (проект C) | `whatsapp/README.md`, `whatsapp/docs/DEPLOY.md` |
-| `contract/` | контракт внутреннего API между ними | `contract/INTERNAL_API.md` |
+| `console/` | единая панель panel.tanbala.kz вместо панелей wa. и leads. | `console/docs/PLAN.md` |
+| `contract/` | контракты API: бот → почта; консоль → почта и бот | `contract/INTERNAL_API.md`, `contract/CONSOLE_API.md` |
 | `handover/` | передача от проектов B и C, итог слияния | `handover/` |
 | `deploy/` | всё для сервера | `deploy/README.md`, `deploy/env.md` |
 
@@ -12,6 +13,11 @@
 Git Bash: `bash deploy/scripts/site.sh` (сборка из последнего коммита A-site, откат — `deploy/README.md`).
 
 Правила работы: [CLAUDE.md](CLAUDE.md).
+
+На сервере (`deploy/README.md`): почта — API 127.0.0.1:8000 и интерфейс 127.0.0.1:8001 (leads.tanbala.kz), бот —
+панель 127.0.0.1:3100 (wa.tanbala.kz) и API для консоли 127.0.0.1:3101, консоль — служба `tanbala-console`,
+`/opt/tanbala/console`, 127.0.0.1:3200 (panel.tanbala.kz). Пароли Caddy для panel: `open-panels.sh panel add <имя>`,
+пользователи консоли: `console-user.sh user add <имя>`, токены консоли — `deploy/env.md`.
 
 История B и C сохранена (git subtree без squash), но в старых коммитах файлы лежат без префикса папки. История файла
 до слияния: `git log 36f58c9 -- tanbala_leads/web/app.py` (B) или `git log 3b70cf0 -- src/main.ts` (C).

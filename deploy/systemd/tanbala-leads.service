@@ -1,9 +1,10 @@
-# Служба: интерфейс почты и внутренний API (проект leads), только 127.0.0.1:8000. Копия: /etc/systemd/system/.
+# Служба: внутренний API почты на 127.0.0.1:8000 (только /internal/*: бот и консоль) и её старый интерфейс
+# на 127.0.0.1:8001 (к нему nftables пускает только Caddy). Проект leads. Копия: /etc/systemd/system/.
 # Секретов здесь нет: сервер сам читает /opt/tanbala/leads/.env. Комментарии только на отдельных строках:
 # после значения systemd счёл бы их частью значения.
 
 [Unit]
-Description=Tanbala leads: интерфейс почты и внутренний API (127.0.0.1:8000)
+Description=Tanbala leads: внутренний API (127.0.0.1:8000) и интерфейс почты (127.0.0.1:8001)
 After=network-online.target docker.service tanbala-firewall.service
 Wants=network-online.target docker.service
 # Без правил nftables (браузеры почты открывают чужие сайты) служба не стартует.
@@ -25,7 +26,7 @@ Environment=LANGUAGE=ru
 # Домашняя папка для Chrome и Chromium (их ~/.cache, ~/.pki, загрузки) — внутри data/, не рядом с .env и кодом.
 Environment=HOME=/opt/tanbala/leads/data/home
 ExecStartPre=/usr/bin/mkdir -p /opt/tanbala/leads/data/home
-ExecStart=/opt/tanbala/leads/.venv/bin/python -m tanbala_leads web --port 8000
+ExecStart=/opt/tanbala/leads/.venv/bin/python -m tanbala_leads web --port 8000 --ui-port 8001
 
 # При старте применяются миграции. Если Postgres в Docker ещё не поднялся, выход 1 и повтор через 10 с.
 Restart=on-failure
@@ -62,8 +63,8 @@ ProtectSystem=strict
 ProtectHome=true
 ReadOnlyPaths=/opt/tanbala/leads
 ReadWritePaths=/opt/tanbala/leads/data /opt/tanbala/leads/logs /opt/tanbala/leads/.crawl4ai
-# Чужое (бот, копии баз, пароли и API Caddy) служба не видит вовсе.
-InaccessiblePaths=-/opt/tanbala/whatsapp -/var/backups/tanbala -/etc/caddy/auth -/etc/tanbala -/var/lib/caddy
+# Чужое (бот, консоль, копии баз, пароли и API Caddy) служба не видит вовсе.
+InaccessiblePaths=-/opt/tanbala/whatsapp -/opt/tanbala/console -/var/backups/tanbala -/etc/caddy/auth -/etc/tanbala -/var/lib/caddy
 ProtectProc=invisible
 SystemCallArchitectures=native
 ProtectKernelTunables=true
@@ -77,6 +78,12 @@ RestrictRealtime=true
 LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 CapabilityBoundingSet=
+# Привязка портов: только свои. Пока другая служба перезапускается, эта не займёт её порт и не получит токен
+# консоли или вход владельца через Caddy. Порты от 32768 (свободный порт по bind(0), отладка Chrome) и UDP
+# не ограничены. SocketBindAllow главнее SocketBindDeny; без BPF в ядре systemd пропустит правило с предупреждением.
+SocketBindDeny=tcp:1-32767
+SocketBindAllow=tcp:8000
+SocketBindAllow=tcp:8001
 
 [Install]
 WantedBy=multi-user.target

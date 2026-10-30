@@ -4,10 +4,16 @@
 # - браузеры почты (Chrome parser-2gis и Chromium crawl4ai) без песочницы открывают чужие сайты: их нельзя увести
 #   на 127.0.0.1, в частные сети (метаданные облака 169.254.169.254, мост Docker) и на свой IP мимо 80 и 443;
 # - Chrome parser-2gis открывает на 127.0.0.1 порт отладки без пароля: до него может дойти только сама почта;
-# - бот, если его взломают через сообщения WhatsApp, дотянется только до внутреннего API почты;
-# - панель бота и интерфейс почты на 127.0.0.1 открываются только через Caddy (и интерфейс ещё ботом), root — всё.
+# - бот, если его взломают через сообщения WhatsApp, дотянется только до внутреннего API почты (8000), но не до её
+#   интерфейса (8001);
+# - консоль (panel.tanbala.kz) держит токены к почте и боту: ей можно только в их API для консоли (8000 и 3101),
+#   больше никуда, даже в интернет и DNS;
+# - панель бота (3100), интерфейс почты (8001) и консоль (3200) на 127.0.0.1 открываются только через Caddy;
+#   API бота для консоли (3101) — только консоли, Caddy туда не пускается никогда. root может всё.
+# Порты: 3100 панель бота, 3101 API бота для консоли, 3200 консоль, 8000 API почты (бот и консоль), 8001 интерфейс почты.
 # Таблица своя: правила ufw и Docker не трогает (стандартный /etc/nftables.conf не использовать: он делает
-# flush ruleset). Загружает tanbala-firewall.service; пользователи tanbala-leads, tanbala-wa и caddy должны уже быть.
+# flush ruleset). Загружает tanbala-firewall.service; пользователи tanbala-leads, tanbala-wa, tanbala-console,
+# tanbala-build и caddy должны уже быть (nft ищет их по имени и без любого из них не примет файл целиком).
 
 # Пересоздание таблицы целиком: повторная загрузка не задваивает правила.
 table inet tanbala_guard
@@ -30,13 +36,19 @@ table inet tanbala_guard {
 		# -150: после conntrack (-200) и до DNAT Docker (-100), правила видят исходный адрес назначения.
 		type filter hook output priority -150; policy accept;
 
-		# Ответы уже открытых соединений (например, почта отвечает Caddy и боту).
+		# Ответы уже открытых соединений (например, почта отвечает Caddy, боту и консоли, консоль отвечает Caddy).
 		ct state established,related accept
-		# DNS через systemd-resolved (127.0.0.53) нужен всем.
+
+		# Консоль: только API почты и API бота для консоли на 127.0.0.1, остальное (в том числе DNS, интернет, ::1)
+		# запрещено. Поэтому эти правила стоят до правила DNS.
+		meta skuid "tanbala-console" ip daddr 127.0.0.1 tcp dport { 3101, 8000 } accept
+		meta skuid "tanbala-console" reject with icmpx admin-prohibited
+
+		# DNS через systemd-resolved (127.0.0.53) нужен всем остальным.
 		ip daddr 127.0.0.0/8 meta l4proto { tcp, udp } th dport 53 accept
 
 		# Почта: на 127.0.0.1 только Postgres, Reacher и свободные порты (Chrome parser-2gis и его порт отладки,
-		# диапазон ip_local_port_range Ubuntu). Свой порт 8000 и панель бота — нельзя.
+		# диапазон ip_local_port_range Ubuntu). Свои порты 8000 и 8001, панель бота, его API и консоль — нельзя.
 		meta skuid "tanbala-leads" ip daddr 127.0.0.0/8 tcp dport { 5432, 8080, 32768-60999 } accept
 		meta skuid "tanbala-leads" ip daddr 127.0.0.0/8 reject with icmpx admin-prohibited
 		meta skuid "tanbala-leads" ip6 daddr ::1 reject with icmpx admin-prohibited
@@ -44,19 +56,27 @@ table inet tanbala_guard {
 		meta skuid "tanbala-leads" ip6 daddr @private6 reject with icmpx admin-prohibited
 		meta skuid "tanbala-leads" ip daddr 91.201.215.210 tcp dport != { 80, 443 } reject with tcp reset
 
-		# Бот: на 127.0.0.1 только внутренний API почты, в частные сети нельзя.
+		# Бот: на 127.0.0.1 только внутренний API почты (8000, не интерфейс 8001), в частные сети нельзя.
 		meta skuid "tanbala-wa" ip daddr 127.0.0.1 tcp dport 8000 accept
 		meta skuid "tanbala-wa" ip daddr 127.0.0.0/8 reject with icmpx admin-prohibited
 		meta skuid "tanbala-wa" ip6 daddr ::1 reject with icmpx admin-prohibited
 		meta skuid "tanbala-wa" ip daddr @private4 reject with icmpx admin-prohibited
 		meta skuid "tanbala-wa" ip6 daddr @private6 reject with icmpx admin-prohibited
 
-		# Caddy: на 127.0.0.1 только панель бота и интерфейс почты (API Caddy в сокете, порт ему не нужен).
-		meta skuid "caddy" ip daddr 127.0.0.1 tcp dport { 3100, 8000 } accept
+		# npm ci консоли (install.sh, шаг console): только интернет (реестр npm) и DNS выше; на 127.0.0.1 (Postgres,
+		# Reacher, порт отладки Chrome) и в частные сети нельзя.
+		meta skuid "tanbala-build" ip daddr 127.0.0.0/8 reject with icmpx admin-prohibited
+		meta skuid "tanbala-build" ip6 daddr ::1 reject with icmpx admin-prohibited
+		meta skuid "tanbala-build" ip daddr @private4 reject with icmpx admin-prohibited
+		meta skuid "tanbala-build" ip6 daddr @private6 reject with icmpx admin-prohibited
+
+		# Caddy: на 127.0.0.1 только панель бота, консоль и интерфейс почты (API Caddy в сокете, порт ему не нужен).
+		# API почты (8000) и API бота для консоли (3101) Caddy не видит вовсе.
+		meta skuid "caddy" ip daddr 127.0.0.1 tcp dport { 3100, 3200, 8001 } accept
 		meta skuid "caddy" ip daddr 127.0.0.0/8 reject with icmpx admin-prohibited
 		meta skuid "caddy" ip6 daddr ::1 reject with icmpx admin-prohibited
 
-		# Остальные, кроме root: панель бота и интерфейс почты на 127.0.0.1 — нельзя (только через Caddy).
-		ip daddr 127.0.0.0/8 tcp dport { 3100, 8000 } meta skuid != 0 reject with tcp reset
+		# Остальные, кроме root: порты приложений на 127.0.0.1 — нельзя (только через Caddy или из правил выше).
+		ip daddr 127.0.0.0/8 tcp dport { 3100, 3101, 3200, 8000, 8001 } meta skuid != 0 reject with tcp reset
 	}
 }

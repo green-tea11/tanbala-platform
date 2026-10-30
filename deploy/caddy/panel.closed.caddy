@@ -1,0 +1,9 @@
+# РЕЖИМ: закрыто до паролей Caddy для panel (эту строку ищет health.sh в /etc/caddy/panel-site.caddy).
+# panel.tanbala.kz, пока нет /etc/caddy/auth/panel.caddy: ответ 503, до консоли запрос не доходит, сертификат Caddy
+# получает уже сейчас. install.sh (шаг caddy) кладёт этот файл в /etc/caddy/panel-site.caddy. Открыть:
+# sudo /opt/tanbala/deploy/scripts/open-panels.sh panel add <имя> (deploy/env.md). Режим wa. и leads. от него
+# не зависит.
+panel.tanbala.kz {
+	import common
+	respond 503
+}

@@ -1,12 +1,15 @@
-# Caddy для сервера Tanbala (PS.KZ, 91.201.215.210), панели открыты. Копия: /etc/caddy/Caddyfile, ставит её
-# install.sh (шаг caddy), когда есть оба файла паролей; до этого там Caddyfile.closed.
+# Caddy для сервера Tanbala (PS.KZ, 91.201.215.210), панели wa. и leads. открыты. Копия: /etc/caddy/Caddyfile, ставит
+# её install.sh (шаг caddy), когда есть оба файла паролей wa и leads; до этого там Caddyfile.closed.
 # HTTPS и сертификаты Caddy получает и продлевает сам (нужны DNS и открытые порты 80 и 443).
-# Пароли basic auth здесь не хранятся: строки «имя хэш» лежат в /etc/caddy/auth/wa.caddy и leads.caddy
+# Пароли basic auth здесь не хранятся: строки «имя хэш» лежат в /etc/caddy/auth/wa.caddy, leads.caddy и panel.caddy
 # (root:caddy, права 640), как их создать — deploy/env.md. Глобальные опции и (common) — в caddy/common.caddy.
 # Не добавлять сайты «на всё» (:443, http://, *): запрос с чужим именем дошёл бы до приложений.
 import /opt/tanbala/deploy/caddy/common.caddy
 # Сайт tanbala.kz и www: открыт всем, в обоих режимах.
 import /opt/tanbala/deploy/caddy/site.caddy
+# Единая панель panel.tanbala.kz: режим свой, от паролей wa. и leads. не зависит. install.sh (шаг caddy) кладёт сюда
+# caddy/panel.caddy, если есть /etc/caddy/auth/panel.caddy, иначе caddy/panel.closed.caddy (503).
+import /etc/caddy/panel-site.caddy
 
 # Панель WhatsApp-бота: пароль Caddy, затем свой вход панели (два слоя, решение владельца 29.10.2026).
 wa.tanbala.kz {
@@ -22,8 +25,8 @@ wa.tanbala.kz {
 	}
 }
 
-# Интерфейс почты: пароль Caddy. Внутренний API бота снаружи не виден: 404 ещё до пароля и до приложения.
-# Само приложение тоже не пускает это имя к /internal (PUBLIC_UI_HOST), а API ещё и требует токен.
+# Интерфейс почты (127.0.0.1:8001): пароль Caddy. Внутренний API почты (8000) Caddy не видит вовсе (nftables),
+# а путь с internal снаружи — 404 ещё до пароля и до приложения. Интерфейс и сам отвечает 404 на такие пути.
 leads.tanbala.kz {
 	import common
 	route {
@@ -32,8 +35,8 @@ leads.tanbala.kz {
 		basic_auth {
 			import /etc/caddy/auth/leads.caddy
 		}
-		# Host всегда имя интерфейса: приложение не пустит его к /internal, даже если правило выше когда-нибудь уберут.
-		reverse_proxy 127.0.0.1:8000 {
+		# Host всегда имя интерфейса (PUBLIC_UI_HOST): другие имена интерфейс не пускает.
+		reverse_proxy 127.0.0.1:8001 {
 			header_up Host leads.tanbala.kz
 			header_up -Authorization
 		}
