@@ -108,6 +108,19 @@ describe('Host, адрес сокета и HTTPS', () => {
     });
     expect(outside.statusCode).toBe(404);
   });
+
+  it('на сервере (NODE_ENV=production) локальный Host пускает только GET /healthz', async () => {
+    const harness = await start({ localOnlyHealthz: true });
+    harness.backends.on('GET leads:/runs/active', null);
+    expect((await harness.request('GET', '/healthz')).statusCode).toBe(200);
+    const page = await harness.request('GET', '/');
+    expect(page.statusCode).toBe(403);
+    expect(page.json()).toMatchObject({ error: 'bad_host' });
+    const login = await harness.request('POST', '/api/login', { body: { name: 'owner', password: 'x'.repeat(12) } });
+    expect(login.statusCode).toBe(403);
+    const viaCaddy = await harness.request('GET', '/', { headers: { host: DOMAIN, 'x-forwarded-proto': 'https' } });
+    expect(viaCaddy.statusCode).toBe(200);
+  });
 });
 
 describe('CSRF, Origin и тип тела', () => {

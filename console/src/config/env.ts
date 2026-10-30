@@ -21,6 +21,8 @@ export interface ConsoleConfig {
   readonly wa: BackendConfig;
   readonly databasePath: string;
   readonly logLevel: LogLevel;
+  /** NODE_ENV=production (служба на сервере): по локальному Host пускается только GET /healthz, всё остальное — через Caddy. */
+  readonly localOnlyHealthz: boolean;
 }
 
 const LOOPBACK_HOST = '127.0.0.1';
@@ -222,5 +224,6 @@ export function loadConfig(
     wa: wa.value,
     databasePath,
     logLevel: logLevel.value,
+    localOnlyHealthz: read(env, 'NODE_ENV') === 'production',
   };
 }

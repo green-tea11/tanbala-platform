@@ -25,6 +25,7 @@ async function main(): Promise<void> {
   const { app, context } = buildApp({
     port: config.port,
     allowedHosts: config.allowedHosts,
+    localOnlyHealthz: config.localOnlyHealthz,
     db,
     ...backends,
     hasher: createScryptHasher(),

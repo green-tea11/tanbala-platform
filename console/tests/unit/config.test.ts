@@ -31,6 +31,7 @@ describe('настройки консоли', () => {
       wa: { baseUrl: 'http://127.0.0.1:3101', token: WA },
       databasePath: join(ROOT, 'data', 'console.db'),
       logLevel: 'info',
+      localOnlyHealthz: false,
     });
   });
 

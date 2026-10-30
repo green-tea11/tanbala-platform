@@ -22,6 +22,8 @@ import { hostRules, type HostRules } from './guard.js';
 export interface AppDeps {
   readonly port: number;
   readonly allowedHosts: readonly string[];
+  /** На сервере локальный Host (без Caddy) — только для GET /healthz. */
+  readonly localOnlyHealthz?: boolean;
   readonly db: Db;
   readonly leads: LeadsApi;
   readonly wa: WaApi;

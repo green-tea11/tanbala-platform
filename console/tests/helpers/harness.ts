@@ -102,6 +102,7 @@ export interface Harness {
 
 export interface HarnessOptions {
   readonly allowedHosts?: readonly string[];
+  readonly localOnlyHealthz?: boolean;
   readonly staticDir?: string;
   readonly limits?: Partial<ClientLimits>;
   readonly hasher?: PasswordHasher;
@@ -134,6 +135,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
   const { app, context, routes } = buildApp({
     port: PORT,
     allowedHosts: options.allowedHosts ?? [DOMAIN],
+    localOnlyHealthz: options.localOnlyHealthz ?? false,
     db,
     leads,
     wa,

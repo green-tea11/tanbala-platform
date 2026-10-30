@@ -64,6 +64,11 @@ function transportDenial(context: AppContext, request: FastifyRequest): Denial |
   if (!isLoopbackPeer(request.socket.remoteAddress)) return { status: 403, code: 'forbidden' };
   const host = normalizedHost(request.headers.host);
   if (host === null || !context.hosts.allowed.has(host)) return { status: 403, code: 'bad_host' };
+  // На сервере взломанный процесс с этой же машины не обходит пароль Caddy и fail2ban: локально — только /healthz.
+  if (context.deps.localOnlyHealthz === true && context.hosts.local.has(host)) {
+    const healthz = request.method === 'GET' && request.url.split('?')[0] === '/healthz';
+    if (!healthz) return { status: 403, code: 'bad_host' };
+  }
   if (!context.hosts.local.has(host) && !isSecure(request)) {
     return { status: 403, code: 'https_required' };
   }
