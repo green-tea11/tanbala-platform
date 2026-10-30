@@ -1,6 +1,8 @@
 import type { Clock } from '../shared/clock.js';
+import { ACTION_BODY_LIMIT_BYTES } from '../shared/limits.js';
 import type { Logger } from '../shared/logger.js';
 import { cleanLine } from '../shared/text.js';
+import { createReadBreaker, type ReadBreaker } from './breaker.js';
 import { createReadCache } from './read-cache.js';
 import { CONSOLE_PREFIX, type BackendPath } from './paths.js';
 import { readLimitedBytes } from './read-limited.js';
@@ -28,17 +30,23 @@ export interface ClientLimits {
   readonly postTimeoutMs: number;
   readonly maxResponseBytes: number;
   readonly maxConcurrent: number;
+  /** Сколько из maxConcurrent мест чтения не занимают: они остаются действиям. */
+  readonly reservedForActions: number;
   readonly maxQueued: number;
   readonly cacheMs: number;
 }
 
 export interface BackendClient {
   readonly name: BackendName;
-  /** Чтение: одинаковые одновременные запросы объединяются, ответ кэшируется на 1.5 с. Не бросает. */
+  /**
+   * Чтение: одинаковые одновременные запросы объединяются, ответ кэшируется на 1.5 с. После 3 таймаутов подряд
+   * чтения 10 с сразу получают «недоступно» (предохранитель). Не бросает.
+   */
   get(path: BackendPath): Promise<BackendResult>;
   /**
    * Действие от имени пользователя консоли (X-Console-User). Сбрасывает кэш чтения. Тело больше maxBodyBytes
-   * (у приложений 16 КБ, у импорта 1.5 МБ) не отправляется: отказ 413. Не бросает.
+   * (у приложений 16 КБ, у правки письма 32 КБ, у импорта 1.5 МБ) не отправляется: отказ 413. Одно место из 4
+   * всегда оставлено действиям. Не бросает.
    */
   post(
     path: BackendPath,
@@ -48,15 +56,12 @@ export interface BackendClient {
   ): Promise<BackendResult>;
 }
 
-/** Предел тела действия у почты и бота (контракт: 16 КБ, у импорта 1.5 МБ). */
-export const ACTION_BODY_LIMIT_BYTES = 16 * 1024;
-export const IMPORT_BODY_LIMIT_BYTES = 1_572_864;
-
 export const DEFAULT_CLIENT_LIMITS: ClientLimits = {
   getTimeoutMs: 8_000,
   postTimeoutMs: 35_000,
   maxResponseBytes: 2 * 1024 * 1024,
   maxConcurrent: 4,
+  reservedForActions: 1,
   maxQueued: 100,
   cacheMs: 1_500,
 };
@@ -80,12 +85,19 @@ const FALLBACK_CODES: Readonly<Record<number, string>> = {
 const SAFE_ERROR_CODE = /^[A-Z][A-Z0-9_]{1,63}$/;
 /** Целые поля отказа, которые консоль передаёт дальше (номер идущего запуска у 409 почты). */
 const EXTRA_INTEGER_FIELDS: readonly string[] = ['activeRunId'];
-/** Сбои, при которых запрос точно не дошёл до приложения. */
+/**
+ * Сбои, при которых запрос точно не дошёл до приложения: соединение не открылось (отказ, нет доступа, нет сети или
+ * адреса) или запрос не вышел из очереди консоли.
+ */
 const NOT_SENT_CODES: ReadonlySet<string> = new Set([
   'ECONNREFUSED',
+  'EACCES',
+  'ENETUNREACH',
+  'EADDRNOTAVAIL',
   'queue_full',
   'timeout_in_queue',
 ]);
+const TIMEOUT_CODE = 'timeout';
 
 interface ExchangeInit {
   readonly method: 'GET' | 'POST';
@@ -97,13 +109,14 @@ interface ClientContext {
   readonly options: BackendClientOptions;
   readonly limits: ClientLimits;
   readonly semaphore: Semaphore;
+  readonly breaker: ReadBreaker;
   readonly logState: { outageAt: number; authAt: number };
 }
 
 /** Код сбоя для лога: таймаут, код ошибки или её причины (так undici отдаёт ECONNREFUSED). */
 export function errorCodeOf(error: unknown): string {
   if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
-    return 'timeout';
+    return TIMEOUT_CODE;
   }
   const pick = (value: unknown): string | null => {
     if (typeof value !== 'object' || value === null) return null;
@@ -115,8 +128,8 @@ export function errorCodeOf(error: unknown): string {
   return pick(error) ?? pick(cause) ?? 'network_error';
 }
 
-/** Ответ с отказом: код и текст из тела, если они есть и годятся; иначе код по статусу. */
-function rejection(status: number, json: unknown): BackendResult | null {
+/** Ответ с отказом: код и текст из тела, если они есть и годятся; иначе код по статусу. null — не отказ. */
+export function rejectionOf(status: number, json: unknown): BackendResult | null {
   if (!REJECT_STATUSES.has(status)) return null;
   const body = typeof json === 'object' && json !== null ? (json as Record<string, unknown>) : {};
   const rawCode = body['error'];
@@ -144,6 +157,11 @@ function rejection(status: number, json: unknown): BackendResult | null {
   };
 }
 
+/** Тело ответа не нужно: поток закрывается, соединение не держит лишнее. */
+function cancelBody(response: Response): void {
+  response.body?.cancel().catch(() => undefined);
+}
+
 function decodeUtf8(bytes: Uint8Array): string | null {
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
@@ -164,7 +182,7 @@ async function interpret(
 ): Promise<BackendResult> {
   const { status } = response;
   if (status === 401 || status === 403) {
-    response.body?.cancel().catch(() => undefined);
+    cancelBody(response);
     return { ok: false, failure: { kind: 'auth' } };
   }
   const bytes = await readLimitedBytes(response, maxBytes, signal);
@@ -173,7 +191,7 @@ async function interpret(
   if (status >= 200 && status <= 299) {
     return json === undefined ? unclear : { ok: true, status, data: json };
   }
-  return rejection(status, json) ?? unclear;
+  return rejectionOf(status, json) ?? unclear;
 }
 
 function logFailure(
@@ -230,20 +248,21 @@ function failureFor(init: ExchangeInit, code: string): BackendResult {
   return init.method === 'GET' || NOT_SENT_CODES.has(code) ? UNAVAILABLE : UNKNOWN_OUTCOME;
 }
 
-/** Ждёт work, но не дольше срока signal: fetch, не услышавший отмену, не держит очередь вечно. */
-function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
+/**
+ * Ждёт ответ, но не дольше срока signal: fetch, не услышавший отмену, не держит очередь вечно. Ответ, пришедший уже
+ * после срока, не нужен: его тело закрывается.
+ */
+function untilAborted(work: Promise<Response>, signal: AbortSignal): Promise<Response> {
+  return new Promise<Response>((resolve, reject) => {
     const onAbort = (): void =>
       reject(Object.assign(new Error('Срок вышел'), { name: 'AbortError' }));
-    if (signal.aborted) {
-      onAbort();
-      return;
-    }
     signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
     work.then(
-      (value) => {
+      (response) => {
         signal.removeEventListener('abort', onAbort);
-        resolve(value);
+        if (signal.aborted) cancelBody(response);
+        else resolve(response);
       },
       (error: unknown) => {
         signal.removeEventListener('abort', onAbort);
@@ -272,9 +291,20 @@ async function sendOnce(
   }
 }
 
+/** Итог обмена для предохранителя: таймаут или нет; разомкнулся — строка в лог. */
+function recordForBreaker(context: ClientContext, code: string): void {
+  const { options, breaker } = context;
+  if (!breaker.record(code === TIMEOUT_CODE, options.clock.now())) return;
+  options.logger.warn(
+    { backend: options.name, code: 'breaker_open' },
+    'Приложение не отвечает: чтение приостановлено на 10 с, действия идут',
+  );
+}
+
 /**
  * Один обмен с приложением. Срок (8 с у чтения, 35 с у действия) считается с постановки в очередь и покрывает
- * ожидание места, запрос и чтение тела. Не бросает.
+ * ожидание места, запрос и чтение тела; по сроку fetch отменяется (AbortController), тело закрывается. Чтение при
+ * разомкнутом предохранителе не отправляется. Не бросает.
  */
 async function exchange(
   context: ClientContext,
@@ -283,18 +313,24 @@ async function exchange(
 ): Promise<BackendResult> {
   const url = urlOf(context.options.baseUrl, path);
   if (url === null) return UNAVAILABLE;
+  const isRead = init.method === 'GET';
+  if (isRead && context.breaker.isOpen(context.options.clock.now())) {
+    logFailure(context, UNAVAILABLE, path, 'breaker_open');
+    return UNAVAILABLE;
+  }
   const controller = new AbortController();
   const { limits } = context;
-  const timeoutMs = init.method === 'GET' ? limits.getTimeoutMs : limits.postTimeoutMs;
+  const timeoutMs = isRead ? limits.getTimeoutMs : limits.postTimeoutMs;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    if (!(await context.semaphore.acquire(controller.signal))) {
+    if (!(await context.semaphore.acquire(controller.signal, isRead ? 'read' : 'action'))) {
       const code = controller.signal.aborted ? 'timeout_in_queue' : 'queue_full';
       logFailure(context, UNAVAILABLE, path, code);
       return UNAVAILABLE;
     }
     try {
       const { result, code } = await sendOnce(context, url, init, controller.signal);
+      recordForBreaker(context, code);
       logFailure(context, result, path, code);
       return result;
     } finally {
@@ -330,7 +366,8 @@ export function createBackendClient(options: BackendClientOptions): BackendClien
   const context: ClientContext = {
     options,
     limits,
-    semaphore: createSemaphore(limits.maxConcurrent, limits.maxQueued),
+    semaphore: createSemaphore(limits.maxConcurrent, limits.maxQueued, limits.reservedForActions),
+    breaker: createReadBreaker(),
     logState: { outageAt: -Infinity, authAt: -Infinity },
   };
   const reads = createReadCache(options.clock, limits.cacheMs);

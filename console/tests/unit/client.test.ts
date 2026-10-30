@@ -128,7 +128,7 @@ describe('клиент приложения', () => {
     expect(await client.get(summary)).toMatchObject({ data: { version: 1 } });
   });
 
-  it('не больше 4 запросов сразу; очередь сверх предела — «недоступно»', async () => {
+  it('чтения занимают не больше 3 мест из 4; очередь сверх предела — «недоступно»', async () => {
     let active = 0;
     let peak = 0;
     const { client } = makeClient(
@@ -144,8 +144,29 @@ describe('клиент приложения', () => {
     const results = await Promise.all(
       Array.from({ length: 8 }, (_, index) => client.get(consolePath(['runs', index + 1]))),
     );
-    expect(peak).toBe(4);
-    expect(results.filter((result) => result.ok)).toHaveLength(7);
+    expect(peak).toBe(3);
+    expect(results.filter((result) => result.ok)).toHaveLength(6);
+  });
+
+  it('четвёртое место остаётся действию, пока чтения заняты', async () => {
+    const gates: (() => void)[] = [];
+    let posted = false;
+    const { client } = makeClient(async (_url, init) => {
+      if (init.method === 'POST') {
+        posted = true;
+        return json({ result: 'approved' });
+      }
+      await new Promise<void>((resolve) => gates.push(resolve));
+      return json({});
+    });
+    const reads = Array.from({ length: 3 }, (_, index) =>
+      client.get(consolePath(['runs', index + 1])),
+    );
+    const action = await client.post(consolePath(['drafts', 1, 'approve']), {}, 'owner');
+    expect(posted).toBe(true);
+    expect(action).toMatchObject({ ok: true });
+    gates.forEach((open) => open());
+    await Promise.all(reads);
   });
 
   it('таймаут: «недоступно», код timeout в лог (не чаще раза в минуту)', async () => {
@@ -163,7 +184,8 @@ describe('клиент приложения', () => {
     expect(lines.map((line) => line['code'])).toEqual(['timeout']);
     clock.advance(60_000);
     await client.get(consolePath(['blocked']));
-    expect(lines).toHaveLength(2);
+    // Третий таймаут подряд: предохранитель разомкнулся, затем строка таймаута (прошла минута).
+    expect(lines.map((line) => line['code'])).toEqual(['timeout', 'breaker_open', 'timeout']);
     expect(JSON.stringify(lines)).not.toContain('T'.repeat(40));
   });
 

@@ -1,6 +1,11 @@
 import type { z } from 'zod';
 import type { Logger } from '../shared/logger.js';
-import { ACTION_BODY_LIMIT_BYTES, IMPORT_BODY_LIMIT_BYTES, type BackendClient } from './client.js';
+import {
+  ACTION_BODY_LIMIT_BYTES,
+  EDIT_BODY_LIMIT_BYTES,
+  IMPORT_BODY_LIMIT_BYTES,
+} from '../shared/limits.js';
+import type { BackendClient } from './client.js';
 import { parsed } from './parsed.js';
 import { consolePath, type BackendPath, type QueryValue } from './paths.js';
 import type { BackendResult } from './result.js';
@@ -114,7 +119,13 @@ export function createLeadsApi(client: BackendClient, logger: Logger) {
     reject: (id: number, user: string) =>
       post(consolePath(['drafts', id, 'reject']), {}, user, rejectedSchema),
     edit: (id: number, body: LetterEdit, user: string) =>
-      post(consolePath(['drafts', id, 'edit']), { ...body }, user, savedSchema),
+      post(
+        consolePath(['drafts', id, 'edit']),
+        { ...body },
+        user,
+        savedSchema,
+        EDIT_BODY_LIMIT_BYTES,
+      ),
     sendTest: (id: number, user: string) =>
       post(consolePath(['drafts', id, 'send-test']), {}, user, testSentSchema),
     block: (id: number, user: string) =>

@@ -1,10 +1,16 @@
-/** Не больше maxActive запросов к приложению сразу; очередь до maxQueued. */
+/** Чей запрос: чтение (опросы страниц) или действие человека. */
+export type SlotKind = 'read' | 'action';
+
+/**
+ * Не больше maxActive запросов к приложению сразу; очередь до maxQueued. Часть мест (reservedForActions) чтению
+ * недоступна: зависшие опросы не займут все места, и «Ответить» или «Одобрить» уйдёт сразу.
+ */
 export interface Semaphore {
   /**
    * Занимает место. true — место получено (вызвать release ровно один раз); false — очередь полна или срок по
    * signal вышел, пока ждали (место не занято, release не нужен).
    */
-  acquire(signal: AbortSignal): Promise<boolean>;
+  acquire(signal: AbortSignal, kind?: SlotKind): Promise<boolean>;
   release(): void;
 }
 
@@ -12,17 +18,42 @@ interface Waiter {
   grant(): void;
 }
 
-export function createSemaphore(maxActive: number, maxQueued: number): Semaphore {
+/**
+ * maxActive мест: действия занимают любое, чтения — не больше maxActive − reservedForActions (но хотя бы одно).
+ * Освободившееся место сначала получает ждущее действие, потом ждущее чтение, если для чтений есть место.
+ */
+export function createSemaphore(
+  maxActive: number,
+  maxQueued: number,
+  reservedForActions = 1,
+): Semaphore {
+  const readLimit = Math.max(1, maxActive - reservedForActions);
   let active = 0;
-  const queue: Waiter[] = [];
+  const queues: Record<SlotKind, Waiter[]> = { action: [], read: [] };
+  const limitOf = (kind: SlotKind): number => (kind === 'action' ? maxActive : readLimit);
+  const queued = (): number => queues.action.length + queues.read.length;
+
+  const pump = (): void => {
+    for (const kind of ['action', 'read'] as const) {
+      const queue = queues[kind];
+      while (queue.length > 0 && active < limitOf(kind)) {
+        const next = queue.shift();
+        if (next === undefined) break;
+        active += 1;
+        next.grant();
+      }
+    }
+  };
+
   return {
-    acquire(signal) {
+    acquire(signal, kind = 'read') {
       if (signal.aborted) return Promise.resolve(false);
-      if (active < maxActive) {
+      if (active < limitOf(kind) && queues[kind].length === 0) {
         active += 1;
         return Promise.resolve(true);
       }
-      if (queue.length >= maxQueued) return Promise.resolve(false);
+      if (queued() >= maxQueued) return Promise.resolve(false);
+      const queue = queues[kind];
       return new Promise<boolean>((resolve) => {
         const onAbort = (): void => {
           const index = queue.indexOf(waiter);
@@ -41,10 +72,8 @@ export function createSemaphore(maxActive: number, maxQueued: number): Semaphore
       });
     },
     release() {
-      // Место переходит следующему в очереди, а если очереди нет — освобождается.
-      const next = queue.shift();
-      if (next === undefined) active -= 1;
-      else next.grant();
+      active -= 1;
+      pump();
     },
   };
 }

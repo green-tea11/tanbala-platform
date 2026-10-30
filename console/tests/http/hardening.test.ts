@@ -109,12 +109,12 @@ describe('итог действия неизвестен', () => {
 });
 
 describe('пределы приложений', () => {
-  it('тело больше 16 КБ не уходит в почту: 413 с понятным текстом', async () => {
+  it('правка письма больше 32 КБ не уходит в почту: 413 с понятным текстом', async () => {
     const harness = await start();
     const session = await harness.signIn('owner', 'owner');
     const response = await harness.request('POST', '/api/letters/4/edit', {
       session,
-      body: { subject: 'Тема', body: 'я'.repeat(9000) },
+      body: { subject: 'Тема', body: 'я'.repeat(17_000) },
     });
     expect(response.statusCode).toBe(413);
     expect(response.json()).toMatchObject({ error: 'too_large' });

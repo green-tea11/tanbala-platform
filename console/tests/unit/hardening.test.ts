@@ -4,12 +4,8 @@ import { createLoginService, type LoginDeps } from '../../src/auth/login.js';
 import { createHashGate, createLoginLimiter } from '../../src/auth/login-limiter.js';
 import { createScryptHasher } from '../../src/auth/passwords.js';
 import { createSessionService } from '../../src/auth/sessions.js';
-import {
-  ACTION_BODY_LIMIT_BYTES,
-  createBackendClient,
-  IMPORT_BODY_LIMIT_BYTES,
-  type FetchLike,
-} from '../../src/backends/client.js';
+import { createBackendClient, type FetchLike } from '../../src/backends/client.js';
+import { ACTION_BODY_LIMIT_BYTES, IMPORT_BODY_LIMIT_BYTES } from '../../src/shared/limits.js';
 import { consolePath } from '../../src/backends/paths.js';
 import { createReadCache } from '../../src/backends/read-cache.js';
 import { UNAVAILABLE } from '../../src/backends/result.js';
@@ -111,29 +107,39 @@ describe('ключ ограничителя по адресу', () => {
 });
 
 describe('клиент: срок, очередь, итог действий', () => {
-  const clientWith = (fetch: FetchLike, limits = {}) =>
+  const clientWith = (fetch: FetchLike, limits = {}, clock = createFakeClock()) =>
     createBackendClient({
       name: 'leads',
       baseUrl: 'http://127.0.0.1:8000',
       token: 'T'.repeat(40),
       fetch,
-      clock: createFakeClock(),
+      clock,
       logger: silent,
       limits: { cacheMs: 0, ...limits },
     });
   const path = consolePath(['runs']);
 
-  it('после многих таймаутов места в очереди не теряются', async () => {
+  it('после многих таймаутов места в очереди не теряются; предохранитель держит чтения 10 с', async () => {
     let hang = true;
+    let sent = 0;
+    const clock = createFakeClock();
     const client = clientWith(
-      () => (hang ? new Promise<Response>(() => undefined) : Promise.resolve(json({ ok: 1 }))),
+      () => {
+        sent += 1;
+        return hang ? new Promise<Response>(() => undefined) : Promise.resolve(json({ ok: 1 }));
+      },
       { getTimeoutMs: 10 },
+      clock,
     );
     const timeouts = await Promise.all(
       Array.from({ length: 8 }, (_, index) => client.get(consolePath(['runs', index + 1]))),
     );
     expect(timeouts.every((result) => !result.ok)).toBe(true);
     hang = false;
+    const before = sent;
+    expect(await client.get(path)).toEqual(UNAVAILABLE);
+    expect(sent).toBe(before);
+    clock.advance(10_000);
     expect(await client.get(path)).toMatchObject({ ok: true });
   });
 
