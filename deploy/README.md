@@ -9,6 +9,7 @@
 | `Caddyfile` | `/etc/caddy/Caddyfile` | HTTPS для wa.tanbala.kz и leads.tanbala.kz, пароль Caddy на обоих, `/internal*` → 404 |
 | `Caddyfile.closed` | `/etc/caddy/Caddyfile`, пока нет паролей Caddy | оба имени отвечают 503, сертификаты уже получаются |
 | `scripts/open-panels.sh` | `/opt/tanbala/deploy/scripts/` | пароли Caddy и переход на рабочий `Caddyfile` одной командой (env.md) |
+| `scripts/pair-whatsapp.sh` | `/opt/tanbala/deploy/scripts/` | этап 4: привязка номера по QR и запуск службы бота одной командой (ниже) |
 | `caddy/common.caddy`, `caddy/site.caddy` | `/opt/tanbala/deploy/caddy/`, их импортируют оба Caddyfile | общие настройки Caddy; сайт tanbala.kz (открыт всем) и www → tanbala.kz |
 | `scripts/site.sh` | на ПК | новая версия сайта одной командой: сборка из последнего коммита `../A-site` и выкладка |
 | `scripts/site-install.sh` | `/opt/tanbala/deploy/scripts/` | версия сайта в `/srv/tanbala-site/releases`, переключение `current`, 5 версий, `--rollback` |
@@ -72,10 +73,38 @@ DEPLOY.md написан для отдельного сервера бота. З
 | шаг 11: ротация журнала токенов | уже в `/etc/logrotate.d/tanbala` вместе с журналом почты; файл из DEPLOY.md не ставить, он затёр бы этот |
 | шаг 11: копия базы в `/home/tanbala/backups` | `tanbala-backup.timer`, копии в `/var/backups/tanbala/whatsapp`, 7 дней |
 | шаг 11: обновление кода | `install.sh whatsapp` из нового архива (бот останавливается и запускается сам) |
-| шаг 8 (QR), шаг 13 (рабочий режим) | этап 4 и дальше, только по команде владельца; команды от `tanbala-wa` с `umask 077` |
+| шаг 7 (проверка без WhatsApp) | сделан 30.10.2026 на коммите bea2603: база создана (схема 12), панель отвечает |
+| шаг 8 (QR), шаг 9 (служба) | `pair-whatsapp.sh` (ниже), только по команде владельца |
+| шаг 13 (рабочий режим) | этап 8, только по команде владельца; команды от `tanbala-wa` с `umask 077` |
 
 Права на личные данные бота (сессия 700, база и `-wal`/`-shm` 600) служба выставляет сама при каждом запуске, даже
 если файлы создала ручная привязка по QR; `health.sh` их проверяет.
+
+## Этап 4: привязка бота по QR
+
+Только по команде владельца, не больше двух попыток за 24 часа (их считает бот, неудачная тоже считается).
+
+1. ПК: в окне «Tanbala bot (D-Email+WhatsApp)» нажать Ctrl+C, через несколько секунд закрыть окно. Бот остановлен,
+   если в PowerShell `Get-NetTCPConnection -LocalPort 3100 -State Listen -ErrorAction SilentlyContinue` ничего
+   не печатает.
+2. Телефон: WhatsApp => Связанные устройства => устройство бота с ПК => Выйти. Бота на ПК больше не запускать.
+3. ПК, окно PowerShell на весь экран:
+   `ssh -t ubuntu@91.201.215.210 sudo /opt/tanbala/deploy/scripts/pair-whatsapp.sh`, ответить `да`.
+   Скрипт проверит часы и `.env`, поставит `WA_ENABLED=true` и запустит бота в этом окне, QR появится здесь же.
+4. Телефон: WhatsApp => Связанные устройства => Привязка устройства, навести камеру на QR.
+5. Дождаться строк «Номер привязан», «Первая синхронизация: чатов записано в known_chats: N» и «Пропущено
+   с запуска», нажать Ctrl+C один раз. Скрипт включит службу `tanbala-whatsapp` и запустит `health.sh`.
+
+QR не сканируется с экрана: та же картинка лежит в `/opt/tanbala/whatsapp/data/qr.png`. Во втором окне PowerShell:
+
+```powershell
+[IO.File]::WriteAllBytes("$env:TEMP\qr.png", [Convert]::FromBase64String((ssh ubuntu@91.201.215.210 "sudo -u tanbala-wa base64 -w0 /opt/tanbala/whatsapp/data/qr.png"))); Start-Process "$env:TEMP\qr.png"
+```
+
+(QR сменяется, при неудаче повторить команду; после привязки `Remove-Item "$env:TEMP\qr.png"`.)
+
+Не успели: бот остановится с `pairing_timeout`, попытка засчитана; следующую не сразу. Окно закрылось после
+привязки: та же команда, QR уже не будет, скрипт только включит службу.
 
 Открыто:
 

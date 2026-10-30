@@ -53,7 +53,7 @@ shred -u ~/leads.env ~/whatsapp.env
 | `ADMIN_PASSWORD` | секрет, не короче 16 символов (иначе панель за Caddy не откроется). Вписывает владелец |
 | `PANEL_HOST`, `PANEL_PORT` | `127.0.0.1` и `3100` |
 | `PANEL_ALLOWED_HOSTS` | `wa.tanbala.kz` |
-| `WA_ENABLED` | `false` до привязки по QR (этап 4, только по команде владельца) |
+| `WA_ENABLED` | `false` до привязки по QR; `true` ставит `pair-whatsapp.sh` (этап 4, только по команде владельца) |
 | `TEST_MODE` | `true`, пока владелец отдельно не скажет |
 | `EMAIL_API_URL` | `http://127.0.0.1:8000` |
 | `EMAIL_UI_URL` | `https://leads.tanbala.kz` (ссылка на карточку компании для менеджера) |
@@ -91,4 +91,10 @@ shred -u ~/leads.env ~/whatsapp.env
 (файлы паролей руками не удалять без этой второй команды: после перезапуска Caddy не нашёл бы их и не поднялся).
 
 Панель бота за паролем Caddy заработает после этапа 4 (до него там 502). Её второй пароль — `ADMIN_PASSWORD`
-в `/opt/tanbala/whatsapp/.env`.
+в `/opt/tanbala/whatsapp/.env`, не короче 16 символов: с коротким бот не пускает в панель по имени wa.tanbala.kz
+(403). Сменить (новый пароль, например `openssl rand -base64 18`):
+
+```bash
+ssh -t ubuntu@91.201.215.210 sudo -u tanbala-wa nano /opt/tanbala/whatsapp/.env   # строка ADMIN_PASSWORD=...
+ssh ubuntu@91.201.215.210 sudo systemctl restart tanbala-whatsapp                  # если бот уже работает
+```
