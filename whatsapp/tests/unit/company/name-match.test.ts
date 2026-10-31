@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  confidentNameMatch,
   MIN_CONFIRM_SIMILARITY,
   nameSimilarity,
   sameCity,
@@ -65,5 +66,26 @@ describe('sameCity', () => {
     ['г.', 'г.'],
   ])('«%s» и «%s»: не один город', (first, second) => {
     expect(sameCity(first, second)).toBe(false);
+  });
+});
+
+describe('confidentNameMatch (ревью этапа 3)', () => {
+  it.each([
+    ['Автопарк 12', 'Автопарк 13'],
+    ['Магазин №125', 'Магазин №126'],
+    ['Ромашка 2000', 'Ромашка 2001'],
+    ['Рахат', 'Рахат 2'],
+    ['Т-Банк', 'Т-Банки'],
+  ])('«%s» и «%s» не одна компания', (client, card) => {
+    expect(confidentNameMatch(client, card)).toBe(false);
+  });
+
+  it.each([
+    ['Т-Банк', 'АО «Т-Банк»'],
+    ['ТБанк', 'Т-Банк, банк'],
+    ['Алматы Логистик Групп', 'ТОО «Алматы Логистик Груп»'],
+    ['Автопарк 12', 'ТОО «Автопарк 12»'],
+  ])('«%s» и «%s» одна компания', (client, card) => {
+    expect(confidentNameMatch(client, card)).toBe(true);
   });
 });

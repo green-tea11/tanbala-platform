@@ -8,6 +8,9 @@ import { normalizeName } from './normalize-name.js';
 /** Признак вопроса об официальном названии в отправленном тексте: слово с этой основой. */
 const OFFICIAL_STEM = 'официальн';
 
+/** Основы «называется» и «название»: вопрос именно о названии. */
+const NAMED_STEMS: readonly string[] = ['называ', 'назван'];
+
 /**
  * Проверка новой компании закончилась ничем: 2ГИС не нашёл подходящую карточку (not_in_2gis) или нашлась не та
  * компания (клиент от неё отказался). Другие неудачи (предел, бюджет, сбой, город) не в счёт: вопрос не поможет.
@@ -41,9 +44,14 @@ export function mayResearchOfficialName(state: ChatCompanyState, name: string): 
   return normalizeName(name) !== state.researchName;
 }
 
-/** В отправленном тексте есть вопрос об официальном названии («как компания называется официально»). */
+/**
+ * В отправленном тексте есть вопрос об официальном названии («как компания называется официально»): слово с основой
+ * «официальн» и слово с основой «называ» или «назван» вместе (ревью этапа 3: «мы официально интегрируемся с 1С» не вопрос).
+ */
 export function asksOfficialName(sentText: string): boolean {
-  return normalizeName(sentText)
-    .split(' ')
-    .some((word) => word.startsWith(OFFICIAL_STEM));
+  const words = normalizeName(sentText).split(' ');
+  return (
+    words.some((word) => word.startsWith(OFFICIAL_STEM)) &&
+    words.some((word) => NAMED_STEMS.some((stem) => word.startsWith(stem)))
+  );
 }

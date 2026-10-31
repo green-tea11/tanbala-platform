@@ -1,26 +1,34 @@
 import type { ChatCandidate, ChatCompanyState } from '../domain/company.js';
 import type { ChatId } from '../domain/types.js';
 import type { CompanyEnv } from './env.js';
-import { MIN_CONFIRM_SIMILARITY, nameSimilarity, sameCity } from './name-match.js';
+import { confidentNameMatch, sameCity } from './name-match.js';
 import { confirmCandidate } from './transitions.js';
+
+/** Кандидаты по признакам надёжнее слов клиента: их не заменяет без вопроса найденное по названию (ревью этапа 3). */
+const STRONG_SOURCES: ReadonlySet<ChatCandidate['source']> = new Set([
+  'profile_domain',
+  'phone',
+  'profile_name',
+  'logo',
+]);
 
 /**
  * Кандидат найден по словам клиента уверенно (решение владельца 30.10.2026): источник шаг г (message) или проверка
- * новой компании (research); название карточки похоже на название клиента или один из его вариантов не меньше чем на
- * 0.9 (MIN_CONFIRM_SIMILARITY); город карточки тот же, что назвал клиент. Клиент город не называл: шаг г ищет по всей
- * базе почты, поэтому достаточно названия; проверка новой компании шла в городе по умолчанию, поэтому нужен вопрос.
+ * новой компании (research); название карточки совпадает с названием, которое написал сам клиент (confidentNameMatch:
+ * похожесть от 0.9, те же цифры, короткие названия полностью); город карточки тот же, что назвал клиент. По ревью
+ * этапа 3 вопрос остаётся, если клиент город не называл (тёзки в базе почты), если совпал только вариант названия от
+ * модели (это догадка, например «Тинькофф» и «Т-Банк») и если найденное заменяет кандидата по номеру, домену, имени
+ * профиля или логотипу.
  */
 export function foundByClientWords(state: ChatCompanyState, candidate: ChatCandidate): boolean {
-  const { statedName, statedCity, statedAliases } = state;
+  const { statedName, statedCity } = state;
   if (candidate.source !== 'message' && candidate.source !== 'research') return false;
-  if (statedName === null) return false;
-  const names = [statedName, ...statedAliases];
-  const similar = names.some(
-    (name) => nameSimilarity(name, candidate.name) >= MIN_CONFIRM_SIMILARITY,
-  );
-  if (!similar) return false;
-  if (statedCity === null) return candidate.source === 'message';
-  return sameCity(candidate.city, statedCity);
+  if (statedName === null || statedCity === null) return false;
+  const previous = state.candidate;
+  if (previous !== null && previous.id !== candidate.id && STRONG_SOURCES.has(previous.source)) {
+    return false;
+  }
+  return confidentNameMatch(statedName, candidate.name) && sameCity(candidate.city, statedCity);
 }
 
 /**

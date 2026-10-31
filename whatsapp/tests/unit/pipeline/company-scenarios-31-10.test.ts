@@ -27,6 +27,11 @@ const HOOK =
 const EXPLAIN =
   'Всё просто. На каждый товар на хранении клеится метка. Антенны на входе и выходе считывают метки и сами отмечают, что пришло и что ушло, всю партию сразу. Данные уходят в вашу 1С, интеграцию делает наш сотрудник. Расскажите, что у вас лежит на хранении и как сейчас проходит проверка?';
 
+const ASK_T_BANK =
+  'Всё просто. На каждый товар на хранении клеится метка, а антенны на входе и выходе сами отмечают, что пришло и что ушло. Т-Банк, Алматы, верно?';
+const DETAILS =
+  'Спасибо! Ручной пересчёт архива и запасов обычно отнимает дни, а со сканером на это уходят часы. Расскажите, что у вас лежит на хранении и как сейчас проходит проверка?';
+
 const BANK: Partial<ClientProfile> = { business: 'банк' };
 
 function turn(reply: ReplyScript, interest: InterestScript = {}): LlmScript {
@@ -36,7 +41,7 @@ function turn(reply: ReplyScript, interest: InterestScript = {}): LlmScript {
 function answer(
   text: string,
   stage: 'intro' | 'hook' | 'explain' | 'details',
-  companyQuestion: 'none' | 'name' = 'none',
+  companyQuestion: 'none' | 'name' | 'confirm' = 'none',
 ): ReplyScript {
   return { outcome: 'answer', text, stage, companyQuestion };
 }
@@ -191,7 +196,7 @@ describe('31.10: проверка новой компании ничего не 
 });
 
 describe('31.10: «Тинькофф, банки», в базе почты бренд «Т-Банк»', () => {
-  it('поиск по «Тинькофф» пуст, по варианту «Т-Банк» найден: компания подтверждена без вопроса, следующий ответ видит боли справки', async () => {
+  it('поиск по «Тинькофф» пуст, по варианту «Т-Банк» найден: бот спрашивает «Т-Банк, Алматы, верно?», после «да» ответ видит боли справки (ревью этапа 3)', async () => {
     const s = createScenario({
       api: {
         lookup: tBankLookup,
@@ -209,35 +214,35 @@ describe('31.10: «Тинькофф, банки», в базе почты бре
         profile: BANK,
       }),
     );
-    const next = await s.say('Нет, расскажите подробнее', turn(answer(EXPLAIN, 'explain')));
 
-    // Ответ на «Тинькофф, банки» писался до поиска: о компании не спрашивать, боль из consult.md по бизнесу.
+    // Совпал только вариант от модели, город клиент не называл: кандидат, справки до «да» нет.
     expect(named.toClient).toEqual([HOOK]);
     expect(requestLines(named.api)).toEqual([
       'GET /internal/lookup {"name":"Тинькофф"}',
       `GET /internal/lookup {"name":"${T_BANK}"}`,
-      `GET /internal/companies/${T_BANK_ID}/brief {}`,
     ]);
     expect(s.state()).toMatchObject({
       statedName: 'Тинькофф',
-      statedAliases: [T_BANK, 'Tinkoff'],
-      candidate: null,
-      confirmed: { id: T_BANK_ID, name: T_BANK, city: 'Алматы' },
+      confirmed: null,
+      candidate: { id: T_BANK_ID, source: 'message' },
     });
-    // Следующий ответ: справка уже есть, вопроса «Т-Банк, Алматы, верно?» нет.
-    expect(next.api).toEqual([]);
-    const data = next.data('reply');
-    expect(data).toContain(`Компания клиента: «${T_BANK}».`);
-    expect(data).toContain(
+
+    const asked = await s.say(
+      'Нет, расскажите подробнее',
+      turn(answer(ASK_T_BANK, 'explain', 'confirm')),
+    );
+    expect(asked.data('reply')).toMatch(/верно\?/u);
+    expect(asked.toClient).toEqual([ASK_T_BANK]);
+
+    const yes = await s.say(
+      'Да, это мы',
+      turn(answer(DETAILS, 'details'), { companyAnswer: 'yes' }),
+    );
+    expect(s.state()).toMatchObject({ candidate: null, confirmed: { id: T_BANK_ID } });
+    expect(yes.data('reply')).toContain(
       `Трудности, которые часто бывают у похожих компаний: ${PAIN_ARCHIVE}; ${PAIN_INVENTORY}.`,
     );
-    expect(data).not.toMatch(/верно\?|правильно\?|companyQuestion: confirm/u);
-    expect(next.data('review')).not.toContain(EVIDENCE);
-    expect(next.toClient).toEqual([EXPLAIN]);
-    expect(s.company.service.summary(s.chatId())).toMatchObject({
-      status: 'confirmed',
-      companyId: T_BANK_ID,
-    });
+    expect(yes.toClient).toEqual([DETAILS]);
   });
 });
 
@@ -245,7 +250,8 @@ const TOLD_EMAIL =
   'Мы писали вам на почту, рады продолжить здесь. На каждую вещь на хранении клеится метка, а антенны на входе и выходе сами отмечают, что пришло и что ушло. Расскажите, что у вас лежит на хранении?';
 const EMAIL_ALLOWED =
   'Мы уже писали этой компании на почту: можно один раз сказать «мы писали вам на почту».';
-const EMAIL_TOLD = 'О нашем письме ты уже сказал, не повторяй.';
+const EMAIL_TOLD =
+  'Мы писали этой компании на почту, и ты уже сказал об этом клиенту: сам не повторяй, на прямой вопрос клиента можно коротко подтвердить.';
 
 describe('31.10: «мы писали вам на почту» один раз', () => {
   it('компания подтверждена, мы ей писали: фраза разрешена один раз, после неё блок просит не повторять', async () => {

@@ -14,9 +14,10 @@ import {
 import { foundByClientWords } from '../../../src/company/offer.js';
 import { createHarness, lookupBy, ok } from './fakes.js';
 
-// Подтверждение без вопроса (решение владельца 30.10.2026): клиент сам назвал компанию, поиск по его словам (шаг г или
-// проверка новой компании) нашёл её уверенно: название совпадает с названием клиента или вариантом (похожесть от 0.9),
-// город карточки тот же, что назвал клиент. Тогда компания сразу подтверждена, справка запрашивается, вопроса нет.
+// Подтверждение без вопроса (решение владельца 30.10.2026, уточнено ревью этапа 3): клиент сам назвал компанию и
+// город, поиск по его словам (шаг г или проверка новой компании) нашёл её уверенно: название совпадает с тем, что
+// написал клиент (похожесть от 0.9, те же цифры, короткие полностью), город карточки тот же. Тогда компания сразу
+// подтверждена, справка запрашивается, вопроса нет. Совпал только вариант от модели или города нет: вопрос.
 
 const FREE_DONE = { freeStepsAtMs: NOW - MINUTE_MS };
 const T_BANK_ID = companyIdOf(77);
@@ -24,8 +25,8 @@ const T_BANK_ID = companyIdOf(77);
 function named(overrides: Partial<ChatCompanyState> = {}): ChatCompanyState {
   return makeState({
     ...FREE_DONE,
-    statedName: 'Тинькофф',
-    statedAliases: ['Т-Банк', 'Tinkoff'],
+    statedName: 'Т-Банк',
+    statedAliases: ['Tinkoff', 'Тинькофф'],
     statedCity: 'Алматы',
     ...overrides,
   });
@@ -41,7 +42,7 @@ const T_BANK = makeCandidate({
 
 const T_BANK_BRIEF = makeBrief({ id: T_BANK_ID, name: 'АО «Т-Банк»', city: 'Алматы' });
 
-/** Проект B находит Т-Банк только по варианту «Т-Банк» и отдаёт его справку. */
+/** Проект B находит Т-Банк только по названию «Т-Банк» и отдаёт его справку. */
 const BY_ALIAS = {
   lookup: lookupBy({}),
   brief: () => ok(T_BANK_BRIEF),
@@ -56,12 +57,12 @@ function byAlias(found = T_BANK) {
 }
 
 describe('шаг г: подтверждение без вопроса', () => {
-  it('найдено по варианту, название совпадает, город тот же: компания подтверждена, справка получена, кандидата нет', async () => {
+  it('найдено по названию клиента, город тот же: компания подтверждена, справка получена, кандидата нет', async () => {
     const h = createHarness({ state: named(), directory: byAlias() });
 
     await h.service.identifyAfterReply(makeChat());
 
-    expect(h.directory.calls.map((call) => call.method)).toEqual(['lookup', 'lookup', 'brief']);
+    expect(h.directory.calls.map((call) => call.method)).toEqual(['lookup', 'brief']);
     expect(h.repo.current()).toMatchObject({
       candidate: null,
       confirmed: {
@@ -89,12 +90,24 @@ describe('шаг г: подтверждение без вопроса', () => {
     expect(turn.awaitingAnswer).toBe(false);
   });
 
-  it('клиент город не называл: найденное по его словам в базе почты подтверждается без вопроса', async () => {
+  it('клиент город не называл: найденное по его словам остаётся кандидатом, бот спросит (тёзки в базе почты)', async () => {
     const h = createHarness({ state: named({ statedCity: null }), directory: byAlias() });
 
     await h.service.identifyAfterReply(makeChat());
 
-    expect(h.repo.current().confirmed).toMatchObject({ id: T_BANK_ID });
+    expect(h.repo.current()).toMatchObject({ confirmed: null, candidate: { id: T_BANK_ID } });
+  });
+
+  it('совпал только вариант названия от модели («Тинькофф» и «Т-Банк»): кандидат, бот спросит', async () => {
+    const h = createHarness({
+      state: named({ statedName: 'Тинькофф', statedAliases: ['Т-Банк', 'Tinkoff'] }),
+      directory: byAlias(),
+    });
+
+    await h.service.identifyAfterReply(makeChat());
+
+    expect(h.directory.calls.map((call) => call.method)).toEqual(['lookup', 'lookup']);
+    expect(h.repo.current()).toMatchObject({ confirmed: null, candidate: { id: T_BANK_ID } });
   });
 
   it('город карточки не тот, что назвал клиент: кандидат, вопрос с городом как раньше', async () => {
@@ -138,7 +151,7 @@ describe('шаг г: подтверждение без вопроса', () => {
     expect(h.repo.current()).toMatchObject({ confirmed: null, candidate: { id: T_BANK_ID } });
   });
 
-  it('клиент назвал другую компанию при кандидате по номеру: найденная по его словам подтверждается без вопроса', async () => {
+  it('клиент назвал другую компанию при кандидате по номеру: найденная по его словам заменяет кандидата, но с вопросом', async () => {
     const h = createHarness({
       state: named({ candidate: makeChatCandidate({ id: companyIdOf(5), source: 'phone' }) }),
       directory: byAlias(),
@@ -146,10 +159,7 @@ describe('шаг г: подтверждение без вопроса', () => {
 
     await h.service.identifyAfterReply(makeChat());
 
-    expect(h.repo.current()).toMatchObject({
-      candidate: null,
-      confirmed: { id: T_BANK_ID, brief: T_BANK_BRIEF },
-    });
+    expect(h.repo.current()).toMatchObject({ confirmed: null, candidate: { id: T_BANK_ID } });
   });
 
   it('справка временно недоступна: компания всё равно подтверждена, справку спросят перед ответом', async () => {
@@ -269,7 +279,18 @@ describe('foundByClientWords', () => {
     );
   });
 
-  it('название похоже на вариант клиента, город тот же: подтверждается', () => {
+  it('название то же, что написал клиент, город тот же: подтверждается', () => {
     expect(foundByClientWords(named(), { ...byWords, source: 'research' })).toBe(true);
+  });
+
+  it('название похоже только на вариант от модели: не подтверждается', () => {
+    const tinkoff = named({ statedName: 'Тинькофф', statedAliases: ['Т-Банк'] });
+    expect(foundByClientWords(tinkoff, { ...byWords, source: 'research' })).toBe(false);
+  });
+
+  it('клиент город не называл: не подтверждается', () => {
+    expect(foundByClientWords(named({ statedCity: null }), { ...byWords, source: 'message' })).toBe(
+      false,
+    );
   });
 });

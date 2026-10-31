@@ -61,6 +61,24 @@ export function nameSimilarity(first: string, second: string): number {
   return 1 - editDistance(a, b) / Math.max(a.length, b.length);
 }
 
+/** Название короче этого (после nameKey) должно совпасть полностью: одна буква на десять уже другая компания. */
+export const MIN_FUZZY_NAME_LENGTH = 10;
+
+/**
+ * Название карточки уверенно то же, что у клиента (ревью этапа 3): цифры в названиях совпадают точно («Автопарк 12»
+ * и «Автопарк 13» разные компании), короткие названия совпадают полностью, длинные похожи от 0.9 (MIN_CONFIRM_SIMILARITY).
+ */
+export function confidentNameMatch(clientName: string, cardName: string): boolean {
+  const a = nameKey(clientName);
+  const b = nameKey(cardName);
+  if (a.length === 0 || b.length === 0) return false;
+  const digits = (key: readonly string[]): string =>
+    key.filter((char) => /\p{N}/u.test(char)).join('');
+  if (digits(a) !== digits(b)) return false;
+  if (Math.max(a.length, b.length) < MIN_FUZZY_NAME_LENGTH) return a.join('') === b.join('');
+  return nameSimilarity(clientName, cardName) >= MIN_CONFIRM_SIMILARITY;
+}
+
 function cityKey(city: string): string {
   const words = normalizeName(city)
     .split(' ')

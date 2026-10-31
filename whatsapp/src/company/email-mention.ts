@@ -19,8 +19,16 @@ const TO_CLIENT: ReadonlySet<string> = new Set(['вам', 'вас']);
 /** Основы слов рядом с «письмо»: «ваше письмо», «наше письмо», «на почту», «получили письмо». */
 const LETTER_CONTEXT: readonly string[] = ['ваш', 'наш', 'почт', 'получ'];
 
+/** «Вы писали, что…», «как вы писали»: писал клиент, а не мы (ревью этапа 3). */
+function clientWrote(words: readonly string[]): boolean {
+  return words.some(
+    (word, index) => WROTE.test(word) && words.slice(Math.max(0, index - 2), index).includes('вы'),
+  );
+}
+
 function aboutOurEmail(words: readonly string[]): boolean {
   const toClient = words.some((word) => TO_CLIENT.has(word));
+  if (clientWrote(words)) return false;
   if (words.some((word) => WROTE.test(word))) {
     return toClient || words.some((word) => word.startsWith('почт'));
   }

@@ -29,3 +29,16 @@ describe('mentionsOurEmail', () => {
     expect(mentionsOurEmail(text)).toBe(false);
   });
 });
+
+describe('ревью этапа 3: писал клиент, а не мы', () => {
+  it.each(['Как вы писали, у вас 1С.', 'Вы писали, что у вас склад в Алматы.'])(
+    '«%s» не о нашем письме',
+    (text) => {
+      expect(mentionsOurEmail(text)).toBe(false);
+    },
+  );
+
+  it('«Мы писали вам на почту» по-прежнему о нашем письме', () => {
+    expect(mentionsOurEmail('Мы писали вам на почту, рады продолжить здесь.')).toBe(true);
+  });
+});
