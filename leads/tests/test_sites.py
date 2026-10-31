@@ -288,6 +288,39 @@ def test_extract_emails_drops_junk(text):
     assert extract_emails(text) == set()
 
 
+# Подпись, прилипшая к адресу (на сервере сайт дал «e-mailinfo@erdaholding.com», ревью 01.11.2026)
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Телефон: +7 (727) 355-10-20E-mailinfo@erdaholding.com\nАдрес: г. Алматы, ул. Сатпаева 30",
+         {"info@erdaholding.com"}),
+        ("**Контакты**\n\nEmailsales@kontainer.kz | WhatsApp +7 701 000 00 00", {"sales@kontainer.kz"}),
+        ("Отдел логистики Mailoffice@pel.kz", {"office@pel.kz"}),
+        ("Пишите: E-MAILzakaz.almaty@sklad-servis.kz", {"zakaz.almaty@sklad-servis.kz"}),
+        ("Директор: Нурланов А. E-maila.nurlanov@kontainer.kz", {"a.nurlanov@kontainer.kz"}),
+        ("E-mailivanov@kontainer.kz", {"ivanov@kontainer.kz"}),
+        ("Почтаinfo@erdaholding.com", {"info@erdaholding.com"}),
+        ("Эл. почта:info@erdaholding.com", {"info@erdaholding.com"}),
+        ("эл.почтаsales@erdaholding.com", {"sales@erdaholding.com"}),
+        ("e‑mailinfo@pel.kz", {"info@pel.kz"}),  # неразрывный дефис: подпись «mail»
+        # Тот же адрес есть на странице отдельно: склеенный вариант не нужен.
+        ("Mailbuhgalter2@pel.kz, mailmaksat@pel.kz, maksat@pel.kz", {"buhgalter2@pel.kz", "maksat@pel.kz"}),
+    ],
+)
+def test_extract_emails_strips_glued_label(text, expected):
+    assert extract_emails(text) == expected
+
+
+@pytest.mark.parametrize(
+    "email",
+    ["mailbox@pel.kz", "mailer@pel.kz", "email@pel.kz", "mail@pel.kz", "e-mail@pel.kz", "emailme@pel.kz",
+     "mail.info@pel.kz", "email-1@pel.kz", "mailtech@pel.kz"],
+)
+def test_real_addresses_that_start_with_mail_are_kept(email):
+    assert extract_emails(f"Почта: {email}") == {email}
+
+
 def test_extract_emails_from_realistic_page_matches_db_check():
     page = """
     <footer>

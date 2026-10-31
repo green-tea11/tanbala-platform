@@ -82,6 +82,13 @@ MAILTO_RE = re.compile(r"mailto:([^\s\"'<>()\[\]]+)", re.IGNORECASE)
 AT_RE = re.compile(r"\s*[\[({]\s*(?:at|собака|@)\s*[\])}]\s*", re.IGNORECASE)
 DOT_RE = re.compile(r"\s*[\[({]\s*(?:dot|точка|\.)\s*[\])}]\s*", re.IGNORECASE)
 JSON_ESCAPE_RE = re.compile(r"\\u00(?:3c|3e|22|27)", re.IGNORECASE)
+# Подпись, прилипшая к адресу в тексте страницы без пробела и двоеточия: «E-mailinfo@erdaholding.com» (так было на
+# сервере). Перед подписью бывает и хвост телефона: «355-10-20E-mailinfo@…». Кириллица («Почта», «Эл. почта»)
+# не прилипает: EMAIL_RE берёт адрес только из латиницы и цифр.
+GLUED_LABEL_RE = re.compile(r"^[0-9._-]*?(e-?mail|mail)(?=[a-z0-9])")
+# После «e-mail»/«email» остаток от 3 символов с буквы — уже адрес (ivanov@). После «mail» только общий ящик
+# (info@, sales@) или адрес, который есть на той же странице: mailbox@ и mailer@ бывают настоящими.
+MIN_GLUED_REST_CHARS = 3
 
 Resolver = Callable[..., list]
 Links = tuple[tuple[str, str], ...]
@@ -190,8 +197,31 @@ def extract_emails(text: str) -> set[str]:
     decoded = html.unescape((text or "")[:MAX_HTML_CHARS].replace("\\u0040", "@"))
     decoded = DOT_RE.sub(".", AT_RE.sub("@", JSON_ESCAPE_RE.sub(" ", decoded)))
     mailto = "\n".join(unquote(value) for value in MAILTO_RE.findall(decoded))
-    found = (match.lower() for match in EMAIL_RE.findall(decoded + "\n" + mailto))
-    return {email for email in found if _is_real_email(email)}
+    found = {match.lower() for match in EMAIL_RE.findall(decoded + "\n" + mailto)}
+    real = {email for email in found if _is_real_email(email)}
+    return {without_glued_label(email, real) for email in real}
+
+
+def without_glued_label(email: str, known: set[str] | frozenset[str] = frozenset()) -> str:
+    """Адрес без прилипшей подписи: e-mailinfo@erdaholding.com → info@erdaholding.com.
+
+    Подпись снимается, только если остаток похож на адрес: общий ящик (info, sales), адрес из known (он есть на той же
+    странице или у той же компании) или, после «e-mail»/«email», от MIN_GLUED_REST_CHARS символов с буквы.
+    Иначе адрес как был: mailbox@pel.kz и email@pel.kz настоящие.
+    """
+    local, _, domain = email.rpartition("@")
+    match = GLUED_LABEL_RE.match(local)
+    if match is None:
+        return email
+    rest = local[match.end():]
+    candidate = f"{rest}@{domain}"
+    if not _is_real_email(candidate):
+        return email
+    if candidate in known or is_role_address(candidate):
+        return candidate
+    if match.group(1) != "mail" and len(rest) >= MIN_GLUED_REST_CHARS and rest[0].isalpha():
+        return candidate
+    return email
 
 
 def is_role_address(email: str) -> bool:

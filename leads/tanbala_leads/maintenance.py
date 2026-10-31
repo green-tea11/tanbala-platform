@@ -9,6 +9,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from tanbala_leads import sites
 from tanbala_leads.steps import qualify
 
 # Все оценки с тем, по чему проверяются цитаты (текст сайта и реклама в raw), как при квалификации.
@@ -101,6 +102,85 @@ def describe_pain_changes(changes: list[PainChange], checked: int) -> list[str]:
     return lines
 
 
+# Почты компаний и есть ли у почты письмо (черновик или отправка): такие не трогаем.
+CONTACTS_SQL = """
+SELECT ct.id, ct.company_id, ct.email, c.name, c.status,
+       EXISTS (SELECT 1 FROM drafts d WHERE d.contact_id = ct.id) AS has_letter
+FROM contacts ct JOIN companies c ON c.id = ct.company_id
+ORDER BY ct.company_id, ct.id
+"""
+
+
+@dataclass(frozen=True)
+class EmailFix:
+    """Почта с прилипшей подписью (e-mailinfo@…) и что с ней сделать: update, delete (такой адрес уже есть) или skip."""
+
+    contact_id: int
+    company_id: int
+    company_name: str
+    company_status: str
+    email: str
+    fixed: str
+    action: str
+
+
+def email_fixes(conn: psycopg.Connection) -> list[EmailFix]:
+    """Почты из базы, у которых sites.without_glued_label снимает подпись, по тому же правилу, что при обходе сайта."""
+    with conn.cursor(row_factory=dict_row) as cursor:
+        rows = cursor.execute(CONTACTS_SQL).fetchall()
+    emails_by_company: dict[int, set[str]] = {}
+    for row in rows:
+        emails_by_company.setdefault(row["company_id"], set()).add(row["email"])
+    taken = {company_id: set(emails) for company_id, emails in emails_by_company.items()}
+    fixes = []
+    for row in rows:
+        fixed = sites.without_glued_label(row["email"], emails_by_company[row["company_id"]])
+        if fixed == row["email"]:
+            continue
+        if row["has_letter"]:
+            action = "skip"
+        elif fixed in taken[row["company_id"]]:
+            action = "delete"
+        else:
+            action = "update"
+            taken[row["company_id"]].add(fixed)
+        fixes.append(EmailFix(contact_id=row["id"], company_id=row["company_id"], company_name=row["name"],
+                              company_status=row["status"], email=row["email"], fixed=fixed, action=action))
+    return fixes
+
+
+def apply_email_fixes(conn: psycopg.Connection, fixes: list[EmailFix]) -> None:
+    """Одной транзакцией. Исправленный адрес снова не проверен: Reacher проверит его в следующем запуске.
+
+    Компания «Почта проверена» без письма возвращается в «Подходит», чтобы запуск проверил новый адрес до письма.
+    """
+    with conn.transaction():
+        for fix in fixes:
+            if fix.action == "delete":
+                conn.execute("DELETE FROM contacts WHERE id = %s", (fix.contact_id,))
+            elif fix.action == "update":
+                conn.execute(
+                    "UPDATE contacts SET email = %s, is_role = %s, verify_result = NULL, verify_raw = NULL,"
+                    " is_catch_all = NULL, verified_at = NULL WHERE id = %s",
+                    (fix.fixed, sites.is_role_address(fix.fixed), fix.contact_id),
+                )
+                conn.execute("UPDATE companies SET status = 'qualified' WHERE id = %s AND status = 'verified'",
+                             (fix.company_id,))
+
+
+EMAIL_ACTIONS = {"update": "исправить", "delete": "удалить: такой адрес у компании уже есть",
+                 "skip": "не трогать: по этой почте есть письмо"}
+
+
+def describe_email_fixes(fixes: list[EmailFix], checked: int) -> list[str]:
+    lines = [f"Компания {fix.company_id} «{_quote(fix.company_name)}»: {fix.email} → {fix.fixed} "
+             f"({EMAIL_ACTIONS[fix.action]})" for fix in fixes]
+    counts = {action: sum(1 for fix in fixes if fix.action == action) for action in EMAIL_ACTIONS}
+    lines.append(f"Итого: почт {checked}, исправить {counts['update']}, удалить {counts['delete']}, "
+                 f"пропустить {counts['skip']}.")
+    return lines
+
+
 DRY_RUN_NOTE = "Пробный прогон (--dry-run): в базе ничего не изменено."
 SAVED_NOTE = "Записано."
 
@@ -113,4 +193,15 @@ def recheck_pains(conn: psycopg.Connection, *, dry_run: bool) -> list[str]:
     if dry_run:
         return [*lines, DRY_RUN_NOTE]
     apply_pain_changes(conn, changes)
+    return [*lines, SAVED_NOTE]
+
+
+def fix_emails(conn: psycopg.Connection, *, dry_run: bool) -> list[str]:
+    """Команда fix-emails: снять прилипшую подпись с сохранённых почт, с dry_run только показать."""
+    fixes = email_fixes(conn)
+    checked = conn.execute("SELECT count(*) FROM contacts").fetchone()[0]
+    lines = describe_email_fixes(fixes, checked)
+    if dry_run:
+        return [*lines, DRY_RUN_NOTE]
+    apply_email_fixes(conn, fixes)
     return [*lines, SAVED_NOTE]

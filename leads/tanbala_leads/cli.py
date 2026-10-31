@@ -4,6 +4,7 @@
     web [--port 8000] [--ui-port 8001]   API для бота и консоли на :8000 (/internal), интерфейс на :8001
     search --query склад [--city almaty] [--limit 5]   запуск поиска без интерфейса
     recheck-pains [--dry-run]       перепроверить сохранённые боли по правилу 01.11.2026, без вызова API
+    fix-emails [--dry-run]          снять прилипшую подпись с сохранённых почт (e-mailinfo@… → info@…)
 """
 
 import argparse
@@ -32,11 +33,14 @@ def _parser() -> argparse.ArgumentParser:
     recheck = commands.add_parser("recheck-pains", help="перепроверить сохранённые боли: рубрика и адрес 2ГИС"
                                                         " не доказательство; без вызова API, письма не меняются")
     recheck.add_argument("--dry-run", action="store_true", help="только показать, что изменится")
+    fix = commands.add_parser("fix-emails", help="снять прилипшую подпись с сохранённых почт (e-mailinfo@… → info@…);"
+                                                 " почты с письмом не трогаются")
+    fix.add_argument("--dry-run", action="store_true", help="только показать, что изменится")
     return parser
 
 
 # Разовые исправления данных: функция получает соединение и dry_run, возвращает строки отчёта.
-MAINTENANCE = {"recheck-pains": maintenance.recheck_pains}
+MAINTENANCE = {"recheck-pains": maintenance.recheck_pains, "fix-emails": maintenance.fix_emails}
 
 
 def _maintenance(dsn: str, command: str, dry_run: bool) -> int:
