@@ -16,22 +16,6 @@ export type MinimumField =
  */
 export const ESTIMATE_LATER = 'Ориентир коллега назовёт, когда поймём вашу задачу.';
 
-/**
- * Минимум собран, а чат ещё не передавался (решение владельца 29.10.2026 вечером): передача сразу, даже без вопроса
- * цены. Эту фразу пропускают проверки кодом и проверка вторым вызовом.
- */
-export const MINIMUM_HANDOFF_TEXT =
-  'Спасибо, этого хватит, чтобы коллега назвал ориентир. Уточню у коллеги и вернусь к вам.';
-
-/**
- * Предел терпения клиента (решение владельца 29.10.2026 вечером): на этом по счёту сообщении клиента чат, который ещё не
- * передавался, уходит коллеге, даже если минимума нет.
- */
-export const CLIENT_MESSAGES_FOR_HANDOFF = 5;
-
-/** Фраза передачи по пределу сообщений: проходит проверки кодом и проверку вторым вызовом. */
-export const CAP_HANDOFF_TEXT = 'Спасибо! Уточню у коллеги и вернусь к вам.';
-
 /** Какой по счёту вопрос цены даёт передачу без минимума (решение владельца 29.10.2026, второй круг): четвёртый. */
 export const PRICE_ASKS_FOR_HANDOFF = 4;
 
@@ -94,23 +78,6 @@ export const MINIMUM_GROUPS: readonly (readonly MinimumField[])[] = [
   ['city', 'premises', 'itemCount'],
   ['has1C'],
 ];
-
-/**
- * Недостающее по группам для данных вызова ответа: «1) ...; 2) ...», в каждой группе только недостающие поля, группы
- * без недостающего пропущены, номера по порядку оставшихся.
- */
-export function minimumGroupQuestions(
-  missing: readonly MinimumField[],
-  company: CompanyPrompt | undefined,
-): string {
-  return MINIMUM_GROUPS.map((group) => group.filter((field) => missing.includes(field)))
-    .filter((fields) => fields.length > 0)
-    .map(
-      (fields, index) =>
-        `${index + 1}) ${fields.map((field) => minimumQuestion(field, company)).join(', ')}`,
-    )
-    .join('; ');
-}
 
 /** Что известно для минимума. */
 export interface MinimumInput {

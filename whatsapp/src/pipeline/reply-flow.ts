@@ -19,13 +19,6 @@ import type {
   StrengthId,
   TurnSignals,
 } from '../domain/types.js';
-import {
-  answerPartOf,
-  autoHandoffOf,
-  autoHandoffPhrase,
-  clientAsksNow,
-  type AutoHandoff,
-} from './auto-handoff.js';
 import { decideAction, type Decision, type DraftGate, type TextDraft } from './decide.js';
 import {
   forcedPriceHandoff,
@@ -132,8 +125,6 @@ interface Flow {
   readonly context: ConversationContext;
   readonly retryContext: ConversationContext;
   readonly price: PriceSituation;
-  /** Ход кончается передачей hot без вопроса цены (pipeline/auto-handoff.ts); null: не кончается. */
-  readonly auto: AutoHandoff | null;
 }
 
 /**
@@ -234,10 +225,10 @@ export async function decideReply(
   if (scope !== null) return { kind: 'limit', scope };
   const price = priceSituation(context, assessment, drafted.draft);
   const retryContext = assessment === null ? context : { ...context, profile: assessment.profile };
-  const flow: Flow = { deps, context, retryContext, price, auto: autoHandoffOf(context, price) };
+  const flow: Flow = { deps, context, retryContext, price };
   const first = await judgeResult(flow, drafted.draft, 1, null);
   const judged = first.kind === 'verdict' ? first.verdict : await retryOnce(flow, first);
-  const verdict = withAutoText(flow, isCheckFailed(judged) ? afterCheckFailed(flow) : judged);
+  const verdict = isCheckFailed(judged) ? afterCheckFailed(flow) : judged;
   if (isHotHandoff(verdict)) markHot(deps, context, assessment);
   return withSignals(verdict, price.signals);
 }
@@ -286,22 +277,6 @@ function afterCheckFailed(flow: Flow): ReplyVerdict {
   return companyQuestion === undefined
     ? { kind: 'send', text }
     : { kind: 'send', text, companyQuestion };
-}
-
-/**
- * Передача hot без вопроса цены (pipeline/auto-handoff.ts), а клиенту ушла бы общая фраза «Уточню у коллеги и вернусь к
- * вам.»: вместо неё фраза этой передачи («Спасибо, этого хватит...»). Фраза о цене и текст модели остаются.
- */
-function withAutoText(flow: Flow, verdict: ReplyVerdict): ReplyVerdict {
-  if (flow.auto === null || verdict.kind !== 'handoff' || 'text' in verdict) return verdict;
-  const { notice } = verdict;
-  if (notice.reason !== 'hot' || notice.aboutPrice === true) return verdict;
-  return { kind: 'handoff', notice: { reason: 'hot' }, text: autoText(flow) };
-}
-
-/** Фиксированная фраза передачи без вопроса цены; как и фиксированные вопросы, проходит проверки (тесты). */
-function autoText(flow: Flow): ReviewedText {
-  return autoHandoffPhrase(flow.auto ?? 'minimum', false) as ReviewedText;
 }
 
 /** Последнее сообщение бота клиенту в окне истории; нет => null. */
@@ -436,12 +411,9 @@ async function judge(flow: Flow, draft: ReplyDraft, attempt: Attempt): Promise<J
   if (draft.outcome === 'complaint') {
     return judgementOf(decideAction({ kind: 'handoff_outcome', draft }), null);
   }
-  if (flow.auto === null && isPrematurePriceHandoff(draft, flow.price)) {
-    return premature(flow, attempt);
-  }
+  if (isPrematurePriceHandoff(draft, flow.price)) return premature(flow, attempt);
   const forced = forcedPriceHandoff(draft, flow.price);
   if (forced !== null) return forcedHandoff(flow, forced);
-  if (draft.outcome === 'answer' && flow.auto !== null) return autoHandoff(flow, draft, attempt);
   const text = normalizeDraft(draft.text);
   const keep = keepOf(draft);
   if (draft.outcome !== 'answer' && text.trim() === '') {
@@ -498,55 +470,6 @@ function fallbackVerdict(flow: Flow): SendVerdict {
   return companyQuestion === undefined
     ? { kind: 'send', text }
     : { kind: 'send', text, companyQuestion };
-}
-
-/**
- * Передача hot вместо ответа answer (решение владельца 29.10.2026 вечером, pipeline/auto-handoff.ts): клиенту уходит
- * ответ из черновика (только если клиент что-то спросил: утверждения без вопросов и без фразы об ориентире) и фраза
- * передачи, при вопросе цены фраза о цене. Такое сообщение проходит проверки кодом и проверку с подписью «сообщение о
- * передаче» без повтора; не прошло или ответа нет => только фиксированная фраза. В лог ID чата, повод и ушёл ли ответ.
- */
-async function autoHandoff(
-  flow: Flow,
-  draft: Extract<ReplyDraft, { readonly outcome: 'answer' }>,
-  attempt: Attempt,
-): Promise<Judgement> {
-  const { chatId, history } = flow.context;
-  const priceTurn = flow.price.signals.priceAsked;
-  const auto = flow.auto ?? 'minimum';
-  const fixed: ReplyVerdict =
-    priceTurn && auto === 'message_cap'
-      ? FORCED_PRICE_HANDOFF
-      : {
-          kind: 'handoff',
-          notice: priceTurn ? { reason: 'hot', aboutPrice: true } : { reason: 'hot' },
-          text: autoHandoffPhrase(auto, priceTurn) as ReviewedText,
-        };
-  // На вопрос цены ответ из черновика не берётся: в нём остаются пересказ слов клиента и обрывки (живой прогон 29.10.2026).
-  const part =
-    !priceTurn && clientAsksNow(history) ? answerPartOf(normalizeDraft(draft.text)) : null;
-  const log = (withAnswer: boolean): void => {
-    flow.deps.logger.info(
-      { chatId, auto: flow.auto, withAnswer },
-      `Передача без вопроса цены: чат передаётся менеджеру: чат #${chatId}`,
-    );
-  };
-  if (part === null) {
-    log(false);
-    return verdictOf(fixed);
-  }
-  const text = normalizeDraft(`${part} ${autoHandoffPhrase(auto, priceTurn)}`);
-  const checked = await checkDraft(flow, 'hot', text, attempt, fixed);
-  if (checked.kind === 'failed') return verdictOf(checked.verdict);
-  const hot: TextDraft = {
-    outcome: 'hot',
-    text: checked.text,
-    ...(priceTurn ? { aboutPrice: true } : {}),
-  };
-  // Вторая попытка: без повтора; не прошло => передача hot без текста, фразу добавит withAutoText или outbox (о цене).
-  const decision = decideAction({ kind: 'text', draft: hot, gate: checked.gate, attempt: 2 });
-  log(decision.kind === 'handoff' && 'text' in decision && decision.text !== undefined);
-  return judgementOf(decision, fixed);
 }
 
 const FORCED_TEXT: Readonly<Record<ForcedPriceHandoff, string>> = {
