@@ -65,6 +65,12 @@ describe('pickCandidate: общие правила', () => {
 });
 
 describe('pickCandidate: поиск по названию', () => {
+  it('порог можно поднять: имя профиля с оценкой 0.85 (только первые слова) не принимается', () => {
+    expect(pickCandidate([byName(1, 0.85)], [], 0.86)).toBeNull();
+    expect(pickCandidate([byName(1, 0.86)], [], 0.86)).not.toBeNull();
+    expect(pickCandidate([byName(1, 0.85)], [])).not.toBeNull();
+  });
+
   it('оценка ниже 0.8: не нашли', () => {
     expect(pickCandidate([byName(1, 0.79)], [])).toBeNull();
     expect(pickCandidate([byName(1, 0.63)], [])).toBeNull();

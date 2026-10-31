@@ -9,7 +9,7 @@ import { isTransientFailure } from './api-failures.js';
 import type { CompanyEnv } from './env.js';
 import { logFailure } from './log.js';
 import { normalizeName } from './normalize-name.js';
-import { pickCandidate } from './pick-candidate.js';
+import { MIN_PROFILE_NAME_SCORE, pickCandidate } from './pick-candidate.js';
 
 /**
  * Итог одного шага поиска. found: выбран кандидат. none: подходящей компании нет, в том числе после постоянного сбоя
@@ -37,7 +37,10 @@ export async function lookupCompany(
     logFailure(env.logger, chatId, step, result.failure);
     return isTransientFailure(result.failure) ? { kind: 'retry' } : { kind: 'none' };
   }
-  const candidate = pickCandidate(result.value, rejectedIds);
+  const candidate =
+    step === 'profile_name'
+      ? pickCandidate(result.value, rejectedIds, MIN_PROFILE_NAME_SCORE)
+      : pickCandidate(result.value, rejectedIds);
   return candidate === null ? { kind: 'none' } : { kind: 'found', candidate };
 }
 

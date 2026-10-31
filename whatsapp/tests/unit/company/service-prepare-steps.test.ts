@@ -217,6 +217,21 @@ describe('prepare: шаг в, имя профиля', () => {
     expect(h.repo.current().candidate).toEqual(makeChatCandidate({ source: 'profile_name' }));
   });
 
+  it('имя профиля совпало только первым словом (оценка 0.85): кандидата нет, бот не спрашивает', async () => {
+    const h = createHarness({
+      contacts: { profile: { kind: 'business', websites: [], email: null } },
+      directory: {
+        lookup: lookupBy({ name: ok([makeCandidate({ matchBy: 'name', matchScore: 0.85 })]) }),
+      },
+    });
+
+    const turn = await h.service.prepare(makeChat(), [makeMessage({ pushName: 'Мадина' })]);
+
+    expect(h.directory.lookups()).toContainEqual({ by: 'name', name: 'Мадина' });
+    expect(turn.prompt).not.toMatchObject({ kind: 'candidate' });
+    expect(h.repo.current().candidate).toBeNull();
+  });
+
   it('pushName обычного человека без признака компании: по имени не ищем', async () => {
     const h = createHarness();
 
