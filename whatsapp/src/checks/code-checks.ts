@@ -14,6 +14,7 @@ import {
   COMBINING_MARK_PATTERN,
   CONTEXT_CHARS,
   CYRILLIC_LETTER,
+  COLON_PATTERN,
   DASH_PATTERNS,
   EMAIL_PATTERN,
   EMOJI_PATTERN,
@@ -52,6 +53,7 @@ import {
 /** Вид нарушения: попадает в развилку решений и в замечания модели при повторе. */
 export type CheckCode =
   | 'dash'
+  | 'colon'
   | 'price'
   | 'stop_word'
   | 'link'
@@ -326,6 +328,11 @@ function linkHost(link: string): string {
 /** Нет тире: «—», «–», «―», «−», «‒» и дефис между пробелами. Дефис в слове можно. */
 export function checkDashes(text: string): readonly CheckFinding[] {
   return scan(text, DASH_PATTERNS, 'dash', 'тире');
+}
+
+/** Без двоеточий (решение владельца 30.10.2026): вместо них точка или запятая; время и числа («18:00») допустимы. */
+export function checkColons(text: string): readonly CheckFinding[] {
+  return scan(text, [COLON_PATTERN], 'colon', 'двоеточие, замени на точку или запятую');
 }
 
 /**
@@ -626,6 +633,7 @@ export function runCodeChecks(
   const form = maskCompanyName(text, options.companyName);
   return [
     ...checkDashes(form),
+    ...checkColons(form),
     ...checkPrices(text, options.note ?? null),
     ...checkStopWords(text, options.note ?? null),
     ...checkVoice(form),
