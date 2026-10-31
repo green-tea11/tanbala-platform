@@ -187,6 +187,20 @@ wa. и leads. работают как прежде. Порядок первой 
 `/etc/caddy/auth/wa.caddy` и `leads.caddy`, `caddy_file()` в `install.sh` и проверки 8001 и 3100 в `health.sh`
 убираются.
 
+## Рабочий режим бота (TEST_MODE=false)
+
+Подготовлен 31.10.2026, включает только владелец, по своей команде. `deploy/scripts/working-mode.sh`:
+
+```bash
+ssh -t ubuntu@91.201.215.210 sudo /opt/tanbala/deploy/scripts/working-mode.sh check   # условия, ничего не меняет
+ssh -t ubuntu@91.201.215.210 sudo /opt/tanbala/deploy/scripts/working-mode.sh on      # включить
+ssh -t ubuntu@91.201.215.210 sudo /opt/tanbala/deploy/scripts/working-mode.sh off     # откат в закрытый режим
+```
+
+`on` проверяет условия (номер привязан, флага «список чатов неполный» нет, список чатов не пуст, номера менеджера нет
+в `TEST_ALLOWLIST`), делает копию баз, ставит `TEST_MODE=false` и перезапускает бота. Если бот отказался переходить,
+скрипт сам возвращает `TEST_MODE=true`. Что будет со старыми чатами: `whatsapp/docs/DEPLOY.md`, раздел 13.
+
 ## Что ставится
 
 Python 3.12 с venv, Node 22.23.2 (архив nodejs.org с проверкой суммы), Docker и compose (репозиторий Docker),
