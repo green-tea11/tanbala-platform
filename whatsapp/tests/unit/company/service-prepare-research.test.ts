@@ -62,6 +62,7 @@ describe('prepare: справка подтверждённой компании'
       rubric: 'Складское хранение',
       pains: ['Инвентаризация занимает дни и отрывает людей'],
       emailed: false,
+      emailTold: false,
     });
     expect(h.repo.current().confirmed).toMatchObject({ brief: makeBrief(), briefAtMs: NOW });
   });
@@ -94,6 +95,7 @@ describe('prepare: справка подтверждённой компании'
       rubric: null,
       pains: [],
       emailed: false,
+      emailTold: false,
     });
     expect(h.repo.saves).toEqual([]);
   });

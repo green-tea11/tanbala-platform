@@ -445,6 +445,37 @@ describe('afterReplySent: вопрос об официальном назван�
   });
 });
 
+describe('afterReplySent: «мы писали вам на почту» один раз', () => {
+  const emailed = makeState({
+    confirmed: makeConfirmed({ brief: makeBrief({ emailed: true }), briefAtMs: NOW - 1000 }),
+  });
+  const TOLD = 'Здравствуйте! Мы писали вам на почту. Расскажите, чем занимается компания?';
+
+  it('компания подтверждена, мы ей писали, бот сказал о письме: запомнено', () => {
+    expect(afterReplySent(deepFreeze(emailed), 'none', TOLD, NOW).emailToldAtMs).toBe(NOW);
+  });
+
+  it('бот о письме не сказал: то же состояние', () => {
+    expect(afterReplySent(emailed, 'none', 'Расскажите, что у вас на хранении?', NOW)).toBe(
+      emailed,
+    );
+  });
+
+  it.each([
+    ['мы этой компании не писали', makeState({ confirmed: makeConfirmed({ brief: makeBrief() }) })],
+    ['справки нет', makeState({ confirmed: makeConfirmed() })],
+    ['компания не подтверждена', makeState()],
+  ])('%s: не запоминается', (_label, state) => {
+    expect(afterReplySent(state, 'none', TOLD, NOW).emailToldAtMs).toBeNull();
+  });
+
+  it('уже сказал: время первого раза не меняется', () => {
+    const told = { ...emailed, emailToldAtMs: NOW - 500 };
+
+    expect(afterReplySent(told, 'none', TOLD, NOW)).toBe(told);
+  });
+});
+
 describe('withStatedCompany', () => {
   const mention = (name: string | null, city: string | null, aliases: readonly string[] = []) => ({
     name,

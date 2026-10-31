@@ -27,8 +27,10 @@ function confirmQuestion(prompt: Extract<CompanyPrompt, { readonly kind: 'candid
     : `«Вы из компании ${plain(prompt.name)}, правильно?»`;
 }
 
+type ConfirmedPrompt = Extract<CompanyPrompt, { readonly kind: 'confirmed' }>;
+
 /** Данные подтверждённой компании: название, рубрика и боли похожих компаний. */
-function confirmedData(prompt: Extract<CompanyPrompt, { readonly kind: 'confirmed' }>): string[] {
+function confirmedData(prompt: ConfirmedPrompt): string[] {
   const rubric = prompt.rubric === null ? [] : [`Рубрика: ${plain(prompt.rubric)}.`];
   const pains =
     prompt.pains.length === 0
@@ -39,10 +41,19 @@ function confirmedData(prompt: Extract<CompanyPrompt, { readonly kind: 'confirme
   return [`Компания клиента: «${plain(prompt.name)}».`, ...rubric, ...pains];
 }
 
-function emailedLine(emailed: boolean): string {
-  return emailed
-    ? 'Мы уже писали этой компании на почту: можно один раз сказать «мы писали вам на почту».'
-    : 'Мы этой компании на почту не писали: не говори, что писали.';
+/** Строка о нашем письме для ответа: писали и бот ещё не говорил, уже сказал, не писали. */
+function emailedLine(prompt: ConfirmedPrompt): string {
+  if (!prompt.emailed) return 'Мы этой компании на почту не писали: не говори, что писали.';
+  return prompt.emailTold
+    ? 'О нашем письме ты уже сказал, не повторяй.'
+    : 'Мы уже писали этой компании на почту: можно один раз сказать «мы писали вам на почту».';
+}
+
+/** Строка о нашем письме для проверки: повтор после того, как бот уже сказал о письме, нарушение. */
+function reviewEmailedLine(prompt: ConfirmedPrompt): string {
+  return prompt.emailed && prompt.emailTold
+    ? 'О нашем письме бот клиенту уже сказал: повторное «мы писали вам на почту» нарушение.'
+    : emailedLine(prompt);
 }
 
 /** Блок о компании для вызова ответа: что известно и о чём можно спросить. */
@@ -70,7 +81,7 @@ export function companyReplyData(company: CompanyPrompt | undefined): string | n
     case 'asked':
       return `Ты уже спрашивал, из компании ли клиент ${quoted(company.name, company.city)}, а подтверждения нет. Снова не спрашивай и о компании ничего не утверждай.`;
     case 'confirmed':
-      return [...confirmedData(company), DATA_NOTE, emailedLine(company.emailed)].join('\n');
+      return [...confirmedData(company), DATA_NOTE, emailedLine(company)].join('\n');
   }
 }
 
@@ -97,7 +108,7 @@ export function companyReviewData(company: CompanyPrompt | undefined): string | 
         'Справка о компании клиента из нашей базы, её можно использовать в ответе:',
         ...confirmedData(company),
         DATA_NOTE,
-        emailedLine(company.emailed),
+        reviewEmailedLine(company),
       ].join('\n');
   }
 }

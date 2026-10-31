@@ -33,14 +33,19 @@ function candidatePrompt(candidate: ChatCandidate): CompanyPrompt {
   };
 }
 
-/** Подтверждённая компания: из справки только рубрика и боли (без цитат, источников и цифр), справки нет => пусто. */
-function confirmedPrompt(confirmed: ConfirmedCompany): CompanyPrompt {
+/**
+ * Подтверждённая компания: из справки только рубрика и боли (без цитат, источников и цифр), справки нет => пусто.
+ * emailTold: мы писали компании, и бот уже сказал клиенту о письме.
+ */
+function confirmedPrompt(confirmed: ConfirmedCompany, emailToldAtMs: number | null): CompanyPrompt {
+  const emailed = confirmed.brief?.emailed ?? false;
   return {
     kind: 'confirmed',
     name: confirmed.name,
     rubric: promptRubric(confirmed.brief),
     pains: promptPains(confirmed.brief),
-    emailed: confirmed.brief?.emailed ?? false,
+    emailed,
+    emailTold: emailed && emailToldAtMs !== null,
   };
 }
 
@@ -62,7 +67,7 @@ function mayAskName(state: ChatCompanyState): boolean {
  */
 export function buildPrompt(state: ChatCompanyState): CompanyPrompt {
   const { confirmed, candidate, research } = state;
-  if (confirmed !== null) return confirmedPrompt(confirmed);
+  if (confirmed !== null) return confirmedPrompt(confirmed, state.emailToldAtMs);
   if (candidate !== null) return candidatePrompt(candidate);
   if (isRunning(research)) return { kind: 'searching' };
   if (mayAskOfficialName(state)) return { kind: 'ask_official' };

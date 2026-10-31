@@ -140,6 +140,7 @@ const storedSchema: z.ZodType<StoredCompanyState> = z.object({
   officialNameAskedAtMs: timeMs.nullable().default(null),
   officialResearchStartedAtMs: timeMs.nullable().default(null),
   researchName: nullableText.default(null),
+  emailToldAtMs: timeMs.nullable().default(null),
   adoptFailures: counter,
   confirmedPains: z.array(z.string()),
 });
@@ -167,6 +168,7 @@ export function emptyCompanyState(chatId: ChatId): ChatCompanyState {
     officialNameAskedAtMs: null,
     officialResearchStartedAtMs: null,
     researchName: null,
+    emailToldAtMs: null,
     adoptFailures: 0,
     confirmedPains: [],
   };

@@ -240,3 +240,39 @@ describe('31.10: «Тинькофф, банки», в базе почты бре
     });
   });
 });
+
+const TOLD_EMAIL =
+  'Мы писали вам на почту, рады продолжить здесь. На каждую вещь на хранении клеится метка, а антенны на входе и выходе сами отмечают, что пришло и что ушло. Расскажите, что у вас лежит на хранении?';
+const EMAIL_ALLOWED =
+  'Мы уже писали этой компании на почту: можно один раз сказать «мы писали вам на почту».';
+const EMAIL_TOLD = 'О нашем письме ты уже сказал, не повторяй.';
+
+describe('31.10: «мы писали вам на почту» один раз', () => {
+  it('компания подтверждена, мы ей писали: фраза разрешена один раз, после неё блок просит не повторять', async () => {
+    const s = createScenario({
+      api: {
+        lookup: tBankLookup,
+        brief: () =>
+          json(200, tBankBrief({ emailed: true, emailed_at: '2026-10-20T10:00:00+00:00' })),
+      },
+    });
+
+    await s.say('Здравствуйте', turn(answer(INTRO, 'intro', 'name')));
+    await s.say(
+      'Т-Банк, Алматы',
+      turn(answer(HOOK, 'hook'), { companyName: T_BANK, companyCity: 'Алматы', profile: BANK }),
+    );
+    const told = await s.say('Нет, расскажите подробнее', turn(answer(TOLD_EMAIL, 'explain')));
+    const next = await s.say('Склад и архив', turn(answer(EXPLAIN, 'details')));
+    const later = await s.say('Около 10 тысяч дел', turn(answer(HOOK, 'details')));
+
+    expect(told.data('reply')).toContain(EMAIL_ALLOWED);
+    expect(told.toClient).toEqual([TOLD_EMAIL]);
+    expect(s.state().emailToldAtMs).toBe(told.atMs);
+    for (const reply of [next, later]) {
+      expect(reply.data('reply')).toContain(EMAIL_TOLD);
+      expect(reply.data('reply')).not.toContain('можно один раз сказать');
+    }
+    expect(s.state().emailToldAtMs).toBe(told.atMs);
+  });
+});

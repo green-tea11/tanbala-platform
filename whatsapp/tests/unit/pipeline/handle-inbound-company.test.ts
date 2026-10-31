@@ -46,6 +46,7 @@ const CONFIRMED: CompanyPrompt = {
   rubric: 'Склады',
   pains: ['Пересорт при отгрузке'],
   emailed: false,
+  emailTold: false,
 };
 const SEARCHING: CompanyPrompt = { kind: 'searching' };
 const AWAITING: CompanyTurn = { prompt: ASKED, awaitingAnswer: true };

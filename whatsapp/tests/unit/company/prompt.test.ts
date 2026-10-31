@@ -218,6 +218,20 @@ describe('buildPrompt: подтверждённая компания', () => {
       rubric: 'Складское хранение',
       pains: ['Долгая инвентаризация', 'Пересорт при приёмке', 'Потери на складе'],
       emailed: true,
+      emailTold: false,
+    });
+  });
+
+  it('мы писали этой компании и бот уже сказал о письме: emailTold', () => {
+    const confirmed = makeConfirmed({ brief: makeBrief({ emailed: true }), briefAtMs: NOW });
+
+    expect(buildPrompt(makeState({ confirmed }))).toMatchObject({
+      emailed: true,
+      emailTold: false,
+    });
+    expect(buildPrompt(makeState({ confirmed, emailToldAtMs: NOW }))).toMatchObject({
+      emailed: true,
+      emailTold: true,
     });
   });
 
@@ -230,6 +244,7 @@ describe('buildPrompt: подтверждённая компания', () => {
       rubric: null,
       pains: [],
       emailed: false,
+      emailTold: false,
     });
   });
 

@@ -70,6 +70,7 @@ export function mergeCompanyStates<T extends StoredCompanyState>(
     researchName: researched.researchName,
     researchStartedAtMs: laterTime(fresher.researchStartedAtMs, older.researchStartedAtMs),
     officialNameAskedAtMs: fresher.officialNameAskedAtMs ?? older.officialNameAskedAtMs,
+    emailToldAtMs: fresher.emailToldAtMs ?? older.emailToldAtMs,
     officialResearchStartedAtMs: laterTime(
       fresher.officialResearchStartedAtMs,
       older.officialResearchStartedAtMs,

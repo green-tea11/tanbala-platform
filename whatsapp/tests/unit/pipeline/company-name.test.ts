@@ -14,7 +14,17 @@ describe('pipeline/company-name: компания для вопроса знак
     [{ kind: 'searching' }, false],
     [{ kind: 'candidate', name: 'Береке', city: null, withCity: false }, true],
     [{ kind: 'asked', name: 'Береке', city: null, awaitingAnswer: true }, false],
-    [{ kind: 'confirmed', name: 'Береке', rubric: null, pains: [], emailed: false }, false],
+    [
+      {
+        kind: 'confirmed',
+        name: 'Береке',
+        rubric: null,
+        pains: [],
+        emailed: false,
+        emailTold: false,
+      },
+      false,
+    ],
   ])('блок %j: спросить о компании можно: %s', (prompt, askable) => {
     expect(companyAskable(prompt)).toBe(askable);
   });

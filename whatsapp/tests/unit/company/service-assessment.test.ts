@@ -41,6 +41,7 @@ describe('applyAssessment: ответ на вопрос о кандидате', 
       rubric: 'Складское хранение',
       pains: ['Инвентаризация занимает дни и отрывает людей'],
       emailed: false,
+      emailTold: false,
     });
     expect(h.directory.calls).toEqual([{ method: 'brief', id: companyIdOf(8) }]);
     expect(h.repo.current()).toMatchObject({
@@ -67,6 +68,7 @@ describe('applyAssessment: ответ на вопрос о кандидате', 
       rubric: null,
       pains: [],
       emailed: false,
+      emailTold: false,
     });
     expect(h.repo.current().confirmed).toMatchObject({ brief: null, briefAtMs: null });
     expect(h.logs.filter((entry) => entry.level === 'warn').map((entry) => entry.context)).toEqual([

@@ -83,6 +83,7 @@ describe('сценарий: найден по домену, номер скры�
       rubric: 'Складское хранение',
       pains: ['Инвентаризация занимает дни и отрывает людей'],
       emailed: false,
+      emailTold: false,
     });
     expect(h.service.summary(chat.id)).toMatchObject({ status: 'confirmed', companyId: 8 });
   });

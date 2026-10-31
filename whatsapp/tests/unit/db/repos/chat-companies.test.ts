@@ -64,6 +64,7 @@ function fullState(chatId: ChatId): ChatCompanyState {
     officialNameAskedAtMs: NOW + 7,
     officialResearchStartedAtMs: NOW + 8,
     researchName: 'платформа а',
+    emailToldAtMs: NOW + 9,
     adoptFailures: 2,
     confirmedPains: ['Инвентаризация занимает дни', 'Пересорт при приёмке'],
   });
@@ -156,6 +157,7 @@ describe('createChatCompaniesRepo: чтение и запись', () => {
       officialNameAskedAtMs: null,
       officialResearchStartedAtMs: null,
       researchName: null,
+      emailToldAtMs: null,
       adoptFailures: 0,
       confirmedPains: [],
     });
@@ -281,6 +283,7 @@ describe('createChatCompaniesRepo: чтение и запись', () => {
       'officialNameAskedAtMs',
       'officialResearchStartedAtMs',
       'researchName',
+      'emailToldAtMs',
     ].reduce((stored, key) => omit(stored, key), storedOf(full));
     insertRaw(db, chatId, JSON.stringify(old));
 

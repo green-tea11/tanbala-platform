@@ -10,6 +10,7 @@ import type {
 } from '../domain/company.js';
 import type { BusinessProfileResult } from '../domain/ports.js';
 import { clipText } from './clip-text.js';
+import { mentionsOurEmail } from './email-mention.js';
 import { normalizeName } from './normalize-name.js';
 import { asksOfficialName, mayAskOfficialName } from './official-name.js';
 import { domainFromProfile } from './profile-domain.js';
@@ -154,11 +155,21 @@ function markOfficialNameAsked(
 }
 
 /**
+ * Компания подтверждена, мы ей писали (справка: emailed), а бот в ответе сказал о нашем письме (mentionsOurEmail):
+ * время записывается один раз, дальше блок о компании просит не повторять.
+ */
+function markEmailTold(state: ChatCompanyState, sentText: string, nowMs: number): ChatCompanyState {
+  if (state.emailToldAtMs !== null || state.confirmed?.brief?.emailed !== true) return state;
+  return mentionsOurEmail(sentText) ? { ...state, emailToldAtMs: nowMs } : state;
+}
+
+/**
  * Ответ бота ушёл клиенту. Кандидат ещё не спрошен, а модель отметила вопрос confirm или его название стоит в
  * предложении-вопросе (см. candidateInReply): вопрос задан, ждём ответа. Название только упомянуто: время вопроса
  * без ожидания (вопрос больше не задаётся, а «да» на другой вопрос компанию не подтвердит). Иначе ожидание прошлого
  * вопроса снимается (ответ на пачку ушёл, «да» или «нет» в ней не было). name: время вопроса о названии (его по
  * тексту не угадываем), а если блок просил официальное название, ещё и время этого вопроса (markOfficialNameAsked).
+ * Бот сказал о нашем письме подтверждённой компании: время записывается (markEmailTold).
  */
 export function afterReplySent(
   state: ChatCompanyState,
@@ -172,7 +183,8 @@ export function afterReplySent(
       ? stopAwaiting(state)
       : markCandidateAsked(state, nowMs, mention === 'asked');
   const official = markOfficialNameAsked(marked, question, sentText, nowMs);
-  return question === 'name' ? markNameAsked(official, nowMs) : official;
+  const told = markEmailTold(official, sentText, nowMs);
+  return question === 'name' ? markNameAsked(told, nowMs) : told;
 }
 
 /** Клиент не ответил на вопрос о кандидате: ожидание снимается, и вопрос больше не задаётся. */

@@ -176,7 +176,14 @@ describe('draftReply и reviewDraft: боли справки (решение в�
   ];
 
   function confirmed(pains: readonly string[]): CompanyPrompt {
-    return { kind: 'confirmed', name: 'Альфа', rubric: 'Склады', pains, emailed: false };
+    return {
+      kind: 'confirmed',
+      name: 'Альфа',
+      rubric: 'Склады',
+      pains,
+      emailed: false,
+      emailTold: false,
+    };
   }
 
   function painsLineOf(requests: Parameters<typeof onlyRequest>[0]): string | null {
