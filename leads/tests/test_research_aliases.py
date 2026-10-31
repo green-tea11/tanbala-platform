@@ -197,16 +197,19 @@ def test_database_keeps_at_most_three_aliases(env):
 
 
 @pytest.mark.db
-def test_parser_failure_on_alias_stops_the_job(env):
+def test_parser_failure_on_alias_stops_the_job(env, caplog):
     from tanbala_leads.steps.collect import ParserError
 
-    deps = deps_with(env, [], ParserError("Chrome упал"), [T_BANK])
+    deps = deps_with(env, [], ParserError("Chrome упал на https://2gis.kz/almaty/search/Т-Банк"), [T_BANK])
     client, _, _ = env.client(deps=deps)
 
     result = status(client, post(client, TINKOFF)["job_id"])
 
     assert (result["status"], result["reason"]) == ("failed", "error")
     assert deps.run_parser.searched == ["Тинькофф", "Т-Банк"]
+    # В лог сервера только номер задачи и вид ошибки: названия от клиента бота туда не идут.
+    assert "ParserError" in caplog.text
+    assert all(name not in caplog.text for name in ("Тинькофф", "Т-Банк", "Tinkoff"))
 
 
 @pytest.mark.db
@@ -248,6 +251,18 @@ def test_known_company_without_assessment_is_found_by_alias_and_skips_2gis(env):
 
 
 @pytest.mark.db
+def test_domain_or_phone_match_wins_over_alias_name(env):
+    by_alias = add_company(env.conn, "Т-Банк, банк")
+    by_domain = add_company(env.conn, "Совсем другое имя", domain="tbank.kz", phones=["+77272000009"])
+    city = "Алматы"
+
+    for extra in ({"domain": "https://tbank.kz/"}, {"phone": "8 727 200 00 09"}):
+        request = research.parse_request({**TINKOFF, **extra})
+        assert research.find_known(env.conn, request, city) == by_domain
+    assert research.find_known(env.conn, research.parse_request(TINKOFF), city) == by_alias
+
+
+@pytest.mark.db
 def test_alias_matches_known_company_only_in_the_same_city(env):
     company_id = add_company(env.conn, "Т-Банк, банк")
     add_qualification(env.conn, company_id)
@@ -276,9 +291,10 @@ def test_repeat_after_done_comes_back_at_once_by_alias(env):
 
 @pytest.mark.db
 @pytest.mark.parametrize("again", [
-    {"name": "Т-Банк"},
-    {"name": "тинькофф", "aliases": ["Kaspi"]},
-    {"name": "Kaspi", "aliases": ["TINKOFF"]},
+    {"name": "Т-Банк"},  # имя заявки — вариант задачи
+    {"name": "т-банк", "aliases": ["Тинькофф"]},  # имя и вариант переставлены
+    {"name": "тинькофф", "aliases": ["Kaspi"]},  # то же имя, другие варианты
+    {"name": "Kaspi", "aliases": ["ТИНЬКОФФ"]},  # имя задачи — вариант заявки
     {"name": "Тинькофф", "aliases": ["Т-Банк", "Tinkoff"], "city": "Алматы"},
 ])
 def test_names_swapped_or_other_aliases_return_the_same_job(env, again):
@@ -295,6 +311,7 @@ def test_names_swapped_or_other_aliases_return_the_same_job(env, again):
     {"name": "Т-Банк", "city": "Астана"},
     {"name": "Т-Банк", "phone": "+7 727 200 00 01"},
     {"name": "Kaspi", "aliases": ["Каспи"]},
+    {"name": "Kaspi", "aliases": ["TINKOFF"]},  # общий только вариант: догадка бота не склеивает компании
 ])
 def test_other_city_phone_or_names_make_a_new_job(env, other):
     client, _, queue = env.client(inline=False)
@@ -303,6 +320,31 @@ def test_other_city_phone_or_names_make_a_new_job(env, other):
 
     assert post(client, other)["job_id"] != first
     assert env.conn.execute("SELECT count(*) FROM research_jobs").fetchone()[0] == 2
+
+
+@pytest.mark.db
+def test_longest_allowed_body_with_escaped_cyrillic_is_accepted(env):
+    """name и три варианта по 200 знаков, кириллица в виде \\uXXXX: тело ≈ 5.7 КБ, это не 400."""
+    client, _, queue = env.client(inline=False)
+    queue.kick = lambda: None
+    body = {"name": "Б" * 200, "aliases": ["В" * 200, "Г" * 200, "Д" * 200], "city": "Алматы" + " " * 94,
+            "phone": "+7 (727) 200-00-01", "domain": "tbank.kz"}
+    content = json.dumps(body, ensure_ascii=True).encode()
+    assert 5000 < len(content) <= 8192
+
+    response = client.post("/internal/research", content=content, headers={**AUTH, "Content-Type": "application/json"})
+
+    assert response.status_code == 202, response.text
+    assert job_rows(env.conn) == [("Б" * 200, ["В" * 200, "Г" * 200, "Д" * 200], "queued", None)]
+
+
+def test_body_over_8_kb_is_400():
+    body = json.dumps({"name": "Тинькофф", "pad": "x" * 8200}).encode()
+
+    response = make_client_without_db().post("/internal/research", content=body,
+                                             headers={**AUTH, "Content-Type": "application/json"})
+
+    assert (response.status_code, response.json()) == (400, {"error": "bad_request"})
 
 
 @pytest.mark.db

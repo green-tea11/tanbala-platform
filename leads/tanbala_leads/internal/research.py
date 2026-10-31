@@ -50,17 +50,17 @@ WHERE id = (SELECT id FROM research_jobs WHERE status = 'queued' ORDER BY create
 RETURNING id, name, aliases, city, phone, domain, company_id
 """
 # Та же заявка, пока первая ещё в очереди или в работе: повтор бота не тратит лимит и второй вызов Haiku.
-# Названия сравниваются вместе с вариантами без учёта регистра: «Т-Банк» при задаче «Тинькофф» с вариантом
-# «Т-Банк» — та же заявка, перестановка имени и вариантов новую задачу не создаёт.
+# Без учёта регистра имя заявки совпало с именем или вариантом задачи, или имя задачи — с вариантом заявки:
+# «Т-Банк» при задаче «Тинькофф» с вариантом «Т-Банк» та же заявка, перестановка имени и вариантов новую задачу
+# не создаёт. Совпадения одних вариантов мало: это догадки бота, общий вариант не склеивает разные компании.
 ACTIVE_JOB_SQL = """
 SELECT id FROM research_jobs
 WHERE status IN ('queued', 'running')
   AND (company_id = %(company_id)s
        OR (city IS NOT DISTINCT FROM %(city)s
            AND phone IS NOT DISTINCT FROM %(phone)s AND domain IS NOT DISTINCT FROM %(domain)s
-           AND EXISTS (SELECT 1 FROM unnest(ARRAY[name] || aliases) AS job(variant),
-                                     unnest(%(names)s::text[]) AS given(variant)
-                       WHERE lower(job.variant) = lower(given.variant))))
+           AND (lower(%(name)s) IN (SELECT lower(variant) FROM unnest(ARRAY[name] || aliases) AS job(variant))
+                OR lower(name) IN (SELECT lower(variant) FROM unnest(%(aliases)s::text[]) AS given(variant)))))
 ORDER BY created_at LIMIT 1
 """
 # Очередь после сбоя (база пропала посреди задачи): пауза и новая попытка.
@@ -199,9 +199,9 @@ def start(conn: psycopg.Connection, request: Request, *, per_day: int, budget_us
         return Started(job_id=_insert_job(conn, request, None, failed_reason="city_unsupported"))
     with conn.transaction():
         conn.execute("SELECT pg_advisory_xact_lock(%s)", (LIMIT_LOCK_KEY,))
-        active = conn.execute(ACTIVE_JOB_SQL, {"company_id": known, "names": list(request.search_names),
-                                               "city": request.city, "phone": request.phone,
-                                               "domain": request.domain}).fetchone()
+        active = conn.execute(ACTIVE_JOB_SQL, {"company_id": known, "name": request.name,
+                                               "aliases": list(request.aliases), "city": request.city,
+                                               "phone": request.phone, "domain": request.domain}).fetchone()
         if active is not None:
             return Started(job_id=str(active[0]))
         if conn.execute(TODAY_JOBS_SQL).fetchone()[0] >= per_day:

@@ -26,7 +26,9 @@ from tanbala_leads.web.labels import MAX_DB_ID
 PREFIX = "/internal"
 TOKEN_HEADER = "X-Internal-Token"
 MIN_TOKEN_CHARS = 32
-MAX_BODY_BYTES = 4096
+# Тело POST /internal/research: name, три варианта (aliases) по 200 символов, city и domain даже с кириллицей
+# в виде \uXXXX (6 байт на знак) около 5.7 КБ.
+MAX_BODY_BYTES = 8192
 # Ошибки до маршрута (нет пути, не тот метод): код по HTTP-статусу, остальное bad_request.
 STATUS_CODES = {401: "unauthorized", 404: "not_found", 503: "db_unavailable"}
 # Строка access-лога uvicorn: '%s - "%s %s HTTP/%s" %d', путь третий.
