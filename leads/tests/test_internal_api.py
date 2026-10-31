@@ -368,6 +368,28 @@ def test_brief_gives_only_verified_pains_and_no_notes_letters_or_addresses(api_d
 
 
 @pytest.mark.db
+def test_brief_gives_up_to_three_verified_pains_in_stored_order(api_db):
+    """Решение владельца 30.10.2026: до трёх болей вместо двух, по-прежнему только подтверждённые."""
+    conn, client = api_db
+    company_id = add_company(conn, "Платформа-А")
+    stored = [
+        ("Инвентаризация занимает дни и отрывает людей", "Склады 11 400 м²", True),
+        ("Вещи теряются, никто не знает, где они", "выдуманная цитата", False),
+        ("Считают вручную или сканируют штрихкоды по одному", "Требуется кладовщик на склад", True),
+        ("Трудно проверить, вся ли партия ушла на отгрузку", "Отгрузка паллет каждый день", True),
+        ("Тара уходит к партнёрам и не возвращается", "Возвратная тара у партнёров", True),
+    ]
+    add_qualification(conn, company_id, [{"pain": pain, "evidence": evidence, "source": "site", "verified": verified}
+                                         for pain, evidence, verified in stored])
+
+    pains = brief(client, company_id)["pains"]
+
+    assert [(pain["pain"], pain["evidence"]) for pain in pains] == [
+        (pain, evidence) for pain, evidence, verified in stored if verified][:3]
+    assert len(pains) == 3 and "выдуманная" not in str(pains)
+
+
+@pytest.mark.db
 def test_brief_hides_contacts_inside_site_texts(api_db):
     conn, client = api_db
     company_id = add_company(conn, "Платформа-А")

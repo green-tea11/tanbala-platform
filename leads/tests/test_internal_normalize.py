@@ -60,6 +60,17 @@ def test_empty_or_long_name_is_refused():
             norm.parse_name(raw)
 
 
+def test_alias_empty_after_normalization_is_dropped_not_refused():
+    assert [norm.parse_alias(raw) for raw in ("", "  ", "ТОО", "«»", ", банк")] == [None] * 5
+    assert norm.parse_alias(" ТОО «Т-Банк» ") == "т банк"
+
+
+@pytest.mark.parametrize("raw", ["я" * 201, "Т\x00Банк", "\ud800"])
+def test_long_or_broken_alias_is_refused_like_name(raw):
+    with pytest.raises(norm.BadInput):
+        norm.parse_alias(raw)
+
+
 def test_similarity_ignores_word_order_and_ranks_typos():
     assert norm.name_similarity("платформа а", "платформа а") == 1.0
     assert norm.name_similarity("express logistic partner", "partner express logistic") == 1.0

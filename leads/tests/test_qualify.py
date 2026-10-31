@@ -97,6 +97,10 @@ def test_site_text_cannot_close_the_data_tag():
 PAIN = "Инвентаризация занимает дни и отрывает людей"
 
 
+def test_prompt_asks_for_as_many_pains_as_are_kept():
+    assert qualify.MAX_PAINS == 3 and "до трёх болей" in qualify.INSTRUCTIONS
+
+
 def test_schema_lists_pains_from_owner_doc():
     item = qualify.SCHEMA["properties"]["pains"]["items"]
 

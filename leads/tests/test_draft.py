@@ -170,3 +170,14 @@ def test_letter_is_built_around_verified_pain_only(db_conn, company):
     content = client.calls[0]["messages"][0]["content"]
     assert "Инвентаризация занимает дни" in content and "инвентаризация раз в квартал" in content
     assert "Вещи теряются" not in content and "выдумка модели" not in content
+
+
+def test_letter_is_built_around_two_pains_even_if_three_are_verified():
+    """Квалификация хранит до трёх болей для справки WhatsApp-бота, письмо по-прежнему строится вокруг двух."""
+    pains = [{"pain": f"Боль {number}", "evidence": f"цитата номер {number}", "source": "site", "verified": True}
+             for number in (1, 2, 3)]
+
+    block = draft.qualification_block({"segment": "Склад, логистика, дистрибуция", "reason": "Склад.", "pains": pains})
+
+    assert "Главная боль: Боль 1" in block and "Ещё боль: Боль 2" in block
+    assert "Боль 3" not in block and "цитата номер 3" not in block
