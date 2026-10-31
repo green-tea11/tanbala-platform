@@ -79,6 +79,20 @@ def test_similarity_ignores_word_order_and_ranks_typos():
     assert norm.name_similarity("", "аксенгер") == 0.0
 
 
+def test_short_brand_matches_by_whole_words_but_never_as_the_same_name():
+    # Живой тест 31.10.2026: клиент написал «kusto», в базе «Kusto Logistics Management, компания».
+    assert norm.name_match("kusto", "kusto logistics management") == norm.WORD_PREFIX_SIMILARITY
+    assert norm.name_match("kusto logistics", "kusto logistics management") == norm.WORD_PREFIX_SIMILARITY
+    assert norm.name_match("kusto", "mks kusto logistics") == norm.WORD_INSIDE_SIMILARITY
+    assert norm.name_match("kusto", "kustom logistics") < 0.7  # не целое слово
+    assert norm.name_match("kusto", "logistics kustoo") < 0.7
+    assert norm.name_match("ост", "ост логистик") < 0.7  # короче четырёх букв по словам не ищем
+    assert norm.name_match("kusto logistics management", "kusto") < 0.7  # название короче запроса
+    assert norm.name_match("платформа а", "платформа а") == 1.0
+    assert norm.name_match("kusto", "kusto") == 1.0
+    assert norm.name_match("", "kusto logistics") == 0.0
+
+
 def test_clean_text_removes_control_and_invisible_characters_and_cuts():
     raw = "Склад\x00 ​А‮Б\tВ\n\nГ\x1b[31m"
     assert norm.clean_text(raw, 100) == "Склад АБ В Г [31m"

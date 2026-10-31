@@ -258,17 +258,28 @@ def _card_score(card: collect.CompanyCard, request: Request, name: str) -> float
             return lookup.EXACT_SCORE
     if request.phone and request.phone in _phones(card):
         return lookup.EXACT_SCORE
-    similarity = norm.name_similarity(name, norm.normalize_name(card.name))
+    similarity = norm.name_match(name, norm.normalize_name(card.name))
     return similarity if similarity >= lookup.MIN_NAME_SIMILARITY else 0.0
 
 
 def best_card(cards: list[collect.CompanyCard], request: Request,
               searched: str | None = None) -> collect.CompanyCard | None:
-    """Лучшая карточка выдачи по запросу searched (по умолчанию имя); при равенстве первая. Ничего похожего: None."""
+    """Лучшая карточка выдачи по запросу searched (по умолчанию имя); при равенстве первая. Ничего похожего: None.
+
+    Неоднозначно, тоже None: лучшая оценка ниже точной и такая же у карточки с другим названием («kusto»: и «Kusto
+    Home», и «Kusto Logistics Management»). Филиалы одной компании с одним названием выбору не мешают.
+    """
     name = norm.normalize_name(searched if searched is not None else request.name)
     scored = [(score, -index, card) for index, card in enumerate(cards)
               if (score := _card_score(card, request, name)) > 0]
-    return max(scored, key=lambda item: item[:2])[2] if scored else None
+    if not scored:
+        return None
+    best_score, _, best = max(scored, key=lambda item: item[:2])
+    best_name = norm.normalize_name(best.name)
+    if best_score < lookup.EXACT_SCORE and any(
+            score == best_score and norm.normalize_name(card.name) != best_name for score, _, card in scored):
+        return None
+    return best
 
 
 def _find_in_2gis(conn: psycopg.Connection, job: dict, deps: pipeline.Deps) -> int | None:

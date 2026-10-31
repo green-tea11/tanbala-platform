@@ -85,9 +85,9 @@ def _ids(conn: psycopg.Connection, query: str, params: dict) -> list[int]:
 
 
 def _by_name(conn: psycopg.Connection, name: str, city: str | None = None) -> list[tuple[int, float]]:
-    """(id, похожесть) для названий не ниже MIN_NAME_SIMILARITY; city: только компании этого города."""
+    """(id, похожесть) для названий не ниже MIN_NAME_SIMILARITY (norm.name_match); city: только компании этого города."""
     rows = conn.execute("SELECT id, name, city FROM companies ORDER BY id").fetchall()
-    scored = ((company_id, norm.name_similarity(name, norm.normalize_name(company_name)))
+    scored = ((company_id, norm.name_match(name, norm.normalize_name(company_name)))
               for company_id, company_name, company_city in rows if city is None or company_city == city)
     return [(company_id, similarity) for company_id, similarity in scored if similarity >= MIN_NAME_SIMILARITY]
 

@@ -259,6 +259,18 @@ def test_lookup_by_name_with_legal_form_and_quotes(api_db):
 
 
 @pytest.mark.db
+def test_lookup_by_short_brand_puts_the_name_that_starts_with_it_first(api_db):
+    # Живой тест 31.10.2026: «kusto» не находил «Kusto Logistics Management, компания» (похожесть строк 0.32).
+    conn, client = api_db
+    mks = add_company(conn, "Mks Kusto Logistics, логистическая компания")
+    kusto = add_company(conn, "Kusto Logistics Management, компания")
+    add_company(conn, "Kustom Group")
+
+    found = lookup(client, name="ТОО Kusto")
+    assert [(c["id"], c["match_by"], c["match_score"]) for c in found] == [(kusto, "name", 0.85), (mks, "name", 0.72)]
+
+
+@pytest.mark.db
 def test_domain_and_phone_rank_above_name_and_only_three_come_back(api_db):
     conn, client = api_db
     by_name = [add_company(conn, f"Платформа-А {suffix}") for suffix in ("1", "2", "3")]

@@ -121,6 +121,37 @@ def test_card_is_scored_by_the_query_that_found_it():
     assert research.best_card([card], request, "Tinkoff") is None
 
 
+# Выдача 2ГИС Алматы по «kusto» из живого теста 31.10.2026 (названия как в выдаче).
+KUSTO_HOME = card_item("Kusto Home", firm_id="70000001000000011")
+KUSTO_LOGISTICS = card_item("Kusto Logistics Management, компания", firm_id="70000001000000012")
+MKS_KUSTO = card_item("Mks Kusto Logistics, логистическая компания", firm_id="70000001000000013")
+DIAMOND = card_item("Diamond, жилой комплекс", firm_id="70000001000000014")
+
+
+def test_short_brand_picks_the_only_card_that_starts_with_it():
+    request = research.Request(name="kusto", city="almaty", phone=None, domain=None)
+    cards = [collect.parse_item(item) for item in (DIAMOND, MKS_KUSTO, KUSTO_LOGISTICS)]
+
+    assert research.best_card(cards, request) == cards[2]
+
+
+def test_short_brand_shared_by_two_companies_is_ambiguous():
+    request = research.Request(name="kusto", city="almaty", phone=None, domain=None)
+    cards = [collect.parse_item(item) for item in (DIAMOND, KUSTO_HOME, KUSTO_LOGISTICS, MKS_KUSTO)]
+
+    assert research.best_card(cards, request) is None
+    assert research.best_card(cards, request, "Kusto Logistics") == cards[2]
+    assert research.best_card(cards, request, "ТОО Kusto Logistics Management") == cards[2]
+
+
+def test_branches_with_one_name_are_not_ambiguous():
+    request = research.Request(name="kusto", city="almaty", phone=None, domain=None)
+    branch = card_item("Kusto Logistics Management, склад", firm_id="70000001000000012")
+    cards = [collect.parse_item(item) for item in (KUSTO_LOGISTICS, branch)]
+
+    assert research.best_card(cards, request) == cards[0]
+
+
 def test_phone_or_domain_match_does_not_depend_on_the_query():
     card = collect.parse_item(T_BANK)
     by_phone = research.Request(name="Тинькофф", city="almaty", phone="77272000001", domain=None)
