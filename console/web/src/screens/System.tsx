@@ -11,6 +11,11 @@ import { isUnavailable, type BotStatus, type LeadsSummary, type Section, type Sp
 interface SpendDays { readonly days: readonly ({ readonly day: string } & SpendTotal)[]; readonly total: SpendTotal }
 interface SystemSpend { readonly from: string; readonly to: string; readonly pricesAsOf: string; readonly bot: Section<SpendDays>; readonly leads: Section<SpendDays> }
 interface AuditRow { readonly id: number; readonly at: string; readonly actor: string; readonly action: string; readonly target: string | null; readonly outcome: string | null; readonly ip: string | null }
+
+function AuditOutcomeCell({ code }: { readonly code: string | null }) {
+  const outcome = auditOutcome(code);
+  return <td className={outcome.bad ? 'bad-text' : undefined}>{outcome.text}</td>;
+}
 interface UserRow { readonly name: string; readonly role: string; readonly active: boolean; readonly createdAt: string; readonly sessions: number }
 interface SessionRow { readonly id: number; readonly user: string; readonly device: string | null; readonly ip: string | null; readonly createdAt: string; readonly lastSeenAt: string; readonly current: boolean }
 
@@ -130,7 +135,7 @@ export function SystemScreen() {
               <td>{row.actor}<div className="cell-sub">{row.ip ?? ''}</div></td>
               <td>{auditAction(row.action)}</td>
               <td>{row.target?.startsWith('chat:') ? <Link to={`/chats/${row.target.slice(5)}`} className="text-link">{auditTarget(row.target)}</Link> : auditTarget(row.target)}</td>
-              <td className={row.outcome && /fail|denied|refused|error/.test(row.outcome) ? 'bad-text' : undefined}>{auditOutcome(row.outcome)}</td>
+              <AuditOutcomeCell code={row.outcome} />
             </tr>
           ))}</tbody>
         </table>

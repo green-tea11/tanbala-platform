@@ -168,23 +168,24 @@ export function LettersFacts({ client, now }: { readonly client: ClientCard; rea
   const leads = client.company?.leads;
   const card = leads && !isUnavailable(leads) && !('notFound' in leads) ? leads : null;
   if (card === null) return null;
+  const draft = card.draft && !card.draft.sentAt ? card.draft : null;
   return (
-    <Panel id="letters" title="Письма компании" count={card.history.length + (card.draft ? 1 : 0)}>
-      {card.draft ? (
-        <Link to={`/letters/${card.draft.id}`} className="row-link">
+    <Panel id="letters" title="Письма компании" count={card.history.length + (draft ? 1 : 0)}>
+      {draft ? (
+        <Link to={`/letters/${draft.id}`} className="row-link">
           <div className="row compact-row">
             <div className="row-main">
-              <div className="row-line1"><span className="who">{card.draft.subject}</span></div>
+              <div className="row-line1"><span className="who">{draft.subject}</span></div>
               <div className="row-line2">
-                Черновик: {card.draft.reviewLabel.toLowerCase()}
-                {card.draft.approvedAt ? ` ${clockTime(card.draft.approvedAt, now)}${card.draft.approvedBy ? `, ${card.draft.approvedBy}` : ''}` : ''}
+                Черновик: {draft.reviewLabel.toLowerCase()}
+                {draft.approvedAt ? ` ${clockTime(draft.approvedAt, now)}${draft.approvedBy ? `, ${draft.approvedBy}` : ''}` : ''}
               </div>
             </div>
           </div>
         </Link>
       ) : null}
       {card.history.length === 0 ? (
-        <p className="empty">{card.draft ? 'Отправленных писем ещё не было.' : 'Этой компании ещё не писали.'}</p>
+        <p className="empty">{draft ? 'Отправленных писем ещё не было.' : 'Этой компании ещё не писали.'}</p>
       ) : (
         <ul className="rows history">
           {card.history.map((item) => (

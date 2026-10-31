@@ -179,7 +179,7 @@ export function CompanyScreen({ id, owner }: { readonly id: number; readonly own
       <PageTitle
         title={c.name}
         sub={<>{c.statusLabel}{card.qualification?.score != null ? ` · ${card.qualification.fitLabel}, ${card.qualification.score} из 100` : ''}{card.qualification?.segment ? ` · ${card.qualification.segment}` : ''} · найдена {clockTime(c.createdAt, now)} · расход {usd(card.cost.usd)}</>}
-        actions={owner ? (
+        actions={owner && (marked || !card.blocked) ? (
           <div className="actions">
             {marked ? <button type="button" className="btn" onClick={clearWa}>Снять отметку WhatsApp</button> : null}
             {card.blocked ? null : <button type="button" className="btn danger" onClick={block}>Больше не писать</button>}

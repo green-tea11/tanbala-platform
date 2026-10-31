@@ -312,7 +312,8 @@ export interface LeadsCompanyCard {
   };
   readonly qualification: { readonly fitLabel: string | null; readonly score: number | null; readonly segment: string | null; readonly reason: string | null } | null;
   readonly pains: readonly Pain[];
-  readonly draft: { readonly id: number; readonly subject: string; readonly reviewLabel: string; readonly approvedBy: string | null; readonly approvedAt: string | null } | null;
+  /** sentAt: письмо ушло компании (тогда оно уже в history и черновиком не считается). */
+  readonly draft: { readonly id: number; readonly subject: string; readonly reviewLabel: string; readonly approvedBy: string | null; readonly approvedAt: string | null; readonly sentAt?: string | null } | null;
   readonly history: readonly { readonly id: number; readonly occurredAt: string; readonly whatLabel: string; readonly sourceLabel: string; readonly subject: string | null; readonly email: string }[];
   readonly blocked: boolean;
 }

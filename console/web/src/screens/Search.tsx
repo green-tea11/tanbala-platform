@@ -28,6 +28,11 @@ interface Page<T> { readonly items: readonly T[]; readonly total: number; readon
 
 interface ResearchRow { readonly id: string; readonly name: string; readonly cityName: string | null; readonly status: string; readonly statusLabel: string; readonly reasonLabel: string | null; readonly companyId: number | null; readonly createdAt: string; readonly finishedAt: string | null }
 
+/** Расход Claude на запуск: компании и подготовка первого вызова; одна сумма под формой и в подтверждении. */
+function estimateUsd(companies: number, opts: SearchOptions): number {
+  return companies * opts.usdPerCompany + opts.usdFirstRun;
+}
+
 function splitIndustries(text: string): string[] {
   return text.split(/[,;\n]/).map((part) => part.trim()).filter(Boolean);
 }
@@ -97,10 +102,9 @@ export function SearchScreen({ owner }: { readonly owner: boolean }) {
   };
   const start = (): void => {
     if (!opts) return;
-    const estimate = total * opts.usdPerCompany;
     setConfirm({
       title: 'Начать поиск?',
-      body: <><p>{industries.join(', ')}: до {total} компаний в городе {opts.cities.find((c) => c.code === (city || opts.defaults.city))?.name}.</p><p>Расход Claude примерно {usd(estimate + opts.usdFirstRun)}. Дневной бюджет проверяется только при старте.</p></>,
+      body: <><p>{industries.join(', ')}: до {total} компаний в городе {opts.cities.find((c) => c.code === (city || opts.defaults.city))?.name}.</p><p>Расход Claude примерно {usd(estimateUsd(total, opts))}. Дневной бюджет проверяется только при старте.</p></>,
       confirmLabel: 'Начать поиск',
       run: async () => { const result = await action.run('/api/runs', { query: industries.join(', '), city: city || opts.defaults.city, count: perQuery }); if (result.ok) { active.refresh(); runs.refresh(); } },
     });
@@ -121,7 +125,7 @@ export function SearchScreen({ owner }: { readonly owner: boolean }) {
                 <label><span>Компаний на отрасль</span><input type="number" min={1} max={opts.limits.maxPerIndustry} value={perQuery} onChange={(e) => setPerQuery(Math.max(1, Math.min(opts.limits.maxPerIndustry, Number(e.target.value) || 1)))} /></label>
               </div>
               <p className={`estimate ${tooMany ? 'bad-text' : ''}`} aria-live="polite">
-                {industries.length ? `${industries.length} ${industries.length === 1 ? 'отрасль' : 'отрасли'} × ${perQuery} = до ${total} компаний · примерно ${usd(total * opts.usdPerCompany)}` : 'Выберите отрасли.'}
+                {industries.length ? `${industries.length} ${industries.length === 1 ? 'отрасль' : 'отрасли'} × ${perQuery} = до ${total} компаний · примерно ${usd(estimateUsd(total, opts))}` : 'Выберите отрасли.'}
                 {tooMany ? ` Больше ${opts.limits.maxQueries} отраслей или ${opts.limits.maxTotal} компаний за запуск нельзя.` : ''}
               </p>
               {owner ? (

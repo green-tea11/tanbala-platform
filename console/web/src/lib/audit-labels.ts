@@ -1,14 +1,10 @@
-// Журнал действий (Система) словами: коды действий и итогов из console/src (context.record) и ответов почты и бота.
+// Журнал действий (Система) словами: коды действий и итогов из console/src (context.record), отказы почты и бота.
 // Незнакомый код показывается как есть.
 
 const ACTIONS: Readonly<Record<string, string>> = {
   login: 'вход',
-  login_failed: 'неверный пароль',
-  login_blocked: 'вход заблокирован',
-  login_busy: 'вход занят',
+  login_failed: 'неудачный вход',
   logout: 'выход',
-  request_denied: 'запрос отклонён',
-  maintenance: 'обслуживание',
   session_revoke: 'закрыта сессия',
   session_revoke_all: 'закрыты все сессии',
   run_start: 'запуск поиска',
@@ -30,35 +26,63 @@ const ACTIONS: Readonly<Record<string, string>> = {
   user_revoke: 'закрыты сессии пользователя',
 };
 
-const OUTCOMES: Readonly<Record<string, string>> = {
+export interface AuditOutcome {
+  readonly text: string;
+  /** Действие не выполнено или итог неизвестен: строка красным. */
+  readonly bad: boolean;
+}
+
+const DONE: Readonly<Record<string, string>> = {
   sent: 'отправлено',
   approved: 'одобрено',
   rejected: 'отклонено',
   saved: 'сохранено',
   blocked: 'в «не писать»',
   cleared: 'снято',
-  imported: 'добавлено',
-  started: 'запущен',
+  revoked: 'закрыта',
   returned: 'возвращён',
   returned_answering: 'возвращён, бот отвечает',
   already_bot: 'уже у бота',
-  whatsapp_not_open: 'WhatsApp не подключён',
-  conflict: 'отказ: занято',
-  not_found: 'не найдено',
-  budget_exhausted: 'бюджет исчерпан',
-  unavailable: 'служба не ответила',
 };
 
-const TARGETS: Readonly<Record<string, string>> = { chat: 'чат', draft: 'письмо', run: 'запуск', company: 'компания', user: '' };
+const FAILED: Readonly<Record<string, string>> = {
+  duplicate: 'повтор, не отправлено',
+  refused: 'отказ',
+  conflict: 'сейчас невозможно',
+  not_found: 'не найдено',
+  bad_request: 'неверный запрос',
+  too_large: 'слишком длинно',
+  rate_limited: 'слишком часто',
+  test_limit: 'лимит тестов на сегодня',
+  budget_exhausted: 'бюджет исчерпан',
+  whatsapp_not_open: 'WhatsApp не подключён',
+  send_failed: 'не отправлено',
+  return_failed: 'не возвращён',
+  backend_unavailable: 'служба не ответила',
+  backend_auth: 'служба не приняла токен',
+  unknown_outcome: 'итог неизвестен',
+};
+
+/** Итоги с числом: «added:5» — «добавлено 5», «closed:3» — «закрыто 3». */
+const COUNTED: Readonly<Record<string, string>> = { added: 'добавлено', closed: 'закрыто' };
+
+const TARGETS: Readonly<Record<string, string>> = { chat: 'чат', draft: 'письмо', run: 'запуск', company: 'компания', session: 'сессия', user: '' };
 
 export function auditAction(code: string): string {
   return ACTIONS[code] ?? code;
 }
 
-/** «run:7» — «запуск №7»; известный итог словами, иначе код как есть. */
-export function auditOutcome(code: string | null): string {
-  if (code === null) return '—';
-  return OUTCOMES[code] ?? auditTarget(code);
+export function auditOutcome(code: string | null): AuditOutcome {
+  if (code === null) return { text: '—', bad: false };
+  const done = DONE[code];
+  if (done !== undefined) return { text: done, bad: false };
+  const failed = FAILED[code];
+  if (failed !== undefined) return { text: failed, bad: true };
+  const [kind, count] = code.split(':');
+  const counted = kind === undefined ? undefined : COUNTED[kind];
+  if (counted !== undefined && count !== undefined && /^\d+$/.test(count)) return { text: `${counted} ${count}`, bad: false };
+  // «run:7» и прочие ссылки на объект; незнакомый код — красным, если похож на сбой.
+  return { text: auditTarget(code), bad: /fail|denied|refused|error/.test(code) };
 }
 
 /** «draft:14» — «письмо №14», «user:bogdan» — «bogdan». */
