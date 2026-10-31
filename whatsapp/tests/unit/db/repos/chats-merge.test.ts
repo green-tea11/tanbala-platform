@@ -565,6 +565,7 @@ describe('слияние чатов: состояние определения �
         candidate: makeChatCandidate({ id: companyIdOf(3) }),
         adoptFailures: 1,
         statedName: 'Бета',
+        statedAliases: ['Beta'],
       }),
       T0 + 20,
     );
@@ -581,6 +582,7 @@ describe('слияние чатов: состояние определения �
         adoptFailures: 1,
         logoCheckedAtMs: T0 + 1,
         statedName: 'Бета',
+        statedAliases: ['Beta'],
         candidate: null,
       }),
     );

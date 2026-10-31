@@ -206,6 +206,92 @@ describe('identifyAfterReply: шаг г, название со слов клие
   );
 });
 
+describe('identifyAfterReply: шаг г, варианты названия (решение владельца 30.10.2026)', () => {
+  /** Т-Банк в карточке из Алматы, клиент назвал Астану: кандидат, а не подтверждение без вопроса. */
+  const T_BANK = makeCandidate({
+    id: companyIdOf(77),
+    name: 'АО «Т-Банк»',
+    city: 'Алматы',
+    matchBy: 'name',
+    matchScore: 0.9,
+  });
+
+  function tinkoff(overrides: Partial<ChatCompanyState> = {}): ChatCompanyState {
+    return named({
+      statedName: 'Тинькофф',
+      statedCity: 'Астана',
+      statedAliases: ['Т-Банк', 'Tinkoff'],
+      ...overrides,
+    });
+  }
+
+  it('по названию ничего, по варианту найдено: поиск по очереди до первой находки, кандидат с источником message', async () => {
+    const h = createHarness({
+      state: tinkoff(),
+      directory: {
+        lookup: (query) => (query.by === 'name' && query.name === 'Т-Банк' ? ok([T_BANK]) : ok([])),
+      },
+    });
+
+    await h.service.identifyAfterReply(makeChat());
+
+    expect(h.directory.lookups()).toEqual([
+      { by: 'name', name: 'Тинькофф' },
+      { by: 'name', name: 'Т-Банк' },
+    ]);
+    expect(h.repo.current()).toMatchObject({
+      candidate: { id: companyIdOf(77), source: 'message' },
+      lookedUpName: 'тинькофф',
+      research: null,
+    });
+    expect(h.directory.count('startResearch')).toBe(0);
+  });
+
+  it('вариант, равный названию после нормализации, и вариант из одной формы собственности не ищутся', async () => {
+    const h = createHarness({
+      state: tinkoff({ statedAliases: ['ТОО «ТИНЬКОФФ»', 'ТОО', 'Т-Банк'] }),
+      directory: { lookup: () => ok([]), startResearch: () => QUEUED },
+    });
+
+    await h.service.identifyAfterReply(makeChat());
+
+    expect(h.directory.lookups()).toEqual([
+      { by: 'name', name: 'Тинькофф' },
+      { by: 'name', name: 'Т-Банк' },
+    ]);
+  });
+
+  it('временный сбой поиска по варианту: ничего не запоминается, проверка не запускается', async () => {
+    const h = createHarness({
+      state: tinkoff(),
+      directory: {
+        lookup: (query) =>
+          query.by === 'name' && query.name === 'Т-Банк' ? fail('unavailable') : ok([]),
+        startResearch: () => QUEUED,
+      },
+    });
+
+    await h.service.identifyAfterReply(makeChat());
+
+    expect(h.repo.saves).toEqual([]);
+    expect(h.directory.count('startResearch')).toBe(0);
+  });
+
+  it('ничего ни по названию, ни по вариантам: проверка новой компании получает варианты', async () => {
+    const h = createHarness({
+      state: tinkoff({ statedAliases: ['Т-Банк', 'ТОО Тинькофф', 'Tinkoff'] }),
+      directory: { lookup: () => ok([]), startResearch: () => QUEUED },
+    });
+
+    await h.service.identifyAfterReply(makeChat());
+
+    expect(h.directory.lookups()).toHaveLength(3);
+    expect(h.directory.calls.find((call) => call.method === 'startResearch')).toMatchObject({
+      request: { name: 'Тинькофф', aliases: ['Т-Банк', 'Tinkoff'], city: 'Астана' },
+    });
+  });
+});
+
 describe('identifyAfterReply: проверка новой компании', () => {
   it('компания не найдена: запускается проверка с названием, городом, номером и доменом', async () => {
     const h = createHarness({

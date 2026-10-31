@@ -352,9 +352,40 @@ describe('normalizeInterest: что клиент сказал о компани�
     expect(assessment.company).toEqual({
       name: 'ТОО «Альфа»',
       city: null,
+      aliases: [],
       answer: 'yes',
       pains: ['теряется инструмент', 'долгий пересчёт', 'партии'],
     });
+  });
+
+  it('варианты названия чистятся как название: пустые и повторы (без учёта регистра) убраны, до трёх, до 200 знаков', () => {
+    const assessment = normalizeInterest(
+      {
+        ...RAW,
+        companyName: 'Тинькофф',
+        companyAliases: [
+          ' Т-Банк\t',
+          'тинькофф',
+          '',
+          'т-банк',
+          'Tinkoff',
+          'В'.repeat(250),
+          'Пятый',
+        ],
+      },
+      EMPTY_PROFILE,
+    );
+
+    expect(assessment.company?.aliases).toEqual(['Т-Банк', 'Tinkoff', 'В'.repeat(200)]);
+  });
+
+  it('клиент компанию не называл: вариантов нет, даже если модель их прислала', () => {
+    const assessment = normalizeInterest(
+      { ...RAW, companyName: '  ', companyAliases: ['Т-Банк'] },
+      EMPTY_PROFILE,
+    );
+
+    expect(assessment.company).toMatchObject({ name: null, aliases: [] });
   });
 
   it('название и город обрезаются по пределам API: 200 и 100 знаков', () => {

@@ -32,6 +32,8 @@ export interface InterestScript {
   readonly companyName?: string | null;
   /** Город компании со слов клиента; по умолчанию null. */
   readonly companyCity?: string | null;
+  /** Варианты названия компании клиента; по умолчанию пусто. */
+  readonly companyAliases?: readonly string[];
   /** Ответ на вопрос «Вы из компании X?»; по умолчанию none. */
   readonly companyAnswer?: 'yes' | 'no' | 'none';
   /** Боли, с которыми клиент согласился; по умолчанию пусто. */
@@ -76,7 +78,10 @@ export interface ScriptedLlm {
 /** Так отвечает модель: невыясненное текстовое поле пустая строка (null только у has1C), см. interestSchema. */
 function asModelOutput(value: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
-    Object.entries(value).map(([key, field]) => [key, field === null && key !== 'has1C' ? '' : field]),
+    Object.entries(value).map(([key, field]) => [
+      key,
+      field === null && key !== 'has1C' ? '' : field,
+    ]),
   );
 }
 
@@ -107,6 +112,7 @@ function rawInterest(level: InterestLevel, interest: InterestScript = {}): unkno
     reason: 'по разговору',
     companyName: interest.companyName ?? null,
     companyCity: interest.companyCity ?? null,
+    companyAliases: interest.companyAliases ?? [],
     companyAnswer: interest.companyAnswer ?? 'none',
     confirmedPains: interest.confirmedPains ?? [],
     priceAsked: interest.priceAsked ?? false,

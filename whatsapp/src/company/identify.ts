@@ -3,7 +3,7 @@ import type { Chat } from '../domain/types.js';
 import { clipText } from './clip-text.js';
 import { contactJid, type CompanyEnv } from './env.js';
 import { logFailure } from './log.js';
-import { lookupCompany } from './lookup-step.js';
+import { lookupCompany, lookupStatedNames, statedNames } from './lookup-step.js';
 import { normalizeName } from './normalize-name.js';
 import { recheckCandidate } from './recheck.js';
 import { startResearch } from './research.js';
@@ -16,10 +16,11 @@ const MAX_PHOTO_BYTES = 1_000_000;
 const MAX_LOGO_NAME_CHARS = 200;
 
 /**
- * Шаг г: поиск по названию со слов клиента. Название уже искали (после нормализации то же): повторный поиск не нужен,
- * но проверка новой компании, которой ещё не было, запускается (так повторяется запуск, не дошедший до проекта B).
- * Поиск не получил ответа по существу (см. LookupOutcome retry): ничего не запоминается и проверка не запускается,
- * повтор позже. Не нашли и проверки ещё не было: запуск проверки новой компании (один раз на чат).
+ * Шаг г: поиск по названию со слов клиента, затем по его вариантам (lookupStatedNames). Название уже искали (после
+ * нормализации то же): повторный поиск не нужен, но проверка новой компании, которой ещё не было, запускается (так
+ * повторяется запуск, не дошедший до проекта B). Поиск не получил ответа по существу (см. LookupOutcome retry):
+ * ничего не запоминается и проверка не запускается, повтор позже. Не нашли ни по названию, ни по вариантам и проверки
+ * ещё не было: запуск проверки новой компании (один раз на чат) с теми же вариантами.
  */
 async function identifyByName(
   env: CompanyEnv,
@@ -31,13 +32,8 @@ async function identifyByName(
   if (normalized === '') return state;
   let searched = state;
   if (normalized !== state.lookedUpName) {
-    const outcome = await lookupCompany(
-      env,
-      chat.id,
-      'message',
-      { by: 'name', name },
-      state.rejectedIds,
-    );
+    const names = statedNames(name, state.statedAliases);
+    const outcome = await lookupStatedNames(env, chat.id, names, state.rejectedIds);
     if (outcome.kind === 'retry') return state;
     searched = { ...state, lookedUpName: normalized };
     if (outcome.kind === 'found') {

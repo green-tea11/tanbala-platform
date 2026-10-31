@@ -20,6 +20,8 @@ const MAX_COMPANY_NAME_CHARS = 200;
 const MAX_CITY_CHARS = 100;
 /** Подтверждённых болей в одной оценке не больше трёх. */
 const MAX_PAINS = 3;
+/** Вариантов названия компании не больше трёх: больше проверка новой компании в проекте B не принимает. */
+const MAX_COMPANY_ALIASES = 3;
 
 /** Ничего не выяснено: блок данных не пустой, и модель знает, что все поля пока null. */
 const NOTHING_KNOWN = 'В выжимке пока ничего нет: клиент ещё ничего о себе не рассказал.';
@@ -38,9 +40,7 @@ export const interestSchema = z.object({
     .string()
     .describe('Что лежит на хранении и что клиент хочет метить; иначе пустая строка.'),
   packaging: z.string().describe('В чём вещи: коробки, паллеты, поштучно; иначе пустая строка.'),
-  material: z
-    .string()
-    .describe('Материал вещей (металл, жидкости и другое); иначе пустая строка.'),
+  material: z.string().describe('Материал вещей (металл, жидкости и другое); иначе пустая строка.'),
   city: z.string().describe('Город объекта; иначе пустая строка.'),
   premises: z
     .string()
@@ -67,13 +67,22 @@ export const interestSchema = z.object({
     .nullable(),
   problem: z
     .string()
-    .describe('Что мешает в нынешнем учёте, какую проблему клиент хочет решить; иначе пустая строка.'),
+    .describe(
+      'Что мешает в нынешнем учёте, какую проблему клиент хочет решить; иначе пустая строка.',
+    ),
   specifics: z.string().describe('Особенности со слов клиента; пустая строка, если их нет.'),
   reason: z.string().describe('Одна короткая фраза: почему выбран этот уровень.'),
   companyName: z
     .string()
-    .describe('Название компании клиента, если клиент сам его написал или сказал; иначе пустая строка.'),
+    .describe(
+      'Название компании клиента, если клиент сам его написал или сказал; иначе пустая строка.',
+    ),
   companyCity: z.string().describe('Город компании клиента с его слов; иначе пустая строка.'),
+  companyAliases: z
+    .array(z.string())
+    .describe(
+      'До трёх других вариантов названия из companyName для поиска: с формой собственности и без, латиницей и кириллицей, нынешнее название бренда вместо старого (Тинькофф: Т-Банк, Tinkoff); если companyName пустой, пустой список.',
+    ),
   companyAnswer: z
     .enum(['yes', 'no', 'none'])
     .describe(
@@ -133,6 +142,7 @@ export interface RawInterest {
   readonly reason: string;
   readonly companyName?: string | null;
   readonly companyCity?: string | null;
+  readonly companyAliases?: readonly string[];
   readonly companyAnswer?: CompanyMention['answer'];
   readonly confirmedPains?: readonly string[];
   readonly oneCName?: string | null;
@@ -179,15 +189,34 @@ function companyField(value: string | null | undefined, maxChars: number): strin
 }
 
 /**
- * Что клиент сказал о компании: название и город (поиск идёт только через API почтового проекта), ответ на вопрос
- * «Вы из компании X?» и подтверждённые боли (до трёх, без пустых). Модель не прислала ни одного поля о компании
- * => undefined: так отвечают подделки LLM, настоящая схема требует все поля.
+ * Варианты названия: каждый чистится как название (одна строка, до 200 знаков), пустые и повторы самого названия
+ * или друг друга без учёта регистра отбрасываются, не больше трёх. Названия нет => вариантов нет.
+ */
+function companyAliases(name: string | null, raw: readonly string[] | undefined): string[] {
+  if (name === null) return [];
+  const seen = new Set([name.toLowerCase()]);
+  const aliases: string[] = [];
+  for (const item of raw ?? []) {
+    const alias = companyField(item, MAX_COMPANY_NAME_CHARS);
+    if (alias === null || seen.has(alias.toLowerCase())) continue;
+    seen.add(alias.toLowerCase());
+    aliases.push(alias);
+  }
+  return aliases.slice(0, MAX_COMPANY_ALIASES);
+}
+
+/**
+ * Что клиент сказал о компании: название, его варианты и город (поиск идёт только через API почтового проекта),
+ * ответ на вопрос «Вы из компании X?» и подтверждённые боли (до трёх, без пустых). Модель не прислала ни одного поля о
+ * компании => undefined: так отвечают подделки LLM, настоящая схема требует все поля.
  */
 function companyMention(raw: RawInterest): CompanyMention | undefined {
-  const { companyName, companyCity, companyAnswer, confirmedPains } = raw;
+  const { companyName, companyCity, companyAliases: rawAliases, companyAnswer } = raw;
+  const { confirmedPains } = raw;
   if (
     companyName === undefined &&
     companyCity === undefined &&
+    rawAliases === undefined &&
     companyAnswer === undefined &&
     confirmedPains === undefined
   ) {
@@ -197,9 +226,11 @@ function companyMention(raw: RawInterest): CompanyMention | undefined {
     .map((pain) => cleanLine(pain, MAX_FIELD_CHARS))
     .filter((pain) => pain !== '')
     .slice(0, MAX_PAINS);
+  const name = companyField(companyName, MAX_COMPANY_NAME_CHARS);
   return {
-    name: companyField(companyName, MAX_COMPANY_NAME_CHARS),
+    name,
     city: companyField(companyCity, MAX_CITY_CHARS),
+    aliases: companyAliases(name, rawAliases),
     answer: companyAnswer ?? 'none',
     pains,
   };

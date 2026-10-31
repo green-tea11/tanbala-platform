@@ -43,6 +43,7 @@ const REPLIES = [
     reason: 'Рассказал о бизнесе',
     companyName: 'ТОО Альфа',
     companyCity: '',
+    companyAliases: [],
     companyAnswer: 'none',
     confirmedPains: ['пересчёт занимает дни'],
     oneCName: '',
@@ -172,6 +173,7 @@ describe('агент с настоящим адаптером Anthropic', () => 
           'reason',
           'companyName',
           'companyCity',
+          'companyAliases',
           'companyAnswer',
           'confirmedPains',
           'oneCName',
@@ -237,6 +239,7 @@ describe('агент с настоящим адаптером Anthropic', () => 
         company: {
           name: 'ТОО Альфа',
           city: null,
+          aliases: [],
           answer: 'none',
           pains: ['пересчёт занимает дни'],
         },

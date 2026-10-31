@@ -127,7 +127,7 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
         level: 'cold',
         profile: EMPTY_PROFILE,
         reason: 'по разговору',
-        company: { name: null, city: null, answer: 'none', pains: [] },
+        company: { name: null, city: null, aliases: [], answer: 'none', pains: [] },
         signals: { priceAsked: false, refused: false },
       },
       NOW,

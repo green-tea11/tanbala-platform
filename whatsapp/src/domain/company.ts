@@ -205,6 +205,11 @@ export interface ChatCompanyState {
   /** Название и город компании со слов клиента (оценка интереса). */
   readonly statedName: string | null;
   readonly statedCity: string | null;
+  /**
+   * Варианты названия statedName от оценки интереса (до трёх: с формой собственности и без, латиницей и кириллицей,
+   * нынешнее название бренда): по ним ищут, если по самому названию ничего нет. Пусто: вариантов нет.
+   */
+  readonly statedAliases: readonly string[];
   /** Название, по которому уже искали (шаг г, после нормализации): по тому же названию повторно не ищут. */
   readonly lookedUpName: string | null;
   readonly candidate: ChatCandidate | null;
@@ -255,6 +260,11 @@ export interface CompanyMention {
   readonly name: string | null;
   /** Город компании со слов клиента; иначе null. */
   readonly city: string | null;
+  /**
+   * Другие варианты названия, которое назвал клиент (до трёх, без повторов названия): с формой собственности и без,
+   * латиницей и кириллицей, нынешнее название бренда вместо старого. Клиент компанию не называл: пусто.
+   */
+  readonly aliases: readonly string[];
   /** Ответ на вопрос бота «Вы из компании X?»: yes, no или none (не отвечал или вопроса не было). */
   readonly answer: 'yes' | 'no' | 'none';
   /** Боли, с которыми клиент согласился или о которых рассказал сам, коротко; до трёх. */

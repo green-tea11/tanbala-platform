@@ -10,12 +10,15 @@ import type {
 } from '../domain/company.js';
 import type { BusinessProfileResult } from '../domain/ports.js';
 import { clipText } from './clip-text.js';
+import { normalizeName } from './normalize-name.js';
 import { domainFromProfile } from './profile-domain.js';
 import { candidateInReply, type ReplyMention } from './reply-mention.js';
 
 /** Длина названия и города со слов клиента: как ограничивает их проект B. */
 const MAX_STATED_NAME_CHARS = 200;
 const MAX_STATED_CITY_CHARS = 100;
+/** Вариантов названия не больше трёх: больше проверка новой компании в проекте B не принимает. */
+const MAX_STATED_ALIASES = 3;
 
 // Переходы состояния определения компании: чистые функции, каждая возвращает новое состояние. Когда менять нечего
 // (нет кандидата, вопрос уже задавался), возвращается то же состояние: вызывающий видит, что писать в базу не надо.
@@ -179,15 +182,44 @@ export function withBrief(
 }
 
 /**
- * Название и город компании со слов клиента: пробелы по краям убираются, название до 200 знаков, город до 100.
- * Пустое значение прежнее не стирает, новое непустое заменяет старое.
+ * Варианты названия name: каждый как название (до 200 знаков, пустые отброшены), не больше трёх. Модель вариантов не
+ * прислала, а название то же после нормализации: прежние варианты остаются; другое название: вариантов нет.
+ */
+function aliasesFor(
+  state: ChatCompanyState,
+  name: string,
+  fresh: readonly string[],
+): readonly string[] {
+  const aliases = fresh
+    .flatMap((alias) => clipText(alias, MAX_STATED_NAME_CHARS) ?? [])
+    .slice(0, MAX_STATED_ALIASES);
+  if (aliases.length > 0) return aliases;
+  const sameName =
+    state.statedName !== null && normalizeName(state.statedName) === normalizeName(name);
+  return sameName ? state.statedAliases : [];
+}
+
+function sameList(first: readonly string[], second: readonly string[]): boolean {
+  return first.length === second.length && first.every((item, index) => item === second[index]);
+}
+
+/**
+ * Название, его варианты и город компании со слов клиента: пробелы по краям убираются, название и варианты до
+ * 200 знаков, город до 100. Пустое значение прежнее не стирает, новое непустое заменяет старое; варианты идут вместе
+ * с названием (aliasesFor). Ничего не изменилось: то же состояние.
  */
 export function withStatedCompany(
   state: ChatCompanyState,
-  mention: Pick<CompanyMention, 'name' | 'city'>,
+  mention: Pick<CompanyMention, 'name' | 'city' | 'aliases'>,
 ): ChatCompanyState {
-  const statedName = clipText(mention.name, MAX_STATED_NAME_CHARS) ?? state.statedName;
+  const name = clipText(mention.name, MAX_STATED_NAME_CHARS);
+  const statedName = name ?? state.statedName;
   const statedCity = clipText(mention.city, MAX_STATED_CITY_CHARS) ?? state.statedCity;
-  if (statedName === state.statedName && statedCity === state.statedCity) return state;
-  return { ...state, statedName, statedCity };
+  const statedAliases =
+    name === null ? state.statedAliases : aliasesFor(state, name, mention.aliases);
+  const unchanged =
+    statedName === state.statedName &&
+    statedCity === state.statedCity &&
+    sameList(statedAliases, state.statedAliases);
+  return unchanged ? state : { ...state, statedName, statedCity, statedAliases };
 }

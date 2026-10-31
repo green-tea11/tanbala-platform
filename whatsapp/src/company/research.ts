@@ -14,6 +14,7 @@ import type { Chat, ChatId } from '../domain/types.js';
 import { isTransientBriefFailure } from './api-failures.js';
 import type { CompanyEnv } from './env.js';
 import { logFailure } from './log.js';
+import { statedNames } from './lookup-step.js';
 import { searchPhone } from './search-phone.js';
 import { candidateFromBrief, isRunning, type RunningResearch } from './transitions.js';
 
@@ -208,13 +209,14 @@ function queueResearch(
 }
 
 /**
- * Запрос проверки: название со слов клиента, его город, домен из бизнес-профиля и номер из адреса с номером, но
- * номер только у бизнес-аккаунта (номер частного человека в проверку компании не отдаём).
+ * Запрос проверки: название со слов клиента, его варианты (без повторов названия после нормализации), город, домен из
+ * бизнес-профиля и номер из адреса с номером, но номер только у бизнес-аккаунта (номер частного человека в проверку
+ * компании не отдаём).
  */
 function researchRequest(chat: Chat, state: ChatCompanyState, name: string): ResearchRequest {
   return {
     name,
-    aliases: [],
+    aliases: statedNames(name, state.statedAliases).slice(1),
     city: state.statedCity,
     phone: state.profileKind === 'business' ? searchPhone(chat.identity.pnJid) : null,
     domain: state.profileDomain,

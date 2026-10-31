@@ -8,6 +8,7 @@ import type { ChatId } from '../domain/types.js';
 import { isTransientFailure } from './api-failures.js';
 import type { CompanyEnv } from './env.js';
 import { logFailure } from './log.js';
+import { normalizeName } from './normalize-name.js';
 import { pickCandidate } from './pick-candidate.js';
 
 /**
@@ -38,4 +39,34 @@ export async function lookupCompany(
   }
   const candidate = pickCandidate(result.value, rejectedIds);
   return candidate === null ? { kind: 'none' } : { kind: 'found', candidate };
+}
+
+/**
+ * Названия для поиска по словам клиента по порядку: само название, затем его варианты (statedAliases). Пустые после
+ * нормализации и повторы (после нормализации: регистр, кавычки, формы собственности не в счёт) пропускаются.
+ */
+export function statedNames(name: string, aliases: readonly string[]): readonly string[] {
+  const all = [name, ...aliases];
+  const keys = all.map(normalizeName);
+  return all.filter((_item, index) => {
+    const key = keys[index] ?? '';
+    return key !== '' && keys.indexOf(key) === index;
+  });
+}
+
+/**
+ * Шаг г: поиск по названию клиента, затем по каждому варианту по очереди (statedNames). Первая находка или временный
+ * сбой (retry) останавливает поиск; ни по одному ничего: none.
+ */
+export async function lookupStatedNames(
+  env: CompanyEnv,
+  chatId: ChatId,
+  names: readonly string[],
+  rejectedIds: readonly CompanyId[],
+): Promise<LookupOutcome> {
+  for (const name of names) {
+    const outcome = await lookupCompany(env, chatId, 'message', { by: 'name', name }, rejectedIds);
+    if (outcome.kind !== 'none') return outcome;
+  }
+  return { kind: 'none' };
 }

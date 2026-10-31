@@ -128,6 +128,7 @@ const storedSchema: z.ZodType<StoredCompanyState> = z.object({
   logoCheckedAtMs: timeMs.nullable(),
   statedName: nullableText,
   statedCity: nullableText,
+  statedAliases: z.array(z.string()).default([]),
   lookedUpName: nullableText,
   candidate: candidateSchema.nullable(),
   rejectedIds: z.array(companyId),
@@ -151,6 +152,7 @@ export function emptyCompanyState(chatId: ChatId): ChatCompanyState {
     logoCheckedAtMs: null,
     statedName: null,
     statedCity: null,
+    statedAliases: [],
     lookedUpName: null,
     candidate: null,
     rejectedIds: [],
@@ -169,8 +171,8 @@ export function emptyCompanyState(chatId: ChatId): ChatCompanyState {
  * Здесь же числа из JSON приводятся к брендам (CompanyId, ResearchJobId), а форма проверяется zod.
  * get: записи нет => пустое состояние; запись испорчена (не JSON или не по схеме) => тоже пустое состояние и
  * предупреждение в лог (только ID чата, без содержимого записи), исключения нет: бот работает без данных о
- * компании, а следующая запись исправит строку. Неизвестные поля в JSON отбрасываются; счётчиков и отметки запуска
- * проверки в старых записях нет: 0 и null.
+ * компании, а следующая запись исправит строку. Неизвестные поля в JSON отбрасываются; счётчиков, отметки запуска
+ * проверки и вариантов названия в старых записях нет: 0, null и пустой список.
  * save: записывает состояние целиком (по state.chatId), справку без неиспользуемых полей; чата нет => ошибка
  * внешнего ключа, как у остальных репозиториев.
  * countResearchStarts: отметки researchStartedAtMs всех чатов позже границы; испорченная запись не считается.

@@ -39,7 +39,7 @@ function mergedCandidate(
  * обеих: из более свежей); отметка запуска проверки наибольшая; счётчики по максимуму. Остальное из более свежей
  * записи, но пустое там (null, пустой список болей, неизвестный вид аккаунта) не затирает известное в другой: иначе
  * после слияния бот снова прошёл бы платный шаг логотипа или второй раз спросил бы название. Бизнес-профиль берётся
- * парой (вид аккаунта и домен). Входные состояния не меняются; поля сверх состояния (ID чата) идут из fresher.
+ * парой (вид аккаунта и домен), название со слов клиента тоже парой с его вариантами. Входные состояния не меняются; поля сверх состояния (ID чата) идут из fresher.
  */
 export function mergeCompanyStates<T extends StoredCompanyState>(
   fresher: T,
@@ -48,6 +48,7 @@ export function mergeCompanyStates<T extends StoredCompanyState>(
   const profile = knowsProfile(fresher) || !knowsProfile(older) ? fresher : older;
   const rejectedIds = [...new Set([...older.rejectedIds, ...fresher.rejectedIds])];
   const confirmed = fresher.confirmed ?? older.confirmed;
+  const named = fresher.statedName === null ? older : fresher;
   return {
     ...fresher,
     profileKind: profile.profileKind,
@@ -55,7 +56,8 @@ export function mergeCompanyStates<T extends StoredCompanyState>(
     profileRequests: Math.max(fresher.profileRequests, older.profileRequests),
     freeStepsAtMs: fresher.freeStepsAtMs ?? older.freeStepsAtMs,
     logoCheckedAtMs: fresher.logoCheckedAtMs ?? older.logoCheckedAtMs,
-    statedName: fresher.statedName ?? older.statedName,
+    statedName: named.statedName,
+    statedAliases: named.statedAliases,
     statedCity: fresher.statedCity ?? older.statedCity,
     lookedUpName: fresher.lookedUpName ?? older.lookedUpName,
     candidate: mergedCandidate(fresher, older, confirmed, rejectedIds),

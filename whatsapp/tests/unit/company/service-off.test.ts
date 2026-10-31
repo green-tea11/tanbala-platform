@@ -17,6 +17,7 @@ import { createHarness, makeMessage } from './fakes.js';
 const MENTION: CompanyMention = {
   name: 'Платформа-А',
   city: 'Алматы',
+  aliases: [],
   answer: 'yes',
   pains: ['Пересорт при приёмке', 'Долгая инвентаризация'],
 };

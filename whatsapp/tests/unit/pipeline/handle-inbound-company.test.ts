@@ -53,8 +53,20 @@ const USUAL: CompanyTurn = { prompt: CANDIDATE, awaitingAnswer: false };
 
 const SECOND = 'Подберём учёт под вашу задачу. Что вы храните?';
 
-const YES: CompanyMention = { name: null, city: null, answer: 'yes', pains: ['Пересорт'] };
-const NAMED: CompanyMention = { name: 'ТОО Склад', city: 'Алматы', answer: 'none', pains: [] };
+const YES: CompanyMention = {
+  name: null,
+  city: null,
+  aliases: [],
+  answer: 'yes',
+  pains: ['Пересорт'],
+};
+const NAMED: CompanyMention = {
+  name: 'ТОО Склад',
+  city: 'Алматы',
+  aliases: [],
+  answer: 'none',
+  pains: [],
+};
 
 function assessedWith(company: CompanyMention): LlmResult<InterestAssessment> {
   return {

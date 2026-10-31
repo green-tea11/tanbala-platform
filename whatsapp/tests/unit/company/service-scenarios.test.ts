@@ -40,7 +40,13 @@ async function conversation(h: Harness, reply: Reply = {}): Promise<Outcome> {
   return { turn, prompt };
 }
 
-const NO_ANSWER: CompanyMention = { name: null, city: null, answer: 'none', pains: [] };
+const NO_ANSWER: CompanyMention = {
+  name: null,
+  city: null,
+  aliases: [],
+  answer: 'none',
+  pains: [],
+};
 const YES: CompanyMention = { ...NO_ANSWER, answer: 'yes' };
 const NO: CompanyMention = { ...NO_ANSWER, answer: 'no' };
 

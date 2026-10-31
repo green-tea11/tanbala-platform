@@ -399,9 +399,10 @@ describe('withBrief', () => {
 });
 
 describe('withStatedCompany', () => {
-  const mention = (name: string | null, city: string | null) => ({
+  const mention = (name: string | null, city: string | null, aliases: readonly string[] = []) => ({
     name,
     city,
+    aliases,
     answer: 'none' as const,
     pains: [],
   });
@@ -446,5 +447,34 @@ describe('withStatedCompany', () => {
     const state = makeState({ statedName: 'Старое' });
 
     expect(withStatedCompany(state, mention(null, null))).toBe(state);
+  });
+
+  it('варианты названия записываются вместе с названием, до трёх и до 200 знаков', () => {
+    const next = withStatedCompany(
+      deepFreeze(makeState()),
+      mention('Тинькофф', null, [' Т-Банк ', 'Tinkoff', 'В'.repeat(250), 'Четвёртый']),
+    );
+
+    expect(next).toMatchObject({
+      statedName: 'Тинькофф',
+      statedAliases: ['Т-Банк', 'Tinkoff', 'В'.repeat(200)],
+    });
+  });
+
+  it('то же название без вариантов: прежние варианты остаются; новое название без вариантов их снимает', () => {
+    const state = makeState({ statedName: 'Тинькофф', statedAliases: ['Т-Банк'] });
+
+    expect(withStatedCompany(state, mention('ТОО «тинькофф»', null))).toMatchObject({
+      statedName: 'ТОО «тинькофф»',
+      statedAliases: ['Т-Банк'],
+    });
+    expect(withStatedCompany(state, mention('Береке', null)).statedAliases).toEqual([]);
+    expect(withStatedCompany(state, mention(null, 'Алматы')).statedAliases).toEqual(['Т-Банк']);
+  });
+
+  it('те же название и варианты: возвращается то же состояние', () => {
+    const state = makeState({ statedName: 'Тинькофф', statedAliases: ['Т-Банк', 'Tinkoff'] });
+
+    expect(withStatedCompany(state, mention('Тинькофф', null, ['Т-Банк', 'Tinkoff']))).toBe(state);
   });
 });

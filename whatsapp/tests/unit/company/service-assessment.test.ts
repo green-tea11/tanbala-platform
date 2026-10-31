@@ -19,7 +19,7 @@ import { createHarness, fail, lookupBy, makeMessage, ok, PHOTO } from './fakes.j
 const ASKED = makeChatCandidate({ source: 'phone', askedAtMs: NOW - 5000, awaitingAnswer: true });
 
 function mention(overrides: Partial<CompanyMention> = {}): CompanyMention {
-  return { name: null, city: null, answer: 'none', pains: [], ...overrides };
+  return { name: null, city: null, aliases: [], answer: 'none', pains: [], ...overrides };
 }
 
 function waiting(overrides: Partial<ChatCompanyState> = {}): ChatCompanyState {

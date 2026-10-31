@@ -53,6 +53,30 @@ function withCandidate(
   return makeState({ freeStepsAtMs: NOW - MINUTE_MS, candidate, ...overrides });
 }
 
+describe('identifyAfterReply: клиент назвал компанию при кандидате, варианты названия', () => {
+  it('по названию клиента ничего, по варианту нашлась другая компания: кандидат заменён', async () => {
+    const h = createHarness({
+      state: withCandidate(UNASKED, {
+        statedName: 'Бетта',
+        statedCity: 'Караганда',
+        statedAliases: ['Бета'],
+      }),
+      directory: {
+        lookup: (query) =>
+          query.by === 'name' && query.name === 'Бета' ? ok([BETA_FOUND]) : ok([]),
+      },
+    });
+
+    await h.service.identifyAfterReply(makeChat());
+
+    expect(h.directory.lookups()).toEqual([
+      { by: 'name', name: 'Бетта' },
+      { by: 'name', name: 'Бета' },
+    ]);
+    expect(h.repo.current().candidate).toMatchObject({ id: companyIdOf(9), source: 'message' });
+  });
+});
+
 describe('identifyAfterReply: клиент назвал компанию при кандидате', () => {
   it('пример владельца: кандидат по номеру «Magnum Cash&Carry», клиент сказал «Magnum», поиск нашёл тот же ID: кандидат остаётся', async () => {
     const h = createHarness({
@@ -262,6 +286,7 @@ describe('applyAssessment: клиент назвал компанию при к�
     const prompt = await h.service.applyAssessment(CHAT_ID, {
       name: 'Бета',
       city: null,
+      aliases: [],
       answer: 'none',
       pains: [],
     });

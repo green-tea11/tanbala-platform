@@ -89,6 +89,7 @@ const FIELD_NAMES = [
   'reason',
   'companyName',
   'companyCity',
+  'companyAliases',
   'companyAnswer',
   'confirmedPains',
   'oneCName',
@@ -101,6 +102,7 @@ const FIELD_NAMES = [
 const NO_COMPANY = {
   companyName: null,
   companyCity: null,
+  companyAliases: [],
   companyAnswer: 'none',
   confirmedPains: [],
 } as const;
@@ -170,7 +172,7 @@ describe('createAgent: assessInterest, запрос', () => {
     expect(last).not.toMatch(/Уровень/);
   });
 
-  it('схема оценки: плоский объект из двадцати восьми полей, все обязательны', async () => {
+  it('схема оценки: плоский объект из двадцати девяти полей, все обязательны', async () => {
     const { requests } = await assess({ ok: true, value: NOTHING_NEW });
     const { schema } = onlyRequest(requests);
 
@@ -208,6 +210,24 @@ describe('createAgent: assessInterest, запрос', () => {
     expect(schema.safeParse({ ...full, companyAnswer: 'maybe' }).success).toBe(false);
     expect(schema.safeParse({ ...full, confirmedPains: 'теряются вещи' }).success).toBe(false);
     expect(schema.safeParse({ ...full, monthlyIntake: null }).success).toBe(false);
+    expect(schema.safeParse({ ...full, companyAliases: null }).success).toBe(false);
+    expect(schema.safeParse({ ...full, companyAliases: 'Т-Банк' }).success).toBe(false);
+    expect(schema.safeParse({ ...full, companyAliases: ['Т-Банк', 'Tinkoff'] }).success).toBe(true);
+  });
+
+  it('варианты названия: список строк (не nullable) с описанием, в инструкции пример со старым брендом', async () => {
+    const { requests } = await assess({ ok: true, value: NOTHING_NEW });
+    const request = onlyRequest(requests);
+    const json = zodOutputFormat(request.schema).schema;
+    const properties = json['properties'] as Record<string, Record<string, unknown>>;
+    const instruction = request.system.map((block) => block.text).join(' ');
+
+    expect(properties['companyAliases']).toMatchObject({ type: 'array' });
+    expect(properties['companyAliases']).not.toHaveProperty('anyOf');
+    expect(String(properties['companyAliases']?.['description'])).toContain('Т-Банк');
+    expect(instruction).toContain('companyAliases');
+    expect(instruction).toContain('«Тинькофф»');
+    expect(instruction).toContain('«Т-Банк»');
   });
 
   it('схема оценки: новые поля для расчёта (30.10.2026) строками с описанием; вещи это то, что на хранении', async () => {

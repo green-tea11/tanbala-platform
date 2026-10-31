@@ -47,6 +47,7 @@ function fullState(chatId: ChatId): ChatCompanyState {
     logoCheckedAtMs: NOW + 1,
     statedName: 'Платформа-А',
     statedCity: 'Алматы',
+    statedAliases: ['Platforma-A', 'Платформа А'],
     lookedUpName: 'платформа а',
     candidate: makeChatCandidate({ source: 'message', askedAtMs: NOW + 2, awaitingAnswer: true }),
     rejectedIds: [companyIdOf(3), companyIdOf(5)],
@@ -140,6 +141,7 @@ describe('createChatCompaniesRepo: чтение и запись', () => {
       logoCheckedAtMs: null,
       statedName: null,
       statedCity: null,
+      statedAliases: [],
       lookedUpName: null,
       candidate: null,
       rejectedIds: [],
@@ -261,13 +263,16 @@ describe('createChatCompaniesRepo: чтение и запись', () => {
     expect(text).not.toContain('Ответственное хранение');
   });
 
-  it('старая запись без счётчиков и с полной справкой читается: счётчики 0, отметки запуска нет', () => {
+  it('старая запись без счётчиков, вариантов названия и с полной справкой читается: счётчики 0, отметки запуска нет, вариантов нет', () => {
     const { db, repo, chatId } = setup();
     const full = makeState({ confirmed: makeConfirmed({ brief: makeBrief(), briefAtMs: NOW }) });
-    const old = ['profileRequests', 'briefFailures', 'researchStartedAtMs', 'adoptFailures'].reduce(
-      (stored, key) => omit(stored, key),
-      storedOf(full),
-    );
+    const old = [
+      'profileRequests',
+      'briefFailures',
+      'researchStartedAtMs',
+      'adoptFailures',
+      'statedAliases',
+    ].reduce((stored, key) => omit(stored, key), storedOf(full));
     insertRaw(db, chatId, JSON.stringify(old));
 
     expect(repo.get(chatId)).toEqual(

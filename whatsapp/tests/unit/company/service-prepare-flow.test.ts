@@ -114,6 +114,7 @@ describe('prepare: порядок и остановка шагов', () => {
     await h.service.applyAssessment(makeChat().id, {
       name: null,
       city: null,
+      aliases: [],
       answer: 'no',
       pains: [],
     });
