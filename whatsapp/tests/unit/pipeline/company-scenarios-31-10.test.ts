@@ -84,6 +84,44 @@ function requestLines(calls: readonly ApiCall[]): string[] {
   return calls.map((call) => `${call.method} ${call.path} ${JSON.stringify(call.query)}`);
 }
 
+const JOB_ID = '5a1e2b3c-4d5e-4f60-8a7b-9c0d1e2f3a4b';
+const SEARCHING =
+  'Клиент назвал свою компанию, система ищет данные о ней, пока их нет. Боль бери из consult.md по бизнесу клиента.';
+
+describe('31.10: пока идёт проверка новой компании', () => {
+  it('ответ видит, что данных пока нет и боль из consult.md; справка пришла: со следующего ответа боли компании', async () => {
+    let status: 'running' | 'done' = 'running';
+    const s = createScenario({
+      api: {
+        research: () => json(202, { job_id: JOB_ID }),
+        status: () =>
+          json(200, status === 'done' ? { status, brief: tBankBrief() } : { status, brief: null }),
+        brief: () => json(200, tBankBrief()),
+      },
+    });
+
+    await s.say('Здравствуйте', turn(answer(INTRO, 'intro', 'name')));
+    const named = await s.say(
+      'Т-Банк, Алматы',
+      turn(answer(HOOK, 'hook'), { companyName: T_BANK, companyCity: 'Алматы', profile: BANK }),
+    );
+    const waiting = await s.say('Нет, расскажите подробнее', turn(answer(EXPLAIN, 'explain')));
+    status = 'done';
+    const ready = await s.say('Склад и архив', turn(answer(HOOK, 'details')));
+
+    expect(named.api.at(-1)?.path).toBe('/internal/research');
+    expect(waiting.data('reply')).toContain(SEARCHING);
+    expect(waiting.data('reply')).not.toContain(PAIN_ARCHIVE);
+    // Проверка нашла компанию в городе клиента: подтверждена без вопроса, справка запрошена в этом же ходе.
+    expect(requestLines(ready.api)).toEqual([
+      `GET /internal/research/${JOB_ID} {}`,
+      `GET /internal/companies/${T_BANK_ID}/brief {}`,
+    ]);
+    expect(ready.data('reply')).not.toContain(SEARCHING);
+    expect(ready.data('reply')).toContain(PAIN_ARCHIVE);
+  });
+});
+
 describe('31.10: «Тинькофф, банки», в базе почты бренд «Т-Банк»', () => {
   it('поиск по «Тинькофф» пуст, по варианту «Т-Банк» найден: компания подтверждена без вопроса, следующий ответ видит боли справки', async () => {
     const s = createScenario({
