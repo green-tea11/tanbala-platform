@@ -20,6 +20,7 @@ import {
   countSentences,
   normalizeDraft,
   runCodeChecks,
+  stripFactNumbers,
   type CheckCode,
   type CheckFinding,
 } from '../../../src/checks/code-checks.js';
@@ -1538,6 +1539,66 @@ describe('checkFactNumbers: номера сильных сторон не ухо
     'Ридер видит сотни меток за секунду.',
   ])('«%s» не нарушение', (text) => {
     expect(checkFactNumbers(text)).toEqual([]);
+  });
+
+  it('номер внутри названия компании клиента не нарушение, рядом с ним нарушение', () => {
+    const options = { ownPhone: OWN_PHONE, clientText: '', companyName: 'F1 Motors' };
+    const named = normalizeDraft('Вы из компании F1 Motors, правильно?');
+    const leaked = normalizeDraft('Вы из компании F1 Motors, правильно? Это F3.');
+
+    expect(codes(runCodeChecks(named, options)).has('fact_number')).toBe(false);
+    expect(codes(runCodeChecks(leaked, options)).has('fact_number')).toBe(true);
+  });
+});
+
+describe('stripFactNumbers: номера сильных сторон убирает код (пункт 2 задания 01.11.2026)', () => {
+  function strip(text: string, companyName?: string | null): string {
+    return stripFactNumbers(normalizeDraft(text), companyName);
+  }
+
+  it.each([
+    [
+      // Живой черновик «Kusto» 01.11.2026: отклонён проверкой fact_number.
+      'С метками на паллетах и коробках F5 запись о товаре зашита в сам код, и любой ридер видит, что это за товар.',
+      'С метками на паллетах и коробках запись о товаре зашита в сам код, и любой ридер видит, что это за товар.',
+    ],
+    [
+      'Антенны на входе сами отмечают приход (F3). Сколько проходов нужно учитывать?',
+      'Антенны на входе сами отмечают приход. Сколько проходов нужно учитывать?',
+    ],
+    ['Ридер видит сотни меток (F2, F4) за секунду.', 'Ридер видит сотни меток за секунду.'],
+    ['Это F5 и F6 вместе.', 'Это вместе.'],
+    ['F5. Метка хранит сам товар.', 'Метка хранит сам товар.'],
+    ['Метка хранит сам товар F5.', 'Метка хранит сам товар.'],
+    ['Метка хранит товар, F5, и ридер это видит.', 'Метка хранит товар, и ридер это видит.'],
+    ['Сканер f4 видит всё.\nКакая у вас 1С?', 'Сканер видит всё.\nКакая у вас 1С?'],
+    ['Метка [F5] хранит товар.', 'Метка хранит товар.'],
+  ])('«%s» => «%s», и проверки кодом его пропускают', (text, cleaned) => {
+    const result = strip(text);
+
+    expect(result).toBe(cleaned);
+    expect(run(result)).toEqual([]);
+  });
+
+  it.each([
+    'Склад F12 на втором этаже, 1С 8.3.',
+    'Модель FF3 и окно 4F1 не номера.',
+    'Ридер  видит сотни меток , за секунду.',
+  ])('без номеров текст тот же, даже лишние пробелы: «%s»', (text) => {
+    const normalized = normalizeDraft(text);
+
+    expect(stripFactNumbers(normalized)).toBe(normalized);
+  });
+
+  it('номер внутри названия компании клиента остаётся, номер рядом убирается', () => {
+    expect(strip('Вы из компании F1 Motors, правильно? Это F3.', 'F1 Motors')).toBe(
+      'Вы из компании F1 Motors, правильно? Это.',
+    );
+    expect(strip('Это F1 и F2 вместе.', 'F1 Motors')).toBe('Это вместе.');
+  });
+
+  it('текст из одних номеров становится пустым', () => {
+    expect(strip(' F3, F4 ')).toBe('');
   });
 });
 

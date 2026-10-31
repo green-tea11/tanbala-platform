@@ -1,5 +1,5 @@
 import type { Agent, ConversationContext, DraftKind } from '../agent/agent.js';
-import { normalizeDraft, runCodeChecks } from '../checks/code-checks.js';
+import { normalizeDraft, runCodeChecks, stripFactNumbers } from '../checks/code-checks.js';
 import type { CompanyPrompt, CompanyQuestion } from '../domain/company.js';
 import type { ChatsRepo, Clock, Logger, RejectedDraftsRepo } from '../domain/ports.js';
 import type {
@@ -222,7 +222,8 @@ export async function requestAssessment(
  * Шаги 4 и 5 плана и развилка. Оценка интереса сохраняется первой, до любой передачи: уровень и выжимка нужны
  * менеджеру в уведомлении (chats.saveAssessment, уровень и выжимка одной транзакцией). Исчерпан дневной лимит API на
  * черновике или на оценке => limit. Дальше черновик проходит попытку: сбой LLM => llm_error (fail-closed); complaint =>
- * передача с фиксированной фразой; answer, hot, no_answer и asked_human с текстом => normalizeDraft, проверки кодом
+ * передача с фиксированной фразой; answer, hot, no_answer и asked_human с текстом => normalizeDraft и без номеров
+ * сильных сторон (draftTextOf), проверки кодом
  * (checks/code-checks.runCodeChecks; название компании клиента из блока о компании в капслоке, ссылках, тире и подмене
  * букв не нарушение), второй вызов agent.reviewDraft (только если проверки кодом пройдены; у hot, no_answer и
  * asked_human с подписью «сообщение о передаче»), затем pipeline/decide.decideAction: проверяется и уходит один и тот же
@@ -471,7 +472,7 @@ async function judge(flow: Flow, draft: ReplyDraft, attempt: Attempt): Promise<J
   if (draft.outcome === 'answer' && hot !== null && hot !== 'final') {
     return codeHandoff(flow, draft, attempt, hot);
   }
-  const text = normalizeDraft(draft.text);
+  const text = draftTextOf(flow, draft.text);
   const keep = keepOf(draft);
   if (draft.outcome !== 'answer' && text.trim() === '') {
     const empty = { ...draft, text: '' };
@@ -490,6 +491,24 @@ async function judge(flow: Flow, draft: ReplyDraft, attempt: Attempt): Promise<J
   logDroppedText(flow, draft, decision);
   if (draft.outcome !== 'answer') return judgementOf(decision, keep);
   return judgementOf(decision, keep, draft.companyQuestion, marksOf(draft));
+}
+
+/**
+ * Текст черновика для проверок и клиента: normalizeDraft, затем без номеров сильных сторон (F1–F10): их код убирает
+ * сам, а не отклоняет черновик (пункт 2 задания 01.11.2026). Номер внутри названия компании клиента остаётся. Убрал =>
+ * в лог только ID чата.
+ */
+function draftTextOf(flow: Flow, raw: string): NormalizedText {
+  const normalized = normalizeDraft(raw);
+  const text = stripFactNumbers(normalized, companyNameOf(flow.context.company));
+  if (text !== normalized) {
+    const { chatId } = flow.context;
+    flow.deps.logger.info(
+      { chatId },
+      `Номера сильных сторон убраны из текста клиенту: чат #${chatId}`,
+    );
+  }
+  return text;
 }
 
 /**
@@ -549,7 +568,9 @@ async function codeHandoff(
   if (why !== 'refused') return verdictOf(PRICE_HANDOFF);
   // На вопрос цены ответ из черновика не берётся: в нём остаются пересказ слов клиента и обрывки (живой прогон 29.10.2026).
   const part =
-    !signals.priceAsked && clientAsksNow(history) ? answerPartOf(normalizeDraft(draft.text)) : null;
+    !signals.priceAsked && clientAsksNow(history)
+      ? answerPartOf(draftTextOf(flow, draft.text))
+      : null;
   if (part === null) return verdictOf(REFUSED_HANDOFF);
   const text = normalizeDraft(`${part} ${HANDOFF_TEXT}`);
   const checked = await checkDraft(flow, 'hot', text, attempt, REFUSED_HANDOFF);

@@ -448,12 +448,61 @@ const FACT_NUMBER_REASON =
 
 /**
  * Номер сильной стороны в тексте клиенту (ревью этапа 2): данные вызова ответа и замечание repeat_fact называют стороны
- * номерами, и модель может перенести номер в текст. Без учёта регистра: «f3» тоже номер.
+ * номерами, и модель может перенести номер в текст. Без учёта регистра: «f3» тоже номер. С 01.11.2026 номера убирает код
+ * до проверок (stripFactNumbers), эта проверка только страховка, если что-то осталось.
  */
 export function checkFactNumbers(text: string): readonly CheckFinding[] {
   return FACT_NUMBER.test(text.normalize('NFKC'))
     ? [{ code: 'fact_number', detail: FACT_NUMBER_REASON }]
     : [];
+}
+
+const FACT_ID = 'F(?:10|[1-9])';
+
+/** Номер или перечень номеров («F3, F4», «F5 и F6») отдельными словами, с пробелами перед ним. */
+const FACT_NUMBER_RUN = new RegExp(
+  String.raw`[ \t]*(?<![\p{L}\p{N}])${FACT_ID}(?:[ \t]*(?:,|[ \t]и)[ \t]*${FACT_ID})*(?![\p{L}\p{N}])`,
+  'giu',
+);
+
+/** Что остаётся после номера и убирается: пустые скобки, двойные пробелы, пробел перед знаком, лишние запятые. */
+const AFTER_STRIP: readonly (readonly [RegExp, string])[] = [
+  [/[ \t]*[([][ \t]*[)\]]/gu, ''],
+  [/[ \t]{2,}/gu, ' '],
+  [/[ \t]+(?=[,.!?;:)])/gu, ''],
+  [/,(?=[.!?;:,])/gu, ''],
+  [/(^|[.!?][ \t]+|\n)[ \t]*[,.;:][ \t]*/gu, '$1'],
+  [/[ \t]+$/gmu, ''],
+];
+
+/** Места названия компании клиента в тексте: номер внутри него («F1 Motors») не трогается. */
+function nameRanges(
+  text: string,
+  name: string | null | undefined,
+): readonly (readonly [number, number])[] {
+  const pattern = companyNamePattern(name);
+  if (pattern === null) return [];
+  return findAll(text, pattern).map((match) => [match.index, match.index + match[0].length]);
+}
+
+/**
+ * Номера сильных сторон (F1–F10) в тексте клиенту убирает код, а не проверка (пункт 2 задания 01.11.2026): модель
+ * переносит номер из данных вызова в текст («коробках F5 запись»), и из-за этого отклонялся годный черновик. Вместе
+ * с номером уходят ставшие лишними скобки, пробелы и запятые. Номер внутри названия компании клиента (companyName,
+ * как в maskCompanyName) остаётся. Номеров нет => тот же текст без изменений.
+ */
+export function stripFactNumbers(
+  text: NormalizedText,
+  companyName?: string | null,
+): NormalizedText {
+  if (!FACT_NUMBER.test(text)) return text;
+  const kept = nameRanges(text, companyName);
+  const stripped = text.replace(FACT_NUMBER_RUN, (match: string, offset: number) =>
+    kept.some(([start, end]) => offset + match.length > start && offset < end) ? match : '',
+  );
+  if (stripped === text) return text;
+  const tidy = AFTER_STRIP.reduce((value, [pattern, to]) => value.replace(pattern, to), stripped);
+  return tidy.trim() as NormalizedText;
 }
 
 /**
@@ -606,18 +655,24 @@ const NAME_ALONE_AFTER = String.raw`(?=${charClass(LINK_TAIL)}*(?:\s|$))`;
  * Названия нет или в нём нет ни буквы, ни цифры (иначе отдельное тире стало бы «названием») => текст как есть.
  */
 function maskCompanyName(text: string, name: string | null | undefined): string {
+  const pattern = companyNamePattern(name);
+  return pattern === null ? text : text.replace(pattern, COMPANY_PLACEHOLDER);
+}
+
+/** Выражение для названия компании, которое стоит отдельно (см. maskCompanyName); названия нет => null. */
+function companyNamePattern(name: string | null | undefined): RegExp | null {
   const words = normalizeDraft(name ?? '')
     .split(/\s+/u)
     .filter((word) => word !== '');
-  if (!words.some((word) => LETTER_OR_DIGIT.test(word))) return text;
+  if (!words.some((word) => LETTER_OR_DIGIT.test(word))) return null;
   const source = words.map((word) => word.replace(REGEX_SYNTAX, '\\$&')).join(String.raw`\s{1,5}`);
-  const pattern = new RegExp(`${NAME_ALONE_BEFORE}${source}${NAME_ALONE_AFTER}`, 'giu');
-  return text.replace(pattern, COMPANY_PLACEHOLDER);
+  return new RegExp(`${NAME_ALONE_BEFORE}${source}${NAME_ALONE_AFTER}`, 'giu');
 }
 
 /**
- * Все проверки ответа клиенту. Текст заранее подготовлен normalizeDraft (бренд NormalizedText).
- * Тире, один голос, ссылки, стиль и подмена букв проверяются без названия компании клиента (options.companyName,
+ * Все проверки ответа клиенту. Текст заранее подготовлен normalizeDraft (бренд NormalizedText), номера сильных сторон
+ * конвейер до проверок убирает stripFactNumbers. Тире, двоеточия, один голос, ссылки, стиль, подмена букв и номера
+ * сильных сторон проверяются без названия компании клиента (options.companyName,
  * maskCompanyName), остальное по всему тексту. Цены и стоп-слова с указанием коллеги (options.note) допустимы, только
  * если они есть в нём. С номерами сильных сторон черновика и рассказанных в чате (options.usedFacts, toldFacts)
  * проверяется ещё, есть ли в сообщении новая (checkRepeatedFacts). Пустой список: ответ можно отдавать на второй вызов
@@ -646,7 +701,7 @@ export function runCodeChecks(
     ...checkHomoglyphs(form),
     ...checkLength(text),
     ...checkFiller(text),
-    ...checkFactNumbers(text),
+    ...checkFactNumbers(form),
     ...(options.priceTurn === false ? checkEstimatePhrase(text, false) : []),
     ...(options.usedFacts === undefined || options.toldFacts === undefined
       ? []

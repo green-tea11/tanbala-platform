@@ -382,6 +382,27 @@ describe('pipeline/reply-flow: ответ проходит проверки', ()
     expect(h.reviewDraft).toHaveBeenCalledWith(expect.anything(), ANSWER, 'answer');
   });
 
+  it('номер сильной стороны в тексте убирает код до проверок: без повтора, ревью и клиент получают текст без него', async () => {
+    const h = setup({ drafts: [answerDraft('Учёт подбираем F7 под задачу (F8). Что вы храните?')] });
+
+    const verdict = await flow(h);
+
+    expect(verdict).toEqual(sent(ANSWER));
+    expect(h.draftReply).toHaveBeenCalledTimes(1);
+    expect(h.reviewDraft).toHaveBeenCalledWith(expect.anything(), ANSWER, 'answer');
+    expect(logsOf(h, 'info')).toContainEqual({ chatId: CHAT_ID });
+    expect(JSON.stringify(h.logs)).not.toContain('Учёт');
+  });
+
+  it('сообщение передачи из одних номеров сильных сторон: пустое, клиенту фиксированная фраза', async () => {
+    const h = setup({ drafts: [handoffDraft('no_answer', 'F3, F4')] });
+
+    const verdict = await flow(h);
+
+    expect(verdict).toEqual(fixedPhrase('no_answer'));
+    expect(h.reviewDraft).not.toHaveBeenCalled();
+  });
+
   it('стоп-слово, спрятанное невидимым символом, ловится после нормализации', async () => {
     const hidden = 'Это бес\u00ADплатно для вас. Что вы храните?';
     const h = setup({ drafts: [answerDraft(hidden), answerDraft()] });

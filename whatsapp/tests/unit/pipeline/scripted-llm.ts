@@ -59,6 +59,11 @@ export interface LlmScript {
   readonly interests?: readonly [InterestScript, ...InterestScript[]];
   /** Замечания проверки черновика; по умолчанию их нет и проверка пройдена. */
   readonly problems?: readonly string[];
+  /**
+   * Замечания проверки по вызовам: на каждый вызов следующий список, последний повторяется; пустой список: проверка
+   * пройдена. Есть поле => problems не читается.
+   */
+  readonly reviews?: readonly (readonly string[])[];
 }
 
 /** Запрос без схемы: то, что тест может сравнить. */
@@ -152,6 +157,7 @@ export function scriptedLlm(script: LlmScript): ScriptedLlm {
   const requests: RecordedRequest[] = [];
   let replyCalls = 0;
   let interestCalls = 0;
+  let reviewCalls = 0;
   const rawAnswer = (purpose: LlmPurpose): unknown => {
     switch (purpose) {
       case 'reply': {
@@ -161,7 +167,8 @@ export function scriptedLlm(script: LlmScript): ScriptedLlm {
         return rawReply(reply);
       }
       case 'review': {
-        const problems = script.problems ?? [];
+        const problems = nth(script.reviews, reviewCalls) ?? script.problems ?? [];
+        reviewCalls += 1;
         return { ok: problems.length === 0, problems };
       }
       case 'interest': {

@@ -73,3 +73,46 @@ describe('пункт 1: черновик пишется после оценки 
     expect(data).toContain('Для расчёта известно всё.');
   });
 });
+
+/** «Kusto»: клиент назвал паллеты, 3000 мест, Алматы и 1С. */
+const KUSTO =
+  'Храним товары клиентов на паллетах, примерно 3000 паллетомест, склад в Алматы. 1С есть, Управление торговлей';
+
+const KUSTO_PROFILE: Partial<ClientProfile> = {
+  business: 'логистика',
+  items: 'товары клиентов',
+  packaging: 'паллеты',
+  itemCount: 'примерно 3000 паллетомест',
+  city: 'Алматы',
+  premises: 'склад',
+  has1C: true,
+  oneCName: '1С:Управление торговлей',
+};
+
+/** Черновик 1: два вопроса о разном, проверка его не пропустила («анкета»). */
+const KUSTO_FIRST =
+  '3000 паллетомест под товары клиентов, это серьёзный объём. Метка записывает сам товар, поэтому любой ридер сразу видит, какой это товар. Расскажите, сколько новых паллет приходит у вас за месяц и сколько проходов нужно учитывать?';
+
+/** Черновик 2: модель перенесла номер сильной стороны в текст. */
+const KUSTO_SECOND =
+  '3000 паллетомест с чужими товарами, значит, каждая ошибка в учёте бьёт по вашим клиентам. С метками на паллетах и коробках F5 запись о товаре зашита в сам код, и любой ридер видит, что это за товар. Расскажите, сколько новых паллет у вас приходит за месяц?';
+
+describe('пункт 2: номер сильной стороны в тексте убирает код, черновик не отклоняется', () => {
+  it('«Kusto»: второй черновик с «F5» уходит без номера, а не голый безопасный вопрос', async () => {
+    const s = createScenario({ api: null });
+
+    const reply = await s.say(KUSTO, {
+      replies: [
+        { outcome: 'answer', text: KUSTO_FIRST, usedFacts: ['F5'] },
+        { outcome: 'answer', text: KUSTO_SECOND, usedFacts: ['F5'] },
+      ],
+      interests: [{ level: 'warm', profile: KUSTO_PROFILE }],
+      reviews: [['Два вопроса о разном подряд: это анкета, оставь один открытый вопрос.'], []],
+    });
+
+    expect(reply.llm.purposes()).toEqual(['interest', 'reply', 'review', 'reply', 'review']);
+    expect(reply.toClient).toEqual([KUSTO_SECOND.replace(' F5', '')]);
+    expect(reply.toClient.join('')).not.toMatch(/F5/u);
+    expect(s.storage.chats.getProgress(s.chatId()).toldFacts).toEqual(['F5']);
+  });
+});
