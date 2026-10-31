@@ -120,7 +120,7 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
       text: FIRST as ReviewedText,
       marks: { stage: 'details', usedFacts: [] },
     });
-    expect(model.purposes()).toEqual(['reply', 'interest', 'review']);
+    expect(model.purposes()).toEqual(['interest', 'reply', 'review']);
     expect(saveAssessment).toHaveBeenCalledWith(
       CHAT_ID,
       {
@@ -141,7 +141,7 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
     });
 
     expect(verdict).toEqual({ kind: 'send', text: INTRO_BUSINESS_QUESTION });
-    expect(model.purposes()).toEqual(['reply', 'interest', 'review', 'reply', 'review']);
+    expect(model.purposes()).toEqual(['interest', 'reply', 'review', 'reply', 'review']);
     const retry = model.requests[3]?.turns.at(-1)?.text ?? '';
     expect(retry).toContain('Названа цена, её нет в знаниях');
     expect(model.requests[4]?.turns.at(-1)?.text).toContain(SECOND);
@@ -155,7 +155,7 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
       text: FIRST as ReviewedText,
       marks: { stage: 'details', usedFacts: [] },
     });
-    expect(model.purposes()).toEqual(['reply', 'interest', 'review']);
+    expect(model.purposes()).toEqual(['interest', 'reply', 'review']);
     expect(saveAssessment).toHaveBeenCalledTimes(1);
   });
 
@@ -171,7 +171,7 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
       text: HOT_TEXT as ReviewedText,
       detail: 'Всё для расчёта известно, клиент готов к расчёту. Клиент: «Сколько стоит?»',
     });
-    expect(model.purposes()).toEqual(['reply', 'interest', 'review']);
+    expect(model.purposes()).toEqual(['interest', 'reply', 'review']);
     const review = model.requests[2]?.turns.at(-1)?.text ?? '';
     expect(review).toContain(HOT_TEXT);
     expect(review).toMatch(/сообщения о передаче чата коллеге/);
@@ -190,8 +190,8 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
     });
 
     expect(model.requests.map(({ purpose, model: id }) => [purpose, id])).toEqual([
-      ['reply', 'claude-sonnet-5-5'],
       ['interest', 'claude-sonnet-5-5'],
+      ['reply', 'claude-sonnet-5-5'],
       ['review', 'claude-sonnet-5-5'],
     ]);
   });
@@ -205,7 +205,7 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
       text: 'Я уточню у коллеги решение и ориентир под вашу задачу.' as ReviewedText,
       detail: expect.stringMatching(/^Всё для расчёта известно/) as unknown,
     });
-    expect(model.purposes()).toEqual(['reply', 'interest']);
+    expect(model.purposes()).toEqual(['interest', 'reply']);
   });
 
   it('исход hot без текста после вопроса цены: aboutPrice из ответа модели доходит до повода передачи', async () => {
@@ -267,7 +267,7 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
       notice: { reason: 'asked_human' },
       detail: 'Просит живого человека. Клиент: «Сколько стоит?»',
     });
-    expect(model.purposes()).toEqual(['reply', 'interest', 'review', 'reply', 'review']);
+    expect(model.purposes()).toEqual(['interest', 'reply', 'review', 'reply', 'review']);
   });
 
   it('нарушение кода: ревью не зовётся, замечание кода уходит модели во втором запросе', async () => {
@@ -280,7 +280,7 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
       text: SECOND as ReviewedText,
       marks: { stage: 'details', usedFacts: [] },
     });
-    expect(model.purposes()).toEqual(['reply', 'interest', 'reply', 'review']);
+    expect(model.purposes()).toEqual(['interest', 'reply', 'reply', 'review']);
     expect(model.requests[2]?.turns.at(-1)?.text).toContain('тире');
   });
 });

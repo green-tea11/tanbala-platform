@@ -418,8 +418,8 @@ export const SEND_STEPS = (replyTo: string): string[] => [
   `answered:${replyTo}`,
 ];
 
-/** Черновик и оценка параллельно, оценка сохранена, ревью, затем отправка. */
-export const CHECKED_STEPS = ['draft', 'assess', 'save:cold', 'review'];
+/** Оценка интереса, затем черновик по её выжимке, оценка сохранена, ревью, затем отправка. */
+export const CHECKED_STEPS = ['assess', 'draft', 'save:cold', 'review'];
 
 export const REPLY_STEPS = (replyTo: string): string[] => [
   ...CHECKED_STEPS,

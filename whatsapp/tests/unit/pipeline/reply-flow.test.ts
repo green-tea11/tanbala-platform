@@ -17,6 +17,7 @@ import type {
 import {
   decideReply,
   requestAssessment,
+  replyContextOf,
   requestDraft,
   type Drafted,
   type ReplyFlowDeps,
@@ -231,24 +232,72 @@ function logsOf(h: Harness, level: string): unknown[] {
   return h.logs.filter((entry) => entry.level === level).map((entry) => entry.context);
 }
 
-describe('pipeline/reply-flow: черновик и оценка интереса параллельно', () => {
-  it('оба вызова стартуют сразу, до ответа любого из них', async () => {
+describe('pipeline/reply-flow: сначала оценка интереса, затем черновик по её выжимке', () => {
+  it('черновик ждёт оценку: до её ответа вызван только assessInterest', async () => {
     const h = setup();
+    let finish: (value: LlmResult<InterestAssessment>) => void = () => undefined;
+    h.assessInterest.mockImplementation(() => {
+      h.calls.push('assess');
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    });
 
     const pending = requestDraft(h.deps, contextOf());
+    await Promise.resolve();
 
-    expect(h.calls).toEqual(['draft', 'assess']);
+    expect(h.calls).toEqual(['assess']);
+    finish(assessed('warm'));
     await pending;
+    expect(h.calls).toEqual(['assess', 'draft']);
   });
 
-  it('вызовы получают контекст разговора, первый черновик без замечаний', async () => {
-    const h = setup();
+  it('оценка получает контекст как есть, черновик тот же контекст с выжимкой оценки, без замечаний', async () => {
+    const h = setup({ assessment: assessed('warm') });
     const context = contextOf('Здравствуйте');
 
     await requestDraft(h.deps, context);
 
-    expect(h.draftReply).toHaveBeenCalledWith(context);
     expect(h.assessInterest).toHaveBeenCalledWith(context);
+    expect(h.draftReply).toHaveBeenCalledWith({ ...context, profile: READY_PROFILE });
+  });
+
+  it.each(['сбой', 'исключение'])(
+    'оценка: %s => черновик по прежней выжимке с пометкой profileStale',
+    async (name) => {
+      const h = setup({ assessment: UNAVAILABLE });
+      if (name === 'исключение') h.assessInterest.mockRejectedValue(new TypeError('сбой'));
+      const context = contextOf('Склад в Алматы, 4000 квадратов');
+
+      const drafted = await requestDraft(h.deps, context);
+
+      expect(drafted.assessment).toEqual(UNAVAILABLE);
+      expect(h.draftReply).toHaveBeenCalledWith({ ...context, profileStale: true });
+    },
+  );
+
+  it('оценка упёрлась в дневной лимит API: черновик не запрашивается, итог limit', async () => {
+    const h = setup({ assessment: CHAT_LIMIT });
+    const context = contextOf();
+
+    const drafted = await requestDraft(h.deps, context);
+
+    expect(drafted).toEqual({ draft: CHAT_LIMIT, assessment: CHAT_LIMIT });
+    expect(h.draftReply).not.toHaveBeenCalled();
+    await expect(decideReply(h.deps, context, drafted)).resolves.toEqual({
+      kind: 'limit',
+      scope: 'chat',
+    });
+  });
+
+  it('replyContextOf: выжимка оценки или прежняя с пометкой', () => {
+    const context = contextOf();
+
+    expect(replyContextOf(context, assessed('hot').value)).toEqual({
+      ...context,
+      profile: READY_PROFILE,
+    });
+    expect(replyContextOf(context, null)).toEqual({ ...context, profileStale: true });
   });
 
   it('итог: ответы обоих вызовов как есть', async () => {
@@ -313,8 +362,13 @@ describe('pipeline/reply-flow: ответ проходит проверки', ()
     const verdict = await flow(h, context);
 
     expect(verdict).toEqual(sent());
-    expect(h.calls).toEqual(['draft', 'assess', 'save', 'review']);
-    expect(h.reviewDraft).toHaveBeenCalledWith(context, ANSWER, 'answer');
+    expect(h.calls).toEqual(['assess', 'draft', 'save', 'review']);
+    // Проверка судит с выжимкой из оценки этого хода, как и черновик.
+    expect(h.reviewDraft).toHaveBeenCalledWith(
+      { ...context, profile: assessed('cold').value.profile },
+      ANSWER,
+      'answer',
+    );
     expect(h.saveAssessment).toHaveBeenCalledWith(CHAT_ID, assessed('cold').value, NOW);
   });
 
@@ -389,7 +443,7 @@ describe('pipeline/reply-flow: повтор с замечаниями', () => {
     const verdict = await flow(h);
 
     expect(verdict).toEqual(sent());
-    expect(h.calls).toEqual(['draft', 'assess', 'save', 'draft:retry', 'review']);
+    expect(h.calls).toEqual(['assess', 'draft', 'save', 'draft:retry', 'review']);
     const feedback = h.draftReply.mock.calls[1]?.[1] ?? [];
     expect(feedback).toHaveLength(1);
     expect(feedback[0]).toContain('тире');
@@ -419,7 +473,7 @@ describe('pipeline/reply-flow: повтор с замечаниями', () => {
     const verdict = await flow(h);
 
     expect(verdict).toEqual(sent(questionText('hook', false)));
-    expect(h.calls).toEqual(['draft', 'assess', 'save', 'review', 'draft:retry', 'review']);
+    expect(h.calls).toEqual(['assess', 'draft', 'save', 'review', 'draft:retry', 'review']);
   });
 
   it('повтор снова с нарушением кода: безопасный вопрос, второго ревью нет', async () => {
@@ -476,7 +530,7 @@ describe('pipeline/reply-flow: передача без текста модели
       const verdict = await flow(h);
 
       expect(verdict).toEqual(expected);
-      expect(h.calls).toEqual(['draft', 'assess', 'save', 'save']);
+      expect(h.calls).toEqual(['assess', 'draft', 'save', 'save']);
     },
   );
 
@@ -499,7 +553,7 @@ describe('pipeline/reply-flow: передача без текста модели
     const verdict = await flow(h);
 
     expect(verdict).toEqual(FINAL_PHRASE);
-    expect(h.calls).toEqual(['draft', 'assess', 'save', 'save']);
+    expect(h.calls).toEqual(['assess', 'draft', 'save', 'save']);
     expect(h.saveAssessment).toHaveBeenLastCalledWith(
       CHAT_ID,
       expect.objectContaining({ level: 'hot' }),
@@ -515,7 +569,7 @@ describe('pipeline/reply-flow: передачу решает вызов отве
     const verdict = await flow(h);
 
     expect(verdict).toEqual(sent());
-    expect(h.calls).toEqual(['draft', 'assess', 'save', 'review']);
+    expect(h.calls).toEqual(['assess', 'draft', 'save', 'review']);
     expect(h.reviewDraft).toHaveBeenCalledWith(expect.anything(), ANSWER, 'answer');
     expect(h.saveAssessment).toHaveBeenCalledTimes(1);
     expect(h.saveAssessment).toHaveBeenCalledWith(
@@ -565,7 +619,11 @@ describe('pipeline/reply-flow: сообщение о передаче (hot, no_a
 
       expect(verdict).toEqual(handedOffWithText(outcome));
       expect(h.reviewDraft).toHaveBeenCalledTimes(1);
-      expect(h.reviewDraft).toHaveBeenCalledWith(context, HANDOFF_TEXT, 'handoff');
+      expect(h.reviewDraft).toHaveBeenCalledWith(
+        { ...context, profile: READY_PROFILE },
+        HANDOFF_TEXT,
+        'handoff',
+      );
       expect(h.draftReply).toHaveBeenCalledTimes(1);
     },
   );
@@ -579,7 +637,7 @@ describe('pipeline/reply-flow: сообщение о передаче (hot, no_a
 
     expect(verdict).toEqual(handedOffWithText('hot', text));
     expect(h.reviewDraft).toHaveBeenCalledWith(expect.anything(), text, 'handoff');
-    expect(h.calls).toEqual(['draft', 'assess', 'save', 'review', 'save']);
+    expect(h.calls).toEqual(['assess', 'draft', 'save', 'review', 'save']);
   });
 
   it('невидимые символы убираются до проверок: ревью и клиент получают один и тот же текст', async () => {
@@ -601,7 +659,7 @@ describe('pipeline/reply-flow: сообщение о передаче (hot, no_a
     const verdict = await flow(h);
 
     expect(verdict).toEqual(handedOffWithText('hot', SECOND_HANDOFF_TEXT));
-    expect(h.calls).toEqual(['draft', 'assess', 'save', 'draft:retry', 'review', 'save']);
+    expect(h.calls).toEqual(['assess', 'draft', 'save', 'draft:retry', 'review', 'save']);
     expect(h.draftReply.mock.calls[1]?.[1]?.[0]).toContain('тире');
   });
 
@@ -1193,7 +1251,11 @@ describe('pipeline/reply-flow: название компании клиента 
       const h = setup({ drafts: [answerDraft(QUESTION)] });
 
       await expect(flow(h, contextWith(company))).resolves.toEqual(sent(QUESTION));
-      expect(h.reviewDraft).toHaveBeenCalledWith(contextWith(company), QUESTION, 'answer');
+      expect(h.reviewDraft).toHaveBeenCalledWith(
+        { ...contextWith(company), profile: READY_PROFILE },
+        QUESTION,
+        'answer',
+      );
     },
   );
 

@@ -220,7 +220,7 @@ describe('а) финал: модель вернула hot, для расчёта
     const r = await run({ drafts: [hot()] });
 
     expect(r.verdict).toEqual(withText(FINAL_TEXT));
-    expect(r.calls).toEqual(['draft', 'assess', 'save', 'review', 'save']);
+    expect(r.calls).toEqual(['assess', 'draft', 'save', 'review', 'save']);
     expect(r.reviewDraft).toHaveBeenCalledWith(expect.anything(), FINAL_TEXT, 'handoff');
   });
 
@@ -250,7 +250,7 @@ describe('а) ранний hot: для расчёта известно не вс
 
     expect(r.verdict).toEqual(sentWith(ANSWER));
     // Текст hot не проверяется: он не уйдёт. Проверяется только повтор.
-    expect(r.calls).toEqual(['draft', 'assess', 'save', 'draft:retry', 'review']);
+    expect(r.calls).toEqual(['assess', 'draft', 'save', 'draft:retry', 'review']);
     expect(r.draftReply.mock.calls[1]?.[1]).toEqual([
       'Для финала не хватает: сколько нового приходит в месяц, сколько проходов нужно учитывать, город. Задай один открытый вопрос о недостающем.',
     ]);
@@ -260,7 +260,7 @@ describe('а) ранний hot: для расчёта известно не вс
     const r = await run({ drafts: [hot(), hot()], profile: TASK });
 
     expect(r.verdict).toEqual(sentWith(questionText('monthlyIntake', false)));
-    expect(r.calls).toEqual(['draft', 'assess', 'save', 'draft:retry']);
+    expect(r.calls).toEqual(['assess', 'draft', 'save', 'draft:retry']);
   });
 
   it('повтор не получился (сбой LLM): тот же безопасный вопрос, а не передача', async () => {
@@ -335,7 +335,7 @@ describe('б) вопрос цены, сроков или договора', () =
     const r = await run({ drafts: [answer(PRICE_ANSWER)], profile: TASK, signals: PRICE });
 
     expect(r.verdict).toEqual(PRICE_HANDOFF);
-    expect(r.calls).toEqual(['draft', 'assess', 'save', 'save']);
+    expect(r.calls).toEqual(['assess', 'draft', 'save', 'save']);
     expect(r.logs).toContainEqual({
       level: 'info',
       context: { chatId: CHAT_ID, hot: 'price', priceAsks: 1, refusedStreak: 0 },
@@ -467,7 +467,7 @@ describe('заметка для бота с суммой-ценой: вопро�
     });
 
     expect(r.verdict).toEqual(sentWith(WITH_PRICE, { signals: PRICE }));
-    expect(r.calls).toEqual(['draft', 'assess', 'save', 'review']);
+    expect(r.calls).toEqual(['assess', 'draft', 'save', 'review']);
   });
 
   it('третий вопрос цены: тоже ответ суммой из заметки', async () => {
@@ -538,7 +538,7 @@ describe('г) клиент два хода подряд уходит от воп
     });
 
     expect(r.verdict).toEqual(REFUSED_HANDOFF);
-    expect(r.calls).toEqual(['draft', 'assess', 'save', 'save']);
+    expect(r.calls).toEqual(['assess', 'draft', 'save', 'save']);
     expect(r.logs).toContainEqual({
       level: 'info',
       context: { chatId: CHAT_ID, hot: 'refused', priceAsks: 0, refusedStreak: 2 },
@@ -715,7 +715,7 @@ describe('фраза об ориентире только при вопросе 
     const r = await run({ drafts: [answer(PRICE_ANSWER), answer(QUESTION)], profile: VAGUE });
 
     expect(r.verdict).toEqual(sentWith(QUESTION));
-    expect(r.calls).toEqual(['draft', 'assess', 'save', 'draft:retry', 'review']);
+    expect(r.calls).toEqual(['assess', 'draft', 'save', 'draft:retry', 'review']);
     expect(r.draftReply.mock.calls[1]?.[1]?.join(' ')).toMatch(
       /только когда клиент спрашивает цену/,
     );

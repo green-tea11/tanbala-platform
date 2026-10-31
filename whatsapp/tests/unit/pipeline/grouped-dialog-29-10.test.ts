@@ -124,7 +124,7 @@ describe('«вы нам писали на почту» (решение влад�
     expect(first.outcome).toEqual({ kind: 'replied' });
     expect(first.toClient).toEqual([LETTER]);
     expect(first.toClient.join(' ')).not.toMatch(/Ориентир/);
-    expect(first.llm.purposes()).toEqual(['reply', 'interest', 'reply', 'review']);
+    expect(first.llm.purposes()).toEqual(['interest', 'reply', 'reply', 'review']);
     const rejected = s.storage.rejectedDrafts.listForChat(s.chatId(), 10);
     expect(rejected.map(({ source, draft }) => ({ source, draft }))).toEqual([
       { source: 'code', draft: OLD_DRAFT },
@@ -141,7 +141,8 @@ describe('«вы нам писали на почту» (решение влад�
       replies: [{ outcome: 'answer', text: LETTER, companyQuestion: 'name' }],
     });
 
-    const system = first.llm.requests[0]?.system.map((block) => block.text).join('\n') ?? '';
+    const reply = first.llm.requests.find((request) => request.purpose === 'reply');
+    const system = reply?.system.map((block) => block.text).join('\n') ?? '';
     expect(system).toContain(
       'Клиент пишет, что мы писали ему на почту, что он получил наше письмо или что пришло письмо: поздоровайся, скажи, что найдёшь письмо, и спроси, из какой он компании (companyQuestion: name)',
     );

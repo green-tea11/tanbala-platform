@@ -387,8 +387,10 @@ describe('сценарии владельца: ответ клиента на в
 
     expect(handed.outcome).toEqual({ kind: 'handed_off', reason: 'asked_human' });
     expect(afterHandoff).toMatchObject({ id: SKLAD_ID, awaitingAnswer: false });
-    // Ответа о компании больше не ждут: оценка не идёт раньше черновика, «да» не засчитывается, справки нет.
-    expect(yes.llm.purposes()).not.toEqual(['interest', 'reply', 'review']);
+    // Ответа о компании больше не ждут: оценке сказано, что вопроса нет, «да» не засчитывается, справки нет.
+    expect(yes.data('interest')).toContain(
+      'Бот не ждёт ответа на вопрос «Вы из компании X?»: companyAnswer none.',
+    );
     expect(yes.outcome).toEqual({ kind: 'replied' });
     expect(yes.api).toEqual([]);
     expect(s.state()).toMatchObject({ confirmed: null, candidate: { awaitingAnswer: false } });
@@ -474,7 +476,7 @@ describe('сценарии владельца: вопрос цены', () => {
 
     expect(first.outcome).toEqual({ kind: 'replied' });
     expect(second.outcome).toEqual({ kind: 'replied' });
-    expect(second.llm.purposes()).toEqual(['reply', 'interest', 'reply', 'review']);
+    expect(second.llm.purposes()).toEqual(['interest', 'reply', 'reply', 'review']);
     expect(second.toClient).toEqual([ASK_COUNT]);
     expect(second.toManager).toEqual([]);
     expect(s.storage.chats.getById(s.chatId())?.control.status).toBe('bot');

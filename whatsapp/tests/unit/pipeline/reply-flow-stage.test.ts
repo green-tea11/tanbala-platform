@@ -190,7 +190,7 @@ describe('pipeline/reply-flow: повтор уже рассказанной си
 
     const verdict = await flow(h, contextOf({ priceAsks: 0, refused: false, toldFacts: ['F4'] }));
 
-    expect(h.calls).toEqual(['draft', 'assess', 'draft:retry', 'review']);
+    expect(h.calls).toEqual(['assess', 'draft', 'draft:retry', 'review']);
     expect(h.feedbacks[1]?.join(' ')).toMatch(/нет новой сильной стороны: F4 уже была в этом чате/);
     expect(verdict).toEqual({
       kind: 'send',
@@ -206,7 +206,7 @@ describe('pipeline/reply-flow: повтор уже рассказанной си
 
     const verdict = await flow(h, contextOf({ priceAsks: 0, refused: false, toldFacts: ['F6'] }));
 
-    expect(h.calls).toEqual(['draft', 'assess', 'review']);
+    expect(h.calls).toEqual(['assess', 'draft', 'review']);
     expect(verdict).toEqual({
       kind: 'handoff',
       notice: { reason: 'no_answer' },

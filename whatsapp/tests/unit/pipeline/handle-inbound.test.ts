@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, type Mock } from 'vitest';
+import type { ConversationContext } from '../../../src/agent/agent.js';
 import type {
   AudioClip,
   Chat,
@@ -39,6 +40,7 @@ import {
   NOW,
   OFF_SUMMARY,
   picture,
+  READY_PROFILE,
   REPLY_STEPS,
   run,
   SECOND_HOT_TEXT,
@@ -128,19 +130,20 @@ describe('pipeline/handle-inbound: ответ', () => {
     expect(outcome).toEqual({ kind: 'replied' });
     expect(h.calls).toEqual(['read:A1,P2', ...REPLY_STEPS('P2')]);
     // Блок о компании из company.prepare: выключенное определение даёт off, агент тогда работает как раньше.
-    // Ход разговора и название компании (для вопроса знакомства) из базы и сводки.
-    expect(h.contexts).toEqual([
-      {
-        chatId: CHAT_ID,
-        history: HISTORY,
-        profile: EMPTY_PROFILE,
-        level: 'cold',
-        company: { kind: 'off' },
-        progress: { priceAsks: 0, refused: false },
-        companyName: null,
-        note: null,
-      },
-    ]);
+    // Ход разговора и название компании (для вопроса знакомства) из базы и сводки. Оценка видит выжимку чата, черновик
+    // уже выжимку из оценки этого хода (пункт 1 задания 01.11.2026).
+    const base: ConversationContext = {
+      chatId: CHAT_ID,
+      history: HISTORY,
+      profile: EMPTY_PROFILE,
+      level: 'cold',
+      company: { kind: 'off' },
+      progress: { priceAsks: 0, refused: false },
+      companyName: null,
+      note: null,
+    };
+    expect(h.assessContexts).toEqual([base]);
+    expect(h.contexts).toEqual([{ ...base, profile: READY_PROFILE }]);
     expect(h.logs).toContainEqual({
       level: 'info',
       context: { chatId: CHAT_ID, outcome: 'replied' },
@@ -153,7 +156,7 @@ describe('pipeline/handle-inbound: ответ', () => {
     const outcome = await run(h, batchOf([text('A1')], [[text('A2')], [text('A3')]]));
 
     expect(outcome).toEqual({ kind: 'replied' });
-    expect(h.calls).toEqual(['read:A1', 'draft', 'assess', 'read:A2', ...REPLY_STEPS('A2')]);
+    expect(h.calls).toEqual(['read:A1', 'assess', 'draft', 'read:A2', ...REPLY_STEPS('A2')]);
     expect(h.outbox.sendBotReply).toHaveBeenCalledTimes(1);
   });
 
@@ -314,8 +317,8 @@ describe('pipeline/handle-inbound: передача менеджеру (чере
       expect(h.handOff.mock.calls).toStrictEqual([[CHAT_ID, request]]);
       expect(h.calls).toEqual([
         'read:A1,A2',
-        'draft',
         'assess',
+        'draft',
         'save:cold',
         // Причина своими словами пишется в чат до передачи; у hot с уровнем hot.
         draft.outcome === 'hot' ? 'save:hot' : 'save:cold',
@@ -332,7 +335,7 @@ describe('pipeline/handle-inbound: передача менеджеру (чере
 
     expect(outcome).toEqual({ kind: 'handed_off', reason: 'limit' });
     expect(h.handOff).toHaveBeenCalledWith(CHAT_ID, { reason: 'limit', scope: 'chat' });
-    expect(h.calls).toEqual(['read:A1', 'draft', 'assess', 'save:cold', 'handoff:limit']);
+    expect(h.calls).toEqual(['read:A1', 'assess', 'draft', 'save:cold', 'handoff:limit']);
     expect(levels(h, 'warn')).toContainEqual({ chatId: CHAT_ID, scope: 'chat' });
   });
 
@@ -350,8 +353,8 @@ describe('pipeline/handle-inbound: передача менеджеру (чере
       });
       expect(h.calls).toEqual([
         'read:A1',
-        'draft',
         'assess',
+        'draft',
         'save:cold',
         'handoff:llm_error',
         'answered:A1',
@@ -372,7 +375,7 @@ describe('pipeline/handle-inbound: передача менеджеру (чере
 
       expect(outcome).toEqual({ kind: 'silent', reason: 'manager_mode' });
       // У «нет ответа» причина своими словами пишется до передачи (второй save), у лимита нет.
-      expect(h.calls.slice(0, 4)).toEqual(['read:A1', 'draft', 'assess', 'save:cold']);
+      expect(h.calls.slice(0, 4)).toEqual(['read:A1', 'assess', 'draft', 'save:cold']);
       expect(h.calls.slice(4).every((call) => call === 'save:cold')).toBe(true);
       expect(h.handOff).not.toHaveBeenCalled();
     },
@@ -407,8 +410,8 @@ describe('pipeline/handle-inbound: проверки, оценка интерес
     expect(outcome).toEqual({ kind: 'replied' });
     expect(h.calls).toEqual([
       'read:A1',
-      'draft',
       'assess',
+      'draft',
       'save:hot',
       'review',
       ...SEND_STEPS('A1'),
@@ -425,8 +428,8 @@ describe('pipeline/handle-inbound: проверки, оценка интерес
     expect(outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
     expect(h.calls).toEqual([
       'read:A1',
-      'draft',
       'assess',
+      'draft',
       'save:cold',
       'review',
       'save:hot',
@@ -578,8 +581,8 @@ describe('pipeline/handle-inbound: проверки, оценка интерес
     expect(outcome).toEqual({ kind: 'replied' });
     expect(h.calls).toEqual([
       'read:A1',
-      'draft',
       'assess',
+      'draft',
       'save:cold',
       'draft:retry',
       'review',
@@ -637,7 +640,8 @@ describe('pipeline/handle-inbound: проверки, оценка интерес
     const outcome = await run(h, batchOf([text('A1')]));
 
     expect(outcome).toEqual({ kind: 'handed_off', reason: 'limit' });
-    expect(h.calls).toEqual(['read:A1', 'draft', 'assess', 'handoff:limit']);
+    // Черновик после исчерпанного лимита на оценке не запрашивается.
+    expect(h.calls).toEqual(['read:A1', 'assess', 'handoff:limit']);
     expect(h.handOff).toHaveBeenCalledWith(CHAT_ID, { reason: 'limit', scope: 'global' });
     expect(levels(h, 'warn')).toContainEqual({ chatId: CHAT_ID, scope: 'global' });
   });
@@ -648,7 +652,7 @@ describe('pipeline/handle-inbound: проверки, оценка интерес
     const outcome = await run(h, batchOf([text('A1')]));
 
     expect(outcome).toEqual({ kind: 'replied' });
-    expect(h.calls).toEqual(['read:A1', 'draft', 'assess', 'review', ...SEND_STEPS('A1')]);
+    expect(h.calls).toEqual(['read:A1', 'assess', 'draft', 'review', ...SEND_STEPS('A1')]);
   });
 });
 

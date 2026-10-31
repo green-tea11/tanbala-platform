@@ -988,7 +988,7 @@ describe('main: ответы клиентам, службы этапа 5 и ве
     const deps = depsOf(startWhatsApp);
 
     await deps.onEvent(CLIENT_EVENT);
-    // Черновик и оценка интереса идут параллельно: два вызова на одну пачку.
+    // Оценка интереса, затем черновик: два вызова на одну пачку.
     await vi.waitFor(() => expect(structured).toHaveBeenCalledTimes(2));
     await deps.onEvent(CLIENT_EVENT);
     await nextTurn();
@@ -1000,11 +1000,14 @@ describe('main: ответы клиентам, службы этапа 5 и ве
     const harness = useHarness();
     writeKnowledge(harness.root);
     const releases: ((value: LlmResult<never>) => void)[] = [];
-    const structured = vi.fn(
-      () =>
-        new Promise<LlmResult<never>>((resolve) => {
-          releases.push(resolve);
-        }),
+    let released = false;
+    // Вызовы ждут, пока тест их не отпустит; после этого следующие (черновик идёт после оценки) отвечают сразу.
+    const structured = vi.fn(() =>
+      released
+        ? Promise.resolve(UNAVAILABLE)
+        : new Promise<LlmResult<never>>((resolve) => {
+            releases.push(resolve);
+          }),
     );
     const { connection, sendText, stop } = sendingConnection();
     const startWhatsApp = fakeStart(connection);
@@ -1019,6 +1022,7 @@ describe('main: ответы клиентам, службы этапа 5 и ве
     const stopping = app.stop();
     await nextTurn();
     expect(stop).not.toHaveBeenCalled();
+    released = true;
     for (const release of releases) release(UNAVAILABLE);
     await stopping;
 

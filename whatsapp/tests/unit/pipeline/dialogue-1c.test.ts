@@ -266,7 +266,7 @@ describe('диалог про 1С и цену (живой случай): Sonnet 
       interests: MINIMUM_COLLECTED,
     });
 
-    expect(d.llm.purposes()).toEqual(['reply', 'interest', 'review']);
+    expect(d.llm.purposes()).toEqual(['interest', 'reply', 'review']);
     expect(d.llm.requests.map((request) => request.model)).toEqual([
       'claude-sonnet-5-5',
       'claude-sonnet-5-5',
@@ -299,7 +299,7 @@ describe('диалог про 1С и цену: проверка не пройд�
       problems: ['Названы сроки, их нет в знаниях'],
     });
 
-    expect(d.llm.purposes()).toEqual(['reply', 'interest', 'review', 'reply', 'review']);
+    expect(d.llm.purposes()).toEqual(['interest', 'reply', 'review', 'reply', 'review']);
     const toClient = d.toClient();
     expect(toClient).toHaveLength(1);
     expect(toClient[0]).toBe('Я уточню у коллеги решение и ориентир под вашу задачу.');

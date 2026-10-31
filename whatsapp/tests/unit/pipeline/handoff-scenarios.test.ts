@@ -77,7 +77,9 @@ describe('диалог 28.10: вопрос цены, а задача не пон
     expect(first.toManager).toEqual([]);
     expect(s.storage.chats.getById(s.chatId())?.control).toEqual({ status: 'bot', by: null });
     const data = first.data('reply');
-    expect(data).toContain('Этап по данным системы: 1 знакомство.');
+    // Черновик пишется после оценки этого хода (пункт 1 задания 01.11.2026): клиент назвал бизнес, этап уже крючок.
+    expect(data).toContain('Этап по данным системы: 2 крючок.');
+    expect(data).toContain('Бизнес: склад');
     expect(data).toContain(
       'Задача клиента ещё не понятна: на вопрос цены, сроков или договора ответь «Ориентир коллега назовёт, когда поймём вашу задачу.» и задай один вопрос.',
     );
@@ -95,7 +97,7 @@ describe('диалог 28.10: вопрос цены, а задача не пон
 
     expect(first.outcome).toEqual({ kind: 'replied' });
     expect(first.toClient).toEqual([ANSWER_28_10]);
-    expect(first.llm.purposes()).toEqual(['reply', 'interest', 'reply', 'review']);
+    expect(first.llm.purposes()).toEqual(['interest', 'reply', 'reply', 'review']);
     const retry = dataOf(first.llm.requests.filter((request) => request.purpose === 'reply')[1]);
     expect(retry).toContain(
       'Цену, сроки и договор называет коллега. Ответь «Ориентир коллега назовёт, когда поймём вашу задачу.» и задай один открытый вопрос о недостающем: что лежит на хранении.',
@@ -146,7 +148,7 @@ describe('б) вопрос цены, сроков или договора, ко�
 
     expect(second.outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
     expect(second.toClient).toEqual([SOLUTION_PHRASE]);
-    expect(second.llm.purposes()).toEqual(['reply', 'interest']);
+    expect(second.llm.purposes()).toEqual(['interest', 'reply']);
   });
 
   it('данные следующего ответа говорят модели, что задача понятна и вопрос цены передаёт чат', async () => {
@@ -195,7 +197,7 @@ describe('г) клиент два хода подряд уходит от воп
     expect(second.toManager[0]).toContain(
       'Причина: Дважды подряд уходит от вопросов. Клиент: «Не скажу же»',
     );
-    expect(second.llm.purposes()).toEqual(['reply', 'interest']);
+    expect(second.llm.purposes()).toEqual(['interest', 'reply']);
   });
 
   it('уход, обычный ответ, снова уход: счёт обнулился, чат у бота', async () => {
@@ -242,7 +244,7 @@ describe('а) финал: для расчёта известно всё', () => 
 
     expect(last.outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
     expect(last.toClient).toEqual([SUMMARY]);
-    expect(last.llm.purposes()).toEqual(['reply', 'interest', 'review']);
+    expect(last.llm.purposes()).toEqual(['interest', 'reply', 'review']);
     expect(last.toManager[0]).toContain(
       'Причина: Всё для расчёта известно, клиент готов к расчёту. Клиент: «Алматы, один вход»',
     );
@@ -274,7 +276,7 @@ describe('д) просьба о живом человеке', () => {
     });
 
     expect(first.outcome).toEqual({ kind: 'handed_off', reason: 'asked_human' });
-    expect(first.llm.purposes()).toEqual(['reply', 'interest']);
+    expect(first.llm.purposes()).toEqual(['interest', 'reply']);
     expect(first.toManager[0]).toContain('Передача чата менеджеру: клиент просит живого человека.');
   });
 });

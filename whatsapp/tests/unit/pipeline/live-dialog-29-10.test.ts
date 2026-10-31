@@ -102,7 +102,7 @@ describe('живой тест 29.10.2026: склад 5000 м², ввоз и вы
     expect(second.toManager).toEqual([]);
     expect(s.storage.handoffs.findOpen(s.chatId())).toBeNull();
     expect(s.storage.chats.getById(s.chatId())?.control).toEqual({ status: 'bot', by: null });
-    expect(second.llm.purposes()).toEqual(['reply', 'interest', 'reply', 'review']);
+    expect(second.llm.purposes()).toEqual(['interest', 'reply', 'reply', 'review']);
     // Модель видит вывод о 1С с пометкой: можно уточнить конфигурацию, переспрашивать «есть ли 1С» не нужно.
     expect(second.data('reply')).toContain(INFERRED_1C);
     expect(s.storage.chats.getProgress(s.chatId())).toEqual({

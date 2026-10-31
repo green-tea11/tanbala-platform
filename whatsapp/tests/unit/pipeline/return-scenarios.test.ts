@@ -23,7 +23,7 @@ describe('сценарии владельца 29.10.2026: возврат бот�
     expect(waiting.toClient).toEqual([]);
     expect(back.outcome).toEqual({ kind: 'replied' });
     expect(back.toClient).toEqual([LATER]);
-    expect(back.llm.purposes()).toEqual(['reply', 'interest', 'review']);
+    expect(back.llm.purposes()).toEqual(['interest', 'reply', 'review']);
     expect(s.storage.chats.getById(s.chatId())?.control).toEqual({ status: 'bot', by: 'panel' });
   });
 
@@ -129,7 +129,7 @@ describe('возврат боту с заметкой, когда клиент �
     expect(back.outcome).toEqual({ kind: 'replied' });
     expect(back.toClient).toEqual([PRICE_REPLY]);
     expect(back.toClient[0]).toContain('1 500 000 тенге');
-    expect(back.llm.purposes()).toEqual(['reply', 'interest', 'review']);
+    expect(back.llm.purposes()).toEqual(['interest', 'reply', 'review']);
   });
 
   it('заметка с ценой, а модель назвала другую сумму: она клиенту не уходит', async () => {

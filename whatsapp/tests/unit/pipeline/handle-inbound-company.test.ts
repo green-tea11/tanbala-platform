@@ -133,7 +133,7 @@ describe('pipeline/handle-inbound и компания: порядок хода',
     expect(h.reviewContexts.map((context) => context.company)).toEqual([CONFIRMED]);
   });
 
-  it('обычный ход: черновик и оценка параллельно, applyAssessment до решения, проверка с блоком черновика', async () => {
+  it('обычный ход: сначала оценка, applyAssessment, затем черновик с новым блоком; проверка с блоком черновика', async () => {
     const h = setup({ assessment: assessedWith(NAMED) });
     journal(h, USUAL, SEARCHING);
 
@@ -143,9 +143,9 @@ describe('pipeline/handle-inbound и компания: порядок хода',
     expect(h.calls).toEqual([
       'read:A1',
       'prepare',
-      'draft',
       'assess',
       'apply:none',
+      'draft',
       'save:cold',
       'review',
       ...SEND_STEPS('A1'),
@@ -154,10 +154,11 @@ describe('pipeline/handle-inbound и компания: порядок хода',
     ]);
     expect(h.company.prepare).toHaveBeenCalledWith(chatWith('bot'), [text('A1')]);
     expect(h.company.applyAssessment).toHaveBeenCalledWith(CHAT_ID, NAMED);
-    // Новый блок после applyAssessment уйдёт в следующий ход: проверка судит с теми же данными, что и черновик.
-    expect(h.contexts.map((context) => context.company)).toEqual([CANDIDATE]);
+    // Оценка видит блок из prepare, черновик уже блок после applyAssessment (клиент назвал компанию: идёт поиск), проверка
+    // судит с теми же данными, что и черновик (пункт 1 задания 01.11.2026).
     expect(h.assessContexts.map((context) => context.company)).toEqual([CANDIDATE]);
-    expect(h.reviewContexts.map((context) => context.company)).toEqual([CANDIDATE]);
+    expect(h.contexts.map((context) => context.company)).toEqual([SEARCHING]);
+    expect(h.reviewContexts.map((context) => context.company)).toEqual([SEARCHING]);
   });
 
   it.each<[string, LlmResult<InterestAssessment>]>([

@@ -47,7 +47,10 @@ export interface ReplyFlowDeps {
   readonly rejectedDrafts?: Pick<RejectedDraftsRepo, 'add'>;
 }
 
-/** Ответы двух параллельных вызовов LLM: черновик и оценка интереса. Сбой приходит значением. */
+/**
+ * Ответы двух вызовов LLM: оценка интереса и черновик, написанный уже по её свежей выжимке (пункт 1 задания 01.11.2026).
+ * Сбой приходит значением.
+ */
 export interface Drafted {
   readonly draft: LlmResult<ReplyDraft>;
   readonly assessment: LlmResult<InterestAssessment>;
@@ -124,13 +127,13 @@ type LlmFailed = Extract<LlmResult<unknown>, { readonly ok: false }>;
 type Attempt = 1 | 2;
 
 /**
- * Всё, что нужно одной попытке: зависимости, разговор (с ним идут проверки), разговор для повтора черновика (с выжимкой
- * из оценки этого хода, если она есть) и что код знает о ходе для решения о передаче (pipeline/handoff-gate.ts).
+ * Всё, что нужно одной попытке: зависимости, разговор с выжимкой из оценки этого хода, если она есть (replyContextOf: с
+ * ним писался черновик, с ним идут проверки и повтор), и что код знает о ходе для решения о передаче
+ * (pipeline/handoff-gate.ts).
  */
 interface Flow {
   readonly deps: ReplyFlowDeps;
   readonly context: ConversationContext;
-  readonly retryContext: ConversationContext;
   readonly gate: TurnSituation;
 }
 
@@ -161,29 +164,51 @@ type Checked =
   | { readonly kind: 'failed'; readonly verdict: ReplyVerdict };
 
 /**
- * Шаг 3 плана и оценка интереса: черновик и оценка идут параллельно (третий вызов не ждёт первого), на ответ
- * уходит по одному вызову каждого. Сбой оценки не останавливает ответ: исключение превращается в сбой
- * unavailable с предупреждением в лог. Исключение черновика уходит наружу (его пишет в лог pipeline/batcher.ts),
- * но только после того, как завершится и вторая попытка: висящих промисов не остаётся.
+ * Шаг 3 плана и оценка интереса: сначала оценка, затем черновик по её свежей выжимке (draftAfterAssessment), на ответ
+ * уходит по одному вызову каждого. Раньше вызовы шли параллельно, и черновик не видел последнего сообщения клиента в
+ * этапе, недостающем для расчёта и выжимке (ревью H2, пункт 1 задания 01.11.2026). Последовательно ход дольше на время
+ * черновика (около 2.5 с при паузе «печатает» до 20 с). Сбой оценки не останавливает ответ: исключение превращается в
+ * сбой unavailable с предупреждением в лог, черновик пишется по прежней выжимке с пометкой. Исключение черновика уходит
+ * наружу (его пишет в лог pipeline/batcher.ts).
  */
 export async function requestDraft(
   deps: Pick<ReplyFlowDeps, 'agent' | 'logger'>,
   context: ConversationContext,
 ): Promise<Drafted> {
-  const [draft, assessment] = await Promise.allSettled([
-    call(() => deps.agent.draftReply(context)),
-    call(() => deps.agent.assessInterest(context)),
-  ]);
-  if (draft.status === 'rejected') throw draft.reason;
-  return {
-    draft: draft.value,
-    assessment: settledAssessment(deps.logger, context.chatId, assessment),
-  };
+  const assessment = await requestAssessment(deps, context);
+  return { draft: await draftAfterAssessment(deps, context, assessment), assessment };
 }
 
 /**
- * Только оценка интереса: ход, в котором бот ждёт ответа на «Вы из компании X?», получает её до черновика. Сбой и
- * исключение как в requestDraft: исключение становится сбоем unavailable с предупреждением в лог.
+ * Черновик после оценки интереса этого хода: с выжимкой из неё (replyContextOf). Исчерпан дневной лимит API на оценке =>
+ * черновик не запрашивается (ход всё равно кончится limit), его итог тот же сбой. Исключение уходит наружу.
+ */
+export async function draftAfterAssessment(
+  deps: Pick<ReplyFlowDeps, 'agent'>,
+  context: ConversationContext,
+  assessment: LlmResult<InterestAssessment>,
+): Promise<LlmResult<ReplyDraft>> {
+  if (!assessment.ok && assessment.failure === 'budget_exceeded') return assessment;
+  return deps.agent.draftReply(replyContextOf(context, assessment.ok ? assessment.value : null));
+}
+
+/**
+ * Контекст черновика, проверки и повтора: выжимка из оценки этого хода, а без оценки прежняя с пометкой profileStale
+ * (данные вызова ответа скажут, что выжимка собрана до последнего сообщения клиента).
+ */
+export function replyContextOf(
+  context: ConversationContext,
+  assessment: InterestAssessment | null,
+): ConversationContext {
+  return assessment === null
+    ? { ...context, profileStale: true }
+    : { ...context, profile: assessment.profile };
+}
+
+/**
+ * Только оценка интереса: первая половина requestDraft, отдельно для хода с компанией (pipeline/company-turn.ts), где
+ * между оценкой и черновиком её итог уходит сервису компании. Исключение становится сбоем unavailable с
+ * предупреждением в лог.
  */
 export async function requestAssessment(
   deps: Pick<ReplyFlowDeps, 'agent' | 'logger'>,
@@ -206,8 +231,9 @@ export async function requestAssessment(
  * LLM при проверке или повторе исхода передачи тоже оставляет причину и фиксированную фразу; исчерпанный лимит API даёт
  * limit. Исход передачи с пустым text (или из одних невидимых символов) проверок не проходит: фиксированная фраза по
  * причине. В лог только ID чата, номер попытки, виды нарушений (CheckCode), причина передачи и числа: фрагменты текста
- * клиента и модели в нём недопустимы. context тот же, с которым писался черновик: проверка судит с теми же данными о
- * компании. Вердикт send несёт companyQuestion черновика answer, чей текст уходит (после повтора: повторного черновика).
+ * клиента и модели в нём недопустимы. context тот же, с которым писался черновик (до выжимки этого хода): проверка
+ * судит с теми же данными о компании и, как черновик и повтор, с выжимкой из оценки этого хода (replyContextOf).
+ * Вердикт send несёт companyQuestion черновика answer, чей текст уходит (после повтора: повторного черновика).
  * Когда чат уходит коллеге с исходом hot (решение владельца 30.10.2026, pipeline/handoff-gate.ts, по выжимке после оценки
  * этого хода): третий вопрос цены, вопрос цены, сроков или договора при понятной задаче, два ухода от вопросов подряд,
  * финал (для расчёта известно всё). Исход hot модели без такой причины ранний: один повтор черновика с замечанием
@@ -228,8 +254,7 @@ export async function decideReply(
   const scope = budgetScopeOf([drafted.draft, drafted.assessment]);
   if (scope !== null) return { kind: 'limit', scope };
   const gate = turnSituation(context, assessment, drafted.draft);
-  const retryContext = assessment === null ? context : { ...context, profile: assessment.profile };
-  const flow: Flow = { deps, context, retryContext, gate };
+  const flow: Flow = { deps, context: replyContextOf(context, assessment), gate };
   const first = await judgeResult(flow, drafted.draft, 1, null);
   const judged = first.kind === 'verdict' ? first.verdict : await retryOnce(flow, first);
   const verdict = withHotPhrase(gate, isCheckFailed(judged) ? afterCheckFailed(flow) : judged);
@@ -410,7 +435,7 @@ async function retryOnce(
   flow: Flow,
   retry: Extract<Judgement, { readonly kind: 'retry' }>,
 ): Promise<ReplyVerdict> {
-  const retried = await call(() => flow.deps.agent.draftReply(flow.retryContext, retry.feedback));
+  const retried = await call(() => flow.deps.agent.draftReply(flow.context, retry.feedback));
   const second = await judgeResult(flow, retried, 2, retry.keep);
   const verdict = second.kind === 'verdict' ? second.verdict : (second.keep ?? CHECK_FAILED);
   return retry.fallback !== undefined && isCheckFailed(verdict) ? retry.fallback : verdict;

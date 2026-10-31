@@ -340,7 +340,7 @@ describe('pipeline/responder-setup', () => {
 
     expect(sendText).toHaveBeenCalledTimes(1);
     expect(sendText).toHaveBeenCalledWith(JID, HOT_REPLY, 'OUT-1');
-    expect(llm.purposes()).toEqual(['reply', 'interest', 'review']);
+    expect(llm.purposes()).toEqual(['interest', 'reply', 'review']);
     expect(storage.chats.getById(chat.id)?.control).toEqual({ status: 'manager', by: 'bot' });
     expect(storage.chats.getById(chat.id)?.level).toBe('hot');
     expect(storage.handoffs.findOpen(chat.id)).toMatchObject({ reason: 'hot', level: 'hot' });

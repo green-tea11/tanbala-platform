@@ -1,7 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { describe, expect, it } from 'vitest';
-import { createAgent, type ConversationContext } from '../../../src/agent/agent.js';
+import {
+  createAgent,
+  STALE_PROFILE_LINE,
+  type ConversationContext,
+} from '../../../src/agent/agent.js';
 import { buildSystem } from '../../../src/agent/prompts.js';
 import type { ModelsConfig } from '../../../src/config/env.js';
 import type { ClientProfile, LlmResult, ReplyDraft } from '../../../src/domain/types.js';
@@ -78,6 +82,20 @@ describe('createAgent: draftReply, запрос', () => {
       'Для расчёта не хватает: чем занимается клиент, что лежит на хранении, сколько этого примерно, сколько нового приходит в месяц, сколько проходов нужно учитывать, есть ли 1С и какая, город.',
     );
     expect(last).not.toMatch(/выжимка системы|Замечания|Уже рассказано|цену|передач|Минимум/);
+  });
+
+  it('оценка этого хода не получилась (profileStale): первая строка данных говорит, что выжимка старая', async () => {
+    const stale = await draft({ ok: true, value: ANSWER }, context({ profileStale: true }));
+    const fresh = await draft({ ok: true, value: ANSWER }, context({ profileStale: false }));
+
+    const data = (stale.request.turns.at(-1)?.text ?? '').split('<данные>\n')[1] ?? '';
+    expect(data.startsWith(`${STALE_PROFILE_LINE}\n\nЭтап по данным системы: 1 знакомство.`)).toBe(
+      true,
+    );
+    expect(STALE_PROFILE_LINE).toBe(
+      'Выжимка собрана до последнего сообщения клиента: что он назвал в нём, уже известно, не спрашивай этого.',
+    );
+    expect(fresh.request.turns.at(-1)?.text).not.toContain('Выжимка собрана до');
   });
 
   it('данные этапа: прошлый этап, рассказанные сильные стороны и вопросы цены из хода разговора', async () => {
