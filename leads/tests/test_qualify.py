@@ -124,12 +124,15 @@ def test_pains_get_verified_flag_and_are_limited():
         {"pain": PAIN, "evidence": "Ответственное хранение", "source": "site"},
         {"pain": qualify.PAINS[0], "evidence": "Теряют инструмент каждую неделю", "source": "site"},
         {"pain": qualify.PAINS[2], "evidence": "Аренда контейнеров", "source": "site"},
+        {"pain": qualify.PAINS[3], "evidence": "Склад от 1000 кв.м", "source": "2gis"},
     ]}
 
     parsed = qualify.parse_answer(answer, qualify.evidence_sources(COMPANY))
 
-    # Подтверждённые идут первыми, выдуманная третья боль отброшена лимитом.
-    assert [(pain["pain"], pain["verified"]) for pain in parsed["pains"]] == [(PAIN, True), (qualify.PAINS[2], True)]
+    # До трёх болей, подтверждённые идут первыми, выдуманная боль отброшена лимитом.
+    assert qualify.MAX_PAINS == 3
+    assert [(pain["pain"], pain["verified"]) for pain in parsed["pains"]] == [
+        (PAIN, True), (qualify.PAINS[2], True), (qualify.PAINS[3], True)]
 
 
 @pytest.mark.db

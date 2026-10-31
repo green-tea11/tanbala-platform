@@ -38,7 +38,7 @@ def _without_contacts(value: str | None, limit: int) -> str | None:
 
 
 def _pains(raw: object) -> list[dict]:
-    """Только подтверждённые боли: цитату нашёл код во входных данных, Claude её не придумал."""
+    """До MAX_PAINS (трёх) болей, только подтверждённые: цитату нашёл код во входных данных, Claude её не придумал."""
     pains = []
     for item in raw if isinstance(raw, list) else []:
         if not isinstance(item, dict) or item.get("verified") is not True or item.get("source") not in PAIN_SOURCES:

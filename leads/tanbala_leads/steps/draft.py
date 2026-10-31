@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 COMPANY_LINE = "Tanbala, направление ТОО «VenMart»"
 VERIFY_RANK = {"safe": 0, "unknown": 1, "risky": 2}
+# Квалификация хранит до трёх болей (для справки WhatsApp-бота), письмо по-прежнему строится вокруг двух.
+LETTER_MAX_PAINS = 2
 
 SCHEMA = {
     "type": "object",
@@ -108,7 +110,7 @@ def choose_contact(conn: psycopg.Connection, company_id: int) -> tuple[int, str]
 def qualification_block(qualification: dict) -> str:
     """Вывод квалификации для письма. Боли только подтверждённые цитатой: выдуманная боль в письмо не идёт."""
     lines = [f"Отрасль: {qualification.get('segment')}", f"Почему подходит: {qualification.get('reason')}"]
-    verified = [pain for pain in qualification.get("pains") or [] if pain.get("verified")]
+    verified = [pain for pain in qualification.get("pains") or [] if pain.get("verified")][:LETTER_MAX_PAINS]
     for index, pain in enumerate(verified):
         label = "Главная боль" if index == 0 else "Ещё боль"
         lines.append(f"{label}: {pain['pain']}. Доказательство: «{as_data(pain['evidence'])}»")
