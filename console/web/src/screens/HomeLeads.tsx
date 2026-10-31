@@ -5,7 +5,7 @@ import { isUnavailable, type LeadsSummary, type Run, type Unavailable as Down } 
 
 /** Ход поиска: пять этапов одной полосой, идущий — цветом данных, с его счётчиком. */
 function RunProgress({ run, now }: { readonly run: Run; readonly now: number }) {
-  const current = run.stages.find((stage) => stage.state === 'running');
+  const current = run.stages.find((stage) => stage.state === 'current');
   const counter = current?.counters?.[0];
   return (
     <div className="run">

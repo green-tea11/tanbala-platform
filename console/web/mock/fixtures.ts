@@ -113,10 +113,10 @@ export function homeFixture(now: number) {
         qualified: 0, rejected: 0, verified: 0, drafted: 0, errors: 0, startedAt: iso(activeRunStart),
         stages: [
           { code: 'collect', label: 'Поиск в 2ГИС', state: 'done', stateLabel: 'готово', counters: [{ field: 'found', label: 'найдено', value: 15 }, { field: 'new_companies', label: 'новых', value: 11 }] },
-          { code: 'crawl', label: 'Сайты', state: 'running', stateLabel: 'идёт', counters: [{ field: 'crawled', label: 'обойдено', value: 6 }] },
-          { code: 'qualify', label: 'Квалификация', state: 'waiting', stateLabel: 'ждёт', counters: [] },
-          { code: 'verify', label: 'Проверка почт', state: 'waiting', stateLabel: 'ждёт', counters: [] },
-          { code: 'draft', label: 'Письма', state: 'waiting', stateLabel: 'ждёт', counters: [] },
+          { code: 'crawl', label: 'Сайты', state: 'current', stateLabel: 'идёт', counters: [{ field: 'crawled', label: 'обойдено', value: 6 }] },
+          { code: 'qualify', label: 'Квалификация', state: 'pending', stateLabel: 'ждёт', counters: [] },
+          { code: 'verify', label: 'Проверка почт', state: 'pending', stateLabel: 'ждёт', counters: [] },
+          { code: 'draft', label: 'Письма', state: 'pending', stateLabel: 'ждёт', counters: [] },
         ],
       },
       research: {

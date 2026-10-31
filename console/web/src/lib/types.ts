@@ -96,7 +96,8 @@ export interface Attention {
 export interface RunStage {
   readonly code: string;
   readonly label: string;
-  readonly state: 'done' | 'running' | 'error' | 'waiting' | string;
+  /** Как у почты (web/views.py stage_states): current — идёт сейчас, failed — запуск упал на нём. */
+  readonly state: 'done' | 'current' | 'failed' | 'pending';
   readonly stateLabel: string;
   readonly hint?: string;
   readonly counters?: readonly { readonly field: string; readonly label: string; readonly value: number }[];

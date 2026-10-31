@@ -58,8 +58,8 @@
 .stages { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 3px; margin: 10px 0 6px; }
 .stage { height: 6px; border-radius: 2px; background: var(--rule); }
 .stage.done { background: var(--accent); }
-.stage.running { background: #8db3ea; }
-.stage.error { background: var(--negative); }
+.stage.current { background: #8db3ea; }
+.stage.failed { background: var(--negative); }
 
 .spend-lead { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
 .spend-figure { font-size: 24px; line-height: 30px; font-weight: 400; }

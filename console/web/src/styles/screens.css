@@ -194,8 +194,8 @@
 .stage-list li { display: grid; grid-template-columns: 6px 140px minmax(0, 1fr); align-items: center; gap: 10px; font-size: 13px; line-height: 18px; }
 .stage-bar { width: 6px; height: 18px; border-radius: 3px; background: var(--rule); }
 .stage-list .done .stage-bar { background: var(--accent); }
-.stage-list .running .stage-bar { background: #8db3ea; }
-.stage-list .error .stage-bar { background: var(--negative); }
+.stage-list .current .stage-bar { background: #8db3ea; }
+.stage-list .failed .stage-bar { background: var(--negative); }
 .stage-list b { font-weight: 500; }
 
 /* система */
