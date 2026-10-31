@@ -356,6 +356,12 @@ SCHEMA_V9 = """
 ALTER TABLE runs ADD COLUMN no_email integer NOT NULL DEFAULT 0;
 """
 
+SCHEMA_V10 = """
+-- Сколько раз сайт компании временно не открылся (время вышло, сбой браузера), пока у неё нет почты.
+-- До предела компания остаётся new и следующий запуск обходит сайт снова (crawl.crawl_company).
+ALTER TABLE companies ADD COLUMN site_failures smallint NOT NULL DEFAULT 0 CHECK (site_failures >= 0);
+"""
+
 MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     (1, "init", SCHEMA_V1),
     (2, "runs_and_llm_calls", SCHEMA_V2),
@@ -366,6 +372,7 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     (7, "whatsapp_contacted_at", SCHEMA_V7),
     (8, "research_aliases", SCHEMA_V8),
     (9, "runs_no_email", SCHEMA_V9),
+    (10, "companies_site_failures", SCHEMA_V10),
 )
 
 

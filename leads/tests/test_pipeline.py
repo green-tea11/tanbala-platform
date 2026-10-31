@@ -320,3 +320,144 @@ def test_each_query_is_searched_and_companies_remember_it(db_conn, dsn, tmp_path
     by_query = dict(db_conn.execute("SELECT search_query, count(*) FROM companies GROUP BY 1").fetchall())
     assert by_query == {"склад": 2, "логистика": 2}
     assert db_conn.execute("SELECT found, new_companies, drafted FROM runs WHERE id = %s", (run_id,)).fetchone() == (4, 4, 4)
+
+
+# Ревью 01.11.2026: временный сбой сайта не отправляет компанию без почты в «Нет почты» навсегда
+
+def parser_without_asklad_emails(url, out, max_records):
+    items = json.loads(FIXTURE.read_text(encoding="utf-8-sig"))
+    for item in items:
+        if item["name"].startswith("Asklad"):
+            for group in item["contact_groups"]:
+                group["contacts"] = [c for c in group["contacts"] if c["type"] != "email"]
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
+    return out
+
+
+def asklad(conn):
+    return conn.execute("SELECT status, site_failures, last_error FROM companies WHERE name LIKE 'Asklad%%'").fetchone()
+
+
+def run_once(conn, dsn, tmp_path, crawl):
+    run_id = pipeline.create_run(conn, "almaty", "склад", 4)
+    pipeline.execute_run(dsn, run_id, make_deps(tmp_path, run_parser=parser_without_asklad_emails, crawl=crawl))
+    return conn.execute("SELECT status, errors, rejected, no_email FROM runs WHERE id = %s", (run_id,)).fetchone()
+
+
+def asklad_times_out(url):
+    if "kontainer" in url:
+        return SiteCrawl(start_url=url, error="главная страница: время на сайт вышло", retryable=True)
+    return fake_site(url)
+
+
+def asklad_site_crashes(url):
+    if "kontainer" in url:
+        raise RuntimeError("Playwright: browser closed")
+    return fake_site(url)
+
+
+@pytest.mark.parametrize("crawl", [asklad_times_out, asklad_site_crashes], ids=["timeout", "crash"])
+def test_temporary_site_failure_keeps_company_without_email_for_next_run(db_conn, dsn, tmp_path, crawl):
+    assert run_once(db_conn, dsn, tmp_path, crawl) == ("done", 1, 0, 0)
+    status, failures, error = asklad(db_conn)
+    assert (status, failures) == ("new", 1) and "попытка 1 из 3" in error and "следующий запуск" in error
+
+    assert run_once(db_conn, dsn, tmp_path, crawl) == ("done", 1, 0, 0)
+    assert asklad(db_conn)[:2] == ("new", 2)
+
+    # Третья попытка последняя: сайт так и не открылся, почты нет — «Нет почты», как раньше.
+    third = run_once(db_conn, dsn, tmp_path, crawl)
+    assert third[2:] == (0, 1)
+    assert asklad(db_conn)[0] == "rejected"
+
+
+def test_site_that_opens_on_next_run_gets_its_emails(db_conn, dsn, tmp_path):
+    run_once(db_conn, dsn, tmp_path, asklad_times_out)
+
+    assert run_once(db_conn, dsn, tmp_path, fake_site) == ("done", 0, 0, 0)
+
+    status, _, error = asklad(db_conn)
+    assert status == "drafted" and error is None
+    assert db_conn.execute("SELECT email FROM contacts c JOIN companies co ON co.id = c.company_id"
+                           " WHERE co.name LIKE 'Asklad%%'").fetchall() == [("sales@kontainer.kz",)]
+
+
+def test_permanent_site_error_without_email_is_no_email_at_once(db_conn, dsn, tmp_path):
+    def asklad_404(url):
+        if "kontainer" in url:
+            return SiteCrawl(start_url=url, error="главная страница: ответ HTTP 404", retryable=False)
+        return fake_site(url)
+
+    assert run_once(db_conn, dsn, tmp_path, asklad_404)[2:] == (0, 1)
+    assert asklad(db_conn)[:2] == ("rejected", 0)
+
+
+def test_site_failure_with_2gis_email_is_not_retried(db_conn, dsn, tmp_path):
+    def aksenger_times_out(url):
+        if "aksenger" in url:
+            return SiteCrawl(start_url=url, error="главная страница: время на сайт вышло", retryable=True)
+        return fake_site(url)
+
+    run_id = pipeline.create_run(db_conn, "almaty", "склад", 4)
+    pipeline.execute_run(dsn, run_id, make_deps(tmp_path, crawl=aksenger_times_out))
+
+    # Почта из 2ГИС есть: письмо по карточке, как раньше.
+    assert db_conn.execute("SELECT status, site_failures FROM companies WHERE name LIKE 'Аксенгер%%'").fetchone() == (
+        "drafted", 0)
+
+
+# Ревью 01.11.2026: сбой 2ГИС по одной отрасли не останавливает остальные
+
+LOGISTICS_URL_TAIL = "%D0%BB%D0%BE%D0%B3%D0%B8%D1%81%D1%82%D0%B8%D0%BA%D0%B0"  # «логистика» в ссылке 2ГИС
+
+
+def test_failed_industry_is_recorded_and_others_continue(db_conn, dsn, tmp_path):
+    def parser_failing_on_logistics(url, out, max_records):
+        if url.endswith(LOGISTICS_URL_TAIL):
+            raise collect.ParserError("parser-2gis не уложился в 1200 с")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(FIXTURE, out)
+        return out
+
+    run_id = pipeline.create_run(db_conn, "almaty", "логистика, склад", 2)
+
+    pipeline.execute_run(dsn, run_id, make_deps(tmp_path, run_parser=parser_failing_on_logistics))
+
+    status, error, new, drafted = db_conn.execute("SELECT status, error, new_companies, drafted FROM runs WHERE id = %s",
+                                                  (run_id,)).fetchone()
+    assert (status, new, drafted) == ("done", 2, 2)
+    assert "«логистика»" in error and "не уложился" in error and "1 из 2" in error and "«склад»" not in error
+
+
+def test_broken_export_of_one_industry_does_not_stop_the_run(db_conn, dsn, tmp_path):
+    calls = []
+
+    def parser_with_broken_first_export(url, out, max_records):
+        calls.append(url)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if len(calls) == 1:
+            out.write_text("[{", encoding="utf-8")
+        else:
+            shutil.copy(FIXTURE, out)
+        return out
+
+    run_id = pipeline.create_run(db_conn, "almaty", "склад, логистика", 2)
+
+    pipeline.execute_run(dsn, run_id, make_deps(tmp_path, run_parser=parser_with_broken_first_export))
+
+    status, error, new = db_conn.execute("SELECT status, error, new_companies FROM runs WHERE id = %s",
+                                         (run_id,)).fetchone()
+    assert (status, new) == ("done", 2) and "«склад»" in error and "JSONDecodeError" in error
+
+
+def test_run_fails_only_when_every_industry_failed(db_conn, dsn, tmp_path):
+    def broken_parser(url, out, max_records):
+        raise collect.ParserError("Chrome не запустился")
+
+    run_id = pipeline.create_run(db_conn, "almaty", "склад, логистика", 2)
+
+    pipeline.execute_run(dsn, run_id, make_deps(tmp_path, run_parser=broken_parser))
+
+    status, error = db_conn.execute("SELECT status, error FROM runs WHERE id = %s", (run_id,)).fetchone()
+    assert status == "failed" and "«склад»" in error and "«логистика»" in error and "Chrome не запустился" in error

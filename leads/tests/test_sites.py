@@ -829,6 +829,7 @@ def test_crawl_site_homepage_with_http_error_is_an_error():
 
     assert crawl.error and "403" in crawl.error
     assert crawl.pages == ()
+    assert crawl.retryable is False  # 403 повтор не исправит
 
 
 def test_crawl_site_drops_page_redirected_to_private_address():
@@ -870,6 +871,7 @@ def test_crawl_site_homepage_redirected_to_private_address():
 
     assert crawl.error
     assert crawl.pages == ()
+    assert crawl.retryable is False
     assert crawl.emails == frozenset()
 
 
@@ -880,6 +882,7 @@ def test_crawl_site_reports_crawler_failure():
 
     assert crawl.error and "Unexpected error" in crawl.error
     assert "Code context" not in crawl.error
+    assert crawl.retryable is True
     assert crawl.pages == ()
     assert crawl.emails == frozenset()
 
@@ -889,6 +892,7 @@ def test_crawl_site_reports_browser_start_failure():
 
     assert crawl.error and "chrome.exe" in crawl.error
     assert crawl.pages == ()
+    assert crawl.retryable is True
 
 
 def test_crawl_site_survives_exception_from_arun():
@@ -899,6 +903,7 @@ def test_crawl_site_survives_exception_from_arun():
     crawl = run_crawl("https://pel.kz", Exploding({}))
 
     assert crawl.error and "browser crashed" in crawl.error
+    assert crawl.retryable is True
 
 
 @pytest.mark.parametrize(
@@ -982,6 +987,33 @@ def test_crawl_site_homepage_timeout_is_an_error(monkeypatch):
 
     assert crawl.error
     assert crawl.pages == ()
+    assert crawl.retryable is True  # время вышло: следующий запуск попробует снова
+
+
+@pytest.mark.parametrize(
+    ("error", "temporary"),
+    [
+        ("время на сайт вышло", True),
+        ("не загрузилась: net::ERR_CONNECTION_RESET", True),
+        ("ответ HTTP 503", True),
+        ("ответ HTTP 429", True),
+        ("browser crashed", True),
+        ("ответ HTTP 404", False),
+        ("ответ HTTP 403", False),
+        ("адрес не публичный", False),
+        ("переадресация на непубличный адрес", False),
+    ],
+)
+def test_temporary_site_errors(error, temporary):
+    assert sites.is_temporary_error(error) is temporary
+
+
+def test_crawl_site_homepage_503_is_retryable():
+    results = {"https://pel.kz": page_result("https://pel.kz", markdown="Service Unavailable", status=503)}
+
+    crawl = run_crawl("https://pel.kz", FakeCrawler(results))
+
+    assert crawl.error and "503" in crawl.error and crawl.retryable is True
 
 
 # --- защита браузера от запросов на локальные адреса ---

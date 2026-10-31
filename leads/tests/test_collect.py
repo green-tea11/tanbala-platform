@@ -294,3 +294,46 @@ def test_kill_of_finished_parser_on_linux_is_quiet(monkeypatch):
     monkeypatch.setattr(collect.signal, "SIGKILL", 9, raising=False)
 
     collect._kill_tree(4242)
+
+
+# Ревью 01.11.2026: parser-2gis ловит свои ошибки сам и выходит с кодом 0 и пустым «[]»
+
+def finished_parser(tmp_path, monkeypatch, *, export: str, stderr: str):
+    output = tmp_path / "out.json"
+
+    class DoneProcess:
+        pid = 4242
+        returncode = 0
+
+        def communicate(self, timeout=None):
+            output.write_text(export, encoding="utf-8")
+            return "", stderr
+
+    binary = tmp_path / "parser-2gis"
+    binary.write_text("")
+    monkeypatch.setattr(collect.subprocess, "Popen", lambda *a, **k: DoneProcess())
+    return lambda: collect.run_parser("https://2gis.kz/almaty/search/x", output, 5, str(binary))
+
+
+CHROME_FAILED = "\n".join([
+    "2026-11-01 10:00:00.000 | INFO     | Парсинг запущен.",
+    "2026-11-01 10:00:31.000 | ERROR    | Ошибка получения ответа сервера.",
+    "2026-11-01 10:00:31.000 | INFO     | Парсинг завершён.",
+])
+NOTHING_FOUND = "2026-11-01 10:00:00.000 | WARNING  | Сервер вернул сообщение «Точных совпадений нет / Не найдено»."
+ONE_CARD = '[{"type": "branch", "name": "Склад"}]'
+
+
+def test_empty_export_with_error_in_log_is_parser_error(tmp_path, monkeypatch):
+    run = finished_parser(tmp_path, monkeypatch, export="[]", stderr=CHROME_FAILED)
+
+    with pytest.raises(collect.ParserError, match="не вернул ни одной карточки: Ошибка получения ответа сервера"):
+        run()
+
+
+@pytest.mark.parametrize(("export", "stderr"), [("[]", NOTHING_FOUND), (ONE_CARD, CHROME_FAILED)],
+                         ids=["no-results", "some-cards-despite-errors"])
+def test_empty_search_or_partial_export_is_not_an_error(tmp_path, monkeypatch, export, stderr):
+    run = finished_parser(tmp_path, monkeypatch, export=export, stderr=stderr)
+
+    assert run().exists()

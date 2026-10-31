@@ -82,6 +82,11 @@ MAILTO_RE = re.compile(r"mailto:([^\s\"'<>()\[\]]+)", re.IGNORECASE)
 AT_RE = re.compile(r"\s*[\[({]\s*(?:at|собака|@)\s*[\])}]\s*", re.IGNORECASE)
 DOT_RE = re.compile(r"\s*[\[({]\s*(?:dot|точка|\.)\s*[\])}]\s*", re.IGNORECASE)
 JSON_ESCAPE_RE = re.compile(r"\\u00(?:3c|3e|22|27)", re.IGNORECASE)
+NOT_PUBLIC_ERROR = "адрес не публичный"
+REDIRECT_NOT_PUBLIC_ERROR = "переадресация на непубличный адрес"
+HTTP_ERROR_RE = re.compile(r"^ответ HTTP (\d+)$")
+# Ответы 4xx, которые бывают временными: таймаут запроса, «слишком рано», «слишком много запросов».
+TEMPORARY_HTTP_CODES = frozenset({408, 425, 429})
 # Подпись, прилипшая к адресу в тексте страницы без пробела и двоеточия: «E-mailinfo@erdaholding.com» (так было на
 # сервере). Перед подписью бывает и хвост телефона: «355-10-20E-mailinfo@…». Кириллица («Почта», «Эл. почта»)
 # не прилипает: EMAIL_RE берёт адрес только из латиницы и цифр.
@@ -107,6 +112,9 @@ class SiteCrawl:
     pages: tuple[PageText, ...] = ()
     emails: frozenset[str] = frozenset()
     error: str | None = None
+    # Сбой временный (время вышло, не загрузилась, ответ 5xx, сбой браузера): следующий запуск может обойти снова.
+    # Адрес не публичный, соцсеть, ответ 404 — нет: повтор даст то же.
+    retryable: bool = False
 
     @property
     def text(self) -> str:
@@ -354,14 +362,25 @@ async def crawl_site(url: str, *, max_pages: int = 6, page_timeout_ms: int = 20_
                     start = candidate
                     break
             if isinstance(home, str):
-                return SiteCrawl(start_url=start, error=f"главная страница: {home}")
+                return SiteCrawl(start_url=start, error=f"главная страница: {home}", retryable=is_temporary_error(home))
             if normalize_domain(home[0].url) is None:
                 return SiteCrawl(start_url=start, error="сайт переадресует на соцсеть или каталог")
             fetched = [home, *await _fetch_pages(crawler, home, max(max_pages - 1, 0), config, deadline, resolver)]
     except Exception as exc:  # запуск и закрытие браузера: любая ошибка crawl4ai или Playwright = сбой сайта
-        return SiteCrawl(start_url=start, error=f"crawl4ai: {_short(exc)}")
+        return SiteCrawl(start_url=start, error=f"crawl4ai: {_short(exc)}", retryable=True)
     emails = frozenset().union(*(emails for _, emails, _ in fetched))
     return SiteCrawl(start_url=start, pages=tuple(page for page, _, _ in fetched), emails=emails)
+
+
+def is_temporary_error(error: str) -> bool:
+    """Ошибка страницы из _fetch временная: время вышло, не загрузилась, ответ 5xx или 408/429, сбой браузера.
+
+    Постоянные: адрес не публичный (или переадресует туда) и прочие ответы 4xx (404, 403, 410).
+    """
+    if error in (NOT_PUBLIC_ERROR, REDIRECT_NOT_PUBLIC_ERROR):
+        return False
+    match = HTTP_ERROR_RE.match(error)
+    return match is None or int(match.group(1)) >= 500 or int(match.group(1)) in TEMPORARY_HTTP_CODES
 
 
 async def _fetch_pages(crawler: Any, home: tuple, limit: int, config: Any, deadline: float,
@@ -395,7 +414,7 @@ async def _fetch(crawler: Any, url: str, kind: str, config: Any, deadline: float
     if remaining <= 0:
         return "время на сайт вышло"
     if not await _is_public(url, resolver):
-        return "адрес не публичный"
+        return NOT_PUBLIC_ERROR
     try:
         result = await asyncio.wait_for(crawler.arun(url, config=config), remaining)
     except TimeoutError:
@@ -408,7 +427,7 @@ async def _fetch(crawler: Any, url: str, kind: str, config: Any, deadline: float
         return f"ответ HTTP {result.status_code}"
     final_url = getattr(result, "redirected_url", None) or url
     if final_url != url and not await _is_public(final_url, resolver):
-        return "переадресация на непубличный адрес"
+        return REDIRECT_NOT_PUBLIC_ERROR
     markdown = _markdown(getattr(result, "markdown", None))
     emails = extract_emails(getattr(result, "html", "") or "") | extract_emails(markdown)
     page = PageText(url=final_url, text=_cut(markdown, MAX_PAGE_TEXT_CHARS), kind=kind)

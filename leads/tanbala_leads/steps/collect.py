@@ -47,6 +47,10 @@ class ParserError(RuntimeError):
     """parser-2gis не отработал."""
 
 
+# Строка лога parser-2gis уровня ERROR или CRITICAL: «12:00:00.000 | ERROR    | Ошибка получения ответа сервера.»
+PARSER_LOG_ERROR_RE = re.compile(r"\|\s*(?:ERROR|CRITICAL)\s*\|([^\n]*)")
+
+
 def build_search_url(city: str, query: str) -> str:
     """Ссылка на выдачу 2ГИС по городу и запросу."""
     if city not in CITIES:
@@ -128,7 +132,19 @@ def run_parser(search_url: str, output_path: Path, max_records: int, parser_bin:
     if process.returncode != 0 or not output_path.exists():
         tail = (stderr or stdout or "").strip()[-500:]
         raise ParserError(f"parser-2gis завершился с кодом {process.returncode}: {tail}")
+    # parser-2gis ловит свои исключения сам: Chrome не открыл страницу — а выход 0 и пустой «[]», как у выдачи без
+    # результатов («Точных совпадений нет» он пишет как WARNING). Пустая выгрузка и строка ERROR в логе — это сбой.
+    errors = PARSER_LOG_ERROR_RE.findall(f"{stdout or ''}\n{stderr or ''}")
+    if errors and _is_empty_export(output_path):
+        raise ParserError(f"parser-2gis не вернул ни одной карточки: {errors[-1].strip()[:300]}")
     return output_path
+
+
+def _is_empty_export(output_path: Path) -> bool:
+    try:
+        return read_export(output_path) == []
+    except (OSError, ValueError, ParserError):
+        return False  # битую выгрузку разберёт load_companies и упадёт с понятной ошибкой
 
 
 def _kill_tree(pid: int) -> None:

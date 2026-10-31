@@ -37,6 +37,8 @@ PARSER_RECORDS_FACTOR = 3
 PARSER_RECORDS_LIMIT = 60
 COUNTERS = ("crawled", "qualified", "rejected", "no_email", "verified", "drafted", "errors")
 NO_EMAIL_ERROR = "Почта не найдена ни в 2ГИС, ни на сайте"
+# Сколько запусков пробуют сайт, который временно не открылся, пока у компании нет почты (потом «Нет почты»).
+MAX_SITE_ATTEMPTS = 3
 MAX_ERROR_CHARS = 500
 # Текст ошибки виден в интерфейсе: ключи API и строки подключения из него вырезаются.
 SECRET_PATTERNS = (re.compile(r"sk-ant-[\w-]+"), re.compile(r"postgres(?:ql)?://\S+"), re.compile(r"key=\S+", re.I))
@@ -300,22 +302,46 @@ def _unfinished(conn: psycopg.Connection, exclude: tuple[int, ...], limit: int) 
     return tuple(company_id for (company_id,) in rows)
 
 
+# Сбой поиска одной отрасли: parser-2gis (таймаут, код выхода, нет выгрузки, Chrome не отдал карточек), чтение
+# или разбор выгрузки. BrowserBusy (Chrome занят дольше предела) и ошибки базы останавливают запуск, как раньше.
+INDUSTRY_ERRORS = (collect.ParserError, OSError, ValueError)
+MAX_INDUSTRY_ERROR_CHARS = 200
+
+
 def _collect(conn: psycopg.Connection, run_id: int, run: dict, deps: Deps) -> tuple[int, ...]:
-    """Поиск в 2ГИС по каждой отрасли запуска: по max_companies новых компаний на отрасль."""
+    """Поиск в 2ГИС по каждой отрасли запуска: по max_companies новых компаний на отрасль.
+
+    Отрасль, по которой поиск не удался, пропускается и записывается в runs.error; запуск падает, только если не
+    удался поиск по всем отраслям.
+    """
     _set(conn, run_id, stage="Поиск в 2ГИС")
     queries = split_queries(run["query"])
     max_records = min(run["max_companies"] * PARSER_RECORDS_FACTOR, PARSER_RECORDS_LIMIT)
     new_ids: tuple[int, ...] = ()
     found = 0
+    failed: list[str] = []
     for index, query in enumerate(queries, start=1):
         _set(conn, run_id, stage_detail=f"{query} ({index} из {len(queries)})" if len(queries) > 1 else query)
         export = deps.exports_dir / (f"run-{run_id}.json" if len(queries) == 1 else f"run-{run_id}-{index}.json")
-        deps.run_parser(collect.build_search_url(run["city"], query), export, max_records)
-        result = collect.load_companies(conn, export, run_id=run_id, limit=run["max_companies"], search_query=query)
+        try:
+            deps.run_parser(collect.build_search_url(run["city"], query), export, max_records)
+            result = collect.load_companies(conn, export, run_id=run_id, limit=run["max_companies"],
+                                            search_query=query)
+        except INDUSTRY_ERRORS as exc:
+            # Одна отрасль не нашлась (таймаут, сбой Chrome, битая выгрузка): остальные ищем дальше (ревью 01.11.2026).
+            logger.warning("Запуск %s: поиск в 2ГИС по отрасли %s из %s не удался: %s", run_id, index, len(queries),
+                           type(exc).__name__)
+            failed.append(f"«{query}» ({safe_error(exc)[:MAX_INDUSTRY_ERROR_CHARS]})")
+            continue
         new_ids += result.new_ids
         found += result.found
         _set(conn, run_id, found=found, new_companies=len(new_ids))
     _set(conn, run_id, stage_detail=None)
+    if failed and len(failed) == len(queries):
+        raise collect.ParserError("Поиск в 2ГИС не удался: " + "; ".join(failed))
+    if failed:
+        _set(conn, run_id, error=f"Поиск в 2ГИС не удался по {len(failed)} из {len(queries)} отраслей: "
+                                 + "; ".join(failed) + ". Остальные отрасли обработаны.")
     total = run["max_companies"] * len(queries)
     return new_ids + _unfinished(conn, new_ids, total - len(new_ids))
 
@@ -348,11 +374,17 @@ def _steps(conn: psycopg.Connection, run_id: int, company_ids: tuple[int, ...], 
 
     _set(conn, run_id, stage="Сайты")
 
-    def do_crawl(cid: int) -> str:
+    def do_crawl(cid: int) -> str | None:
         try:
-            crawl.crawl_company(conn, cid, deps.crawl)
+            crawl.crawl_company(conn, cid, deps.crawl, max_attempts=MAX_SITE_ATTEMPTS)
         except browsers.BrowserBusy:
             raise  # сайт не обходили: компания остаётся new, её дообработает следующий запуск
+        except crawl.SiteUnavailable as exc:
+            # Почты нет, сайт не открылся временно: компания остаётся new (причина в last_error), это ошибка запуска,
+            # а не «Нет почты» навсегда.
+            logger.warning("Запуск %s, компания %s: %s", run_id, cid, exc)
+            _bump(conn, run_id, "errors")
+            return None
         except Exception as exc:  # noqa: BLE001  сайт не открылся: дальше по карточке 2ГИС и её почтам
             _company_failed(conn, run_id, cid, exc)
             conn.execute("UPDATE companies SET status = 'crawled' WHERE id = %s AND status = 'new'", (cid,))
