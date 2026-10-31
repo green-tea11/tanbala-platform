@@ -221,6 +221,7 @@ describe('identifyAfterReply: проверка новой компании', () 
         method: 'startResearch',
         request: {
           name: 'Платформа-А',
+          aliases: [],
           city: 'Алматы',
           phone: '77000000001',
           domain: 'sklad.kz',
@@ -281,7 +282,7 @@ describe('identifyAfterReply: проверка новой компании', () 
 
     expect(h.directory.calls.find((call) => call.method === 'startResearch')).toEqual({
       method: 'startResearch',
-      request: { name: 'Платформа-А', city: null, phone: null, domain: null },
+      request: { name: 'Платформа-А', aliases: [], city: null, phone: null, domain: null },
     });
   });
 

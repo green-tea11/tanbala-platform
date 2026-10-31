@@ -166,12 +166,16 @@ describe('company-api brief: ответ', () => {
     expect(JSON.stringify(valueOf(result))).not.toMatch(/notes|заметка|confirmed/);
   });
 
-  it('болей не больше двух: лишние отбрасываются', async () => {
-    const pains = [1, 2, 3].map((n) => ({ pain: `Боль ${n}`, evidence: 'цитата', source: '2gis' }));
+  it('болей не больше трёх (контракт с 31.10.2026): лишние отбрасываются', async () => {
+    const pains = [1, 2, 3, 4].map((n) => ({
+      pain: `Боль ${n}`,
+      evidence: 'цитата',
+      source: '2gis',
+    }));
 
     const result = valueOf(await briefOf({ pains }));
 
-    expect(result.pains.map((item) => item.pain)).toEqual(['Боль 1', 'Боль 2']);
+    expect(result.pains.map((item) => item.pain)).toEqual(['Боль 1', 'Боль 2', 'Боль 3']);
   });
 
   it('боль допускает evidence и source равные null', async () => {

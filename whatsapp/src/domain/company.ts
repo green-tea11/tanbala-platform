@@ -50,7 +50,7 @@ export interface CompanyBrief {
   /** 0..100; null: не оценивали. */
   readonly fitScore: number | null;
   readonly reason: string | null;
-  /** До двух болей, только подтверждённые проектом B. */
+  /** До трёх болей, только подтверждённые проектом B. */
   readonly pains: readonly CompanyPain[];
   /** Мы уже писали этой компании на почту (тестовые отправки не считаются). */
   readonly emailed: boolean;
@@ -68,6 +68,11 @@ export type CompanyLookupQuery =
 /** Запуск проверки новой компании (POST /internal/research). */
 export interface ResearchRequest {
   readonly name: string;
+  /**
+   * Другие варианты названия той же компании (старое или новое название бренда, латиница, без формы собственности):
+   * проект B пробует их по очереди, если по name ничего не нашлось. До трёх, пустой список: вариантов нет.
+   */
+  readonly aliases: readonly string[];
   readonly city: string | null;
   readonly phone: PhoneDigits | null;
   readonly domain: string | null;

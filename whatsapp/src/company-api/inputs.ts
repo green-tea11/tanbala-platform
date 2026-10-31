@@ -20,9 +20,16 @@ const PHONE = /^7\d{10}$/;
 /** ID задачи проверки: UUID, то есть буквы, цифры и дефис, не длиннее 100. */
 const JOB_ID = /^[A-Za-z0-9-]{1,100}$/;
 
-/** Тело POST /internal/research: до 4 КБ даже в худшем случае (все знаки экранируются, 553 знака по 6 байт). */
+/** Вариантов названия в проверке не больше трёх: больше проект B не принимает. */
+export const MAX_ALIASES = 3;
+
+/**
+ * Тело POST /internal/research: до 8 КБ даже в худшем случае (все знаки экранируются: название и три варианта по
+ * 200, город 100 и домен 253, всего 1153 знака по 6 байт, около 7 КБ).
+ */
 export interface ResearchBody {
   readonly name: string;
+  readonly aliases: readonly string[];
   readonly city: string | null;
   readonly phone: string | null;
   readonly domain: string | null;
@@ -72,14 +79,32 @@ export function statusPath(jobId: ResearchJobId): string | null {
 }
 
 /**
- * Тело POST /internal/research: name обрезается по краям и до 200, пустые city и domain становятся null, city до 100,
- * domain до 253. null: названия нет или телефон не 7XXXXXXXXXX (bad_request без запроса).
+ * Варианты названия для проверки: каждый обрезается по краям и до 200, пустые и повторы названия или друг друга без
+ * учёта регистра отбрасываются (проект B отбросил бы их сам), остаются первые три.
+ */
+function aliasesOf(name: string, raw: readonly string[]): readonly string[] {
+  const seen = new Set([name.toLowerCase()]);
+  const aliases: string[] = [];
+  for (const item of raw) {
+    const alias = trimmedOrNull(item, MAX_NAME_CHARS);
+    if (alias === null || seen.has(alias.toLowerCase())) continue;
+    seen.add(alias.toLowerCase());
+    aliases.push(alias);
+  }
+  return aliases.slice(0, MAX_ALIASES);
+}
+
+/**
+ * Тело POST /internal/research: name обрезается по краям и до 200, варианты как в aliasesOf, пустые city и domain
+ * становятся null, city до 100, domain до 253. null: названия нет или телефон не 7XXXXXXXXXX (bad_request без
+ * запроса).
  */
 export function researchBody(request: ResearchRequest): ResearchBody | null {
   const name = trimmedOrNull(request.name, MAX_NAME_CHARS);
   if (name === null || (request.phone !== null && !PHONE.test(request.phone))) return null;
   return {
     name,
+    aliases: aliasesOf(name, request.aliases),
     city: optionalText(request.city, MAX_CITY_CHARS),
     phone: request.phone,
     domain: optionalText(request.domain, MAX_DOMAIN_CHARS),

@@ -357,7 +357,13 @@ describe('company-api транспорт: пауза после сбоя', () =>
         failure: 'unavailable',
       });
       expect(
-        await h.directory.startResearch({ name: 'Ромашка', city: null, phone: null, domain: null }),
+        await h.directory.startResearch({
+          name: 'Ромашка',
+          aliases: [],
+          city: null,
+          phone: null,
+          domain: null,
+        }),
       ).toEqual({ ok: false, failure: 'unavailable' });
       expect(await h.directory.researchStatus('abc-1' as ResearchJobId)).toEqual({
         ok: false,
@@ -400,7 +406,13 @@ describe('company-api транспорт: пауза после сбоя', () =>
     h.reply(hanging());
 
     expect(
-      await h.directory.startResearch({ name: 'Ромашка', city: null, phone: null, domain: null }),
+      await h.directory.startResearch({
+        name: 'Ромашка',
+        aliases: [],
+        city: null,
+        phone: null,
+        domain: null,
+      }),
     ).toEqual({ ok: false, failure: 'timeout' });
   });
 
@@ -512,7 +524,13 @@ describe('company-api транспорт: записи в лог', () => {
     h.clock.advance(1);
     await h.directory.brief(1 as CompanyId);
     h.clock.advance(1);
-    await h.directory.startResearch({ name: 'Ромашка', city: null, phone: null, domain: null });
+    await h.directory.startResearch({
+      name: 'Ромашка',
+      aliases: [],
+      city: null,
+      phone: null,
+      domain: null,
+    });
     h.clock.advance(1);
     await h.directory.researchStatus('abc-1' as ResearchJobId);
 

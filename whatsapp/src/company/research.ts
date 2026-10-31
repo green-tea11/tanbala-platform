@@ -214,6 +214,7 @@ function queueResearch(
 function researchRequest(chat: Chat, state: ChatCompanyState, name: string): ResearchRequest {
   return {
     name,
+    aliases: [],
     city: state.statedCity,
     phone: state.profileKind === 'business' ? searchPhone(chat.identity.pnJid) : null,
     domain: state.profileDomain,

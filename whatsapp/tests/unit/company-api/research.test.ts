@@ -13,7 +13,13 @@ import { BASE_URL, createHarness, json, TOKEN } from './harness.js';
 const JOB_ID = '3f2c9e0a-1b2c-4d5e-8f90-a1b2c3d4e5f6' as ResearchJobId;
 const PHONE = '77011234567' as PhoneDigits;
 
-const REQUEST: ResearchRequest = { name: 'Платформа-А', city: null, phone: null, domain: null };
+const REQUEST: ResearchRequest = {
+  name: 'Платформа-А',
+  aliases: [],
+  city: null,
+  phone: null,
+  domain: null,
+};
 
 const CONTRACT_BRIEF = {
   id: 51,
@@ -31,7 +37,7 @@ const CONTRACT_BRIEF = {
 };
 
 describe('company-api startResearch: запрос', () => {
-  it('POST /internal/research: JSON с name, city, phone, domain (null для пустых), заголовки по контракту', async () => {
+  it('POST /internal/research: JSON с name, aliases, city, phone, domain (null для пустых), заголовки по контракту', async () => {
     const h = createHarness();
     h.reply(json(202, { job_id: JOB_ID }));
 
@@ -48,12 +54,14 @@ describe('company-api startResearch: запрос', () => {
     expect(h.sent[0]?.redirect).toBe('manual');
     expect(JSON.parse(h.sent[0]?.body ?? 'null')).toEqual({
       name: 'Платформа-А',
+      aliases: [],
       city: null,
       phone: null,
       domain: null,
     });
     expect(Object.keys(JSON.parse(h.sent[0]?.body ?? '{}') as object)).toEqual([
       'name',
+      'aliases',
       'city',
       'phone',
       'domain',
@@ -65,14 +73,16 @@ describe('company-api startResearch: запрос', () => {
     h.reply(json(202, { job_id: JOB_ID }));
 
     await h.directory.startResearch({
-      name: 'Платформа-А',
+      name: 'Тинькофф',
+      aliases: ['Т-Банк', 'Tinkoff'],
       city: 'Алматы',
       phone: PHONE,
       domain: 'platforma.kz',
     });
 
     expect(JSON.parse(h.sent[0]?.body ?? 'null')).toEqual({
-      name: 'Платформа-А',
+      name: 'Тинькофф',
+      aliases: ['Т-Банк', 'Tinkoff'],
       city: 'Алматы',
       phone: PHONE,
       domain: 'platforma.kz',
@@ -85,6 +95,7 @@ describe('company-api startResearch: запрос', () => {
 
     await h.directory.startResearch({
       name: '  Платформа-А \n',
+      aliases: ['  Platforma-A ', '  '],
       city: '   ',
       phone: null,
       domain: ' \t ',
@@ -92,9 +103,26 @@ describe('company-api startResearch: запрос', () => {
 
     expect(JSON.parse(h.sent[0]?.body ?? 'null')).toEqual({
       name: 'Платформа-А',
+      aliases: ['Platforma-A'],
       city: null,
       phone: null,
       domain: null,
+    });
+  });
+
+  it('варианты названия: пустые и повторы названия или друг друга (без учёта регистра) отбрасываются, не больше трёх', async () => {
+    const h = createHarness();
+    h.reply(json(202, { job_id: JOB_ID }));
+
+    await h.directory.startResearch({
+      ...REQUEST,
+      name: 'Тинькофф',
+      aliases: ['тинькофф', '', 'Т-Банк', 'т-банк', 'Tinkoff', 'ТОО Т-Банк', 'Тинькофф Банк'],
+    });
+
+    expect(JSON.parse(h.sent[0]?.body ?? 'null')).toMatchObject({
+      name: 'Тинькофф',
+      aliases: ['Т-Банк', 'Tinkoff', 'ТОО Т-Банк'],
     });
   });
 
@@ -104,6 +132,7 @@ describe('company-api startResearch: запрос', () => {
 
     await h.directory.startResearch({
       name: 'н'.repeat(300),
+      aliases: ['в'.repeat(300)],
       city: 'г'.repeat(300),
       phone: null,
       domain: 'd'.repeat(300),
@@ -111,27 +140,29 @@ describe('company-api startResearch: запрос', () => {
 
     expect(JSON.parse(h.sent[0]?.body ?? 'null')).toEqual({
       name: 'н'.repeat(200),
+      aliases: ['в'.repeat(200)],
       city: 'г'.repeat(100),
       phone: null,
       domain: 'd'.repeat(253),
     });
   });
 
-  it('тело запроса меньше предела 4 КБ даже в худшем случае: все знаки экранируются в JSON (6 байт)', async () => {
+  it('тело запроса меньше предела 8 КБ даже в худшем случае: три варианта, все знаки экранируются в JSON (6 байт)', async () => {
     const h = createHarness();
     h.reply(json(202, { job_id: JOB_ID }));
-    const control = String.fromCodePoint(1);
+    const escaped = (mark: number): string => String.fromCodePoint(mark).repeat(300);
 
     await h.directory.startResearch({
-      name: control.repeat(300),
-      city: control.repeat(300),
+      name: escaped(1),
+      aliases: [escaped(2), escaped(3), escaped(4)],
+      city: escaped(5),
       phone: PHONE,
-      domain: control.repeat(300),
+      domain: escaped(6),
     });
 
     const size = Buffer.byteLength(h.sent[0]?.body ?? '');
-    expect(size).toBeGreaterThan(3000);
-    expect(size).toBeLessThan(4096);
+    expect(size).toBeGreaterThan(6000);
+    expect(size).toBeLessThan(8192);
   });
 });
 
