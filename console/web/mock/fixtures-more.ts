@@ -37,7 +37,7 @@ export function notificationsFixture(now: number, q: URLSearchParams) {
   return page(items, Number(q.get('page') ?? 1), 30);
 }
 
-const STATUS_LABELS: Record<string, string> = { new: 'Найдена', crawled: 'Сайт обойдён', qualified: 'Подходит', rejected: 'Не подходит', verified: 'Почта проверена', drafted: 'Письмо готово', approved: 'Одобрено', sent: 'Отправлено', replied: 'Ответили' };
+const STATUS_LABELS: Record<string, string> = { new: 'Найдена', crawled: 'Сайт обойдён', qualified: 'Подходит', rejected: 'Не подходит', no_email: 'Нет почты', verified: 'Почта проверена', drafted: 'Письмо готово', approved: 'Одобрено', sent: 'Отправлено', replied: 'Ответили' };
 
 const COMPANY_NAMES = ['ТОО «Алматы Логистик Хаб»', 'ТОО «Степь Склад»', 'ТОО «Казпромтара»', 'ТОО «Шымкент Агро Склад»', 'ТОО «Евразия Трейд Логистикс Восточный Терминал»', 'ИП «Жумабаев М.»', 'ТОО «Нур Пак»', 'ТОО «Мега Сервис Алматы»'];
 
@@ -67,7 +67,7 @@ export function companiesFixture(now: number, q: URLSearchParams) {
     ...page(filtered, Number(q.get('page') ?? 1), 50),
     facets: {
       // Числа считаются из тех же компаний, что в списке (как у почты: из базы), а не вписаны вручную.
-      cards: [{ code: 'all', label: 'Все', count: items.length }, ...(['drafted', 'approved', 'rejected'] as const).map((code) => ({ code, label: STATUS_LABELS[code], count: items.filter((c) => c.status === code).length }))],
+      cards: [{ code: 'all', label: 'Все', count: items.length }, ...(['drafted', 'approved', 'rejected', 'no_email'] as const).map((code) => ({ code, label: STATUS_LABELS[code], count: items.filter((c) => c.status === code).length }))],
       statuses: Object.entries(STATUS_LABELS).map(([code, label]) => ({ code, label, count: items.filter((c) => c.status === code).length })),
       industries: [...new Set(items.map((c) => c.searchQuery).filter((x): x is string => x !== null))].map((query) => ({ query, count: items.filter((c) => c.searchQuery === query).length })),
       runs: [{ id: 4, city: 'almaty', cityName: 'Алматы', query: 'склад, логистика, оборотная тара', createdAt: iso(now - 11 * MIN) }, { id: 3, city: 'almaty', cityName: 'Алматы', query: 'магазин одежды', createdAt: iso(now - 3 * DAY) }],

@@ -344,7 +344,7 @@ status, reason, reasonLabel, companyId, createdAt, startedAt, finishedAt`. По�
              "whatsappContactedAt": null, "runId": 1, "searchQuery": "склад", "createdAt": "2026-10-30T07:37:41+00:00"},
  "qualification": {"fit": "yes", "fitLabel": "подходит", "score": 86, "segment": "склады 3PL",
                    "reason": "Склад на 12 000 паллетомест, инвентаризация вручную.", "model": "claude-haiku-5-5",
-                   "createdAt": "2026-10-30T07:37:41+00:00"},
+                   "createdAt": "2026-10-30T07:37:41+00:00", "cardOnly": false},
  "pains": [{"pain": "Инвентаризация занимает дни", "evidence": "пересчёт раз в квартал", "source": "site",
             "sourceLabel": "сайт", "verified": true}],
  "contacts": [{"id": 1, "email": "info@step-sklad.kz", "sourcePage": "https://step-sklad.kz/kontakty",

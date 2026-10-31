@@ -130,7 +130,8 @@ interface CompanyCardData {
       readonly status: string; readonly statusLabel: string; readonly lastError: string | null; readonly requestedVia: string | null; readonly whatsappContactedAt: string | null;
       readonly searchQuery: string | null; readonly runId: number | null; readonly createdAt: string;
     };
-    readonly qualification: { readonly fitLabel: string | null; readonly score: number | null; readonly segment: string | null; readonly reason: string | null; readonly model: string | null; readonly createdAt: string } | null;
+    /** cardOnly: оценка только по карточке 2ГИС (сайта и рекламы нет), болей нет, fit не выше «возможно». */
+    readonly qualification: { readonly fitLabel: string | null; readonly score: number | null; readonly segment: string | null; readonly reason: string | null; readonly model: string | null; readonly createdAt: string; readonly cardOnly?: boolean | null } | null;
     readonly pains: readonly Pain[];
     readonly contacts: readonly { readonly id: number; readonly email: string; readonly sourcePage: string | null; readonly verifyLabel: string; readonly isCatchAll: boolean | null; readonly isRole: boolean | null }[];
     readonly draft: { readonly id: number; readonly subject: string; readonly reviewLabel: string; readonly approvedBy: string | null; readonly approvedAt: string | null } | null;
@@ -205,6 +206,7 @@ export function CompanyScreen({ id, owner }: { readonly id: number; readonly own
             {card.qualification ? (
               <>
                 <div className="fit"><span className="num fit-score">{card.qualification.score ?? '—'}</span><span className="fit-of">из 100</span><div className="fit-text"><b>{card.qualification.fitLabel}</b>{card.qualification.segment ? <span className="muted"> · {card.qualification.segment}</span> : null}<p>{card.qualification.reason}</p></div></div>
+                {card.qualification.cardOnly ? <p className="notice warn" style={{ marginTop: 12 }}>Оценка только по карточке 2ГИС: сайта нет или он не открылся. Болей по такой оценке нет.</p> : null}
                 <p className="hint">{card.qualification.model} · {clockTime(card.qualification.createdAt, now)}</p>
               </>
             ) : <p className="empty">Ещё не оценена.</p>}
