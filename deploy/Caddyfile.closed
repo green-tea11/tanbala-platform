@@ -1,6 +1,6 @@
-# РЕЖИМ: закрыто до паролей Caddy (эту строку ищет health.sh).
-# Caddy, пока нет паролей basic auth для wa и leads: оба имени отвечают 503, до приложений запрос не доходит.
-# Сертификаты Caddy получает и продлевает уже сейчас. Ставит этот файл в /etc/caddy/Caddyfile install.sh (шаг caddy),
+# РЕЖИМ: без паролей Caddy для wa. и leads. (их файлов в /etc/caddy/auth нет).
+# С этапа Б (31.10.2026, «ок» владельца) оба имени, как и в рабочем Caddyfile, ведут на panel.tanbala.kz: паролей
+# для них больше не нужно, до старых панелей (3100, 8001) запрос не доходит. Сертификаты Caddy получает и продлевает. Ставит этот файл в /etc/caddy/Caddyfile install.sh (шаг caddy),
 # пока в /etc/caddy/auth нет обоих файлов паролей. Открыть панели: sudo /opt/tanbala/deploy/scripts/open-panels.sh
 # (deploy/env.md), он поставит рабочий deploy/Caddyfile. Общие настройки в caddy/common.caddy, как у рабочего.
 import /opt/tanbala/deploy/caddy/common.caddy
@@ -9,7 +9,27 @@ import /opt/tanbala/deploy/caddy/site.caddy
 # Единая панель panel.tanbala.kz: режим свой (caddy/panel.caddy или caddy/panel.closed.caddy), как в рабочем.
 import /etc/caddy/panel-site.caddy
 
-wa.tanbala.kz, leads.tanbala.kz {
+# Бывшая панель бота: перенаправление на panel (этап Б, 31.10.2026). 302, а не 301: браузер не запоминает его навсегда.
+# Ссылка на чат /chats/{id} ведёт на тот же чат: номера чатов у панели бота и у консоли одни.
+wa.tanbala.kz {
 	import common
-	respond 503
+	route {
+		@chat path_regexp chat ^/chats/(\d{1,12})$
+		redir @chat https://panel.tanbala.kz/chats/{re.chat.1} 302
+		redir https://panel.tanbala.kz/ 302
+	}
+}
+
+# Бывший интерфейс почты: перенаправление на panel (этап Б). Ссылки из уведомлений менеджеру
+# (EMAIL_UI_URL + /companies/{id}) открывают ту же компанию. Путь с internal снаружи — по-прежнему 404; route нужен:
+# в стандартном порядке Caddy redir идёт раньше respond, и /internal ушёл бы в перенаправление.
+leads.tanbala.kz {
+	import common
+	route {
+		@internal path_regexp internal (?i)(^|/)internal([/;]|$)
+		respond @internal 404
+		@card path_regexp card ^/companies/(\d{1,19})$
+		redir @card https://panel.tanbala.kz/companies/{re.card.1} 302
+		redir https://panel.tanbala.kz/ 302
+	}
 }

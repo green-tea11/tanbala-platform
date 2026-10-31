@@ -2,7 +2,7 @@
 # Проверка «всё живо»: службы, контейнеры, сайты снаружи и изнутри, закрытые API, диск, память, свежесть копий.
 # Запуск: таймер tanbala-health.timer раз в 5 минут (root) или вручную: sudo /opt/tanbala/deploy/scripts/health.sh
 # Печатает OK, СБОЙ или ПРОПУСК по каждому пункту. Код выхода 1, если есть сбой: systemd пометит запуск failed.
-# До паролей Caddy wa. и leads. (Caddyfile.closed) отвечают 503, panel. — 503 до своих паролей (режим отдельный);
+# wa. и leads. ведут на panel (этап Б, в обоих Caddyfile), panel. — 503 до своих паролей (режим отдельный);
 # до привязки по QR (этап 4) бот не проверяется, до .env консоли (токены, deploy/env.md) — консоль.
 set -uo pipefail
 
@@ -95,20 +95,14 @@ else
 	skip "бот не привязан по QR (этап 4): служба, панель и API бота не проверяются"
 fi
 
-# Снаружи, через Caddy и настоящий сертификат. До паролей wa. и leads. — 503 на всё. С паролями (этап Б) оба имени
-# ведут на panel, ссылки на компанию и чат — на ту же компанию и тот же чат, внутренний API — 404.
-if grep -q '^# РЕЖИМ: закрыто' /etc/caddy/Caddyfile; then
-	expect 503 "https://leads.tanbala.kz закрыт до паролей Caddy" https://leads.tanbala.kz/
-	expect 503 "внутренний API снаружи не виден" https://leads.tanbala.kz/internal/lookup
-	expect 503 "https://wa.tanbala.kz закрыт до паролей Caddy" https://wa.tanbala.kz/
-else
-	expect_redirect "https://leads.tanbala.kz ведёт на panel" https://leads.tanbala.kz/ https://panel.tanbala.kz/
-	expect_redirect "ссылка на компанию ведёт на неё же в panel" https://leads.tanbala.kz/companies/1 \
-		https://panel.tanbala.kz/companies/1
-	expect 404 "внутренний API снаружи не виден" https://leads.tanbala.kz/internal/lookup
-	expect_redirect "https://wa.tanbala.kz ведёт на panel" https://wa.tanbala.kz/ https://panel.tanbala.kz/
-	expect_redirect "ссылка на чат ведёт на него же в panel" https://wa.tanbala.kz/chats/1 https://panel.tanbala.kz/chats/1
-fi
+# Снаружи, через Caddy и настоящий сертификат (этап Б, оба Caddyfile): wa. и leads. ведут на panel, ссылки на
+# компанию и чат — на ту же компанию и тот же чат, внутренний API — 404.
+expect_redirect "https://leads.tanbala.kz ведёт на panel" https://leads.tanbala.kz/ https://panel.tanbala.kz/
+expect_redirect "ссылка на компанию ведёт на неё же в panel" https://leads.tanbala.kz/companies/1 \
+	https://panel.tanbala.kz/companies/1
+expect 404 "внутренний API снаружи не виден" https://leads.tanbala.kz/internal/lookup
+expect_redirect "https://wa.tanbala.kz ведёт на panel" https://wa.tanbala.kz/ https://panel.tanbala.kz/
+expect_redirect "ссылка на чат ведёт на него же в panel" https://wa.tanbala.kz/chats/1 https://panel.tanbala.kz/chats/1
 # panel. — свой режим (install.sh, шаг caddy): закрыт (503), пока нет его паролей Caddy.
 if grep -qs '^# РЕЖИМ: закрыто' "$PANEL_SITE"; then
 	expect 503 "https://panel.tanbala.kz закрыт до паролей Caddy" https://panel.tanbala.kz/
