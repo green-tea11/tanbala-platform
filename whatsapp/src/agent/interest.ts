@@ -93,7 +93,7 @@ export const interestSchema = z.object({
   priceAsked: z
     .boolean()
     .describe(
-      'true, если в последних сообщениях клиента (после последней реплики assistant) есть вопрос о цене или стоимости; иначе false.',
+      'true, если в последних сообщениях клиента (после последней реплики assistant) есть вопрос о цене, стоимости, сроках или договоре; иначе false.',
     ),
   refused: z
     .boolean()
