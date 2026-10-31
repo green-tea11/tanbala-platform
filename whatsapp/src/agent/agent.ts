@@ -218,7 +218,7 @@ function normalizeReplyDraft(raw: RawReplyDraft): LlmResult<ReplyDraft> {
 /**
  * Ответ answer: вопрос о компании (confirm или name) сохраняется, чтобы система не задала его второй раз; none
  * и отсутствие поля (подделки LLM в тестах его не пишут) не сохраняются. aboutPrice сохраняется только true: это
- * запасной сигнал вопроса цены, если оценка интереса не получилась (pipeline/price-gate.ts).
+ * запасной сигнал вопроса цены, если оценка интереса не получилась (pipeline/handoff-gate.ts).
  */
 function answerDraft(text: string, raw: RawReplyDraft): ReplyDraft {
   const question = (raw as Partial<RawReplyDraft>).companyQuestion;

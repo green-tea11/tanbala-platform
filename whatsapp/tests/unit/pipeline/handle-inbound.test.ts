@@ -128,7 +128,7 @@ describe('pipeline/handle-inbound: ответ', () => {
     expect(outcome).toEqual({ kind: 'replied' });
     expect(h.calls).toEqual(['read:A1,P2', ...REPLY_STEPS('P2')]);
     // Блок о компании из company.prepare: выключенное определение даёт off, агент тогда работает как раньше.
-    // Ход разговора о цене и название компании для минимума передачи по цене из базы и сводки.
+    // Ход разговора и название компании (для вопроса знакомства) из базы и сводки.
     expect(h.contexts).toEqual([
       {
         chatId: CHAT_ID,

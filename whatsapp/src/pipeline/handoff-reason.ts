@@ -26,6 +26,7 @@ export function handoffWhyOf(
 ): HandoffWhy | null {
   switch (reason) {
     case 'hot':
+      // Ранний hot (причины нет) чат не передаёт и сюда не доходит; «финал» только запасной ответ на случай рассинхрона.
       return hotKindOf(situation) ?? 'final';
     case 'asked_human':
     case 'complaint':
