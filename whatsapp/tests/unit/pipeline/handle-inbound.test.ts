@@ -12,7 +12,7 @@ import type {
   WaMessageId,
 } from '../../../src/domain/types.js';
 import type { HandOffRequest } from '../../../src/handoff/handoff.js';
-import type { SendBlocked } from '../../../src/messaging/outbox.js';
+import { HOT_PRICE_HANDOFF_TEXT, type SendBlocked } from '../../../src/messaging/outbox.js';
 import {
   SEND_RETRY_DELAY_MS,
   type PipelineDeps,
@@ -272,9 +272,13 @@ describe('pipeline/handle-inbound: передача менеджеру (чере
       { reason: 'asked_human', replyToWaId: 'A2' as WaMessageId },
     ],
     [
-      'горячий клиент, текста нет',
+      'горячий клиент (финал), текста нет: фраза о решении и ориентире',
       { outcome: 'hot', text: '' },
-      { reason: 'hot', replyToWaId: 'A2' as WaMessageId },
+      {
+        reason: 'hot',
+        replyToWaId: 'A2' as WaMessageId,
+        text: HOT_PRICE_HANDOFF_TEXT as ReviewedText,
+      },
     ],
     [
       'жалоба с просьбой не писать',
@@ -448,7 +452,11 @@ describe('pipeline/handle-inbound: проверки, оценка интерес
     const outcome = await run(h, batchOf([text('A1')]));
 
     expect(outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
-    expect(h.handOff).toHaveBeenCalledWith(CHAT_ID, { reason: 'hot', replyToWaId: 'A1' });
+    expect(h.handOff).toHaveBeenCalledWith(CHAT_ID, {
+      reason: 'hot',
+      replyToWaId: 'A1',
+      text: HOT_PRICE_HANDOFF_TEXT,
+    });
     expect(h.feedbacks[1]).toEqual(['срок']);
     expect(h.reviewKinds).toEqual(['handoff', 'handoff']);
   });
@@ -559,7 +567,11 @@ describe('pipeline/handle-inbound: проверки, оценка интерес
 
   it('ревью не пропустило два раза: чат у бота, уходит безопасный вопрос, текст модели не уходит', async () => {
     const failed: LlmResult<ReviewResult> = { ok: true, value: { ok: false, problems: ['срок'] } };
-    const h = setup({ drafts: [answer(), answer(SECOND)], reviews: [failed] });
+    const h = setup({
+      drafts: [answer(), answer(SECOND)],
+      reviews: [failed],
+      assessment: { ok: true, value: { level: 'cold', profile: EMPTY_PROFILE, reason: 'r' } },
+    });
 
     const outcome = await run(h, batchOf([text('A1')]));
 
@@ -864,10 +876,11 @@ describe('pipeline/handle-inbound: минимум для передачи по �
     expect(h.calls).not.toContain('turn:price:-');
   });
 
-  it('передача по цене: ход не записывается, его обнулит возврат боту', async () => {
+  it('передача по цене (третий вопрос): ход не записывается, его обнулит возврат боту', async () => {
     const h = setup({
       drafts: [{ ok: true, value: { outcome: 'hot', text: '', aboutPrice: true } }],
       assessment: priceAssessed(true),
+      progress: { priceAsks: 2, refused: false },
     });
 
     const outcome = await run(h, batchOf([text('A1'), text('A2')]));
@@ -879,10 +892,11 @@ describe('pipeline/handle-inbound: минимум для передачи по �
     expect(h.calls.filter((call) => call.startsWith('turn:'))).toEqual([]);
   });
 
-  it('четвёртый вопрос цены по ходу разговора из базы: hot без минимума передаёт чат', async () => {
+  it('третий вопрос цены по ходу разговора из базы: hot передаёт чат (решение владельца 30.10.2026)', async () => {
     const h = setup({
       drafts: [{ ok: true, value: { outcome: 'hot', text: '', aboutPrice: true } }],
-      progress: { priceAsks: 3, refused: false },
+      assessment: priceAssessed(),
+      progress: { priceAsks: 2, refused: false },
     });
 
     const outcome = await run(h, batchOf([text('A1')]));

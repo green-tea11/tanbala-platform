@@ -69,6 +69,22 @@ const CONTEXT: ConversationContext = {
   level: 'cold',
 };
 
+/** Оценка интереса: для расчёта известно всё, исход hot модели принимается как финал (решение владельца 30.10.2026). */
+const READY: LlmScript['interests'] = [
+  {
+    level: 'warm',
+    profile: {
+      business: 'склад',
+      items: 'запчасти',
+      itemCount: 'около 3000',
+      monthlyIntake: '200 в месяц',
+      passages: 'один вход',
+      has1C: true,
+      city: 'Алматы',
+    },
+  },
+];
+
 const logger: Logger = {
   level: 'info',
   trace: () => undefined,
@@ -146,7 +162,7 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
   it('горячий клиент по решению вызова ответа: ответ из знаний и фраза о передаче одним текстом, проверка знает, что это сообщение о передаче', async () => {
     const { verdict, model, saveAssessment } = await run({
       replies: [{ outcome: 'hot', text: HOT_TEXT }],
-      level: 'warm',
+      interests: READY,
     });
 
     expect(verdict).toEqual({
@@ -167,7 +183,10 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
   });
 
   it('модели вызовов из config/models.json: ответ, проверка и оценка интереса на Sonnet', async () => {
-    const { model } = await run({ replies: [{ outcome: 'hot', text: HOT_TEXT }] });
+    const { model } = await run({
+      replies: [{ outcome: 'hot', text: HOT_TEXT }],
+      interests: READY,
+    });
 
     expect(model.requests.map(({ purpose, model: id }) => [purpose, id])).toEqual([
       ['reply', 'claude-sonnet-5-5'],
@@ -176,10 +195,14 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
     ]);
   });
 
-  it('исход hot без текста: фиксированная фраза, проверки вторым вызовом нет', async () => {
-    const { verdict, model } = await run({ replies: [{ outcome: 'hot' }] });
+  it('исход hot без текста в финале: фраза о решении и ориентире, проверки вторым вызовом нет', async () => {
+    const { verdict, model } = await run({ replies: [{ outcome: 'hot' }], interests: READY });
 
-    expect(verdict).toEqual({ kind: 'handoff', notice: { reason: 'hot' } });
+    expect(verdict).toEqual({
+      kind: 'handoff',
+      notice: { reason: 'hot' },
+      text: 'Я уточню у коллеги решение и ориентир под вашу задачу.' as ReviewedText,
+    });
     expect(model.purposes()).toEqual(['reply', 'interest']);
   });
 

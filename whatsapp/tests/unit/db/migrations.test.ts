@@ -64,9 +64,9 @@ const VERSION_5_TABLES = CURRENT_TABLES.filter(
  * компании клиента версию 6, минимум для передачи по цене версию 7, заметка для бота версию 8, отметка «у менеджера»
  * при переходе в рабочий режим (этап 8) версию 9, отклонённые черновики для панели версию 10, шире квалификация клиента версию 11, пометки «вероятно» версию 12,
  * поля для расчёта (сколько нового в месяц, проходы, пересчёт полок) версию 13, рассказанные сильные стороны и этап
- * последнего ответа бота версию 14.
+ * последнего ответа бота версию 14, уходы от вопросов подряд (передача менеджеру 30.10.2026) версию 15.
  */
-const CURRENT_VERSION = 14;
+const CURRENT_VERSION = 15;
 
 function columnNames(db: Database.Database, table: string): unknown[] {
   return db.prepare('SELECT name FROM pragma_table_info(?) ORDER BY cid').pluck().all(table);
@@ -294,6 +294,35 @@ describe('runMigrations', () => {
     expect(
       db.prepare('SELECT price_asks, told_facts, last_stage FROM chats WHERE id = ?').get(chatId),
     ).toEqual({ price_asks: 2, told_facts: '[]', last_stage: null });
+  });
+
+  it('живая база версии 14 переходит на 15: чаты и ход разговора на месте, уходов от вопросов подряд нет', () => {
+    const db = useMemoryDb();
+    runMigrations(db, 14);
+    const chatId = insertChat(db, { replyJid: PN_A });
+    db.prepare('UPDATE chats SET price_asks = 2, refused_answers = 1 WHERE id = ?').run(chatId);
+
+    runMigrations(db);
+
+    expect(userVersion(db)).toBe(CURRENT_VERSION);
+    expect(
+      db
+        .prepare('SELECT price_asks, refused_answers, refused_streak FROM chats WHERE id = ?')
+        .get(chatId),
+    ).toEqual({ price_asks: 2, refused_answers: 1, refused_streak: 0 });
+  });
+
+  it('схема версии 15: уходов от вопросов подряд не меньше нуля, значение обязательно', () => {
+    const db = useMigratedDb();
+    const chatId = insertChat(db, { replyJid: PN_A });
+
+    db.prepare('UPDATE chats SET refused_streak = 2 WHERE id = ?').run(chatId);
+    expect(() =>
+      db.prepare('UPDATE chats SET refused_streak = -1 WHERE id = ?').run(chatId),
+    ).toThrow(/CHECK/);
+    expect(() =>
+      db.prepare('UPDATE chats SET refused_streak = NULL WHERE id = ?').run(chatId),
+    ).toThrow(/NOT NULL/);
   });
 
   it('схема версии 14: этап только из списка, сильные стороны обязательны', () => {

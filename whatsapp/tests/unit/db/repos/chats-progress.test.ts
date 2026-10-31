@@ -36,6 +36,28 @@ describe('createChatsRepo: ход разговора о цене', () => {
     expect(repo.getProgress(otherChatId)).toEqual({ priceAsks: 0, refused: false });
   });
 
+  it('recordTurn: отказ продолжает счёт уходов от вопросов подряд, ход без отказа его обнуляет (решение владельца 30.10.2026)', () => {
+    const { repo, chatId, otherChatId } = setup();
+
+    repo.recordTurn(chatId, { priceAsked: false, refused: true });
+    expect(repo.getProgress(chatId)).toEqual({ priceAsks: 0, refused: true, refusedStreak: 1 });
+    repo.recordTurn(chatId, { priceAsked: true, refused: true });
+    expect(repo.getProgress(chatId)).toMatchObject({ priceAsks: 1, refusedStreak: 2 });
+    repo.recordTurn(chatId, { priceAsked: false, refused: false });
+    expect(repo.getProgress(chatId)).toEqual({ priceAsks: 1, refused: true });
+    expect(repo.getProgress(otherChatId)).toEqual({ priceAsks: 0, refused: false });
+  });
+
+  it('resetProgress: возврат боту обнуляет и уходы от вопросов подряд', () => {
+    const { repo, chatId } = setup();
+    repo.recordTurn(chatId, { priceAsked: false, refused: true });
+    repo.recordTurn(chatId, { priceAsked: false, refused: true });
+
+    repo.resetProgress(chatId);
+
+    expect(repo.getProgress(chatId).refusedStreak).toBeUndefined();
+  });
+
   it('чат хоть раз передавался менеджеру (любая причина): handedOff true, и возврат боту его не снимает', () => {
     const { db, repo, chatId, otherChatId } = setup();
     const handoffs = createHandoffsRepo(db);

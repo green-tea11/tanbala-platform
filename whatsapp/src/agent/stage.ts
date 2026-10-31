@@ -1,4 +1,11 @@
 import type { ClientProfile, ConversationStage, StrengthId } from '../domain/types.js';
+import { HOT_PRICE_HANDOFF_TEXT } from '../messaging/outbox.js';
+
+/**
+ * Ответ на вопрос цены, сроков или договора, пока задача клиента не понятна (решение владельца 30.10.2026): ориентир
+ * называет коллега. Эту фразу пропускают проверки кодом и проверка вторым вызовом на ходу с вопросом цены.
+ */
+export const ESTIMATE_LATER = 'Ориентир коллега назовёт, когда поймём вашу задачу.';
 
 /**
  * Что нужно знать для расчёта (решение владельца 30.10.2026): чем занимается клиент, что лежит на хранении, сколько
@@ -64,6 +71,14 @@ function isKnown(field: CalcField, profile: ClientProfile): boolean {
   return value !== null && value.trim() !== '';
 }
 
+/**
+ * Задача клиента понятна (решение владельца 30.10.2026): клиент согласился, что трудность есть, или сам рассказал о задаче,
+ * и известно, что лежит на хранении и сколько этого. Тогда вопрос цены, сроков или договора передаёт чат коллеге.
+ */
+export function taskUnderstood(profile: ClientProfile): boolean {
+  return profile.problemAgreed && isKnown('items', profile) && isKnown('itemCount', profile);
+}
+
 /** Чего не хватает для расчёта по выжимке; вывод с пометкой «вероятно» считается известным. */
 export function calcMissing(profile: ClientProfile): readonly CalcField[] {
   return CALC_FIELDS.filter((field) => !isKnown(field, profile));
@@ -100,6 +115,8 @@ export interface StageDataInput {
   readonly toldFacts?: readonly StrengthId[];
   /** Сколько раз клиент спрашивал цену до этого сообщения; нет поля => ноль. */
   readonly priceAsks?: number;
+  /** Задача клиента понятна (taskUnderstood); нет поля => не понятна. */
+  readonly taskUnderstood?: boolean;
 }
 
 /** «раз» или «раза» по числу. */
@@ -109,10 +126,18 @@ function times(count: number): string {
   return last >= 2 && last <= 4 && (lastTwo < 12 || lastTwo > 14) ? 'раза' : 'раз';
 }
 
+/** Что делать с вопросом цены, сроков или договора: при понятной задаче передать чат, иначе ответить об ориентире. */
+function priceLine(understood: boolean): string {
+  return understood
+    ? `Задача клиента понятна: если он спрашивает цену, сроки или договор, передай чат (hot) с фразой «${HOT_PRICE_HANDOFF_TEXT}».`
+    : `Задача клиента ещё не понятна: на вопрос цены, сроков или договора ответь «${ESTIMATE_LATER}» и задай один вопрос.`;
+}
+
 /**
  * Строки системы для данных вызова ответа (решение владельца 30.10.2026): этап по данным системы и право модели выбрать
- * другой по последнему сообщению клиента, чего не хватает для расчёта, какие сильные стороны уже рассказаны (если есть)
- * и сколько раз клиент уже спрашивал цену (если спрашивал).
+ * другой по последнему сообщению клиента, чего не хватает для расчёта, что делать с вопросом цены, сроков или договора
+ * (понятна ли задача), какие сильные стороны уже рассказаны (если есть) и сколько раз клиент уже спрашивал цену (если
+ * спрашивал).
  */
 export function stageReplyData(input: StageDataInput): string {
   const { advice } = input;
@@ -123,6 +148,7 @@ export function stageReplyData(input: StageDataInput): string {
     advice.missingWords.length === 0
       ? 'Для расчёта известно всё.'
       : `Для расчёта не хватает: ${advice.missingWords.join(', ')}.`,
+    priceLine(input.taskUnderstood === true),
     ...(told.length === 0 ? [] : [`Уже рассказано: ${told.join(', ')}.`]),
     ...(priceAsks > 0
       ? [`До этого сообщения клиент спрашивал цену ${priceAsks} ${times(priceAsks)}.`]

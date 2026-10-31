@@ -222,9 +222,9 @@ describe('pipeline/reply-flow: два провала проверок дают �
     expect(r.verdict).toEqual({ kind: 'handoff', notice: { reason: 'check_failed' } });
   });
 
-  it('клиент спрашивает цену, минимум собран, а черновик дважды не прошёл: передача по цене с фразой о цене', async () => {
+  it('клиент спрашивает цену при понятной задаче: код передаёт чат сразу, черновик не проверяется (решение владельца 30.10.2026)', async () => {
     const r = await run({
-      profile: EVERYTHING,
+      profile: { ...EVERYTHING, problemAgreed: true },
       signals: { priceAsked: true, refused: false },
       companyName: 'ТОО Склад',
       progress: { priceAsks: 0, refused: false, handedOff: true },

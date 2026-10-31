@@ -7,7 +7,6 @@ import {
   handoffMinimum,
   MINIMUM_LABELS,
   minimumReport,
-  PRICE_ASKS_FOR_HANDOFF,
 } from '../../../src/handoff/minimum.js';
 import { OFF_SUMMARY } from './fakes.js';
 
@@ -134,10 +133,6 @@ describe('handoff/minimum: handoffMinimum', () => {
     });
 
     expect(minimum.missing).toEqual(['material', 'city', 'company']);
-  });
-
-  it('четвёртый вопрос цены даёт передачу без минимума (решение владельца 29.10.2026, второй круг)', () => {
-    expect(PRICE_ASKS_FOR_HANDOFF).toBe(4);
   });
 });
 

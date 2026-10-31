@@ -1,13 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeDraft, runCodeChecks } from '../../../src/checks/code-checks.js';
 import type { ClientProfile, PhoneDigits } from '../../../src/domain/types.js';
-import { handoffMinimum } from '../../../src/handoff/minimum.js';
 import {
   askedKeys,
   INTRO_BUSINESS_QUESTION,
   ESTIMATE_LATER,
-  minimumSafeQuestion,
   nextSafeQuestion,
+  calcSafeQuestion,
   QUESTION_KEYS,
   questionText,
   type QuestionKey,
@@ -74,7 +73,7 @@ const FULL: ClientProfile = {
 function input(profile: ClientProfile, patch: Partial<SafeQuestionInput> = {}): SafeQuestionInput {
   return {
     profile,
-    minimum: handoffMinimum({ profile, companyName: null, companyAskable: false }),
+    companyAskable: false,
     lastBotText: null,
     ...patch,
   };
@@ -160,9 +159,7 @@ describe('pipeline/safe-questions: какой вопрос задать вмес
   });
 
   it('компания названа (известно название): знакомство не переспрашивает компанию', () => {
-    const named = input(EMPTY, {
-      minimum: handoffMinimum({ profile: EMPTY, companyName: 'Тинькофф', companyAskable: true }),
-    });
+    const named = input(EMPTY, { companyAskable: false });
 
     expect(nextSafeQuestion(named, false)).toEqual({
       key: 'intro',
@@ -180,9 +177,7 @@ describe('pipeline/safe-questions: какой вопрос задать вмес
   });
 
   it('о компании можно спросить: вопрос знакомства отмечается как вопрос о названии', () => {
-    const asking = input(EMPTY, {
-      minimum: handoffMinimum({ profile: EMPTY, companyName: null, companyAskable: true }),
-    });
+    const asking = input(EMPTY, { companyAskable: true });
 
     expect(nextSafeQuestion(asking, false)).toEqual({
       key: 'intro',
@@ -260,22 +255,20 @@ describe('pipeline/safe-questions: какой вопрос задать вмес
   });
 });
 
-describe('pipeline/safe-questions: вместо ранней передачи по цене (pipeline/price-gate.ts)', () => {
+describe('pipeline/safe-questions: вместо раннего hot (pipeline/handoff-gate.ts)', () => {
   it('первое недостающее для расчёта с фразой об ориентире, без вопроса о RFID', () => {
     const profile = { ...EMPTY, business: 'склад' };
 
-    expect(minimumSafeQuestion(input(profile), true)).toEqual({
+    expect(calcSafeQuestion(input(profile), true)).toEqual({
       key: 'items',
       text: `${ESTIMATE_LATER} ${TEXTS.items}`,
     });
   });
 
   it('бизнес неизвестен, о компании можно спросить: знакомство как вопрос о названии', () => {
-    const asking = input(EMPTY, {
-      minimum: handoffMinimum({ profile: EMPTY, companyName: null, companyAskable: true }),
-    });
+    const asking = input(EMPTY, { companyAskable: true });
 
-    expect(minimumSafeQuestion(asking, true)).toEqual({
+    expect(calcSafeQuestion(asking, true)).toEqual({
       key: 'intro',
       text: `${ESTIMATE_LATER} ${TEXTS.intro}`,
       companyQuestion: 'name',
@@ -285,7 +278,7 @@ describe('pipeline/safe-questions: вместо ранней передачи п
   it('прошлым сообщением бот спросил о вещах: следующий вопрос', () => {
     const profile = { ...EMPTY, business: 'склад' };
 
-    expect(minimumSafeQuestion(input(profile, { lastBotText: TEXTS.items }), true).key).toBe(
+    expect(calcSafeQuestion(input(profile, { lastBotText: TEXTS.items }), true).key).toBe(
       'itemCount',
     );
   });
@@ -293,7 +286,7 @@ describe('pipeline/safe-questions: вместо ранней передачи п
   it('всё спрошено или для расчёта всё известно: вопрос всё равно есть', () => {
     const profile = { ...FULL, city: null };
 
-    expect(minimumSafeQuestion(input(profile, { lastBotText: TEXTS.city }), true).key).toBe('city');
-    expect(minimumSafeQuestion(input(FULL), true).key).toBe('items');
+    expect(calcSafeQuestion(input(profile, { lastBotText: TEXTS.city }), true).key).toBe('city');
+    expect(calcSafeQuestion(input(FULL), true).key).toBe('items');
   });
 });

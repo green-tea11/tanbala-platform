@@ -20,12 +20,20 @@ function noteBlockOf(turn: Turn, purpose: 'reply' | 'review'): string {
   return request?.system[2]?.text ?? '';
 }
 
-/** Клиент спросил цену, бот передал чат, клиент ждёт: на последнее сообщение ещё никто не ответил. */
+/**
+ * Клиент спросил цену, когда задача понятна (решение владельца 30.10.2026), бот передал чат, клиент ждёт: на последнее
+ * сообщение ещё никто не ответил.
+ */
 async function waitingForPrice() {
   const s = createScenario({ api: null });
-  await s.say('Сколько стоит учёт на складе?', {
+  await s.say('Около 3000 запчастей на складе. Сколько стоит учёт?', {
     replies: [{ outcome: 'hot', aboutPrice: true }],
-    interests: [{ priceAsked: true, refused: true }],
+    interests: [
+      {
+        priceAsked: true,
+        profile: { problemAgreed: true, items: 'запчасти', itemCount: 'около 3000' },
+      },
+    ],
   });
   await s.say('Ну что по цене?', { replies: [ASK_COUNT] });
   return s;

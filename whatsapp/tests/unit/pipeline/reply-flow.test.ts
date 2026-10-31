@@ -87,11 +87,26 @@ function handoffDraft(
   return { ok: true, value: { outcome, text } };
 }
 
+/**
+ * Выжимка оценки: для расчёта известно всё (решение владельца 30.10.2026), поэтому исход hot модели принимается как
+ * финал. Ранний hot проверяют тесты pipeline/reply-flow-handoff.test.ts.
+ */
+const READY_PROFILE: ClientProfile = {
+  ...EMPTY_PROFILE,
+  business: 'склад',
+  items: 'запчасти',
+  itemCount: 'около 3000',
+  monthlyIntake: '200 в месяц',
+  passages: 'один вход',
+  has1C: true,
+  city: 'Алматы',
+};
+
+/** Фраза финала: передача hot без текста модели уходит с ней. */
+const SOLUTION_TEXT = 'Я уточню у коллеги решение и ориентир под вашу задачу.';
+
 function assessed(level: InterestLevel): { readonly ok: true; readonly value: InterestAssessment } {
-  return {
-    ok: true,
-    value: { level, profile: { ...EMPTY_PROFILE, business: 'склад' }, reason: 'по разговору' },
-  };
+  return { ok: true, value: { level, profile: READY_PROFILE, reason: 'по разговору' } };
 }
 
 const REVIEW_OK: LlmResult<ReviewResult> = { ok: true, value: { ok: true } };
@@ -188,6 +203,18 @@ function sent(text: string = ANSWER): ReplyVerdict {
 
 function handedOff(notice: Extract<ReplyVerdict, { kind: 'handoff' }>['notice']): ReplyVerdict {
   return { kind: 'handoff', notice };
+}
+
+/** Передача hot в финале без текста модели: клиенту уходит фраза о решении и ориентире (решение владельца 30.10.2026). */
+const FINAL_PHRASE: ReplyVerdict = {
+  kind: 'handoff',
+  notice: { reason: 'hot' },
+  text: SOLUTION_TEXT as ReviewedText,
+};
+
+/** Передача без текста модели: у hot (финал) фраза о решении и ориентире, у остальных фиксированная фраза по причине. */
+function fixedPhrase(reason: ReplyHandoffOutcome): ReplyVerdict {
+  return reason === 'hot' ? FINAL_PHRASE : handedOff({ reason });
 }
 
 /** Передача, при которой клиенту уходит проверенный текст модели вместо фиксированной фразы. */
@@ -452,18 +479,18 @@ describe('pipeline/reply-flow: передача без текста модели
 
       const verdict = await flow(h);
 
-      expect(verdict).toEqual(handedOff({ reason: outcome }));
+      expect(verdict).toEqual(fixedPhrase(outcome));
       expect(h.reviewDraft).not.toHaveBeenCalled();
       expect(h.draftReply).toHaveBeenCalledTimes(1);
     },
   );
 
-  it('горячий клиент без текста: фиксированная фраза hot, проверок нет, уровень hot записан в чат', async () => {
+  it('горячий клиент без текста (финал): фраза о решении и ориентире, проверок нет, уровень hot записан в чат', async () => {
     const h = setup({ drafts: [handoffDraft('hot', '')], assessment: assessed('warm') });
 
     const verdict = await flow(h);
 
-    expect(verdict).toEqual(handedOff({ reason: 'hot' }));
+    expect(verdict).toEqual(FINAL_PHRASE);
     expect(h.calls).toEqual(['draft', 'assess', 'save', 'save']);
     expect(h.saveAssessment).toHaveBeenLastCalledWith(
       CHAT_ID,
@@ -610,8 +637,7 @@ describe('pipeline/reply-flow: сообщение о передаче (hot, no_a
 
       const verdict = await flow(h);
 
-      expect(verdict).toEqual(handedOff({ reason: outcome }));
-      expect(verdict).not.toHaveProperty('text');
+      expect(verdict).toEqual(fixedPhrase(outcome));
       expect(h.reviewDraft).toHaveBeenCalledTimes(2);
       expect(h.draftReply).toHaveBeenCalledTimes(2);
     },
@@ -623,7 +649,7 @@ describe('pipeline/reply-flow: сообщение о передаче (hot, no_a
 
     const verdict = await flow(h);
 
-    expect(verdict).toEqual(handedOff({ reason: 'hot' }));
+    expect(verdict).toEqual(FINAL_PHRASE);
     expect(h.reviewDraft).not.toHaveBeenCalled();
   });
 
@@ -679,7 +705,7 @@ describe('pipeline/reply-flow: сообщение о передаче (hot, no_a
 
       const verdict = await flow(h);
 
-      expect(verdict).toEqual(handedOff({ reason: 'hot' }));
+      expect(verdict).toEqual(FINAL_PHRASE);
       expect(logsOf(h, 'warn')).toContainEqual({ chatId: CHAT_ID, failure });
       expect(JSON.stringify(h.logs)).not.toContain('интеграцию');
     },
@@ -756,7 +782,7 @@ describe('pipeline/reply-flow: уровень hot при передаче hot', 
   });
 
   it('оценка интереса не получена: уровень hot записывается с текущей выжимкой чата', async () => {
-    const profile: ClientProfile = { ...EMPTY_PROFILE, business: 'склад', has1C: true };
+    const profile: ClientProfile = { ...READY_PROFILE, oneCName: 'Бухгалтерия' };
     const h = setup({ drafts: [handoffDraft('hot')], assessment: UNAVAILABLE });
 
     await flow(h, { ...contextOf(), profile });
@@ -776,7 +802,7 @@ describe('pipeline/reply-flow: уровень hot при передаче hot', 
       assessment: assessed('warm'),
     });
 
-    await expect(flow(h)).resolves.toEqual(handedOff({ reason: 'hot' }));
+    await expect(flow(h)).resolves.toEqual(FINAL_PHRASE);
     expect(h.saveAssessment).toHaveBeenLastCalledWith(
       CHAT_ID,
       expect.objectContaining({ level: 'hot' }),
@@ -983,10 +1009,10 @@ describe('pipeline/reply-flow: компания клиента', () => {
 });
 
 describe('pipeline/reply-flow: hot после вопроса цены (aboutPrice)', () => {
-  /** Четвёртый вопрос цены: передача по цене разрешена и без минимума (решение владельца 29.10.2026). */
+  /** Третий вопрос цены: передача по цене разрешена (решение владельца 30.10.2026). */
   const FOURTH_ASK: ConversationContext = {
     ...contextOf(),
-    progress: { priceAsks: 3, refused: false },
+    progress: { priceAsks: 2, refused: false },
   };
 
   function priced(
@@ -1040,9 +1066,16 @@ describe('pipeline/reply-flow: hot после вопроса цены (aboutPric
     await expect(flow(h, FOURTH_ASK)).resolves.toStrictEqual(handedOffWithText('hot'));
   });
 
+  it.each<[string, LlmResult<ReplyDraft>]>([
+    ['hot с aboutPrice false', priced('hot', '', false)],
+    ['hot без поля', handoffDraft('hot', '')],
+  ])('%s, для расчёта известно всё: финал с фразой о решении и ориентире', async (_case, draft) => {
+    const h = setup({ drafts: [draft] });
+
+    await expect(flow(h, FOURTH_ASK)).resolves.toStrictEqual(FINAL_PHRASE);
+  });
+
   it.each<[string, LlmResult<ReplyDraft>, ReplyHandoffOutcome]>([
-    ['hot с aboutPrice false', priced('hot', '', false), 'hot'],
-    ['hot без поля', handoffDraft('hot', ''), 'hot'],
     ['no_answer с aboutPrice', priced('no_answer', '', true), 'no_answer'],
     ['asked_human с aboutPrice', priced('asked_human', '', true), 'asked_human'],
   ])('%s: обычная фраза по причине', async (_case, draft, reason) => {

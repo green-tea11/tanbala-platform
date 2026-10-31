@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest';
 import {
   CALC_FIELDS,
   calcMissing,
+  ESTIMATE_LATER,
   recommendStage,
   stageReplyData,
+  taskUnderstood,
   type StageInput,
 } from '../../../src/agent/stage.js';
 import type { ClientProfile, ConversationStage } from '../../../src/domain/types.js';
+import { HOT_PRICE_HANDOFF_TEXT } from '../../../src/messaging/outbox.js';
 import { EMPTY_PROFILE } from './fakes.js';
 
 /** Выжимка, где известно всё для расчёта (решение владельца 30.10.2026). */
@@ -138,6 +141,7 @@ describe('agent/stage: строки данных вызова ответа', () 
     expect(text.split('\n')).toEqual([
       'Этап по данным системы: 3 как это работает. Если из последнего сообщения клиента ясно другое (например, он сам знает RFID или уже назвал всё нужное), выбери этап сам и верни его в stage.',
       'Для расчёта не хватает: город.',
+      'Задача клиента ещё не понятна: на вопрос цены, сроков или договора ответь «Ориентир коллега назовёт, когда поймём вашу задачу.» и задай один вопрос.',
       'Уже рассказано: F2, F3.',
       'До этого сообщения клиент спрашивал цену 2 раза.',
     ]);
@@ -171,5 +175,63 @@ describe('agent/stage: строки данных вызова ответа', () 
     expect(stageReplyData({ advice, priceAsks: 12 })).toContain('спрашивал цену 12 раз.');
     expect(stageReplyData({ advice, priceAsks: 22 })).toContain('спрашивал цену 22 раза.');
     expect(stageReplyData({ advice, priceAsks: 0 })).not.toMatch(/цену/);
+  });
+});
+
+describe('agent/stage: задача клиента понятна (решение владельца 30.10.2026)', () => {
+  const TASK: ClientProfile = {
+    ...EMPTY_PROFILE,
+    problemAgreed: true,
+    items: 'запчасти',
+    itemCount: 'около 3000',
+  };
+
+  it('понятна: клиент согласился с трудностью или рассказал о задаче, известно, что на хранении и сколько', () => {
+    expect(taskUnderstood(TASK)).toBe(true);
+    expect(taskUnderstood({ ...TASK, items: 'вероятно товар', inferred: ['items'] })).toBe(true);
+  });
+
+  it.each<[string, Partial<ClientProfile>]>([
+    ['нет согласия с трудностью', { problemAgreed: false }],
+    ['неизвестно, что на хранении', { items: null }],
+    ['неизвестно сколько', { itemCount: null }],
+    ['пустая строка вместо числа', { itemCount: '  ' }],
+  ])('не понятна: %s', (_name, patch) => {
+    expect(taskUnderstood({ ...TASK, ...patch })).toBe(false);
+  });
+
+  it('остальное для расчёта (город, 1С, проходы) для понятной задачи не нужно', () => {
+    expect(calcMissing(TASK)).toEqual(['business', 'monthlyIntake', 'passages', 'has1C', 'city']);
+    expect(taskUnderstood(TASK)).toBe(true);
+  });
+});
+
+describe('agent/stage: строка о вопросе цены, сроков и договора в данных вызова ответа', () => {
+  const advice = recommendStage(input());
+
+  it('задача понятна: передать чат (hot) с фразой о решении и ориентире', () => {
+    const text = stageReplyData({ advice, taskUnderstood: true });
+
+    expect(text.split('\n')).toContain(
+      'Задача клиента понятна: если он спрашивает цену, сроки или договор, передай чат (hot) с фразой «Я уточню у коллеги решение и ориентир под вашу задачу.».',
+    );
+    expect(text).toContain(`«${HOT_PRICE_HANDOFF_TEXT}»`);
+  });
+
+  it('задача не понятна или поля нет: ответить фразой об ориентире и задать один вопрос', () => {
+    const line =
+      'Задача клиента ещё не понятна: на вопрос цены, сроков или договора ответь «Ориентир коллега назовёт, когда поймём вашу задачу.» и задай один вопрос.';
+
+    expect(stageReplyData({ advice, taskUnderstood: false }).split('\n')).toContain(line);
+    expect(stageReplyData({ advice }).split('\n')).toContain(line);
+    expect(line).toContain(`«${ESTIMATE_LATER}»`);
+  });
+
+  it('строка идёт сразу после недостающего для расчёта', () => {
+    const lines = stageReplyData({ advice, taskUnderstood: true, priceAsks: 1 }).split('\n');
+
+    expect(lines[1]).toBe('Для расчёта известно всё.');
+    expect(lines[2]).toMatch(/^Задача клиента понятна/);
+    expect(lines[3]).toBe('До этого сообщения клиент спрашивал цену 1 раз.');
   });
 });

@@ -93,23 +93,29 @@ describe('возврат боту: ответ менеджера из панел
   });
 });
 
-// Возврат с заметкой после фразы передачи (ревью 29.10.2026, ждёт подтверждения владельца): клиент спросил цену, бот
-// ответил фразой передачи, клиент молчит, менеджер возвращает чат с заметкой. Бот возвращается к сообщениям, на которые
-// ответила фраза, обычным путём: проверки кодом и Haiku, лимиты, очередь чата.
+// Возврат с заметкой после фразы передачи (ревью 29.10.2026, ждёт подтверждения владельца): клиент спросил цену при
+// понятной задаче, бот ответил фразой передачи, клиент молчит, менеджер возвращает чат с заметкой. Бот возвращается к
+// сообщениям, на которые ответила фраза, обычным путём: проверки кодом и вторым вызовом, лимиты, очередь чата.
+
+/** Оценка интереса: клиент спрашивает цену, задача понятна (решение владельца 30.10.2026). */
+const PRICE_TASK = {
+  priceAsked: true,
+  profile: { problemAgreed: true, items: 'запчасти', itemCount: 'около 3000' },
+} as const;
 describe('возврат боту с заметкой, когда клиент молчал после фразы передачи', () => {
   const PRICE_NOTE = 'Ориентир от 1 500 000 тенге, нужен выезд';
   const TASK_NOTE = 'Узнай количество вещей и какая у них 1С';
-  const PRICE_PHRASE = 'Цена сильно зависит от объёма. Уточню у коллеги и вернусь к вам.';
+  const PRICE_PHRASE = 'Я уточню у коллеги решение и ориентир под вашу задачу.';
   const PRICE_REPLY = 'Коллега подсказал: ориентир от 1 500 000 тенге, нужен выезд на склад.';
   const ASK_COUNT =
     'Чтобы коллега точнее назвал ориентир, подскажите, сколько примерно вещей нужно учитывать?';
 
-  /** Клиент спросил цену и отказался отвечать: бот передал чат фразой о цене. Клиент больше не пишет. */
+  /** Клиент спросил цену при понятной задаче: бот передал чат фразой о решении и ориентире. Клиент больше не пишет. */
   async function handedOffOnPrice() {
     const s = createScenario({ api: null });
-    const asked = await s.say('Сколько стоит учёт на складе? Без подробностей, просто цену', {
+    const asked = await s.say('Около 3000 запчастей на складе. Сколько стоит учёт?', {
       replies: [{ outcome: 'hot', aboutPrice: true }],
-      interests: [{ priceAsked: true, refused: true }],
+      interests: [PRICE_TASK],
     });
     expect(asked.toClient).toEqual([PRICE_PHRASE]);
     return s;
@@ -259,11 +265,11 @@ describe('возврат с заметкой с ценой, а клиент от
     expect(s.storage.chats.getNote(s.chatId())).toMatchObject({ text: PRICE_NOTE });
   });
 
-  it('путь после фразы передачи: отказ снова не передаёт чат, бот отвечает суммой из заметки', async () => {
+  it('путь после фразы передачи: отказ не передаёт чат, бот отвечает суммой из заметки', async () => {
     const s = createScenario({ api: null });
-    await s.say('Сколько стоит учёт на складе? Без подробностей, просто цену', {
+    await s.say('Около 3000 запчастей на складе. Сколько стоит учёт?', {
       replies: [{ outcome: 'hot', aboutPrice: true }],
-      interests: [REFUSED],
+      interests: [PRICE_TASK],
     });
 
     const back = await s.returnToBot({ replies: [PRICE_REPLY], interests: [REFUSED] }, PRICE_NOTE);
@@ -272,16 +278,20 @@ describe('возврат с заметкой с ценой, а клиент от
     expect(back.toClient).toEqual([PRICE_REPLY]);
   });
 
-  it('заметка-задание без суммы: отказ передаёт чат, как без заметки', async () => {
+  it('заметка-задание без суммы: первый уход после возврата чат не передаёт (счёт обнулён возвратом), второй подряд передаёт', async () => {
     const s = createScenario({ api: null });
     await s.say('Позовите менеджера', { replies: [{ outcome: 'asked_human' }] });
     await s.say('Ладно, на вопросы отвечать не буду, просто назовите цену', { replies: [ASK] });
+    const question = 'Понимаю. А сколько примерно вещей нужно учитывать?';
 
     const back = await s.returnToBot(
-      { replies: ['Понимаю. А сколько примерно вещей нужно учитывать?'], interests: [REFUSED] },
+      { replies: [question], interests: [REFUSED] },
       'Узнай число вещей и какая 1С',
     );
+    const again = await s.say('Не скажу', { replies: [question], interests: [REFUSED] });
 
-    expect(back.outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
+    expect(back.outcome).toEqual({ kind: 'replied' });
+    expect(again.outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
+    expect(again.toClient).toEqual(['Уточню у коллеги и вернусь к вам.']);
   });
 });

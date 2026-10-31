@@ -377,12 +377,10 @@ describe('createOutbox: sendHandoffNotice', () => {
     },
   );
 
-  it('hot после вопроса цены (aboutPrice): ровно фраза о цене при любой случайности', async () => {
+  it('hot после вопроса цены (aboutPrice): ровно фраза о решении и ориентире при любой случайности (решение владельца 30.10.2026)', async () => {
     const texts = await phrasesOf({ reason: 'hot', aboutPrice: true });
 
-    expect(HOT_PRICE_HANDOFF_TEXT).toBe(
-      'Цена сильно зависит от объёма. Уточню у коллеги и вернусь к вам.',
-    );
+    expect(HOT_PRICE_HANDOFF_TEXT).toBe('Я уточню у коллеги решение и ориентир под вашу задачу.');
     expect(texts).toEqual([HOT_PRICE_HANDOFF_TEXT, HOT_PRICE_HANDOFF_TEXT, HOT_PRICE_HANDOFF_TEXT]);
   });
 

@@ -92,6 +92,32 @@ describe('живой тест 30.10.2026: «Здравствуйте», «Тин
     expect(s.storage.chats.getById(s.chatId())?.level).toBe('warm');
   });
 
+  it('модель на пятом сообщении вернула hot, а для расчёта нового в месяц и проходов нет: повтор с замечанием, бот спрашивает', async () => {
+    const s = createScenario();
+    await firstFour(s);
+
+    const fifth = await s.say('Алматы, да у нас есть 1c система', {
+      replies: [
+        {
+          outcome: 'hot',
+          text: 'Я уточню у коллеги решение и ориентир под вашу задачу.',
+          stage: 'final',
+        },
+        { outcome: 'answer', text: AFTER_FIFTH, stage: 'details' },
+      ],
+      interests: [{ level: 'warm', profile: FIFTH }],
+    });
+
+    expect(fifth.outcome).toEqual({ kind: 'replied' });
+    expect(fifth.toClient).toEqual([AFTER_FIFTH]);
+    expect(fifth.toManager).toEqual([]);
+    const retry = fifth.llm.requests.filter((request) => request.purpose === 'reply')[1];
+    expect(retry?.turns.at(-1)?.text).toContain(
+      'Для финала не хватает: сколько нового приходит в месяц, сколько проходов нужно учитывать. Задай один открытый вопрос о недостающем.',
+    );
+    expect(s.storage.handoffs.findOpen(s.chatId())).toBeNull();
+  });
+
   it('шестое сообщение тоже не передаёт: предела сообщений больше нет', async () => {
     const s = createScenario();
     await firstFour(s);

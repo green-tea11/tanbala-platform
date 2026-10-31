@@ -27,7 +27,23 @@ import {
 } from '../../../src/pipeline/services.js';
 import { ROOT as PROJECT_ROOT } from '../../helpers/source-files.js';
 import { useMigratedDb, useTempDir } from '../db/fixture.js';
-import { scriptedLlm } from './scripted-llm.js';
+import { scriptedLlm, type LlmScript } from './scripted-llm.js';
+
+/** Оценка интереса: для расчёта известно всё, исход hot модели принимается как финал (решение владельца 30.10.2026). */
+const READY: LlmScript['interests'] = [
+  {
+    level: 'warm',
+    profile: {
+      business: 'склад',
+      items: 'запчасти',
+      itemCount: 'около 3000',
+      monthlyIntake: '200 в месяц',
+      passages: 'один вход',
+      has1C: true,
+      city: 'Алматы',
+    },
+  },
+];
 
 // Настоящие репозитории на SQLite в памяти, LLM поддельный, подключение WhatsApp поддельное: сети нет.
 
@@ -300,7 +316,7 @@ describe('pipeline/responder-setup', () => {
     const logger = createLogger([]);
     const storage = storageOf(config);
     const services = servicesOf(config, storage, logger);
-    const llm = scriptedLlm({ replies: [{ outcome: 'hot', text: HOT_REPLY }] });
+    const llm = scriptedLlm({ replies: [{ outcome: 'hot', text: HOT_REPLY }], interests: READY });
     const responder = await assembleResponder({
       config,
       logger,
@@ -349,7 +365,8 @@ describe('pipeline/responder-setup', () => {
       storage,
       services,
       company: companyOff(),
-      createLlm: () => scriptedLlm({ replies: [{ outcome: 'hot', text: HOT_REPLY }] }).llm,
+      createLlm: () =>
+        scriptedLlm({ replies: [{ outcome: 'hot', text: HOT_REPLY }], interests: READY }).llm,
     });
     if (responder === null) throw new Error('ответы не собраны');
     const { link, sendText } = connection();

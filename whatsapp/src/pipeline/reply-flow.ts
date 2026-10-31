@@ -5,6 +5,7 @@ import type { ChatsRepo, Clock, Logger, RejectedDraftsRepo } from '../domain/por
 import type {
   BudgetScope,
   ChatId,
+  ChatProgress,
   HandoffNotice,
   InterestAssessment,
   LlmResult,
@@ -19,16 +20,17 @@ import type {
   StrengthId,
   TurnSignals,
 } from '../domain/types.js';
+import { HANDOFF_TEXT, HOT_PRICE_HANDOFF_TEXT } from '../messaging/outbox.js';
+import { answerPartOf, clientAsksNow } from './answer-part.js';
 import { decideAction, type Decision, type DraftGate, type TextDraft } from './decide.js';
 import {
-  forcedPriceHandoff,
-  isPrematurePriceHandoff,
-  minimumFallback,
-  minimumRemark,
-  priceSituation,
-  type ForcedPriceHandoff,
-  type PriceSituation,
-} from './price-gate.js';
+  earlyHotFallback,
+  earlyHotRemark,
+  hotKindOf,
+  turnSituation,
+  type HotKind,
+  type TurnSituation,
+} from './handoff-gate.js';
 import { nextSafeQuestion } from './safe-questions.js';
 
 /** Что нужно ходу ответа от остальной системы: агент, запись оценки интереса, часы и лог. */
@@ -101,13 +103,19 @@ const CHECK_FAILED: ReplyVerdict = { kind: 'handoff', notice: { reason: 'check_f
 const LLM_ERROR: ReplyVerdict = { kind: 'handoff', notice: { reason: 'llm_error' } };
 
 /**
- * Четвёртый вопрос цены или отказ отвечать при вопросе цены, а модель ответила answer: передача с фиксированной фразой о
- * цене (решение владельца 29.10.2026).
+ * Вопрос цены, сроков или договора при понятной задаче или третий вопрос цены: передача hot с фразой «Я уточню у коллеги
+ * решение и ориентир под вашу задачу.» (решение владельца 30.10.2026, outbox по HandoffNotice.aboutPrice).
  */
-const FORCED_PRICE_HANDOFF: ReplyVerdict = {
+const PRICE_HANDOFF: ReplyVerdict = {
   kind: 'handoff',
   notice: { reason: 'hot', aboutPrice: true },
 };
+
+/** Два ухода от вопросов подряд: передача hot с фразой «Уточню у коллеги и вернусь к вам.». */
+const REFUSED_HANDOFF: ReplyVerdict = { kind: 'handoff', notice: { reason: 'hot' } };
+
+/** Фраза финала: как и фиксированные вопросы, проходит проверки кодом (это проверяют тесты). */
+const SOLUTION_TEXT = HOT_PRICE_HANDOFF_TEXT as ReviewedText;
 
 /** Причина записи уровня hot, когда его назначила не оценка интереса, а вызов ответа. */
 const HOT_BY_REPLY =
@@ -118,13 +126,13 @@ type Attempt = 1 | 2;
 
 /**
  * Всё, что нужно одной попытке: зависимости, разговор (с ним идут проверки), разговор для повтора черновика (с выжимкой
- * из оценки этого хода, если она есть) и что код знает о цене (pipeline/price-gate.ts).
+ * из оценки этого хода, если она есть) и что код знает о ходе для решения о передаче (pipeline/handoff-gate.ts).
  */
 interface Flow {
   readonly deps: ReplyFlowDeps;
   readonly context: ConversationContext;
   readonly retryContext: ConversationContext;
-  readonly price: PriceSituation;
+  readonly gate: TurnSituation;
 }
 
 /**
@@ -139,8 +147,8 @@ type Judgement =
       readonly feedback: readonly string[];
       readonly keep: ReplyVerdict | null;
       /**
-       * Повтор после ранней передачи по цене: если и он не прошёл проверки, уходит этот фиксированный вопрос, а не
-       * передача check_failed.
+       * Повтор после раннего hot: если и он не прошёл проверки, уходит этот фиксированный вопрос, а не передача
+       * check_failed.
        */
       readonly fallback?: SendVerdict;
     };
@@ -188,32 +196,29 @@ export async function requestAssessment(
 
 /**
  * Шаги 4 и 5 плана и развилка. Оценка интереса сохраняется первой, до любой передачи: уровень и выжимка нужны
- * менеджеру в уведомлении (chats.saveAssessment, уровень и выжимка одной транзакцией). Передачу решает вызов
- * ответа (исход черновика), а не оценка интереса: она только хранит уровень и выжимку. Исчерпан дневной лимит API
- * на черновике или на оценке => limit. Дальше черновик проходит попытку: сбой LLM => llm_error (fail-closed);
- * complaint => передача с фиксированной фразой; answer, hot, no_answer и asked_human с текстом => normalizeDraft,
- * проверки кодом (checks/code-checks.runCodeChecks; название компании клиента из блока о компании в капслоке, ссылках,
- * тире и подмене букв не нарушение), второй вызов agent.reviewDraft (только если проверки кодом
- * пройдены; у hot, no_answer и asked_human с подписью «сообщение о передаче»), затем pipeline/decide.decideAction:
- * проверяется и уходит один и тот же нормализованный текст. Не прошёл: один повтор agent.draftReply с замечаниями
- * (оценка заново не запрашивается). Второй провал: для answer check_failed, для исхода передачи та же причина и
- * фиксированная фраза (причина не меняется). Сбой LLM при проверке или повторе исхода передачи тоже оставляет причину
- * и фиксированную фразу; исчерпанный лимит API даёт limit. Исход передачи с пустым text (или из одних невидимых
- * символов) проверок не проходит: фиксированная фраза по причине. Фиксированная фраза hot черновика с aboutPrice
- * (клиент спрашивал цену) ровно «Цена сильно зависит от объёма. Уточню у коллеги и вернусь к вам.»
- * (её выбирает messaging/outbox.ts по HandoffNotice.aboutPrice). При передаче hot уровень hot записывается в чат
- * (оценка интереса могла дать ниже или не получиться), поэтому и в передаче, и в чате он hot. Вызовов API на ответ
- * три (черновик, оценка, проверка), с повтором пять. В лог только ID чата, номер попытки, виды нарушений
- * (CheckCode), причина передачи и числа: фрагменты текста клиента и модели в нём недопустимы. context тот же, с которым
- * писался черновик: проверка судит с теми же данными о компании. Вердикт send несёт companyQuestion черновика answer,
- * чей текст уходит (после повтора: повторного черновика).
- * Правило минимума перед передачей по цене (решение владельца 29.10.2026, pipeline/price-gate.ts): исход hot из-за
- * вопроса цены, пока минимума нет (вопрос не четвёртый, отказа отвечать не было), не передаёт чат: один повтор черновика с
- * замечанием, чего не хватает и какой один вопрос задать; повтор снова hot, не получился или не прошёл проверки =>
- * фиксированный вопрос о первом недостающем (pipeline/safe-questions.ts), чат остаётся у бота. Четвёртый вопрос цены
- * или отказ отвечать (в этом ходе) при вопросе цены сейчас или раньше, а модель ответила answer => передача hot с
- * фразой о цене. Повтор черновика видит выжимку из оценки этого хода.
- * Вердикт send несёт сигналы хода (вопрос цены, отказ отвечать), если они есть: конвейер записывает их после отправки.
+ * менеджеру в уведомлении (chats.saveAssessment, уровень и выжимка одной транзакцией). Исчерпан дневной лимит API на
+ * черновике или на оценке => limit. Дальше черновик проходит попытку: сбой LLM => llm_error (fail-closed); complaint =>
+ * передача с фиксированной фразой; answer, hot, no_answer и asked_human с текстом => normalizeDraft, проверки кодом
+ * (checks/code-checks.runCodeChecks; название компании клиента из блока о компании в капслоке, ссылках, тире и подмене
+ * букв не нарушение), второй вызов agent.reviewDraft (только если проверки кодом пройдены; у hot, no_answer и
+ * asked_human с подписью «сообщение о передаче»), затем pipeline/decide.decideAction: проверяется и уходит один и тот же
+ * нормализованный текст. Не прошёл: один повтор agent.draftReply с замечаниями (оценка заново не запрашивается). Второй
+ * провал: для answer безопасный вопрос (afterCheckFailed), для исхода передачи та же причина и фиксированная фраза. Сбой
+ * LLM при проверке или повторе исхода передачи тоже оставляет причину и фиксированную фразу; исчерпанный лимит API даёт
+ * limit. Исход передачи с пустым text (или из одних невидимых символов) проверок не проходит: фиксированная фраза по
+ * причине. В лог только ID чата, номер попытки, виды нарушений (CheckCode), причина передачи и числа: фрагменты текста
+ * клиента и модели в нём недопустимы. context тот же, с которым писался черновик: проверка судит с теми же данными о
+ * компании. Вердикт send несёт companyQuestion черновика answer, чей текст уходит (после повтора: повторного черновика).
+ * Когда чат уходит коллеге с исходом hot (решение владельца 30.10.2026, pipeline/handoff-gate.ts, по выжимке после оценки
+ * этого хода): третий вопрос цены, вопрос цены, сроков или договора при понятной задаче, два ухода от вопросов подряд,
+ * финал (для расчёта известно всё). Исход hot модели без такой причины ранний: один повтор черновика с замечанием
+ * (earlyHotRemark); повтор снова hot, не получился или не прошёл проверки => готовый вопрос о первом недостающем для
+ * расчёта (earlyHotFallback), чат остаётся у бота. Модель ответила answer, а причина есть (кроме финала) => код сам
+ * передаёт чат (codeHandoff). Фиксированная фраза hot по причине (withHotPhrase): финал и цена с фразой «Я уточню у
+ * коллеги решение и ориентир под вашу задачу.», уходы от вопросов с «Уточню у коллеги и вернусь к вам.». При передаче
+ * hot уровень hot записывается в чат (оценка интереса могла дать ниже или не получиться). Вызовов API на ответ три
+ * (черновик, оценка, проверка), с повтором пять. Вердикт send несёт сигналы хода (вопрос цены, отказ отвечать), если они
+ * меняют ход разговора: конвейер записывает их после отправки.
  */
 export async function decideReply(
   deps: ReplyFlowDeps,
@@ -223,44 +228,58 @@ export async function decideReply(
   const assessment = keepAssessment(deps, context.chatId, drafted.assessment);
   const scope = budgetScopeOf([drafted.draft, drafted.assessment]);
   if (scope !== null) return { kind: 'limit', scope };
-  const price = priceSituation(context, assessment, drafted.draft);
+  const gate = turnSituation(context, assessment, drafted.draft);
   const retryContext = assessment === null ? context : { ...context, profile: assessment.profile };
-  const flow: Flow = { deps, context, retryContext, price };
+  const flow: Flow = { deps, context, retryContext, gate };
   const first = await judgeResult(flow, drafted.draft, 1, null);
   const judged = first.kind === 'verdict' ? first.verdict : await retryOnce(flow, first);
-  const verdict = isCheckFailed(judged) ? afterCheckFailed(flow) : judged;
+  const verdict = withHotPhrase(gate, isCheckFailed(judged) ? afterCheckFailed(flow) : judged);
   if (isHotHandoff(verdict)) markHot(deps, context, assessment);
-  return withSignals(verdict, price.signals);
+  return withSignals(verdict, gate.signals, context.progress);
 }
 
 /**
- * Ответ дважды не прошёл проверки (пункт 2 задания 29.10.2026): чат не уходит менеджеру. Клиент спрашивает цену и
- * минимум собран => передача по цене с фразой о цене (так велит правило цены). Иначе один открытый вопрос по
+ * Передача hot без текста модели: фиксированная фраза по причине (решение владельца 30.10.2026). Финал: «Я уточню у
+ * коллеги решение и ориентир под вашу задачу.» текстом; вопрос цены: та же фраза через outbox (aboutPrice); уходы от
+ * вопросов: «Уточню у коллеги и вернусь к вам.».
+ */
+function withHotPhrase(gate: TurnSituation, verdict: ReplyVerdict): ReplyVerdict {
+  if (verdict.kind !== 'handoff' || 'text' in verdict || verdict.notice.reason !== 'hot') {
+    return verdict;
+  }
+  switch (hotKindOf(gate)) {
+    case 'final':
+      return { kind: 'handoff', notice: { reason: 'hot' }, text: SOLUTION_TEXT };
+    case 'price':
+    case 'price_third':
+      return PRICE_HANDOFF;
+    case 'refused':
+      return REFUSED_HANDOFF;
+    case null:
+      return verdict;
+  }
+}
+
+/**
+ * Ответ дважды не прошёл проверки (пункт 2 задания 29.10.2026): чат не уходит менеджеру. Один открытый вопрос по
  * рекомендуемому этапу и первому недостающему для расчёта, который бот ещё не задавал в чате (решение владельца
  * 30.10.2026, safe-questions.nextSafeQuestion: выжимка этого хода, этап последнего ответа, передавался ли чат, все
  * прошлые ответы бота в окне истории); при вопросе цены перед ним фраза об ориентире. Спросить нечего => check_failed.
  * В лог только ID чата и код вопроса.
  */
 function afterCheckFailed(flow: Flow): ReplyVerdict {
-  const { context, price, deps } = flow;
+  const { context, gate, deps } = flow;
   const { chatId } = context;
-  if (price.signals.priceAsked && price.minimum.missing.length === 0 && !price.notePrice) {
-    deps.logger.info(
-      { chatId },
-      `Черновик дважды не прошёл проверки, минимум собран: передача по цене: чат #${chatId}`,
-    );
-    return FORCED_PRICE_HANDOFF;
-  }
   const question = nextSafeQuestion(
     {
-      profile: price.profile,
-      minimum: price.minimum,
+      profile: gate.profile,
+      companyAskable: gate.companyAskable,
       lastBotText: lastBotTextOf(context.history),
       botTexts: botTextsOf(context.history),
       lastStage: context.progress?.lastStage ?? null,
       handedOff: context.progress?.handedOff === true || context.note != null,
     },
-    price.signals.priceAsked,
+    gate.signals.priceAsked,
   );
   if (question === null) {
     deps.logger.info(
@@ -271,7 +290,7 @@ function afterCheckFailed(flow: Flow): ReplyVerdict {
   }
   const { key, text, companyQuestion } = question;
   deps.logger.info(
-    { chatId, question: key, aboutPrice: price.signals.priceAsked },
+    { chatId, question: key, aboutPrice: gate.signals.priceAsked },
     `Черновик дважды не прошёл проверки, клиенту уходит безопасный вопрос: чат #${chatId}`,
   );
   return companyQuestion === undefined
@@ -292,9 +311,18 @@ function botTextsOf(history: readonly StoredMessage[]): readonly string[] {
   );
 }
 
-/** Ответ уходит: сигналы хода идут с ним, если клиент спросил цену или отказался отвечать. */
-function withSignals(verdict: ReplyVerdict, signals: TurnSignals): ReplyVerdict {
-  if (verdict.kind !== 'send' || (!signals.priceAsked && !signals.refused)) return verdict;
+/**
+ * Ответ уходит: сигналы хода идут с ним, если клиент спросил цену или отказался отвечать, а также если он уходил от
+ * вопросов прошлым ходом (ход без отказа обнуляет счёт уходов подряд).
+ */
+function withSignals(
+  verdict: ReplyVerdict,
+  signals: TurnSignals,
+  progress: ChatProgress | undefined,
+): ReplyVerdict {
+  if (verdict.kind !== 'send') return verdict;
+  const streak = progress?.refusedStreak ?? 0;
+  if (!signals.priceAsked && !signals.refused && streak === 0) return verdict;
   return { ...verdict, signals };
 }
 
@@ -411,9 +439,11 @@ async function judge(flow: Flow, draft: ReplyDraft, attempt: Attempt): Promise<J
   if (draft.outcome === 'complaint') {
     return judgementOf(decideAction({ kind: 'handoff_outcome', draft }), null);
   }
-  if (isPrematurePriceHandoff(draft, flow.price)) return premature(flow, attempt);
-  const forced = forcedPriceHandoff(draft, flow.price);
-  if (forced !== null) return forcedHandoff(flow, forced);
+  const hot = hotKindOf(flow.gate);
+  if (draft.outcome === 'hot' && hot === null) return early(flow, attempt);
+  if (draft.outcome === 'answer' && hot !== null && hot !== 'final') {
+    return codeHandoff(flow, draft, attempt, hot);
+  }
   const text = normalizeDraft(draft.text);
   const keep = keepOf(draft);
   if (draft.outcome !== 'answer' && text.trim() === '') {
@@ -447,48 +477,67 @@ function marksOf(
 }
 
 /**
- * Ранняя передача по цене: попытка 1 => повтор с замечанием о минимуме (keep и fallback: фиксированный вопрос о первом
- * недостающем), попытка 2 => сразу этот вопрос. Текст hot не проверяется: он не уйдёт. В лог только коды полей и числа.
+ * Ранний hot (pipeline/handoff-gate.ts): попытка 1 => повтор с замечанием (earlyHotRemark; keep и fallback: готовый вопрос
+ * о первом недостающем для расчёта), попытка 2 => сразу этот вопрос. Текст hot не проверяется: он не уйдёт. В лог только
+ * коды полей и числа.
  */
-function premature(flow: Flow, attempt: Attempt): Judgement {
+function early(flow: Flow, attempt: Attempt): Judgement {
   const { chatId } = flow.context;
-  const { minimum, priceAsks } = flow.price;
+  const { missing, priceAsks, signals } = flow.gate;
   flow.deps.logger.info(
-    { chatId, attempt, missing: [...minimum.missing], priceAsks },
-    `Передача по цене рано: не хватает минимума, чат остаётся у бота: чат #${chatId}`,
+    { chatId, attempt, missing: [...missing], priceAsks, aboutPrice: signals.priceAsked },
+    `Передача рано: задача не понятна или для расчёта известно не всё, чат остаётся у бота: чат #${chatId}`,
   );
   const fallback = fallbackVerdict(flow);
   if (attempt === 2) return verdictOf(fallback);
-  return { kind: 'retry', feedback: [minimumRemark(flow.price)], keep: fallback, fallback };
+  return { kind: 'retry', feedback: [earlyHotRemark(flow.gate)], keep: fallback, fallback };
 }
 
 function fallbackVerdict(flow: Flow): SendVerdict {
-  const { text, companyQuestion } = minimumFallback(
-    flow.price,
-    lastBotTextOf(flow.context.history),
-  );
+  const { text, companyQuestion } = earlyHotFallback(flow.gate, botTextsOf(flow.context.history));
   return companyQuestion === undefined
     ? { kind: 'send', text }
     : { kind: 'send', text, companyQuestion };
 }
 
-const FORCED_TEXT: Readonly<Record<ForcedPriceHandoff, string>> = {
-  price_asks_limit: 'Четвёртый вопрос цены',
-  refused: 'Клиент отказывается отвечать на вопросы о цене',
-};
-
 /**
- * Четвёртый вопрос цены или отказ отвечать при вопросе цены, а модель ответила answer: передача hot с фразой о цене,
- * текст модели не нужен. В лог только ID чата и число вопросов цены.
+ * Модель ответила answer, а чат по правилу владельца уходит коллеге (решение 30.10.2026): при вопросе цены (третий раз
+ * или при понятной задаче) фиксированная фраза о решении и ориентире, текст модели не нужен. При двух уходах от вопросов
+ * подряд «Уточню у коллеги и вернусь к вам.», а перед ней ответ из черновика, если клиент что-то спросил и это не ход с
+ * вопросом цены (answerPartOf); такое сообщение проходит проверки кодом и проверку с подписью «сообщение о передаче» без
+ * повтора, не прошло или ответа нет => только фраза. В лог ID чата, причина и числа.
  */
-function forcedHandoff(flow: Flow, why: ForcedPriceHandoff): Judgement {
-  const { chatId } = flow.context;
+async function codeHandoff(
+  flow: Flow,
+  draft: Extract<ReplyDraft, { readonly outcome: 'answer' }>,
+  attempt: Attempt,
+  why: Exclude<HotKind, 'final'>,
+): Promise<Judgement> {
+  const { chatId, history } = flow.context;
+  const { priceAsks, refusedStreak, signals } = flow.gate;
   flow.deps.logger.info(
-    { chatId, priceAsks: flow.price.priceAsks },
-    `${FORCED_TEXT[why]}: чат передаётся менеджеру: чат #${chatId}`,
+    { chatId, hot: why, priceAsks, refusedStreak },
+    `${CODE_HANDOFF_TEXT[why]}: чат передаётся менеджеру: чат #${chatId}`,
   );
-  return verdictOf(FORCED_PRICE_HANDOFF);
+  if (why !== 'refused') return verdictOf(PRICE_HANDOFF);
+  // На вопрос цены ответ из черновика не берётся: в нём остаются пересказ слов клиента и обрывки (живой прогон 29.10.2026).
+  const part =
+    !signals.priceAsked && clientAsksNow(history) ? answerPartOf(normalizeDraft(draft.text)) : null;
+  if (part === null) return verdictOf(REFUSED_HANDOFF);
+  const text = normalizeDraft(`${part} ${HANDOFF_TEXT}`);
+  const checked = await checkDraft(flow, 'hot', text, attempt, REFUSED_HANDOFF);
+  if (checked.kind === 'failed') return verdictOf(checked.verdict);
+  const hot: TextDraft = { outcome: 'hot', text: checked.text };
+  // Без повтора: не прошло => передача hot без текста, фраза «Уточню у коллеги и вернусь к вам.».
+  const decision = decideAction({ kind: 'text', draft: hot, gate: checked.gate, attempt: 2 });
+  return judgementOf(decision, REFUSED_HANDOFF);
 }
+
+const CODE_HANDOFF_TEXT: Readonly<Record<Exclude<HotKind, 'final'>, string>> = {
+  price_third: 'Третий вопрос цены',
+  price: 'Вопрос цены при понятной задаче',
+  refused: 'Клиент дважды подряд уходит от вопросов',
+};
 
 /**
  * Решение исхода передачи, если вызов проверки не получился: та же передача с фиксированной фразой (у hot после
@@ -596,7 +645,7 @@ function codeGateOf(
     clientText,
     companyName,
     note,
-    priceTurn: flow.price.signals.priceAsked,
+    priceTurn: flow.gate.signals.priceAsked,
     ...facts,
   });
   if (first === undefined) return null;

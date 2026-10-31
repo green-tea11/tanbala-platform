@@ -25,7 +25,7 @@ import { interestCallData, interestSchema, normalizeInterest } from './interest.
 import type { Knowledge } from './knowledge.js';
 import { profileText } from './profile.js';
 import { buildSystem, buildTurns, noteBlock } from './prompts.js';
-import { recommendStage, stageReplyData } from './stage.js';
+import { recommendStage, stageReplyData, taskUnderstood } from './stage.js';
 import {
   EMPTY_DRAFT_REVIEW,
   normalizeReview,
@@ -59,8 +59,8 @@ export interface ConversationContext {
    */
   readonly progress?: ChatProgress;
   /**
-   * Название компании клиента для минимума передачи по цене: подтверждённое или со слов клиента. Не передано или
-   * null => неизвестно.
+   * Название компании клиента: подтверждённое или со слов клиента. Известно => безопасный вопрос знакомства о названии
+   * не спрашивает. Не передано или null => неизвестно.
    */
   readonly companyName?: string | null;
   /**
@@ -230,8 +230,9 @@ function answerDraft(text: string, raw: RawReplyDraft): ReplyDraft {
 /**
  * Строки об этапе (agent/stage.ts, решение владельца 30.10.2026): рекомендуемый этап по выжимке до этого хода, этапу
  * последнего ответа бота и тому, передавался ли чат (заметка для бота бывает только после возврата, значит, передавался),
- * недостающее для расчёта, рассказанные сильные стороны и сколько раз клиент спрашивал цену. Вопрос цены модели
- * объясняет инструкция, строк о минимуме передачи в данных нет.
+ * недостающее для расчёта, понятна ли задача клиента (что делать с вопросом цены, сроков или договора), рассказанные
+ * сильные стороны и сколько раз клиент спрашивал цену. Всё по выжимке до этого хода: решение о передаче код принимает по
+ * выжимке после оценки этого хода (pipeline/handoff-gate.ts).
  */
 function stageData(context: ConversationContext): string {
   const progress = context.progress;
@@ -244,6 +245,7 @@ function stageData(context: ConversationContext): string {
     advice,
     toldFacts: progress?.toldFacts ?? [],
     priceAsks: progress?.priceAsks ?? 0,
+    taskUnderstood: taskUnderstood(context.profile),
   });
 }
 

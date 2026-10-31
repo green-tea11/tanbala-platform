@@ -28,7 +28,8 @@ const REVIEW_REMARK = 'Кейс о складе в Алматы не из док
 const LIVE_FALSE_POSITIVE =
   'Цена сильно зависит от объёма, и 3000 позиций уже хороший ориентир для коллеги. Подскажите, какие вещи нужно учитывать?';
 
-const PRICE_PHRASE = 'Цена сильно зависит от объёма. Уточню у коллеги и вернусь к вам.';
+/** Фраза передачи по цене с 30.10.2026. */
+const PRICE_PHRASE = 'Я уточню у коллеги решение и ориентир под вашу задачу.';
 const INFERRED_1C = '1С: вероятно есть, конфигурация не выяснена';
 
 /** Что оценка интереса узнала из первого сообщения: склад, площадь, ввоз и вывоз; 1С по выводу из вопроса. */
@@ -144,34 +145,22 @@ describe('живой тест 29.10.2026: склад 5000 м², ввоз и вы
     expect(s.storage.rejectedDrafts.listForChat(s.chatId(), 10)).toEqual([]);
   });
 
-  it('третий вопрос цены без минимума ещё не передаёт, четвёртый передаёт с фразой о цене', async () => {
+  it('третий вопрос цены передаёт чат (решение владельца 30.10.2026, было четыре), модель ответила answer', async () => {
     const s = createScenario();
     await firstTurn(s);
     await s.say(CLIENT_2, turn([LIVE_FALSE_POSITIVE], PROFILE_2));
 
     const third = await s.say(
       'Запчасти. Ну так сколько стоит?',
-      turn([{ outcome: 'hot', text: PRICE_PHRASE, aboutPrice: true }], {
-        ...PROFILE_2,
-        items: 'запчасти',
-      }),
-    );
-    const fourth = await s.say(
-      'Просто назовите цену.',
       turn(['Подскажите, из какого материала эти вещи?'], { ...PROFILE_2, items: 'запчасти' }),
     );
 
-    expect(third.outcome).toEqual({ kind: 'replied' });
-    expect(third.toManager).toEqual([]);
-    expect(third.toClient).toEqual([questionText('monthlyIntake', true)]);
-    expect(fourth.outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
-    expect(fourth.toClient).toEqual([PRICE_PHRASE]);
-    const notice = fourth.toManager[0] ?? '';
-    expect(notice).toContain(INFERRED_1C);
-    expect(notice).toContain('Не удалось выяснить: материал, город, название компании');
+    expect(third.outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
+    expect(third.toClient).toEqual([PRICE_PHRASE]);
+    expect(third.toManager[0] ?? '').toContain(INFERRED_1C);
   });
 
-  it('минимум собран и клиент спрашивает цену: передача с полным списком собранного в уведомлении', async () => {
+  it('задача понятна и клиент спрашивает цену: передача с полным списком собранного в уведомлении', async () => {
     const s = createScenario();
     await firstTurn(s);
 
@@ -179,7 +168,13 @@ describe('живой тест 29.10.2026: склад 5000 м², ввоз и вы
       'Около 3000 позиций, металлические запчасти, склад в Алматы, мы ТОО Береке. Так сколько?',
       turn(
         [{ outcome: 'hot', text: PRICE_PHRASE, aboutPrice: true }],
-        { ...PROFILE_2, items: 'запчасти', material: 'металл', city: 'Алматы' },
+        {
+          ...PROFILE_2,
+          items: 'запчасти',
+          material: 'металл',
+          city: 'Алматы',
+          problemAgreed: true,
+        },
         { companyName: 'ТОО Береке' },
       ),
     );

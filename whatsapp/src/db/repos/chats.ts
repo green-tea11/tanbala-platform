@@ -57,6 +57,8 @@ interface ProfileColumns {
 interface ProgressRow {
   readonly price_asks: number;
   readonly refused_answers: number;
+  /** Ходов подряд, в которых клиент уходит от вопросов (CHECK: не меньше нуля). */
+  readonly refused_streak: number;
   /** 1, если у чата есть хоть одна запись в handoffs (открытая или закрытая). */
   readonly handed_off: number;
   /** JSON-массив номеров сильных сторон. */
@@ -190,7 +192,8 @@ const UPSERT_PROFILE = `INSERT INTO client_profiles
  * неизвестный чат => явная ошибка.
  * listForPanel и countForPanel: чаты для панели с фильтром по статусу и страницами; limit и offset проверяются
  * (отрицательный LIMIT в SQLite значит «без лимита»), статус только bot или manager.
- * getProgress, recordTurn и resetProgress: ход разговора о цене в колонках chats (price_asks, refused_answers);
+ * getProgress, recordTurn и resetProgress: ход разговора о цене в колонках chats (price_asks, refused_answers,
+ * refused_streak: отказ отвечать продолжает счёт уходов подряд, ход без отказа его обнуляет);
  * getProgress ещё говорит, передавался ли чат менеджеру хоть раз (handedOff, только если да: запись в handoffs), какие
  * сильные стороны уже рассказаны (told_facts, только если есть) и самый дальний этап ответов бота (last_stage, только
  * если есть). recordReply: этап меняется только на более дальний (null и этап раньше не меняют: ответ о письме на
@@ -347,7 +350,7 @@ function prepareStatements(db: Database.Database) {
       )
       .pluck(),
     progress: db.prepare<[number], ProgressRow>(
-      `SELECT c.price_asks, c.refused_answers, c.told_facts, c.last_stage,
+      `SELECT c.price_asks, c.refused_answers, c.refused_streak, c.told_facts, c.last_stage,
          EXISTS (SELECT 1 FROM handoffs h WHERE h.chat_id = c.id) AS handed_off
        FROM chats c WHERE c.id = ?`,
     ),
@@ -365,11 +368,12 @@ function prepareStatements(db: Database.Database) {
     ),
     recordTurn: db.prepare<{ id: ChatId; priceAsked: 0 | 1; refused: 0 | 1 }>(
       `UPDATE chats SET price_asks = price_asks + @priceAsked,
-         refused_answers = max(refused_answers, @refused)
+         refused_answers = max(refused_answers, @refused),
+         refused_streak = CASE WHEN @refused = 1 THEN refused_streak + 1 ELSE 0 END
        WHERE id = @id`,
     ),
     resetProgress: db.prepare<[number]>(
-      'UPDATE chats SET price_asks = 0, refused_answers = 0 WHERE id = ?',
+      'UPDATE chats SET price_asks = 0, refused_answers = 0, refused_streak = 0 WHERE id = ?',
     ),
     note: db.prepare<[number], NoteRow>('SELECT bot_note, bot_note_at_ms FROM chats WHERE id = ?'),
     setNote: db.prepare<{ id: ChatId; text: string | null; atMs: number | null }>(
@@ -515,8 +519,8 @@ function toNote(row: NoteRow): BotNote | null {
 }
 
 /**
- * Ход разговора из строки chats: необязательные поля только со значением (передавался, рассказанное, этап), чтобы
- * новый чат читался как раньше.
+ * Ход разговора из строки chats: необязательные поля только со значением (уходы от вопросов подряд, передавался,
+ * рассказанное, этап), чтобы новый чат читался как раньше.
  */
 function toProgress(row: ProgressRow): ChatProgress {
   if (row.refused_answers !== 0 && row.refused_answers !== 1) {
@@ -530,6 +534,7 @@ function toProgress(row: ProgressRow): ChatProgress {
   return {
     priceAsks: row.price_asks,
     refused: row.refused_answers === 1,
+    ...(row.refused_streak > 0 ? { refusedStreak: row.refused_streak } : {}),
     ...(row.handed_off === 1 ? { handedOff: true } : {}),
     ...(toldFacts.length === 0 ? {} : { toldFacts }),
     ...(lastStage === null ? {} : { lastStage }),

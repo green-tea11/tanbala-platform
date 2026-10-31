@@ -100,11 +100,11 @@ describe('pipeline/reply-flow: повтор на второй попытке н�
 
   it('исход передачи: тот же случай оставляет причину и фиксированную фразу, текст не уходит', async () => {
     const verdict = await verdictWithEndlessRetry({
-      outcome: 'hot',
+      outcome: 'no_answer',
       text: 'Уточню у коллеги и вернусь к вам.',
     });
 
-    expect(verdict).toEqual({ kind: 'handoff', notice: { reason: 'hot' } });
+    expect(verdict).toEqual({ kind: 'handoff', notice: { reason: 'no_answer' } });
     expect(verdict).not.toHaveProperty('text');
   });
 });

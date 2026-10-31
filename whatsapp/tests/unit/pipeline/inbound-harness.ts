@@ -117,8 +117,23 @@ export function handoffAnswer(
   return { ok: true, value: { outcome, text: value } };
 }
 
+/**
+ * Выжимка оценки интереса по умолчанию: для расчёта известно всё (решение владельца 30.10.2026), поэтому исход hot модели
+ * принимается как финал. Когда hot ранний, проверяют тесты pipeline/reply-flow-handoff.test.ts.
+ */
+export const READY_PROFILE: ClientProfile = {
+  ...EMPTY_PROFILE,
+  business: 'склад',
+  items: 'запчасти',
+  itemCount: 'около 3000',
+  monthlyIntake: '200 в месяц',
+  passages: 'один вход',
+  has1C: true,
+  city: 'Алматы',
+};
+
 export function assessed(level: InterestLevel): LlmResult<InterestAssessment> {
-  return { ok: true, value: { level, profile: EMPTY_PROFILE, reason: 'по разговору' } };
+  return { ok: true, value: { level, profile: READY_PROFILE, reason: 'по разговору' } };
 }
 
 export const REVIEW_OK: LlmResult<ReviewResult> = { ok: true, value: { ok: true } };

@@ -1,9 +1,8 @@
-import { calcMissing, recommendStage, type CalcField } from '../agent/stage.js';
+import { calcMissing, ESTIMATE_LATER, recommendStage, type CalcField } from '../agent/stage.js';
 import type { CompanyQuestion } from '../domain/company.js';
 import type { ClientProfile, ConversationStage, ReviewedText } from '../domain/types.js';
-import { ESTIMATE_LATER, type HandoffMinimum } from '../handoff/minimum.js';
 
-export { ESTIMATE_LATER } from '../handoff/minimum.js';
+export { ESTIMATE_LATER } from '../agent/stage.js';
 
 /**
  * Готовый открытый вопрос (решение владельца 30.10.2026): знакомство, крючок (знает ли клиент RFID) и по вопросу на
@@ -112,8 +111,8 @@ export function askedKeys(text: string): ReadonlySet<QuestionKey> {
 export interface SafeQuestionInput {
   /** Выжимка после оценки этого хода (если она есть). */
   readonly profile: ClientProfile;
-  /** Минимум по той же выжимке: компания в нём недостающая, только если о ней можно спросить. */
-  readonly minimum: HandoffMinimum;
+  /** О названии компании можно спросить: оно неизвестно, и блок о компании это разрешает. */
+  readonly companyAskable: boolean;
   /** Прошлое сообщение бота клиенту; null: бот ещё не писал. Учитывается, если нет botTexts. */
   readonly lastBotText: string | null;
   /** Все прошлые ответы бота в окне истории; нет поля => только lastBotText. */
@@ -143,8 +142,8 @@ function calcQuestions(profile: ClientProfile): readonly QuestionKey[] {
 }
 
 /**
- * Вопрос знакомства спрашивает и название компании, только если о ней сейчас можно спросить (компания недостающая в
- * минимуме), с отметкой; иначе только чем она занимается (ревью этапа 2: не переспрашивать названную компанию).
+ * Вопрос знакомства спрашивает и название компании, только если о ней сейчас можно спросить (название неизвестно, блок о
+ * компании разрешает), с отметкой; иначе только чем она занимается (ревью этапа 2: не переспрашивать названную компанию).
  */
 function safeQuestionOf(
   key: QuestionKey,
@@ -152,7 +151,7 @@ function safeQuestionOf(
   input: SafeQuestionInput,
 ): SafeQuestion {
   if (key !== 'intro') return { key, text: questionText(key, aboutPrice) };
-  return input.minimum.missing.includes('company')
+  return input.companyAskable
     ? { key, text: questionText(key, aboutPrice), companyQuestion: 'name' }
     : { key, text: withEstimate(INTRO_BUSINESS_QUESTION, aboutPrice) };
 }
@@ -194,11 +193,11 @@ export function nextSafeQuestion(
 }
 
 /**
- * Вопрос вместо ранней передачи по цене (pipeline/price-gate.ts): первое недостающее для расчёта (бизнес спрашивает
+ * Вопрос вместо ранней передачи (pipeline/handoff-gate.ts): первое недостающее для расчёта (бизнес спрашивает
  * знакомство), без вопроса о RFID, которого бот ещё не задавал; всё спрошено => первое недостающее; всё известно =>
  * вопрос о том, что лежит на хранении. С фразой об ориентире или без.
  */
-export function minimumSafeQuestion(input: SafeQuestionInput, aboutPrice: boolean): SafeQuestion {
+export function calcSafeQuestion(input: SafeQuestionInput, aboutPrice: boolean): SafeQuestion {
   const asked = alreadyAsked(input);
   const candidates = calcQuestions(input.profile);
   const key = candidates.find((candidate) => !asked.has(candidate)) ?? candidates[0] ?? 'items';

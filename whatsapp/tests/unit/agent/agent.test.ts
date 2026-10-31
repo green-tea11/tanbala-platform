@@ -65,7 +65,7 @@ describe('createAgent: draftReply, запрос', () => {
     expect(last?.text).toMatch(/Бизнес: магазин одежды/);
     expect(last?.text).toMatch(/Площадь: 300 м2/);
     expect(last?.text).toMatch(/1С: есть/);
-    expect(last?.text).not.toMatch(/Задача|не выяснили/);
+    expect(last?.text).not.toMatch(/Задача:|не выяснили/);
     expect(last?.text).toContain('В ответе названа цена');
   });
 

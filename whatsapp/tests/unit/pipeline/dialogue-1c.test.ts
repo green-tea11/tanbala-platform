@@ -186,7 +186,10 @@ async function runDialogue(script: LlmScript): Promise<Dialogue> {
 
 const HOT_REPLY = { outcome: 'hot', text: MODEL_TEXT, aboutPrice: true } as const;
 
-/** Оценка интереса этого сообщения: минимум для передачи по цене собран, клиент спрашивает цену. */
+/**
+ * Оценка интереса этого сообщения: задача понятна (клиент рассказал о задаче, известно, что на хранении и сколько), клиент
+ * спрашивает цену: передача hot разрешена (решение владельца 30.10.2026).
+ */
 const MINIMUM_COLLECTED: LlmScript['interests'] = [
   {
     profile: {
@@ -288,7 +291,7 @@ describe('диалог про 1С и цену (живой случай): Sonnet 
 });
 
 describe('диалог про 1С и цену: проверка не пройдена', () => {
-  it('проверка не пропустила дважды: причина всё равно hot, клиенту ровно одна фиксированная фраза передачи', async () => {
+  it('проверка не пропустила дважды: причина всё равно hot, клиенту ровно одна фраза о решении и ориентире', async () => {
     const d = await runDialogue({
       replies: [HOT_REPLY],
       level: 'warm',
@@ -299,7 +302,7 @@ describe('диалог про 1С и цену: проверка не пройд�
     expect(d.llm.purposes()).toEqual(['reply', 'interest', 'review', 'reply', 'review']);
     const toClient = d.toClient();
     expect(toClient).toHaveLength(1);
-    expect(toClient[0]).toMatch(/Уточню у коллеги и вернусь к вам\.$/);
+    expect(toClient[0]).toBe('Я уточню у коллеги решение и ориентир под вашу задачу.');
     expect(toClient[0]).not.toBe(MODEL_TEXT);
     expect(d.storage.handoffs.findOpen(d.chat.id)).toMatchObject({ reason: 'hot', level: 'hot' });
     expect(d.toManager()[0]).toContain('Передача чата менеджеру: горячий клиент.');

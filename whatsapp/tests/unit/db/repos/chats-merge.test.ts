@@ -158,7 +158,20 @@ describe('слияние чатов: ход разговора о цене', () 
     const { chats, survivor } = pair();
     chats.recordTurn(survivor.id, { priceAsked: true, refused: true });
 
-    expect(chats.getProgress(merge(chats).id)).toEqual({ priceAsks: 1, refused: true });
+    expect(chats.getProgress(merge(chats).id)).toEqual({
+      priceAsks: 1,
+      refused: true,
+      refusedStreak: 1,
+    });
+  });
+
+  it('уходы от вопросов подряд: остаётся больше из двух', () => {
+    const { chats, survivor, absorbed } = pair();
+    chats.recordTurn(survivor.id, { priceAsked: false, refused: true });
+    chats.recordTurn(absorbed.id, { priceAsked: false, refused: true });
+    chats.recordTurn(absorbed.id, { priceAsked: false, refused: true });
+
+    expect(chats.getProgress(merge(chats).id)).toMatchObject({ refusedStreak: 2 });
   });
 });
 
