@@ -25,7 +25,7 @@
 }
 .searchbox { display: flex; gap: 8px; min-width: 260px; flex: 1; max-width: 460px; }
 .searchbox input {
-  flex: 1; height: 32px; padding: 0 10px;
+  flex: 1; min-width: 0; height: 32px; padding: 0 10px;
   border: 1px solid var(--control); border-radius: var(--radius-control); background: var(--surface);
 }
 .searchbox input::placeholder { color: #66707a; }
@@ -75,6 +75,8 @@
 .list-item { border-left: 3px solid transparent; }
 .list-item[aria-current="page"] { background: var(--accent-soft); border-left-color: var(--accent); }
 .list-item .row-line1 { justify-content: space-between; }
+/* Длинное название сжимается с многоточием, оценка справа всегда видна (home.css не даёт .who сжиматься). */
+.list-item .row-line1 .who { flex: 0 1 auto; min-width: 0; }
 
 .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--gap); align-items: start; }
 .stack { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
@@ -130,7 +132,8 @@
   .chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -16px; padding: 0 16px; }
   .chips::-webkit-scrollbar { display: none; }
   .chip { flex: none; height: 36px; }
-  .searchbox { min-width: 0; max-width: none; width: 100%; }
+  /* Своей строкой: рядом со списком поле с кнопкой не помещалось и раздвигало страницу шире экрана. */
+  .searchbox { min-width: 0; max-width: none; width: 100%; flex: 1 1 100%; }
   .searchbox input, .select select, .form-grid input, .form-grid textarea, .form-grid select { font-size: 16px; height: 40px; }
   .select { width: 100%; }
   .select select { max-width: none; width: 100%; }

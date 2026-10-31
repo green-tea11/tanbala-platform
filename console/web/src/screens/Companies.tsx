@@ -83,7 +83,7 @@ export function CompaniesScreen() {
                   <tr key={row.id} className="clickable" onClick={() => navigate(`/companies/${row.id}`)}>
                     <td>
                       <Link to={`/companies/${row.id}`} className="cell-main">{row.name}</Link>
-                      <div className="cell-sub">{[row.rubric, row.cityName, row.searchQuery].filter(Boolean).join(' · ')}</div>
+                      <div className="cell-sub clamp">{[row.rubric, row.cityName, row.searchQuery].filter(Boolean).join(' · ')}</div>
                       {row.requestedVia === 'whatsapp' ? <span className="pill note">из WhatsApp</span> : row.whatsappContactedAt ? <span className="pill info">писал в WhatsApp</span> : null}
                       {row.blocked ? <span className="pill bad">не писать</span> : null}
                     </td>
@@ -107,7 +107,7 @@ export function CompaniesScreen() {
                         </>
                       ) : <span className="muted">—</span>}
                     </td>
-                    <td data-label="Статус">{row.statusLabel}{row.hadError ? <div className="cell-sub bad-text">была ошибка</div> : null}</td>
+                    <td data-label="Статус"><span className="nowrap">{row.statusLabel}</span>{row.hadError ? <div className="cell-sub bad-text">была ошибка</div> : null}</td>
                   </tr>
                 ))}
               </tbody>
