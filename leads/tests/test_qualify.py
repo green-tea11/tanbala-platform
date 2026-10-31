@@ -254,3 +254,21 @@ def test_recheck_drops_all_pains_of_card_only_company():
     stored = [{"pain": PAIN, "evidence": "Складское хранение", "source": "2gis", "verified": True}]
 
     assert qualify.recheck_pains(stored, qualify.evidence_sources(CARD_ONLY)) == []
+
+
+# Решение владельца 01.11.2026: «мы ориентированы на всех»
+
+def test_prompt_rejects_only_non_businesses_and_companies_with_nothing_to_track():
+    text = " ".join(qualify.INSTRUCTIONS.split())
+
+    assert "Tanbala работает со всеми" in text
+    assert "один бутик" in text and "Размер не важен" in text
+    assert "Маленький размер и отсутствие явных болей не причина для no" in text
+    assert "no только если это не действующий бизнес" in text and "вроде самого 2ГИС" in text
+    assert "есть масштаб" not in text and "сдаёт только помещения" not in text  # старое правило отбора по размеру
+
+
+def test_output_schema_is_unchanged():
+    assert qualify.SCHEMA["required"] == ["fit", "score", "segment", "reason", "pains"]
+    assert qualify.SCHEMA["properties"]["fit"]["enum"] == ["yes", "maybe", "no"]
+    assert qualify.SCHEMA["properties"]["score"] == {"type": "integer"}
