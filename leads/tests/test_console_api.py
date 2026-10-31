@@ -504,13 +504,41 @@ def test_companies_filters_sort_facets_and_rows(console_db):
     assert facets["cards"][0] == {"code": "all", "label": "Все", "count": 1}
 
     everything = ok(get(client, "/companies"))
-    assert [c["count"] for c in everything["facets"]["cards"]] == [4, 2, 0, 0]
+    assert [c["count"] for c in everything["facets"]["cards"]] == [4, 2, 0, 0, 0]
     assert {s["code"]: s["count"] for s in everything["facets"]["statuses"]}["qualified"] == 1
-    assert len(everything["facets"]["statuses"]) == 9
+    assert len(everything["facets"]["statuses"]) == 10
     assert everything["facets"]["industries"] == [{"query": "склад", "count": 2}, {"query": "тара", "count": 1}]
     assert everything["facets"]["run"] is None
     filtered = ok(get(client, "/companies?status=drafted"))
-    assert filtered["total"] == 2 and [c["count"] for c in filtered["facets"]["cards"]] == [4, 2, 0, 0]
+    assert filtered["total"] == 2 and [c["count"] for c in filtered["facets"]["cards"]] == [4, 2, 0, 0, 0]
+
+
+@pytest.mark.db
+def test_no_email_is_its_own_status_card_and_not_an_error(console_db):
+    """Ревью 01.11.2026: компания без почты (rejected без оценки) — «Нет почты», отдельная карточка фильтра,
+    без «была ошибка»; «Не подходит» — только те, кого отсеял Claude."""
+    conn, _, _ = console_db
+    no_email = seed_company(conn, "ТОО «Без почты»", status="rejected", website=None,
+                            last_error="Почта не найдена ни в 2ГИС, ни на сайте")
+    not_fit = seed_company(conn, "ТОО «Не подходит»", status="rejected", website=None, last_error="LLMError: сбой")
+    seed_qualification(conn, not_fit, 5, fit="no")
+    client = client_for(console_db)
+
+    data = ok(get(client, "/companies"))
+    rows = {row["id"]: row for row in data["items"]}
+    assert (rows[no_email]["status"], rows[no_email]["statusLabel"], rows[no_email]["statusTone"],
+            rows[no_email]["hadError"]) == ("no_email", "Нет почты", "muted", False)
+    assert (rows[not_fit]["status"], rows[not_fit]["statusLabel"], rows[not_fit]["hadError"]) == (
+        "rejected", "Не подходит", True)
+    assert data["facets"]["cards"][-2:] == [{"code": "rejected", "label": "Не подходит", "count": 1},
+                                            {"code": "no_email", "label": "Нет почты", "count": 1}]
+    statuses = {s["code"]: (s["label"], s["count"]) for s in data["facets"]["statuses"]}
+    assert statuses["no_email"] == ("Нет почты", 1) and statuses["rejected"] == ("Не подходит", 1)
+    assert [row["id"] for row in ok(get(client, "/companies?status=no_email"))["items"]] == [no_email]
+    assert [row["id"] for row in ok(get(client, "/companies?status=rejected"))["items"]] == [not_fit]
+    card = ok(get(client, f"/companies/{no_email}"))["company"]
+    assert (card["status"], card["statusLabel"]) == ("no_email", "Нет почты")
+    assert card["lastError"] == "Почта не найдена ни в 2ГИС, ни на сайте"
 
 
 @pytest.mark.db

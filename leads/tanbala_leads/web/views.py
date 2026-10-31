@@ -36,6 +36,7 @@ from tanbala_leads.web.labels import (
     COMPANIES_PER_PAGE,
     COMPANY_SEARCH_MAX_LENGTH,
     COMPANY_STATUSES,
+    NO_EMAIL_STATUS,
     DEFAULT_CITY,
     DEFAULT_LETTER_FILTER,
     DEFAULT_MAX_COMPANIES,
@@ -226,8 +227,14 @@ def contact_view(row: dict[str, Any]) -> dict[str, Any]:
             "source_href": safe_href(row.get("source_page"))}
 
 
+def display_status(status: str, qualified: bool) -> str:
+    """Статус для показа, как queries.DISPLAY_STATUS_SQL: rejected без оценки — «Нет почты», а не «Не подходит»."""
+    return NO_EMAIL_STATUS if status == "rejected" and not qualified else status
+
+
 def company_row_view(row: dict[str, Any]) -> dict[str, Any]:
-    label, tone = COMPANY_STATUSES.get(row["status"], (row["status"], "neutral"))
+    status = display_status(row["status"], row.get("fit") is not None)
+    label, tone = COMPANY_STATUSES.get(status, (status, "neutral"))
     draft = None
     if row.get("draft_id") is not None:
         draft = {"id": row["draft_id"], "subject": row["subject"], "review_status": row["review_status"],
@@ -235,7 +242,10 @@ def company_row_view(row: dict[str, Any]) -> dict[str, Any]:
                  **checks_summary(row["check_result"])}
     url = f"/companies/{row['id']}"
     return {
-        **row, "status_label": label, "status_tone": tone, "city_name": CITIES.get(row["city"], row["city"]),
+        **row, "status": status, "status_label": label, "status_tone": tone,
+        "city_name": CITIES.get(row["city"], row["city"]),
+        # «Нет почты» — итог отбора, а не сбой: last_error там только причина.
+        "had_error": row["last_error"] is not None and status != NO_EMAIL_STATUS,
         "fit_label": FIT_LABELS.get(row.get("fit"), row.get("fit")),
         "contact": contact_view(row) if row.get("email") else None, "draft": draft, "url": url,
         # Статус «Письмо готово» ведёт к письму: туда владелец и нажимал.
@@ -323,12 +333,14 @@ def company_context(conn, company_id: int) -> dict[str, Any] | None:
     qualification = q.fetch_qualification(conn, company_id)
     draft = q.fetch_latest_draft(conn, company_id)
     blocked = bool(company["blocked"]) or bool(draft and q.letter_blocked(conn, draft["id"]))
-    label, tone = COMPANY_STATUSES.get(company["status"], (company["status"], "neutral"))
+    status = display_status(company["status"], qualification is not None)
+    label, tone = COMPANY_STATUSES.get(status, (status, "neutral"))
     site_text = company["site_text"] or ""
     website_href = safe_href(company["website"])
     return {
         "title": company["name"], "nav": "companies",
-        "company": {**company, "status_label": label, "status_tone": tone, "last_error": redact(company["last_error"]),
+        "company": {**company, "status": status, "status_label": label, "status_tone": tone,
+                    "last_error": redact(company["last_error"]),
                     "city_name": CITIES.get(company["city"], company["city"]),
                     "website_href": website_href,
                     "website_text": display_url(website_href) if website_href else company["website"],

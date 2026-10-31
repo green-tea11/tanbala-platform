@@ -133,9 +133,13 @@
 - 50 на странице. Строка: `id, name, rubric, city, cityName, searchQuery, status, statusLabel, hadError, fit,
   fitLabel, score, segment, contact {email, verifyResult, verifyLabel, isCatchAll, isRole} | null, draft {id, subject,
   reviewStatus, reviewLabel, checksTotal, checksFailed} | null, requestedVia, whatsappContactedAt, blocked, createdAt`.
-- Плюс `facets`: `cards` (все, письмо готово, одобрено, не подходит — с числами), `statuses` (9 статусов с числами),
-  `industries` (`query`, `count`), `runs` (последние 50: `id, city, cityName, query, createdAt`), `run` — выбранный
-  запуск, если задан `run`, даже если он старше 50.
+- Плюс `facets`: `cards` (все, письмо готово, одобрено, не подходит, нет почты — с числами), `statuses` (10 статусов
+  с числами), `industries` (`query`, `count`), `runs` (последние 50: `id, city, cityName, query, createdAt`), `run` —
+  выбранный запуск, если задан `run`, даже если он старше 50.
+- «Нет почты» (01.11.2026): `status` строки, карточки и фильтра — 9 статусов базы и `no_email` («Нет почты», тон
+  `muted`). Это компания, которую пайплайн отсеял без Claude, потому что почты нет ни в 2ГИС, ни на сайте: в базе она
+  `rejected` без единой оценки. `rejected` («Не подходит») — только те, кого оценил Claude. У `no_email` `hadError`
+  всегда `false` (это итог отбора, а не сбой); причина в `lastError` карточки. `digest` отдаёт статус базы.
 
 `GET /internal/console/companies/{id}` — всё, что показывает старая карточка:
 
@@ -234,7 +238,7 @@ status, reason, reasonLabel, companyId, createdAt, startedAt, finishedAt`. По�
   адрес или домен получателя последнего письма компании.
 - `letter=1` — у компании есть хоть одно письмо (и отклонённое). `sort=score` — оценка последней квалификации, без
   оценки в конце; `sort=letter` — дата последнего письма, без письма в конце; при равенстве новые сверху.
-- `facets.cards[].code`: `all`, `drafted`, `approved`, `rejected`. Числа у карточек и статусов — при всех фильтрах,
+- `facets.cards[].code`: `all`, `drafted`, `approved`, `rejected`, `no_email`. Числа у карточек и статусов — при всех фильтрах,
   кроме статуса; у отраслей — при всех, кроме отрасли.
 - `spend`: `from` и `to` обязательны, включительно, годы 2000–2100, сутки по UTC+5 (постоянный сдвиг, как у бота); ответ ещё отдаёт
   `from` и `to`. Модель без цены в `prices` отсутствует. `summary.budget.spentTodayUsd` — ровно `spent_today_usd`
@@ -299,7 +303,7 @@ status, reason, reasonLabel, companyId, createdAt, startedAt, finishedAt`. По�
  "pricesAsOf": "2026-10-06"}
 ```
 
-`GET /internal/console/companies?sort=score` (статусы сокращены: всегда 9, в порядке старого фильтра)
+`GET /internal/console/companies?sort=score` (статусы сокращены: всегда 10, в порядке старого фильтра)
 
 ```json
 {"items": [
@@ -319,7 +323,8 @@ status, reason, reasonLabel, companyId, createdAt, startedAt, finishedAt`. По�
  "total": 2, "page": 1, "pages": 1, "pageSize": 50,
  "facets": {
    "cards": [{"code": "all", "label": "Все", "count": 2}, {"code": "drafted", "label": "Письмо готово", "count": 1},
-             {"code": "approved", "label": "Одобрено", "count": 0}, {"code": "rejected", "label": "Не подходит", "count": 0}],
+             {"code": "approved", "label": "Одобрено", "count": 0}, {"code": "rejected", "label": "Не подходит", "count": 0},
+             {"code": "no_email", "label": "Нет почты", "count": 0}],
    "statuses": [{"code": "new", "label": "Найдена", "count": 0}, {"code": "qualified", "label": "Подходит", "count": 1},
                 {"code": "drafted", "label": "Письмо готово", "count": 1}, "…"],
    "industries": [{"query": "склад", "count": 1}],
@@ -426,7 +431,8 @@ status, reason, reasonLabel, companyId, createdAt, startedAt, finishedAt`. По�
 {"id": 1, "city": "almaty", "cityName": "Алматы", "query": "склад, логистика", "industries": ["склад", "логистика"],
  "maxCompanies": 5, "status": "done", "statusLabel": "Готово", "statusTone": "pos", "stage": "Готово",
  "stageLabel": "Готово", "stageDetail": null, "found": 10, "newCompanies": 8, "crawled": 8, "qualified": 3,
- "rejected": 5, "verified": 3, "drafted": 2, "errors": 1, "error": null, "createdAt": "2026-10-30T07:37:41+00:00",
+ "rejected": 3, "noEmail": 2, "verified": 3, "drafted": 2, "errors": 1, "error": null,
+ "createdAt": "2026-10-30T07:37:41+00:00",
  "startedAt": "2026-10-30T07:17:41+00:00", "finishedAt": "2026-10-30T07:32:41+00:00",
  "cost": {"usd": 0.003263, "tokens": 38300, "unpricedTokens": 0, "priced": true, "text": "≈ $0,0033"},
  "stages": [{"code": "collect", "label": "Поиск в 2ГИС", "state": "done", "stateLabel": "готово",
@@ -437,6 +443,9 @@ status, reason, reasonLabel, companyId, createdAt, startedAt, finishedAt`. По�
 ```
 
 `GET /internal/console/runs` — `{"items": [как выше], "total": 1, "page": 1, "pages": 1, "pageSize": 20}`.
+
+`noEmail` (01.11.2026) — компании без почты, отсеянные без Claude; раньше они входили в `rejected`, у старых запусков
+`noEmail` 0. У этапа `qualify` три счётчика: `qualified` «подходят», `rejected` «не подходят», `no_email` «без почты».
 
 `GET /internal/console/search/options`
 

@@ -35,7 +35,8 @@
   <span class="hint">Если бот перепутал компанию: предупреждение пропадёт{% if company.requested_via %}, компания сможет попасть в рассылку{% endif %}.</span>
 </form>
 {% endif %}
-{% if company.last_error %}<p class="notice neg"><b>Ошибка на последнем шаге.</b> {{ company.last_error }}</p>{% endif %}
+{% if company.last_error and company.status == "no_email" %}<p class="notice"><b>Нет почты.</b> {{ company.last_error }}</p>
+{% elif company.last_error %}<p class="notice neg"><b>Ошибка на последнем шаге.</b> {{ company.last_error }}</p>{% endif %}
 
 <div class="detail">
   <div class="detail-main">

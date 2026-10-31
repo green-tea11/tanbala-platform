@@ -43,7 +43,7 @@ COMPANY_SEARCH_MAX_LENGTH = 100  # поиск по названию и рубр�
 STAGES: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
     ("collect", "Поиск в 2ГИС", (("found", "найдено"), ("new_companies", "новых"))),
     ("crawl", "Сайты", (("crawled", "обойдено"),)),
-    ("qualify", "Квалификация", (("qualified", "подходят"), ("rejected", "не подходят"))),
+    ("qualify", "Квалификация", (("qualified", "подходят"), ("rejected", "не подходят"), ("no_email", "без почты"))),
     ("verify", "Проверка почт", (("verified", "проверено"),)),
     ("draft", "Письма", (("drafted", "писем"),)),
 )
@@ -64,18 +64,23 @@ RUN_STATUSES = {
     "failed": ("Ошибка", "neg"),
 }
 FINISHED_RUN_STATUSES = frozenset({"done", "failed"})
+# Статусы компании для показа и фильтра: 9 статусов базы и «Нет почты» (NO_EMAIL_STATUS). «Нет почты» в базе
+# остаётся rejected, но без оценки: писать некуда, Claude её не оценивал (queries.DISPLAY_STATUS_SQL).
+NO_EMAIL_STATUS = "no_email"
 COMPANY_STATUSES = {
     "new": ("Найдена", "neutral"),
     "crawled": ("Сайт обойдён", "neutral"),
     "qualified": ("Подходит", "neutral"),
     "rejected": ("Не подходит", "muted"),
+    NO_EMAIL_STATUS: ("Нет почты", "muted"),
     "verified": ("Почта проверена", "neutral"),
     "drafted": ("Письмо готово", "accent"),
     "approved": ("Одобрено", "pos"),
     "sent": ("Отправлено", "pos"),
     "replied": ("Ответили", "pos"),
 }
-STATUS_CARDS = (("", "Все"), ("drafted", "Письмо готово"), ("approved", "Одобрено"), ("rejected", "Не подходит"))
+STATUS_CARDS = (("", "Все"), ("drafted", "Письмо готово"), ("approved", "Одобрено"), ("rejected", "Не подходит"),
+                (NO_EMAIL_STATUS, "Нет почты"))
 VERIFY_RESULTS = {
     "safe": ("Существует", "pos"),
     "risky": ("Рискованная", "warn"),

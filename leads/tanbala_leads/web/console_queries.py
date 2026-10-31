@@ -177,7 +177,7 @@ def company_where(filters: CompanyFilters, *, skip: tuple[str, ...] = ()) -> tup
         clauses.append("(c.name ILIKE %s OR c.rubric ILIKE %s)")
         params += [pattern, pattern]
     if filters.status and "status" not in skip:
-        clauses.append("c.status = %s")
+        clauses.append(f"({q.DISPLAY_STATUS_SQL}) = %s")
         params.append(filters.status)
     if filters.via == "whatsapp":
         clauses.append("c.requested_via = 'whatsapp'")
@@ -193,9 +193,10 @@ def company_where(filters: CompanyFilters, *, skip: tuple[str, ...] = ()) -> tup
 
 
 def company_status_counts(conn: psycopg.Connection, filters: CompanyFilters) -> dict[str, int]:
-    """Числа по статусам при всех фильтрах, кроме статуса."""
+    """Числа по статусам показа (с «Нет почты») при всех фильтрах, кроме статуса."""
     where, params = company_where(filters, skip=("status",))
-    rows = _rows(conn, f"SELECT c.status, count(*) AS n FROM companies c {where} GROUP BY c.status", params)
+    rows = _rows(conn, f"SELECT {q.DISPLAY_STATUS_SQL} AS status, count(*) AS n FROM companies c {where} GROUP BY 1",
+                 params)
     return {row["status"]: row["n"] for row in rows}
 
 

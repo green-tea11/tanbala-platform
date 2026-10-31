@@ -164,7 +164,7 @@ WhatsApp: не `open` → 422 «WhatsApp не подключён (…): отве
 
 | Метод и путь | Роль | Параметры / тело | Ответ |
 | --- | --- | --- | --- |
-| `GET /api/companies` | М | `status` (9 статусов почты), `query` (отрасль, до 60), `run`, `q` (название/рубрика, до 100), `via=whatsapp\|regular`, `wa=1`, `blocked=1`, `letter=1`, `sort=new\|score\|letter`, `page` | список почты (50) с `facets` |
+| `GET /api/companies` | М | `status` (9 статусов почты и `no_email` — «Нет почты»), `query` (отрасль, до 60), `run`, `q` (название/рубрика, до 100), `via=whatsapp\|regular`, `wa=1`, `blocked=1`, `letter=1`, `sort=new\|score\|letter`, `page` | список почты (50) с `facets` |
 | `GET /api/companies/:id` | М | — | `{"company": <карточка почты>, "chats": {"items": [связи чат→компания]} \| недоступно}` |
 | `POST /api/companies/:id/block` | В | `{}` | `{"result": "blocked", "message"}` |
 | `POST /api/companies/:id/whatsapp-clear` | В | `{}` | `{"result": "cleared", "wasRequestedVia", "message"}` |

@@ -1278,7 +1278,9 @@ def test_companies_filter_by_industry_with_counts_and_tags(web_db):
     conn, connect, _ = web_db
     run_id = seed_run(conn, query="склад, логистика")
     seed_industry_company(conn, "ТОО «Склад 1»", "склад", run_id=run_id)
-    seed_industry_company(conn, "ТОО «Склад 2»", "склад", run_id=run_id, status="rejected")
+    rejected = seed_industry_company(conn, "ТОО «Склад 2»", "склад", run_id=run_id, status="rejected")
+    conn.execute("INSERT INTO qualifications (company_id, fit, score, reason, model)"
+                 " VALUES (%s, 'no', 5, 'Только аренда помещений', 'claude-haiku-5-5')", (rejected,))
     logistic = seed_industry_company(conn, "ТОО «Логист»", "логистика", run_id=run_id)
     seed_company(conn, "ТОО «Без отрасли»")
     client = make_client(connect)
@@ -1294,6 +1296,23 @@ def test_companies_filter_by_industry_with_counts_and_tags(web_db):
     assert "По этим условиям компаний нет." in client.get("/companies", params={"query": "<нет>"}).text
     card = client.get(f"/companies/{logistic}").text
     assert 'class="tag" href="/companies?query=%D0%BB%D0%BE%D0%B3%D0%B8%D1%81%D1%82%D0%B8%D0%BA%D0%B0"' in card
+
+
+@pytest.mark.db
+def test_company_without_email_is_no_email_not_rejected_or_error(web_db):
+    """Ревью 01.11.2026: отсеянная без Claude компания без почты — «Нет почты», без «была ошибка»,
+    и в фильтре «Не подходит» её нет."""
+    conn, connect, _ = web_db
+    no_email = seed_company(conn, "ТОО «Без почты»", status="rejected",
+                            last_error="Почта не найдена ни в 2ГИС, ни на сайте")
+    client = make_client(connect)
+
+    html = client.get("/companies").text
+    assert "Нет почты" in html and "была ошибка" not in html
+    assert "ТОО «Без почты»" in client.get("/companies", params={"status": "no_email"}).text
+    assert "ТОО «Без почты»" not in client.get("/companies", params={"status": "rejected"}).text
+    card = client.get(f"/companies/{no_email}").text
+    assert "<b>Нет почты.</b> Почта не найдена" in card and "Ошибка на последнем шаге" not in card
 
 
 @pytest.mark.db

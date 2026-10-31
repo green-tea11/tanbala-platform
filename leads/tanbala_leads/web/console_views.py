@@ -39,6 +39,7 @@ from tanbala_leads.web.labels import (
     FIT_STATUSES,
     HISTORY_PER_PAGE,
     LETTER_FILTERS,
+    NO_EMAIL_STATUS,
     QUICK_QUERIES,
     REJECTED_TEST_TEXT,
     RESEARCH_PER_PAGE,
@@ -94,7 +95,7 @@ def run_json(conn: psycopg.Connection, row: dict[str, Any], cost: Cost, pending_
         "stage": row["stage"], "stageLabel": view["stage_label"], "stageDetail": row["stage_detail"],
         "found": row["found"], "newCompanies": row["new_companies"], "crawled": row["crawled"],
         "qualified": row["qualified"], "rejected": row["rejected"], "verified": row["verified"],
-        "drafted": row["drafted"], "errors": row["errors"], "error": view["error"],
+        "noEmail": row["no_email"], "drafted": row["drafted"], "errors": row["errors"], "error": view["error"],
         "createdAt": iso(row["created_at"]), "startedAt": iso(row["started_at"]), "finishedAt": iso(row["finished_at"]),
         "cost": {**cost_json(cost), "priced": cost.priced, "text": format_cost(cost)},
         "stages": [{"code": stage["code"], "label": stage["label"], "state": stage["state"],
@@ -213,6 +214,7 @@ def status_json(status: str) -> dict[str, str]:
 
 
 def company_row_json(row: dict[str, Any]) -> dict[str, Any]:
+    status = views.display_status(row["status"], row["fit"] is not None)
     draft = None
     if row["draft_id"] is not None:
         checks = views.checks_summary(row["check_result"])
@@ -221,8 +223,10 @@ def company_row_json(row: dict[str, Any]) -> dict[str, Any]:
                  "checksTotal": checks["checks_total"], "checksFailed": checks["checks_failed"]}
     return {
         "id": row["id"], "name": row["name"], "rubric": row["rubric"], "city": row["city"],
-        "cityName": city_name(row["city"]), "searchQuery": row["search_query"], **status_json(row["status"]),
-        "hadError": row["last_error"] is not None, "fit": row["fit"], "fitLabel": FIT_LABELS.get(row["fit"]),
+        "cityName": city_name(row["city"]), "searchQuery": row["search_query"], **status_json(status),
+        # «Нет почты» — итог отбора, а не сбой: last_error там только причина.
+        "hadError": row["last_error"] is not None and status != NO_EMAIL_STATUS,
+        "fit": row["fit"], "fitLabel": FIT_LABELS.get(row["fit"]),
         "score": row["score"], "segment": row["segment"], "contact": contact_json(row), "draft": draft,
         "requestedVia": row["requested_via"], "whatsappContactedAt": iso(row["whatsapp_contacted_at"]),
         "blocked": bool(row["blocked"]), "createdAt": iso(row["created_at"]),
@@ -283,7 +287,8 @@ def company_card(conn: psycopg.Connection, company_id: int, *, test_to: str | No
             "cityName": city_name(company["city"]), "address": company["address"],
             "phones": list(company["phones"] or []), "website": company["website"],
             "websiteDomain": company["website_domain"], "sourceUrl": company["source_url"],
-            "branchesCount": company["branches_count"], **status_json(company["status"]),
+            "branchesCount": company["branches_count"],
+            **status_json(views.display_status(company["status"], qualification is not None)),
             "lastError": redact(company["last_error"]), "requestedVia": company["requested_via"],
             "whatsappContactedAt": iso(company["whatsapp_contacted_at"]), "runId": company["run_id"],
             "searchQuery": company["search_query"], "createdAt": iso(company["created_at"]),

@@ -79,7 +79,7 @@
             {% if row.search_query %}<span class="tag">{{ row.search_query }}</span>{% endif %}</a>
           </td>
           <td class="cell-city"><a class="cell-fill" href="{{ row.url }}" tabindex="-1">{{ row.city_name or '—' }}</a></td>
-          <td class="cell-status"><a class="cell-fill" href="{{ row.status_url }}" tabindex="-1"><span class="pill {{ row.status_tone }}">{{ row.status_label }}</span>{% if row.last_error %}<span class="sub neg-text">была ошибка</span>{% endif %}</a></td>
+          <td class="cell-status"><a class="cell-fill" href="{{ row.status_url }}" tabindex="-1"><span class="pill {{ row.status_tone }}">{{ row.status_label }}</span>{% if row.had_error %}<span class="sub neg-text">была ошибка</span>{% endif %}</a></td>
           <td class="n cell-score"><a class="cell-fill" href="{{ row.url }}" tabindex="-1">
             {% if row.score is not none %}<span class="num score">{{ row.score }}</span><span class="sub">{{ row.fit_label }}</span>{% else %}<span class="dash">—</span>{% endif %}
           </a></td>

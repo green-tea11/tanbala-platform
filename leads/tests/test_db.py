@@ -55,7 +55,7 @@ def conn(db_conn):
 def test_migrate_creates_all_tables(db_conn):
     applied = db.migrate(db_conn)
 
-    assert applied == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert applied == [1, 2, 3, 4, 5, 6, 7, 8, 9]
     assert TABLES <= table_names(db_conn)
 
 

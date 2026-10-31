@@ -35,7 +35,8 @@ MAX_QUERY_TEXT_LENGTH = MAX_QUERIES * (MAX_QUERY_LENGTH + 2)
 # В выдаче 2ГИС бывают районы, здания и уже известные компании: берём записей с запасом.
 PARSER_RECORDS_FACTOR = 3
 PARSER_RECORDS_LIMIT = 60
-COUNTERS = ("crawled", "qualified", "rejected", "verified", "drafted", "errors")
+COUNTERS = ("crawled", "qualified", "rejected", "no_email", "verified", "drafted", "errors")
+NO_EMAIL_ERROR = "Почта не найдена ни в 2ГИС, ни на сайте"
 MAX_ERROR_CHARS = 500
 # Текст ошибки виден в интерфейсе: ключи API и строки подключения из него вырезаются.
 SECRET_PATTERNS = (re.compile(r"sk-ant-[\w-]+"), re.compile(r"postgres(?:ql)?://\S+"), re.compile(r"key=\S+", re.I))
@@ -363,10 +364,10 @@ def _steps(conn: psycopg.Connection, run_id: int, company_ids: tuple[int, ...], 
 
     def do_qualify(cid: int) -> str:
         if not _has_contacts(conn, cid):
-            # Писать некуда: не тратим вызов модели.
-            conn.execute("UPDATE companies SET status = 'rejected',"
-                         " last_error = 'Почта не найдена ни в 2ГИС, ни на сайте' WHERE id = %s", (cid,))
-            return "rejected"
+            # Писать некуда: не тратим вызов модели. В базе rejected без оценки, в интерфейсе «Нет почты».
+            conn.execute("UPDATE companies SET status = 'rejected', last_error = %s WHERE id = %s",
+                         (NO_EMAIL_ERROR, cid))
+            return "no_email"
         answer = qualify.qualify_company(conn, cid, client=deps.client, owner_doc=deps.owner_doc,
                                          on_usage=usage_recorder(conn, run_id, cid, log_path))
         return "rejected" if answer["fit"] == "no" else "qualified"

@@ -209,6 +209,15 @@ describe('запросы к приложениям', () => {
     expect(companies?.url.search).toBe('?status=drafted&run=4&wa=1&sort=score');
   });
 
+  it('карточка «Нет почты»: status=no_email доходит до почты', async () => {
+    const harness = await start();
+    const session = await harness.signIn('owner', 'owner');
+    harness.backends.on('GET leads:/companies', list([]));
+    const response = await harness.request('GET', '/api/companies?status=no_email', { session });
+    expect(response.statusCode).toBe(200);
+    expect(harness.backends.calls[0]?.url.search).toBe('?status=no_email');
+  });
+
   it('неверный id или фильтр: 400 и приложение не вызывается', async () => {
     const harness = await start();
     const session = await harness.signIn('owner', 'owner');

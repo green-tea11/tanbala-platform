@@ -20,12 +20,16 @@ const COMPANY_TEXTS: FailureTexts = { source: 'leads', notFound: 'Компани
 /** Отрасль (query) почта принимает до 60 символов, поиск по названию (q) — до 100. */
 const INDUSTRY_MAX = 60;
 
-/** Статусы компании почты (COMPANY_STATUSES в leads/tanbala_leads/web/labels.py). */
+/**
+ * Статусы компании почты (COMPANY_STATUSES в leads/tanbala_leads/web/labels.py): 9 статусов базы
+ * и no_email — «Нет почты» (в базе rejected без оценки, отдельная карточка быстрого фильтра).
+ */
 const COMPANY_STATUSES = [
   'new',
   'crawled',
   'qualified',
   'rejected',
+  'no_email',
   'verified',
   'drafted',
   'approved',

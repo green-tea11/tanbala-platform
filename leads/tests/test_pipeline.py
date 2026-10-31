@@ -213,6 +213,9 @@ def test_company_without_any_email_is_not_sent_to_claude(db_conn, dsn, tmp_path)
     status, error = db_conn.execute("SELECT status, last_error FROM companies WHERE name LIKE 'Asklad%%'").fetchone()
     assert qualify_calls == 3
     assert status == "rejected" and "почта" in error.lower()
+    # «Без почты» в запуске отдельно от «не подходят» и не ошибка (ревью 01.11.2026).
+    assert db_conn.execute("SELECT rejected, no_email, errors FROM runs WHERE id = %s",
+                           (run_id,)).fetchone() == (0, 1, 0)
 
 
 def test_usage_log_failure_does_not_lose_paid_answer(db_conn, dsn, tmp_path):

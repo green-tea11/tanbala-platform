@@ -10,7 +10,13 @@ from tanbala_leads.web.labels import COMPANIES_PER_PAGE, LETTER_FILTERS, LETTERS
 
 RUN_COLUMNS = (
     "id, city, query, max_companies, status, stage, found, new_companies, crawled, qualified, rejected,"
-    " verified, drafted, errors, error, created_at, started_at, finished_at, stage_detail"
+    " no_email, verified, drafted, errors, error, created_at, started_at, finished_at, stage_detail"
+)
+# Статус компании для показа и фильтра (labels.COMPANY_STATUSES): rejected без единой оценки — это «Нет почты»
+# (пайплайн отсеял её без Claude, писать некуда), а не «Не подходит».
+DISPLAY_STATUS_SQL = (
+    "CASE WHEN c.status = 'rejected' AND NOT EXISTS (SELECT 1 FROM qualifications nq WHERE nq.company_id = c.id)"
+    " THEN 'no_email' ELSE c.status END"
 )
 TOKEN_SUMS = (
     "sum(input_tokens)::bigint AS input_tokens, sum(output_tokens)::bigint AS output_tokens,"
@@ -166,14 +172,15 @@ def _company_where(run_id: int | None, q: str, status: str | None = None,
         clauses.append("(c.name ILIKE %s OR c.rubric ILIKE %s)")
         params += [pattern, pattern]
     if status:
-        clauses.append("c.status = %s")
+        clauses.append(f"({DISPLAY_STATUS_SQL}) = %s")
         params.append(status)
     return ("WHERE " + " AND ".join(clauses) if clauses else ""), params
 
 
 def fetch_status_counts(conn, run_id: int | None, q: str, query: str | None = None) -> dict[str, int]:
     where, params = _company_where(run_id, q, query=query)
-    rows = _rows(conn, f"SELECT c.status, count(*) AS n FROM companies c {where} GROUP BY c.status", params)
+    rows = _rows(conn, f"SELECT {DISPLAY_STATUS_SQL} AS status, count(*) AS n FROM companies c {where} GROUP BY 1",
+                 params)
     return {row["status"]: row["n"] for row in rows}
 
 

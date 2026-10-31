@@ -350,6 +350,12 @@ ALTER TABLE research_jobs ADD COLUMN aliases text[] NOT NULL DEFAULT '{}'
     CHECK (cardinality(aliases) <= 3);
 """
 
+SCHEMA_V9 = """
+-- Компании без единой почты (ни в 2ГИС, ни на сайте) в запуске считаются отдельно от «не подходят»
+-- (решение владельца 01.11.2026). Сама компания в базе остаётся rejected без оценки.
+ALTER TABLE runs ADD COLUMN no_email integer NOT NULL DEFAULT 0;
+"""
+
 MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     (1, "init", SCHEMA_V1),
     (2, "runs_and_llm_calls", SCHEMA_V2),
@@ -359,6 +365,7 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     (6, "whatsapp_research", SCHEMA_V6),
     (7, "whatsapp_contacted_at", SCHEMA_V7),
     (8, "research_aliases", SCHEMA_V8),
+    (9, "runs_no_email", SCHEMA_V9),
 )
 
 

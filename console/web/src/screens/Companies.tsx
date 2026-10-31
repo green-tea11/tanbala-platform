@@ -45,7 +45,9 @@ export function CompaniesScreen() {
   const poll = usePoll<Section<CompanyList>>(`/api/companies${query ? `?${query}` : ''}`, POLL_MS.live);
   const data = poll.data;
   const list = data && !isUnavailable(data) ? data : null;
-  const cardCode = ['drafted', 'approved', 'rejected'].includes(params.get('status') ?? '') ? (params.get('status') ?? '') : params.get('status') ? '' : 'all';
+  // Карточки быстрого фильтра приходят с почты (facets.cards: все, письмо готово, одобрено, не подходит, нет почты).
+  const status = params.get('status') ?? '';
+  const cardCode = status === '' ? 'all' : list?.facets.cards.some((card) => card.code === status) ? status : '';
 
   return (
     <div className="sheet-inner">
@@ -125,7 +127,7 @@ interface CompanyCardData {
     readonly company: {
       readonly id: number; readonly name: string; readonly rubric: string | null; readonly cityName: string | null; readonly address: string | null;
       readonly phones: readonly string[]; readonly website: string | null; readonly sourceUrl: string | null; readonly branchesCount: number | null;
-      readonly statusLabel: string; readonly lastError: string | null; readonly requestedVia: string | null; readonly whatsappContactedAt: string | null;
+      readonly status: string; readonly statusLabel: string; readonly lastError: string | null; readonly requestedVia: string | null; readonly whatsappContactedAt: string | null;
       readonly searchQuery: string | null; readonly runId: number | null; readonly createdAt: string;
     };
     readonly qualification: { readonly fitLabel: string | null; readonly score: number | null; readonly segment: string | null; readonly reason: string | null; readonly model: string | null; readonly createdAt: string } | null;
@@ -158,6 +160,8 @@ export function CompanyScreen({ id, owner }: { readonly id: number; readonly own
   const twoGis = safeExternalUrl(c.sourceUrl);
   const site = safeExternalUrl(c.website);
   const marked = c.requestedVia === 'whatsapp' || c.whatsappContactedAt !== null;
+  // «Нет почты»: Claude компанию не оценивал, писать некуда (в базе rejected без оценки).
+  const noEmail = c.status === 'no_email';
 
   const block = (): void => setConfirm({
     title: 'Больше не писать этой компании?',
@@ -191,7 +195,9 @@ export function CompanyScreen({ id, owner }: { readonly id: number; readonly own
       {c.requestedVia === 'whatsapp' ? <p className="notice warn" style={{ marginBottom: 16 }}>Компанию добавила проверка из WhatsApp: в рассылку она не попадает.</p> : null}
       {c.whatsappContactedAt ? <p className="notice info" style={{ marginBottom: 16 }}>Клиент уже писал в WhatsApp ({clockTime(c.whatsappContactedAt, now)}). Проверьте, нужно ли письмо.</p> : null}
       {card.blocked ? <p className="notice bad" style={{ marginBottom: 16 }}>В списке «не писать»: письма этой компании одобрить нельзя.</p> : null}
-      {c.lastError ? <p className="notice warn" style={{ marginBottom: 16 }}>Причина или ошибка на последнем шаге: {c.lastError}</p> : null}
+      {c.lastError ? (noEmail
+        ? <p className="notice info" style={{ marginBottom: 16 }}>Нет почты: {c.lastError}</p>
+        : <p className="notice warn" style={{ marginBottom: 16 }}>Причина или ошибка на последнем шаге: {c.lastError}</p>) : null}
 
       <div className="grid-2">
         <div className="stack">
@@ -215,7 +221,7 @@ export function CompanyScreen({ id, owner }: { readonly id: number; readonly own
           <Panel id="letter" title="Письмо" aside={card.draft ? <Link to={`/letters/${card.draft.id}`} className="text-link">Открыть в очереди</Link> : null}>
             {card.draft ? (
               <><p className="cell-main">{card.draft.subject}</p><p className="cell-sub">{card.draft.reviewLabel}{card.draft.approvedAt ? `, ${card.draft.approvedBy ?? ''} ${clockTime(card.draft.approvedAt, now)}` : ''}</p></>
-            ) : <p className="empty">{card.qualification?.fitLabel === 'не подходит' || c.requestedVia === 'whatsapp' ? 'Письма не будет.' : 'Письма пока нет. Черновик появится после проверки почты.'}</p>}
+            ) : <p className="empty">{noEmail ? 'Письма не будет: почты нет.' : card.qualification?.fitLabel === 'не подходит' || c.requestedVia === 'whatsapp' ? 'Письма не будет.' : 'Письма пока нет. Черновик появится после проверки почты.'}</p>}
             {card.testSends.length > 0 ? (
               <ul className="rows" style={{ marginTop: 12 }}>
                 {card.testSends.map((t) => <li key={t.id} className="history-row"><span className="num">{clockTime(t.createdAt, now)}</span><span>{t.ok ? 'тест ушёл' : <span className="bad-text">тест не ушёл</span>} на {t.sentTo}</span>{t.error ? <span className="muted">{t.error}</span> : null}</li>)}
