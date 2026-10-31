@@ -19,6 +19,11 @@ export type NotificationReason =
 
 /** Данные для уведомления менеджеру. */
 export type ManagerNotificationInput = NotificationReason & {
+  /**
+   * Причина передачи своими словами с цитатой клиента (pipeline/handoff-reason.ts): недоверенный текст (в цитате слова
+   * клиента). Нет поля или null: строки нет (технические причины, лимит).
+   */
+  readonly detail?: string | null;
   /** Имя из профиля WhatsApp: недоверенный текст. */
   readonly name: string | null;
   /** Номер клиента; null, если чат пришёл только с адресом @lid. */
@@ -33,6 +38,9 @@ export type ManagerNotificationInput = NotificationReason & {
    */
   readonly company?: CompanySummary | null;
 };
+
+/** Длина причины передачи в уведомлении, в символах Unicode: текст причины и цитата до 150 знаков. */
+export const DETAIL_MAX_LENGTH = 300;
 
 /** Длина имени из профиля в уведомлении, в символах Unicode. */
 export const NAME_MAX_LENGTH = 50;
@@ -105,7 +113,8 @@ const LIMIT_PHRASES: Readonly<Record<BudgetScope, string>> = {
 
 /**
  * Текст уведомления на номер менеджера: имя и номер клиента, уровень интереса, выжимка и причина передачи.
- * Чистая функция, без LLM. Фиксированный шаблон: первая строка с причиной, затем имя, номер, ID чата в панели,
+ * Чистая функция, без LLM. Фиксированный шаблон: первая строка с причиной, затем строка «Причина: ...» своими словами с
+ * цитатой клиента (detail, если есть; у лимита никогда), имя, номер, ID чата в панели,
  * уровень и все поля выжимки (agent/profile.profileEntries: компания, вещи, материал, город, помещение, число вещей,
  * 1С и остальное) с пометкой «всё со слов клиента». Нет номера: «номер скрыт» и ID чата, по которому
  * чат ищут в панели. Лимит (reason 'limit'): «бот замолчал в этом чате» с названием настройки, ID чата и номер те же.
@@ -120,6 +129,7 @@ export function formatManagerNotification(input: ManagerNotificationInput): stri
   const company = input.reason === 'limit' ? null : (input.company ?? null);
   return [
     headline(input),
+    ...detailLines(input),
     `Имя в WhatsApp: ${knownOr(input.name, NAME_MAX_LENGTH, NO_NAME)}`,
     phoneLine(input.phone, input.chatId),
     `Чат в панели: ID ${input.chatId}`,
@@ -132,6 +142,13 @@ export function formatManagerNotification(input: ManagerNotificationInput): stri
     ...(input.reason === 'limit' ? [] : ['', ...minimumLines(input.profile, company)]),
     ...(company === null ? [] : ['', ...companyLines(company)]),
   ].join('\n');
+}
+
+/** Причина своими словами одной строкой (недоверенный текст: чистится как поля выжимки); у лимита строки нет. */
+function detailLines(input: ManagerNotificationInput): readonly string[] {
+  if (input.reason === 'limit') return [];
+  const detail = knownOr(input.detail ?? null, DETAIL_MAX_LENGTH, '');
+  return detail === '' ? [] : [`Причина: ${detail}`];
 }
 
 /**

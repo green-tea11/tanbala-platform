@@ -378,6 +378,48 @@ describe('createHandoffService: handOff с фразой клиенту', () => {
     expect(h.opened[0]?.level).toBe('hot');
   });
 
+  it('причина своими словами (detail): строкой «Причина» сразу после заголовка, фраза клиенту прежняя', async () => {
+    const h = setup();
+    const detail = 'Спрашивает цену, сроки или договор, задача понятна. Клиент: «Так сколько?»';
+
+    await h.service.handOff(CHAT_ID, {
+      reason: 'hot',
+      aboutPrice: true,
+      replyToWaId: IN_1,
+      detail,
+    });
+
+    const lines = (h.notifications[0]?.text ?? '').split('\n');
+    expect(lines[0]).toBe('Передача чата менеджеру: горячий клиент.');
+    expect(lines[1]).toBe(`Причина: ${detail}`);
+    expect(h.notices).toStrictEqual([
+      { chatId: CHAT_ID, notice: { reason: 'hot', aboutPrice: true }, replyToWaId: IN_1 },
+    ]);
+  });
+
+  it('причина своими словами у сообщения модели: та же строка, клиенту текст модели', async () => {
+    const h = setup();
+    const detail = 'Ответа нет в документах. Клиент: «А RFID видит сквозь металл?»';
+
+    await h.service.handOff(CHAT_ID, {
+      reason: 'no_answer',
+      replyToWaId: IN_1,
+      text: 'Уточню у коллеги и вернусь к вам.' as ReviewedText,
+      detail,
+    });
+
+    expect(h.notifications[0]?.text.split('\n')[1]).toBe(`Причина: ${detail}`);
+    expect(h.texts).toHaveLength(1);
+  });
+
+  it('без причины своими словами (технические поводы): строки «Причина» нет', async () => {
+    const h = setup();
+
+    await h.service.handOff(CHAT_ID, plainRequest('check_failed'));
+
+    expect(h.notifications[0]?.text).not.toContain('Причина:');
+  });
+
   it.each(['no_answer', 'check_failed', 'asked_human', 'llm_error'] as const)(
     'повод %s: фраза этого повода и уведомление handoff',
     async (reason) => {

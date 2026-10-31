@@ -201,8 +201,12 @@ function sent(text: string = ANSWER): ReplyVerdict {
   return { kind: 'send', text: text as ReviewedText };
 }
 
+/** Причина своими словами с цитатой клиента (решение владельца 30.10.2026): у всех передач, кроме технических. */
+const DETAIL = expect.stringContaining('Клиент: «') as unknown as string;
+
 function handedOff(notice: Extract<ReplyVerdict, { kind: 'handoff' }>['notice']): ReplyVerdict {
-  return { kind: 'handoff', notice };
+  const technical = notice.reason === 'check_failed' || notice.reason === 'llm_error';
+  return technical ? { kind: 'handoff', notice } : { kind: 'handoff', notice, detail: DETAIL };
 }
 
 /** Передача hot в финале без текста модели: клиенту уходит фраза о решении и ориентире (решение владельца 30.10.2026). */
@@ -210,6 +214,7 @@ const FINAL_PHRASE: ReplyVerdict = {
   kind: 'handoff',
   notice: { reason: 'hot' },
   text: SOLUTION_TEXT as ReviewedText,
+  detail: DETAIL,
 };
 
 /** Передача без текста модели: у hot (финал) фраза о решении и ориентире, у остальных фиксированная фраза по причине. */
@@ -219,7 +224,7 @@ function fixedPhrase(reason: ReplyHandoffOutcome): ReplyVerdict {
 
 /** Передача, при которой клиенту уходит проверенный текст модели вместо фиксированной фразы. */
 function handedOffWithText(reason: ReplyHandoffOutcome, text: string = HANDOFF_TEXT): ReplyVerdict {
-  return { kind: 'handoff', notice: { reason }, text: text as ReviewedText };
+  return { kind: 'handoff', notice: { reason }, text: text as ReviewedText, detail: DETAIL };
 }
 
 function logsOf(h: Harness, level: string): unknown[] {
@@ -463,14 +468,17 @@ describe('pipeline/reply-flow: передача без текста модели
       { outcome: 'complaint', stopRequested: true },
       handedOff({ reason: 'complaint', stopRequested: true }),
     ],
-  ])('%s: проверок нет, оценка сохранена до передачи', async (_case, draft, expected) => {
-    const h = setup({ drafts: [outcomeDraft(draft)] });
+  ])(
+    '%s: проверок нет, оценка сохранена до передачи, затем причина',
+    async (_case, draft, expected) => {
+      const h = setup({ drafts: [outcomeDraft(draft)] });
 
-    const verdict = await flow(h);
+      const verdict = await flow(h);
 
-    expect(verdict).toEqual(expected);
-    expect(h.calls).toEqual(['draft', 'assess', 'save']);
-  });
+      expect(verdict).toEqual(expected);
+      expect(h.calls).toEqual(['draft', 'assess', 'save', 'save']);
+    },
+  );
 
   it.each(['hot', 'no_answer', 'asked_human'] as const)(
     '%s: текст из одних невидимых символов это нет текста, ревью не зовётся',
@@ -773,12 +781,21 @@ describe('pipeline/reply-flow: уровень hot при передаче hot', 
     );
   });
 
-  it('оценка интереса уже hot: вторая запись не нужна', async () => {
+  it('оценка интереса уже hot: вторая запись всё равно есть, в ней причина передачи с цитатой клиента', async () => {
     const h = setup({ drafts: [handoffDraft('hot')], assessment: assessed('hot') });
 
     await flow(h);
 
-    expect(h.saveAssessment).toHaveBeenCalledTimes(1);
+    expect(h.saveAssessment).toHaveBeenCalledTimes(2);
+    expect(h.saveAssessment).toHaveBeenLastCalledWith(
+      CHAT_ID,
+      {
+        level: 'hot',
+        profile: READY_PROFILE,
+        reason: 'Всё для расчёта известно, клиент готов к расчёту. Клиент: «Сколько стоит?»',
+      },
+      NOW,
+    );
   });
 
   it('оценка интереса не получена: уровень hot записывается с текущей выжимкой чата', async () => {
@@ -810,13 +827,84 @@ describe('pipeline/reply-flow: уровень hot при передаче hot', 
     );
   });
 
-  it.each(['no_answer', 'asked_human'] as const)(
-    '%s: уровень не трогается, пишется только оценка интереса',
-    async (outcome) => {
+  it.each([
+    ['no_answer', 'Ответа нет в документах.'],
+    ['asked_human', 'Просит живого человека.'],
+  ] as const)(
+    '%s: уровень из оценки не трогается, второй записью только причина с цитатой клиента',
+    async (outcome, words) => {
       const h = setup({ drafts: [handoffDraft(outcome)], assessment: assessed('warm') });
 
       await flow(h);
 
+      expect(h.saveAssessment).toHaveBeenCalledTimes(2);
+      expect(h.saveAssessment).toHaveBeenLastCalledWith(
+        CHAT_ID,
+        { level: 'warm', profile: READY_PROFILE, reason: `${words} Клиент: «Сколько стоит?»` },
+        NOW,
+      );
+    },
+  );
+
+  it('оценки нет: уровень причины из чата, выжимка чата', async () => {
+    const h = setup({
+      drafts: [outcomeDraft({ outcome: 'complaint', stopRequested: false })],
+      assessment: UNAVAILABLE,
+    });
+
+    await flow(h, { ...contextOf('Надоели'), level: 'warm' });
+
+    expect(h.saveAssessment).toHaveBeenCalledWith(
+      CHAT_ID,
+      { level: 'warm', profile: EMPTY_PROFILE, reason: 'Жалуется. Клиент: «Надоели»' },
+      NOW,
+    );
+  });
+
+  it('оценки нет и уровень чата неизвестен: причина пишется с холодным уровнем', async () => {
+    const h = setup({
+      drafts: [outcomeDraft({ outcome: 'complaint', stopRequested: false })],
+      assessment: UNAVAILABLE,
+    });
+
+    await flow(h, contextOf('Надоели'));
+
+    expect(h.saveAssessment).toHaveBeenCalledWith(
+      CHAT_ID,
+      expect.objectContaining({ level: 'cold' }),
+      NOW,
+    );
+  });
+
+  it.each([
+    ['сбой LLM', UNAVAILABLE],
+    ['черновик дважды не прошёл проверки, спросить нечего', null],
+  ] as const)(
+    '%s: техническая причина, причина своими словами не пишется',
+    async (_case, draft) => {
+      const h =
+        draft === null
+          ? setup({
+              drafts: [answerDraft('Интеграцию — проводим. Что храните?')],
+              assessment: {
+                ok: true,
+                value: { level: 'warm', profile: READY_PROFILE, reason: 'r' },
+              },
+            })
+          : setup({ drafts: [draft] });
+
+      const verdict = await flow(
+        h,
+        draft === null
+          ? {
+              ...contextOf(),
+              progress: { priceAsks: 0, refused: false, handedOff: true, lastStage: 'details' },
+            }
+          : contextOf(),
+      );
+
+      expect(verdict).toMatchObject({ kind: 'handoff' });
+      expect(verdict).not.toHaveProperty('detail');
       expect(h.saveAssessment).toHaveBeenCalledTimes(1);
     },
   );

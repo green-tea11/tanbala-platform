@@ -230,7 +230,11 @@ describe('pipeline/reply-flow: два провала проверок дают �
       progress: { priceAsks: 0, refused: false, handedOff: true },
     });
 
-    expect(r.verdict).toEqual({ kind: 'handoff', notice: { reason: 'hot', aboutPrice: true } });
+    expect(r.verdict).toEqual({
+      kind: 'handoff',
+      notice: { reason: 'hot', aboutPrice: true },
+      detail: expect.stringMatching(/^Спрашивает цену, сроки или договор/) as unknown,
+    });
   });
 
   it('в лог код вопроса, без текста черновика и вопроса', async () => {

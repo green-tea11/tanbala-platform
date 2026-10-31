@@ -169,6 +169,7 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
       kind: 'handoff',
       notice: { reason: 'hot' },
       text: HOT_TEXT as ReviewedText,
+      detail: 'Всё для расчёта известно, клиент готов к расчёту. Клиент: «Сколько стоит?»',
     });
     expect(model.purposes()).toEqual(['reply', 'interest', 'review']);
     const review = model.requests[2]?.turns.at(-1)?.text ?? '';
@@ -202,6 +203,7 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
       kind: 'handoff',
       notice: { reason: 'hot' },
       text: 'Я уточню у коллеги решение и ориентир под вашу задачу.' as ReviewedText,
+      detail: expect.stringMatching(/^Всё для расчёта известно/) as unknown,
     });
     expect(model.purposes()).toEqual(['reply', 'interest']);
   });
@@ -234,13 +236,21 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
       ],
     });
 
-    expect(verdict).toStrictEqual({ kind: 'handoff', notice: { reason: 'hot', aboutPrice: true } });
+    expect(verdict).toStrictEqual({
+      kind: 'handoff',
+      notice: { reason: 'hot', aboutPrice: true },
+      detail: 'Спрашивает цену, сроки или договор, задача понятна. Клиент: «Сколько стоит?»',
+    });
   });
 
   it('модель отметила вопрос цены, но исход no_answer: обычная фраза без пометки', async () => {
     const { verdict } = await run({ replies: [{ outcome: 'no_answer', aboutPrice: true }] });
 
-    expect(verdict).toStrictEqual({ kind: 'handoff', notice: { reason: 'no_answer' } });
+    expect(verdict).toStrictEqual({
+      kind: 'handoff',
+      notice: { reason: 'no_answer' },
+      detail: 'Ответа нет в документах. Клиент: «Сколько стоит?»',
+    });
   });
 
   it('проверка не пропустила сообщение передачи дважды: та же причина и фиксированная фраза', async () => {
@@ -252,7 +262,11 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
       problems: ['Назван срок'],
     });
 
-    expect(verdict).toEqual({ kind: 'handoff', notice: { reason: 'asked_human' } });
+    expect(verdict).toEqual({
+      kind: 'handoff',
+      notice: { reason: 'asked_human' },
+      detail: 'Просит живого человека. Клиент: «Сколько стоит?»',
+    });
     expect(model.purposes()).toEqual(['reply', 'interest', 'review', 'reply', 'review']);
   });
 

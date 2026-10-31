@@ -127,6 +127,10 @@ describe('б) вопрос цены, сроков или договора, ко�
     expect(second.outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
     expect(second.toClient).toEqual([SOLUTION_PHRASE]);
     expect(second.toManager).toHaveLength(1);
+    // Причина своими словами с цитатой клиента, а не заготовка «спрашивает цену» (пункт 3).
+    expect(second.toManager[0]?.split('\n')[1]).toBe(
+      'Причина: Спрашивает цену, сроки или договор, задача понятна. Клиент: «Запчасти, около 3000 позиций. Так сколько?»',
+    );
     expect(s.storage.chats.getById(s.chatId())?.level).toBe('hot');
     expect(s.storage.handoffs.findOpen(s.chatId())).toMatchObject({ reason: 'hot', level: 'hot' });
   });
@@ -188,6 +192,9 @@ describe('г) клиент два хода подряд уходит от воп
     expect(progress).toMatchObject({ refused: true, refusedStreak: 1 });
     expect(second.outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
     expect(second.toClient).toEqual([HANDOFF_PHRASE]);
+    expect(second.toManager[0]).toContain(
+      'Причина: Дважды подряд уходит от вопросов. Клиент: «Не скажу же»',
+    );
     expect(second.llm.purposes()).toEqual(['reply', 'interest']);
   });
 
@@ -236,6 +243,9 @@ describe('а) финал: для расчёта известно всё', () => 
     expect(last.outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
     expect(last.toClient).toEqual([SUMMARY]);
     expect(last.llm.purposes()).toEqual(['reply', 'interest', 'review']);
+    expect(last.toManager[0]).toContain(
+      'Причина: Всё для расчёта известно, клиент готов к расчёту. Клиент: «Алматы, один вход»',
+    );
   });
 
   it('для расчёта известно не всё, модель вернула hot: повтор с замечанием, чего не хватает для финала', async () => {

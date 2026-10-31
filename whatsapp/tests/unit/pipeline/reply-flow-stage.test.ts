@@ -211,6 +211,7 @@ describe('pipeline/reply-flow: повтор уже рассказанной си
       kind: 'handoff',
       notice: { reason: 'no_answer' },
       text: HANDOFF_TEXT,
+      detail: expect.stringMatching(/^Ответа нет в документах/) as unknown,
     });
   });
 });

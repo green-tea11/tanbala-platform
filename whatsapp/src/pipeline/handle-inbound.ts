@@ -480,11 +480,15 @@ async function handOff(
   return finish(deps, chatId, turn, { kind: 'handed_off', reason: request.reason });
 }
 
-/** Запрос сервису передачи: с text, если клиенту уходит сообщение модели, иначе с фиксированной фразой по поводу. */
+/**
+ * Запрос сервису передачи: с text, если клиенту уходит сообщение модели, иначе с фиксированной фразой по поводу; с
+ * причиной своими словами (detail) для уведомления менеджеру, если она есть.
+ */
 function handOffRequestOf(verdict: HandoffVerdict, replyToWaId: WaMessageId): HandOffRequest {
+  const detail = verdict.detail === undefined ? {} : { detail: verdict.detail };
   return 'text' in verdict
-    ? { reason: verdict.notice.reason, replyToWaId, text: verdict.text }
-    : { ...verdict.notice, replyToWaId };
+    ? { reason: verdict.notice.reason, replyToWaId, text: verdict.text, ...detail }
+    : { ...verdict.notice, replyToWaId, ...detail };
 }
 
 /** Дневной лимит API исчерпан: бот замолкает в чате без фразы клиенту (решение владельца), менеджеру уходит уведомление. */

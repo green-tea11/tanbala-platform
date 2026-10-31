@@ -104,7 +104,11 @@ describe('pipeline/reply-flow: повтор на второй попытке н�
       text: 'Уточню у коллеги и вернусь к вам.',
     });
 
-    expect(verdict).toEqual({ kind: 'handoff', notice: { reason: 'no_answer' } });
+    expect(verdict).toEqual({
+      kind: 'handoff',
+      notice: { reason: 'no_answer' },
+      detail: expect.stringMatching(/^Ответа нет в документах/) as unknown,
+    });
     expect(verdict).not.toHaveProperty('text');
   });
 });

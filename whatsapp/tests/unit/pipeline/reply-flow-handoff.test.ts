@@ -61,11 +61,19 @@ const PRICE: TurnSignals = { priceAsked: true, refused: false };
 const NOTHING: TurnSignals = { priceAsked: false, refused: false };
 const REFUSED: TurnSignals = { priceAsked: false, refused: true };
 
+/** Причина своими словами с цитатой клиента (пункт 3 решения владельца 30.10.2026); точные тексты в своём разделе. */
+const DETAIL = expect.stringContaining('Клиент: «') as unknown as string;
+
 const PRICE_HANDOFF: ReplyVerdict = {
   kind: 'handoff',
   notice: { reason: 'hot', aboutPrice: true },
+  detail: DETAIL,
 };
-const REFUSED_HANDOFF: ReplyVerdict = { kind: 'handoff', notice: { reason: 'hot' } };
+const REFUSED_HANDOFF: ReplyVerdict = {
+  kind: 'handoff',
+  notice: { reason: 'hot' },
+  detail: DETAIL,
+};
 
 interface Case {
   readonly drafts: readonly LlmResult<ReplyDraft>[];
@@ -97,6 +105,7 @@ function bot(id: number, text: string): StoredMessage {
 
 function setup(c: Case) {
   const calls: string[] = [];
+  const saved: InterestAssessment[] = [];
   const logs: { level: string; context: unknown }[] = [];
   const drafts = [...c.drafts];
   const log =
@@ -141,7 +150,12 @@ function setup(c: Case) {
     });
   });
   const deps: ReplyFlowDeps = {
-    chats: { saveAssessment: () => calls.push('save') },
+    chats: {
+      saveAssessment: (_chatId, assessment) => {
+        calls.push('save');
+        saved.push(assessment);
+      },
+    },
     agent: {
       draftReply,
       reviewDraft,
@@ -161,7 +175,7 @@ function setup(c: Case) {
     ...(c.progress === undefined ? {} : { progress: c.progress }),
     ...(c.note === undefined ? {} : { note: { text: c.note, atMs: NOW } }),
   };
-  return { calls, logs, draftReply, reviewDraft, deps, context };
+  return { calls, saved, logs, draftReply, reviewDraft, deps, context };
 }
 
 async function run(c: Case) {
@@ -176,7 +190,7 @@ function sentWith(text: string, extra: Partial<Extract<ReplyVerdict, { kind: 'se
 }
 
 function withText(text: string): ReplyVerdict {
-  return { kind: 'handoff', notice: { reason: 'hot' }, text: text as ReviewedText };
+  return { kind: 'handoff', notice: { reason: 'hot' }, text: text as ReviewedText, detail: DETAIL };
 }
 
 function progress(patch: Partial<ChatProgress>): ChatProgress {
@@ -606,6 +620,83 @@ describe('д) просьба о человеке, жалоба и нет отв�
 
     expect(r.verdict).toMatchObject({ kind: 'handoff' });
     expect(r.calls).not.toContain('draft:retry');
+  });
+});
+
+describe('причина передачи своими словами с цитатой клиента (пункт 3)', () => {
+  const QUOTE = `Клиент: «${CLIENT_TEXT}»`;
+
+  it.each<[string, Case, string]>([
+    ['а) финал', { drafts: [hot()] }, 'Всё для расчёта известно, клиент готов к расчёту.'],
+    [
+      'б) цена при понятной задаче',
+      { drafts: [answer(PRICE_ANSWER)], profile: TASK, signals: PRICE },
+      'Спрашивает цену, сроки или договор, задача понятна.',
+    ],
+    [
+      'в) третий вопрос цены',
+      {
+        drafts: [answer(PRICE_ANSWER)],
+        profile: VAGUE,
+        signals: PRICE,
+        progress: progress({ priceAsks: 2 }),
+      },
+      'Третий раз спрашивает цену.',
+    ],
+    [
+      'г) два ухода от вопросов подряд',
+      {
+        drafts: [answer()],
+        profile: VAGUE,
+        signals: REFUSED,
+        progress: progress({ refusedStreak: 1 }),
+      },
+      'Дважды подряд уходит от вопросов.',
+    ],
+  ])('%s: уровень hot, причина в чате и в вердикте', async (_name, c, words) => {
+    const r = await run(c);
+
+    const reason = `${words} ${QUOTE}`;
+    expect(r.verdict).toMatchObject({ kind: 'handoff', detail: reason });
+    expect(r.saved.at(-1)).toEqual({ level: 'hot', profile: c.profile ?? READY, reason });
+  });
+
+  it.each<[string, LlmResult<ReplyDraft>, string]>([
+    [
+      'просьба о человеке',
+      { ok: true, value: { outcome: 'asked_human', text: '' } },
+      'Просит живого человека.',
+    ],
+    ['жалоба', { ok: true, value: { outcome: 'complaint', stopRequested: false } }, 'Жалуется.'],
+    [
+      'нет ответа',
+      { ok: true, value: { outcome: 'no_answer', text: '' } },
+      'Ответа нет в документах.',
+    ],
+  ])('%s: уровень из оценки, причина своими словами', async (_name, draft, words) => {
+    const r = await run({ drafts: [draft], profile: VAGUE });
+
+    const reason = `${words} ${QUOTE}`;
+    expect(r.verdict).toMatchObject({ detail: reason });
+    expect(r.saved.at(-1)).toEqual({ level: 'warm', profile: VAGUE, reason });
+  });
+
+  it('прежней заготовки «спрашивает цену» больше нет: живой тест 30.10, клиент цену не спрашивал', async () => {
+    const r = await run({
+      drafts: [hot()],
+      history: [client(1, 'Алматы, да у нас есть 1c система')],
+    });
+
+    expect(r.saved.at(-1)?.reason).toBe(
+      'Всё для расчёта известно, клиент готов к расчёту. Клиент: «Алматы, да у нас есть 1c система»',
+    );
+    expect(JSON.stringify(r.saved)).not.toMatch(/спрашивает цену, сроки или договор\./u);
+  });
+
+  it('в лог причина и слова клиента не попадают', async () => {
+    const r = await run({ drafts: [answer(PRICE_ANSWER)], profile: TASK, signals: PRICE });
+
+    expect(JSON.stringify(r.logs)).not.toContain(CLIENT_TEXT);
   });
 });
 

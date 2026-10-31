@@ -22,16 +22,19 @@ import type { ManagerNotifier } from './notifier.js';
  * Запрос передачи. Перехват человеком и исчерпанный дневной лимит идут без фразы клиенту;
  * остальные поводы всегда с сообщением клиенту на входящее replyToWaId. Это фиксированная фраза по поводу, а при
  * hot, no_answer и asked_human необязательный text: проверенное сообщение модели (ответ на то, что есть в знаниях, и
- * фраза о передаче) уходит вместо фиксированной фразы. Повод и порядок действий от text не зависят.
+ * фраза о передаче) уходит вместо фиксированной фразы. Повод и порядок действий от text не зависят. detail: причина
+ * своими словами с цитатой клиента (pipeline/handoff-reason.ts), строкой «Причина» в уведомлении менеджеру; нет поля =>
+ * строки нет (технические причины).
  */
 export type HandOffRequest =
   | { readonly reason: 'human_took_over'; readonly by: 'phone' | 'panel' }
   | { readonly reason: 'limit'; readonly scope: BudgetScope }
-  | (HandoffNotice & { readonly replyToWaId: WaMessageId })
+  | (HandoffNotice & { readonly replyToWaId: WaMessageId; readonly detail?: string })
   | {
       readonly reason: ReplyHandoffOutcome;
       readonly replyToWaId: WaMessageId;
       readonly text: ReviewedText;
+      readonly detail?: string;
     };
 
 /** Передача чата менеджеру и возврат боту (раздел плана «Передача менеджеру»). */
@@ -265,6 +268,7 @@ async function tellManager(deps: HandoffDeps, chat: Chat, request: NotifiedReque
   try {
     const text = formatManagerNotification({
       ...reasonOf(request),
+      detail: 'detail' in request ? (request.detail ?? null) : null,
       name: chat.pushName,
       phone: phoneOf(chat),
       level: chat.level,

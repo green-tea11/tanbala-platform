@@ -259,17 +259,29 @@ describe('pipeline/handle-inbound: сбой отправки исключени�
   });
 });
 
+/** Причина передачи своими словами с цитатой последнего сообщения клиента (решение владельца 30.10.2026). */
+const QUOTE = 'Клиент: «Сколько стоит?»';
+const FINAL_DETAIL = `Всё для расчёта известно, клиент готов к расчёту. ${QUOTE}`;
+
 describe('pipeline/handle-inbound: передача менеджеру (через сервис передачи)', () => {
   it.each<[string, ReplyDraft, HandOffRequest]>([
     [
       'нет ответа в знаниях, текста нет',
       { outcome: 'no_answer', text: '' },
-      { reason: 'no_answer', replyToWaId: 'A2' as WaMessageId },
+      {
+        reason: 'no_answer',
+        replyToWaId: 'A2' as WaMessageId,
+        detail: `Ответа нет в документах. ${QUOTE}`,
+      },
     ],
     [
       'просит человека, текста нет',
       { outcome: 'asked_human', text: '' },
-      { reason: 'asked_human', replyToWaId: 'A2' as WaMessageId },
+      {
+        reason: 'asked_human',
+        replyToWaId: 'A2' as WaMessageId,
+        detail: `Просит живого человека. ${QUOTE}`,
+      },
     ],
     [
       'горячий клиент (финал), текста нет: фраза о решении и ориентире',
@@ -278,12 +290,18 @@ describe('pipeline/handle-inbound: передача менеджеру (чере
         reason: 'hot',
         replyToWaId: 'A2' as WaMessageId,
         text: HOT_PRICE_HANDOFF_TEXT as ReviewedText,
+        detail: FINAL_DETAIL,
       },
     ],
     [
       'жалоба с просьбой не писать',
       { outcome: 'complaint', stopRequested: true },
-      { reason: 'complaint', stopRequested: true, replyToWaId: 'A2' as WaMessageId },
+      {
+        reason: 'complaint',
+        stopRequested: true,
+        replyToWaId: 'A2' as WaMessageId,
+        detail: `Жалуется. ${QUOTE}`,
+      },
     ],
   ])(
     '%s: handOff с причиной и ответом на последнее сообщение пачки',
@@ -299,8 +317,8 @@ describe('pipeline/handle-inbound: передача менеджеру (чере
         'draft',
         'assess',
         'save:cold',
-        // Передача hot: уровень hot дописывается в чат до передачи.
-        ...(draft.outcome === 'hot' ? ['save:hot'] : []),
+        // Причина своими словами пишется в чат до передачи; у hot с уровнем hot.
+        draft.outcome === 'hot' ? 'save:hot' : 'save:cold',
         `handoff:${draft.outcome}`,
         'answered:A2',
       ]);
@@ -353,7 +371,9 @@ describe('pipeline/handle-inbound: передача менеджеру (чере
       const outcome = await run(h, batchOf([text('A1')]));
 
       expect(outcome).toEqual({ kind: 'silent', reason: 'manager_mode' });
-      expect(h.calls).toEqual(['read:A1', 'draft', 'assess', 'save:cold']);
+      // У «нет ответа» причина своими словами пишется до передачи (второй save), у лимита нет.
+      expect(h.calls.slice(0, 4)).toEqual(['read:A1', 'draft', 'assess', 'save:cold']);
+      expect(h.calls.slice(4).every((call) => call === 'save:cold')).toBe(true);
       expect(h.handOff).not.toHaveBeenCalled();
     },
   );
@@ -418,6 +438,7 @@ describe('pipeline/handle-inbound: проверки, оценка интерес
       reason: 'hot',
       replyToWaId: 'A1',
       text: HOT_TEXT as ReviewedText,
+      detail: FINAL_DETAIL,
     });
     expect(h.reviewed).toEqual([HOT_TEXT]);
     expect(h.reviewKinds).toEqual(['handoff']);
@@ -437,6 +458,7 @@ describe('pipeline/handle-inbound: проверки, оценка интерес
         reason,
         replyToWaId: 'A2',
         text: HOT_TEXT as ReviewedText,
+        detail: expect.stringContaining(QUOTE) as unknown,
       });
       expect(h.reviewKinds).toEqual(['handoff']);
     },
@@ -456,6 +478,7 @@ describe('pipeline/handle-inbound: проверки, оценка интерес
       reason: 'hot',
       replyToWaId: 'A1',
       text: HOT_PRICE_HANDOFF_TEXT,
+      detail: FINAL_DETAIL,
     });
     expect(h.feedbacks[1]).toEqual(['срок']);
     expect(h.reviewKinds).toEqual(['handoff', 'handoff']);
@@ -470,7 +493,11 @@ describe('pipeline/handle-inbound: проверки, оценка интерес
     const outcome = await run(h, batchOf([text('A1')]));
 
     expect(outcome).toEqual({ kind: 'handed_off', reason: 'asked_human' });
-    expect(h.handOff).toHaveBeenCalledWith(CHAT_ID, { reason: 'asked_human', replyToWaId: 'A1' });
+    expect(h.handOff).toHaveBeenCalledWith(CHAT_ID, {
+      reason: 'asked_human',
+      replyToWaId: 'A1',
+      detail: `Просит живого человека. ${QUOTE}`,
+    });
   });
 
   it('лимит API на ревью текста передачи: handOff limit без фразы клиенту', async () => {
@@ -498,6 +525,7 @@ describe('pipeline/handle-inbound: проверки, оценка интерес
       reason: 'hot',
       replyToWaId: 'A2',
       text: SECOND_HOT_TEXT as ReviewedText,
+      detail: FINAL_DETAIL,
     });
     expect(h.calls.filter((call) => call.startsWith('draft'))).toEqual(['draft', 'draft']);
   });
@@ -522,6 +550,7 @@ describe('pipeline/handle-inbound: проверки, оценка интерес
       reason: 'hot',
       replyToWaId: 'V1',
       text: HOT_TEXT as ReviewedText,
+      detail: FINAL_DETAIL,
     });
   });
 
@@ -887,7 +916,15 @@ describe('pipeline/handle-inbound: минимум для передачи по �
 
     expect(outcome).toEqual({ kind: 'handed_off', reason: 'hot' });
     expect(h.handOff.mock.calls).toStrictEqual([
-      [CHAT_ID, { reason: 'hot', aboutPrice: true, replyToWaId: 'A2' as WaMessageId }],
+      [
+        CHAT_ID,
+        {
+          reason: 'hot',
+          aboutPrice: true,
+          replyToWaId: 'A2' as WaMessageId,
+          detail: `Третий раз спрашивает цену. ${QUOTE}`,
+        },
+      ],
     ]);
     expect(h.calls.filter((call) => call.startsWith('turn:'))).toEqual([]);
   });

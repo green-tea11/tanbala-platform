@@ -31,6 +31,7 @@ import {
   type HotKind,
   type TurnSituation,
 } from './handoff-gate.js';
+import { handoffReasonText, handoffWhyOf } from './handoff-reason.js';
 import { nextSafeQuestion } from './safe-questions.js';
 
 /** Что нужно ходу ответа от остальной системы: агент, запись оценки интереса, часы и лог. */
@@ -55,14 +56,16 @@ export interface Drafted {
 /**
  * Передача менеджеру. Без text клиенту уходит фиксированная фраза по причине (в том числе при сбое LLM и после
  * отказа от текста модели). С text клиенту уходит сообщение модели, прошедшее проверки кодом и второй вызов:
- * только при hot, no_answer, asked_human.
+ * только при hot, no_answer, asked_human. detail: причина своими словами с цитатой клиента (pipeline/handoff-reason.ts)
+ * для уведомления менеджеру; у технических причин (check_failed, llm_error) поля нет.
  */
 export type HandoffVerdict =
-  | { readonly kind: 'handoff'; readonly notice: HandoffNotice }
+  | { readonly kind: 'handoff'; readonly notice: HandoffNotice; readonly detail?: string }
   | {
       readonly kind: 'handoff';
       readonly notice: { readonly reason: ReplyHandoffOutcome };
       readonly text: ReviewedText;
+      readonly detail?: string;
     };
 
 /**
@@ -116,10 +119,6 @@ const REFUSED_HANDOFF: ReplyVerdict = { kind: 'handoff', notice: { reason: 'hot'
 
 /** Фраза финала: как и фиксированные вопросы, проходит проверки кодом (это проверяют тесты). */
 const SOLUTION_TEXT = HOT_PRICE_HANDOFF_TEXT as ReviewedText;
-
-/** Причина записи уровня hot, когда его назначила не оценка интереса, а вызов ответа. */
-const HOT_BY_REPLY =
-  'Вызов ответа определил клиента как горячего: он спрашивает цену, сроки или договор.';
 
 type LlmFailed = Extract<LlmResult<unknown>, { readonly ok: false }>;
 type Attempt = 1 | 2;
@@ -216,7 +215,7 @@ export async function requestAssessment(
  * расчёта (earlyHotFallback), чат остаётся у бота. Модель ответила answer, а причина есть (кроме финала) => код сам
  * передаёт чат (codeHandoff). Фиксированная фраза hot по причине (withHotPhrase): финал и цена с фразой «Я уточню у
  * коллеги решение и ориентир под вашу задачу.», уходы от вопросов с «Уточню у коллеги и вернусь к вам.». При передаче
- * hot уровень hot записывается в чат (оценка интереса могла дать ниже или не получиться). Вызовов API на ответ три
+ * не по технической причине в чат пишется причина с цитатой клиента, у hot с уровнем hot (withReason). Вызовов API на ответ три
  * (черновик, оценка, проверка), с повтором пять. Вердикт send несёт сигналы хода (вопрос цены, отказ отвечать), если они
  * меняют ход разговора: конвейер записывает их после отправки.
  */
@@ -234,8 +233,8 @@ export async function decideReply(
   const first = await judgeResult(flow, drafted.draft, 1, null);
   const judged = first.kind === 'verdict' ? first.verdict : await retryOnce(flow, first);
   const verdict = withHotPhrase(gate, isCheckFailed(judged) ? afterCheckFailed(flow) : judged);
-  if (isHotHandoff(verdict)) markHot(deps, context, assessment);
-  return withSignals(verdict, gate.signals, context.progress);
+  const handed = withReason(deps, context, assessment, gate, verdict);
+  return withSignals(handed, gate.signals, context.progress);
 }
 
 /**
@@ -377,26 +376,29 @@ function budgetScopeOf(results: readonly LlmResult<unknown>[]): BudgetScope | nu
   return null;
 }
 
-function isHotHandoff(verdict: ReplyVerdict): boolean {
-  return verdict.kind === 'handoff' && verdict.notice.reason === 'hot';
-}
-
 /**
- * Передача hot: уровень hot должен стоять и в передаче, и в чате. Оценка интереса могла дать ниже или не
- * получиться, поэтому уровень дописывается тут, с выжимкой оценки или, если её нет, с текущей выжимкой чата.
- * Передача читает уровень из чата, так что запись нужна до неё.
+ * Передача не по технической причине (решение владельца 30.10.2026): причина своими словами с цитатой последнего
+ * сообщения клиента (pipeline/handoff-reason.ts) пишется туда, где её берут панель и уведомление менеджеру, и идёт с
+ * вердиктом (detail). Запись в чат с выжимкой оценки этого хода (без неё с выжимкой чата) до передачи: передача читает
+ * уровень из чата. У hot уровень hot (оценка интереса могла дать ниже или не получиться), у остальных уровень оценки.
+ * Технические причины (check_failed, llm_error) как раньше: без записи и без detail.
  */
-function markHot(
+function withReason(
   deps: ReplyFlowDeps,
   context: ConversationContext,
   assessment: InterestAssessment | null,
-): void {
-  if (assessment?.level === 'hot') return;
-  deps.chats.saveAssessment(
-    context.chatId,
-    { level: 'hot', profile: assessment?.profile ?? context.profile, reason: HOT_BY_REPLY },
-    deps.clock.now(),
-  );
+  gate: TurnSituation,
+  verdict: ReplyVerdict,
+): ReplyVerdict {
+  if (verdict.kind !== 'handoff') return verdict;
+  const why = handoffWhyOf(verdict.notice.reason, gate);
+  if (why === null) return verdict;
+  const detail = handoffReasonText(why, context.history);
+  const level =
+    verdict.notice.reason === 'hot' ? 'hot' : (assessment?.level ?? context.level ?? 'cold');
+  const profile = assessment?.profile ?? context.profile;
+  deps.chats.saveAssessment(context.chatId, { level, profile, reason: detail }, deps.clock.now());
+  return { ...verdict, detail };
 }
 
 /**

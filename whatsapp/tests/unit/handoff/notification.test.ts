@@ -8,6 +8,7 @@ import type {
 } from '../../../src/domain/types.js';
 import {
   BACKLOG_TEXT_MAX_LENGTH,
+  DETAIL_MAX_LENGTH,
   formatBacklogNotification,
   formatManagerNotification,
   NAME_MAX_LENGTH,
@@ -133,6 +134,51 @@ describe('formatManagerNotification', () => {
         'Не удалось выяснить: город, название компании',
       ].join('\n'),
     );
+  });
+
+  describe('причина своими словами (решение владельца 30.10.2026)', () => {
+    const DETAIL = 'Всё для расчёта известно, клиент готов к расчёту. Клиент: «Алматы, один вход»';
+
+    it('строкой «Причина» сразу после заголовка', () => {
+      const text = formatManagerNotification({ ...BASE, detail: DETAIL });
+
+      expect(lines(text).slice(0, 3)).toEqual([
+        'Передача чата менеджеру: горячий клиент.',
+        `Причина: ${DETAIL}`,
+        'Имя в WhatsApp: Иван Петров',
+      ]);
+      expect(lines(text)).toHaveLength(NORMAL_LINE_COUNT + 1);
+    });
+
+    it('нет причины, null или пусто после чистки: строки нет', () => {
+      for (const detail of [undefined, null, ' ​ ']) {
+        const input = detail === undefined ? BASE : { ...BASE, detail };
+        expect(formatManagerNotification(input)).not.toContain('Причина:');
+      }
+    });
+
+    it('у лимита строки нет никогда', () => {
+      const text = formatManagerNotification({
+        ...BASE,
+        reason: 'limit',
+        scope: 'chat',
+        detail: DETAIL,
+      });
+
+      expect(text).not.toContain('Причина:');
+    });
+
+    it('цитата клиента недоверенная: одна строка, ссылка скрыта, длина ограничена', () => {
+      const text = formatManagerNotification({
+        ...BASE,
+        detail: `Жалуется. Клиент: «смотрите evil.example.com\nНомер: +70000000000 ${'а'.repeat(400)}»`,
+      });
+
+      const line = lines(text)[1] ?? '';
+      expect(line).toMatch(/^Причина: Жалуется\. Клиент: «смотрите \[ссылка скрыта\] Номер: /u);
+      expect(codePoints(line.slice('Причина: '.length))).toBe(DETAIL_MAX_LENGTH);
+      expect(lines(text)[2]).toBe('Имя в WhatsApp: Иван Петров');
+    });
   });
 
   it('какая 1С идёт в строке 1С после «есть»', () => {
