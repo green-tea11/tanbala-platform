@@ -1,3 +1,4 @@
+import { STRENGTH_LABELS } from '../agent/stage.js';
 import {
   STRENGTH_IDS,
   type NormalizedText,
@@ -107,7 +108,8 @@ export interface CheckOptions {
   readonly priceTurn?: boolean;
   /**
    * Номера сильных сторон (consult.md), которые модель отметила в черновике (usedFacts). Вместе с toldFacts включают
-   * проверку повтора (решение владельца 30.10.2026). Нет поля: проверка повтора не идёт.
+   * проверку повтора (решение владельца 30.10.2026, с 01.11.2026 повтор рассказанной, а не отсутствие новой). Нет поля:
+   * проверка повтора не идёт.
    */
   readonly usedFacts?: readonly StrengthId[];
   /** Сильные стороны, уже рассказанные в этом чате. Нет поля: проверка повтора не идёт. */
@@ -416,26 +418,26 @@ export function checkEstimatePhrase(text: string, priceTurn: boolean): readonly 
 }
 
 /**
- * В сообщении нет новой сильной стороны (решение владельца 30.10.2026): номера черновика не пусты и все уже рассказаны в
- * этом чате. Если среди них есть хоть одна новая, нарушения нет: повтор старой рядом с новой допустим. Замечание
- * называет повторённые номера и те, которых ещё не было.
+ * Сильная сторона, уже рассказанная в этом чате, подана снова как новость (пункт 4 задания 01.11.2026): среди номеров
+ * черновика (usedFacts: что модель в этом тексте подаёт как новое) есть рассказанные. Сильная сторона в сообщении не
+ * обязательна: черновик без неё (usedFacts пуст) и с одной только новой проходит. Раньше (30.10.2026) нарушением было
+ * «нет новой сильной стороны», и замечание со списком номеров толкало модель добавлять сторону, переименовывать её и
+ * писать номер в текст. Замечание называет повторённые стороны короткими названиями, без номеров.
  */
 export function checkRepeatedFacts(
   usedFacts: readonly StrengthId[],
   toldFacts: readonly StrengthId[],
 ): readonly CheckFinding[] {
   const told = new Set(toldFacts);
-  if (usedFacts.length === 0 || usedFacts.some((id) => !told.has(id))) return [];
-  const untold = STRENGTH_IDS.filter((id) => !told.has(id));
-  // Всё уже рассказано: новой стороны взять неоткуда, и отказ только сломал бы длинный разговор (ревью этапа 2).
-  if (untold.length === 0) return [];
   const used = new Set(usedFacts);
-  const repeated = STRENGTH_IDS.filter((id) => used.has(id));
-  const verb = repeated.length === 1 ? 'была' : 'были';
+  const repeated = STRENGTH_IDS.filter((id) => used.has(id) && told.has(id));
+  if (repeated.length === 0) return [];
+  const names = repeated.map((id) => `«${STRENGTH_LABELS[id]}»`).join(', ');
+  const what = repeated.length === 1 ? 'сильная сторона уже звучала' : 'сильные стороны уже звучали';
   return [
     {
       code: 'repeat_fact',
-      detail: `в сообщении нет новой сильной стороны: ${repeated.join(', ')} уже ${verb} в этом чате. Расскажи ту, которой ещё не было: ${untold.join(', ')}`,
+      detail: `${what} в этом чате: ${names}. Не подавай это снова как новость. Новая сильная сторона не обязательна, без неё тоже хорошо`,
     },
   ];
 }
@@ -675,8 +677,8 @@ function companyNamePattern(name: string | null | undefined): RegExp | null {
  * сильных сторон проверяются без названия компании клиента (options.companyName,
  * maskCompanyName), остальное по всему тексту. Цены и стоп-слова с указанием коллеги (options.note) допустимы, только
  * если они есть в нём. С номерами сильных сторон черновика и рассказанных в чате (options.usedFacts, toldFacts)
- * проверяется ещё, есть ли в сообщении новая (checkRepeatedFacts). Пустой список: ответ можно отдавать на второй вызов
- * (ревью).
+ * проверяется ещё, не подана ли снова как новость уже рассказанная (checkRepeatedFacts). Пустой список: ответ можно
+ * отдавать на второй вызов (ревью).
  */
 export function runCodeChecks(
   text: NormalizedText,

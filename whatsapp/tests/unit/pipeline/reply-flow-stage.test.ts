@@ -181,21 +181,39 @@ describe('pipeline/reply-flow: отметки отправленного отв�
   });
 });
 
-describe('pipeline/reply-flow: повтор уже рассказанной сильной стороны (30.10.2026)', () => {
-  it('все номера черновика уже рассказаны: проверка кодом, повтор с замечанием, уходит черновик с новой', async () => {
+describe('pipeline/reply-flow: повтор уже рассказанной сильной стороны (30.10.2026, 01.11.2026)', () => {
+  it('рассказанная подана снова: проверка кодом, повтор с замечанием, уходит черновик без сильной стороны', async () => {
     const h = setup([
       draft({ outcome: 'answer', text: ANSWER, stage: 'details', usedFacts: ['F4'] }),
-      draft({ outcome: 'answer', text: SECOND, stage: 'details', usedFacts: ['F4', 'F3'] }),
+      draft({ outcome: 'answer', text: SECOND, stage: 'details' }),
     ]);
 
     const verdict = await flow(h, contextOf({ priceAsks: 0, refused: false, toldFacts: ['F4'] }));
 
     expect(h.calls).toEqual(['assess', 'draft', 'draft:retry', 'review']);
-    expect(h.feedbacks[1]?.join(' ')).toMatch(/нет новой сильной стороны: F4 уже была в этом чате/);
+    expect(h.feedbacks[1]?.join(' ')).toBe(
+      'сильная сторона уже звучала в этом чате: «ручной сканер». Не подавай это снова как новость. Новая сильная сторона не обязательна, без неё тоже хорошо',
+    );
     expect(verdict).toEqual({
       kind: 'send',
       text: SECOND,
-      marks: { stage: 'details', usedFacts: ['F4', 'F3'] },
+      marks: { stage: 'details', usedFacts: [] },
+    });
+  });
+
+  it('сильной стороны нет совсем: проверка кодом её не требует, черновик уходит сразу', async () => {
+    const h = setup([draft({ outcome: 'answer', text: ANSWER, stage: 'details' })]);
+
+    const verdict = await flow(
+      h,
+      contextOf({ priceAsks: 0, refused: false, toldFacts: ['F2', 'F3', 'F4'] }),
+    );
+
+    expect(h.calls).toEqual(['assess', 'draft', 'review']);
+    expect(verdict).toEqual({
+      kind: 'send',
+      text: ANSWER,
+      marks: { stage: 'details', usedFacts: [] },
     });
   });
 

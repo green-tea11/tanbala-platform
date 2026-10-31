@@ -1465,7 +1465,7 @@ describe('фраза об ориентире только на ходу с во�
   });
 });
 
-describe('checkRepeatedFacts: в сообщении нет новой сильной стороны (30.10.2026)', () => {
+describe('checkRepeatedFacts: рассказанная сильная сторона подана снова как новость (01.11.2026)', () => {
   function withFacts(
     usedFacts: readonly StrengthId[] | undefined,
     toldFacts: readonly StrengthId[] | undefined,
@@ -1478,17 +1478,29 @@ describe('checkRepeatedFacts: в сообщении нет новой сильн
     });
   }
 
-  it('все номера черновика уже рассказаны в чате: нарушение с замечанием, что рассказать вместо', () => {
+  it('рассказанные стороны в черновике: нарушение, замечание называет их словами, без номеров, и не требует новой', () => {
     const findings = checkRepeatedFacts(['F3', 'F2'], ['F2', 'F3', 'F4']);
 
     expect(codes(findings)).toEqual(new Set(['repeat_fact']));
     expect(details(findings)).toBe(
-      'в сообщении нет новой сильной стороны: F2, F3 уже были в этом чате. Расскажи ту, которой ещё не было: F1, F5, F6, F7, F8, F9, F10',
+      'сильные стороны уже звучали в этом чате: «сотни меток за секунду», «антенны на входе и выходе». Не подавай это снова как новость. Новая сильная сторона не обязательна, без неё тоже хорошо',
+    );
+    expect(details(findings)).not.toMatch(/F\d/u);
+    expect(details(checkRepeatedFacts(['F2'], ['F2']))).toBe(
+      'сильная сторона уже звучала в этом чате: «сотни меток за секунду». Не подавай это снова как новость. Новая сильная сторона не обязательна, без неё тоже хорошо',
     );
     expect(codes(withFacts(['F2'], ['F2']))).toEqual(new Set(['repeat_fact']));
   });
 
-  it('все сильные стороны уже рассказаны: нарушения нет, новой взять неоткуда (ревью этапа 2)', () => {
+  it('рассказанная рядом с новой тоже повтор: рассказанную снова не подают никогда', () => {
+    const findings = checkRepeatedFacts(['F2', 'F5'], ['F2']);
+
+    expect(details(findings)).toMatch(
+      /^сильная сторона уже звучала в этом чате: «сотни меток за секунду»\./u,
+    );
+  });
+
+  it('все сильные стороны уже рассказаны: подать снова нельзя и здесь, без новой тоже можно', () => {
     const all: readonly StrengthId[] = [
       'F1',
       'F2',
@@ -1502,14 +1514,15 @@ describe('checkRepeatedFacts: в сообщении нет новой сильн
       'F10',
     ];
 
-    expect(checkRepeatedFacts(['F6'], all)).toEqual([]);
-    expect(withFacts(['F2', 'F6'], all)).toEqual([]);
+    expect(codes(checkRepeatedFacts(['F6'], all))).toEqual(new Set(['repeat_fact']));
+    expect(checkRepeatedFacts([], all)).toEqual([]);
   });
 
   it.each([
-    [['F2', 'F5'], ['F2']],
+    [['F5'], ['F2']],
     [['F1'], []],
     [[], ['F1', 'F2']],
+    [[], []],
   ] as const)('черновик %j, рассказано %j: нарушения нет', (usedFacts, toldFacts) => {
     expect(checkRepeatedFacts(usedFacts, toldFacts)).toEqual([]);
     expect(withFacts(usedFacts, toldFacts)).toEqual([]);
