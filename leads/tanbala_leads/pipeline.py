@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import functools
 import logging
 import re
 import threading
@@ -199,10 +200,12 @@ def default_deps(settings: Settings, limits: browsers.BrowserLimits | None = Non
     limits = limits or browsers.limits_from_settings(settings)
     client = llm.make_client(settings)
     secret = settings.require("reacher_secret")
-    reacher_limit = verify.RateLimiter(reacher_per_minute(settings))
+    # Лимит читается при первой проверке почты: неверный REACHER_MAX_PER_MINUTE не ломает проверку из WhatsApp,
+    # ей Reacher не нужен (ревью 31.10.2026).
+    reacher_limit = functools.cache(lambda: verify.RateLimiter(reacher_per_minute(settings)))
 
     def check_email(email: str) -> verify.EmailCheck:
-        reacher_limit.wait()
+        reacher_limit().wait()
         return verify.check_email(email, base_url=settings.reacher_url, secret=secret)
 
     parser_timeout = RESEARCH_PARSER_TIMEOUT_SECONDS if urgent else collect.PARSER_TIMEOUT_SECONDS

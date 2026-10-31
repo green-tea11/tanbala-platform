@@ -168,6 +168,13 @@ def test_bad_reacher_limit_is_a_clear_settings_error(value):
         pipeline.reacher_per_minute(make_settings(value))
 
 
+def test_bad_reacher_limit_breaks_only_email_checks_not_whatsapp_research():
+    deps = pipeline.default_deps(make_settings("десять"), urgent=True)
+
+    with pytest.raises(SettingsError, match="REACHER_MAX_PER_MINUTE"):
+        deps.check_email("info@pel.kz")
+
+
 def test_real_deps_check_email_waits_for_the_limiter(monkeypatch):
     order = []
 
