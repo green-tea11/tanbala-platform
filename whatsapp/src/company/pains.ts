@@ -3,8 +3,8 @@ import type { CompanyBrief } from '../domain/company.js';
 /** Сколько болей клиента хранится в состоянии чата (для уведомления и панели). */
 const MAX_CLIENT_PAINS = 5;
 
-/** Сколько болей справки уходит в промпт модели. */
-const MAX_PROMPT_PAINS = 2;
+/** Сколько болей справки уходит в промпт модели (решение владельца 30.10.2026: до трёх). */
+const MAX_PROMPT_PAINS = 3;
 
 /** Любая цифра Unicode, в том числе арабско-индийская, и числовые знаки вроде «²» и «½». */
 const HAS_NUMBER = /\p{N}/u;
@@ -31,7 +31,7 @@ export function mergeClientPains(
 
 /**
  * Боли справки для промпта: только тексты pain (цитата и источник модели не передаются), без строк с цифрами и не
- * больше двух. Справки нет => пусто.
+ * больше трёх. Справки нет => пусто.
  */
 export function promptPains(brief: CompanyBrief | null): readonly string[] {
   return (brief?.pains ?? [])

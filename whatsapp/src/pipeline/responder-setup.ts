@@ -165,7 +165,7 @@ function responderParts(
   const api = { budget: storage.budget, clock, tokenLog, logger };
   const llm = (context.createLlm ?? createAnthropicLlm)({ apiKey, ...api });
   return {
-    agent: createAgent({ llm, knowledge, models: config.models, logger }),
+    agent: createAgent({ llm, knowledge, models: config.models }),
     transcriber: transcriberOf(config, api),
   };
 }

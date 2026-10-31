@@ -29,7 +29,7 @@ const BEREKE_ID = 21;
 const BEREKE = 'ТОО Береке';
 const JOB_ID = '3f2b8c1e-7a4d-4c2e-9b1a-5d6e7f8a9b0c';
 
-/** Пункт списка раздела 5 knowledge/tanbala-agent.md целиком: часть пункта модели не передаётся. */
+/** Боль справки: пункт списка раздела 5 knowledge/tanbala-agent.md. */
 const PAIN_INVENTORY = 'Инвентаризация занимает дни и отрывает людей от работы';
 const PAIN_MIXUP = 'Пересорт при отгрузке';
 /** Цитаты и источники болей, оценка и тема письма из справки: модели их видеть нельзя, только менеджеру в панели. */
@@ -338,11 +338,10 @@ describe('сценарии владельца: ответ клиента на в
     const data = confirmed.data('reply');
     expect(data).toContain(`Компания клиента: «${BEREKE}».`);
     expect(data).toContain('Рубрика: Оптовая торговля.');
+    // Обе боли справки, без отбора по разделу 5 knowledge/tanbala-agent.md (решение владельца 30.10.2026).
     expect(data).toContain(
-      `Трудности, которые часто бывают у похожих компаний: ${PAIN_INVENTORY}.`,
+      `Трудности, которые часто бывают у похожих компаний: ${PAIN_INVENTORY}; ${PAIN_MIXUP}.`,
     );
-    // Боли нет в разделе 5 knowledge/tanbala-agent.md: в промпт она не идёт.
-    expect(data).not.toContain(PAIN_MIXUP);
     expect(data).toContain('Мы этой компании на почту не писали: не говори, что писали.');
     const allData = confirmed.llm.requests.map(dataOf).join('\n');
     for (const hidden of [EVIDENCE_SITE, EVIDENCE_2GIS, FIT_REASON, 'site', '2gis', '64']) {

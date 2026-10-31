@@ -113,16 +113,16 @@ describe('promptPains', () => {
     },
   );
 
-  it('не больше двух болей', () => {
-    const brief = makeBrief({ pains: [pain('a'), pain('b'), pain('c')] });
+  it('не больше трёх болей (решение владельца 30.10.2026)', () => {
+    const brief = makeBrief({ pains: [pain('a'), pain('b'), pain('c'), pain('d')] });
 
-    expect(promptPains(brief)).toEqual(['a', 'b']);
+    expect(promptPains(brief)).toEqual(['a', 'b', 'c']);
   });
 
-  it('два предела вместе: сначала отбрасываются строки с цифрами, потом берутся первые две', () => {
-    const brief = makeBrief({ pains: [pain('a1'), pain('b'), pain('c'), pain('d')] });
+  it('два предела вместе: сначала отбрасываются строки с цифрами, потом берутся первые три', () => {
+    const brief = makeBrief({ pains: [pain('a1'), pain('b'), pain('c'), pain('d'), pain('e')] });
 
-    expect(promptPains(brief)).toEqual(['b', 'c']);
+    expect(promptPains(brief)).toEqual(['b', 'c', 'd']);
   });
 
   it('у справки нет болей: пусто', () => {

@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { createAgent } from '../../../src/agent/agent.js';
 import { normalizeInterest, type RawInterest } from '../../../src/agent/interest.js';
@@ -13,9 +12,7 @@ import {
   KNOWLEDGE,
   MODELS,
   onlyRequest,
-  SILENT_LOGGER,
 } from './fakes.js';
-import { createFakeLogger, type LogEntry } from '../llm/fakes.js';
 
 const CANDIDATE: CompanyPrompt = {
   kind: 'candidate',
@@ -42,7 +39,7 @@ function agentWith(answer: LlmResult<unknown>) {
   const { requests, llm } = fakeLlm(answer);
   return {
     requests,
-    agent: createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS, logger: SILENT_LOGGER }),
+    agent: createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS }),
   };
 }
 
@@ -165,176 +162,64 @@ describe('reviewDraft и assessInterest: компания клиента', () =>
   });
 });
 
-describe('draftReply и reviewDraft: боли справки только из раздела 5 документа владельца', () => {
-  const OWNER = [
-    '# Tanbala: что должен знать агент',
-    '',
-    '## 4. Что можно учитывать',
-    '',
-    '- склад, где пересорт при отгрузке;',
-    '',
-    '## 5. Какие задачи решаем',
-    '',
-    'Клиент приходит не за технологией, а с проблемой. Типичные:',
-    '',
-    '- вещи теряются, и никто не знает, где они (например, инструмент между сменами);',
-    '- инвентаризация занимает дни и отрывает людей от работы;',
-    '- всё считают вручную или сканируют штрихкоды по одному;',
-    '- тара уходит к партнёрам и не возвращается.',
-    '',
-    'Что меняется (говори только это, без цифр):',
-    '',
-    '- ридер видит сотни меток за секунду, не нужно искать код на каждой вещи;',
-    '',
-    '## 6. Как это работает простыми словами',
-  ].join('\r\n');
-
+describe('draftReply и reviewDraft: боли справки (решение владельца 30.10.2026)', () => {
   const ANSWER: LlmResult<unknown> = {
     ok: true,
     value: { outcome: 'answer', text: 'Добрый день.', stopRequested: false },
   };
 
+  /** Боли не из раздела 5 документа владельца: с 30.10.2026 они тоже идут модели. */
+  const PAINS = [
+    'Пересорт при отгрузке',
+    'Инвентаризация занимает дни и отрывает людей от работы',
+    'Трудно найти дело в архиве',
+  ];
+
   function confirmed(pains: readonly string[]): CompanyPrompt {
     return { kind: 'confirmed', name: 'Альфа', rubric: 'Склады', pains, emailed: false };
   }
 
-  function ownerAgent(answer: LlmResult<unknown>, owner = OWNER) {
-    const { requests, llm } = fakeLlm(answer);
-    const logs: LogEntry[] = [];
-    const knowledge = { ...KNOWLEDGE, owner };
-    const agent = createAgent({ llm, knowledge, models: MODELS, logger: createFakeLogger(logs) });
-    return { requests, agent, logs };
+  function painsLineOf(requests: Parameters<typeof onlyRequest>[0]): string | null {
+    return (
+      lastTurn(requests)
+        .split('\n')
+        .find((item) => item.startsWith('Трудности')) ?? null
+    );
   }
 
-  /** Строка о трудностях в данных вызова ответа; нет строки => null. */
-  async function painsLine(pains: readonly string[], owner = OWNER): Promise<string | null> {
-    const { requests, agent } = ownerAgent(ANSWER, owner);
-    await agent.draftReply(context({ company: confirmed(pains) }));
-    const line = lastTurn(requests)
-      .split('\n')
-      .find((item) => item.startsWith('Трудности'));
-    return line ?? null;
-  }
-
-  it('пункт списка совпадает целиком: без учёта регистра, пробелов по краям, «;» и «.» на конце', async () => {
-    const pains = [
-      ' Инвентаризация занимает дни и отрывает людей от работы ',
-      'ВСЁ СЧИТАЮТ ВРУЧНУЮ ИЛИ СКАНИРУЮТ ШТРИХКОДЫ ПО ОДНОМУ;',
-      'тара уходит к партнёрам и не возвращается',
-    ];
-
-    const line = await painsLine(pains);
-
-    expect(line).toContain('Инвентаризация занимает дни и отрывает людей от работы');
-    expect(line).toContain('ВСЁ СЧИТАЮТ ВРУЧНУЮ ИЛИ СКАНИРУЮТ ШТРИХКОДЫ ПО ОДНОМУ');
-    expect(line).toContain('тара уходит к партнёрам и не возвращается');
-  });
-
-  it('пункт с пояснением в скобках: совпадает и целиком, и начало до скобки', async () => {
-    const full = 'вещи теряются, и никто не знает, где они (например, инструмент между сменами)';
-    const head = 'Вещи теряются, и никто не знает, где они.';
-
-    expect(await painsLine([full])).toContain(full);
-    expect(await painsLine([head])).toContain(head);
-  });
-
-  it.each([
-    ['часть пункта', 'инвентаризация занимает дни'],
-    ['слово из раздела', 'инвентаризация'],
-    ['начало пункта без скобок', 'тара уходит к партнёрам'],
-    ['пункт другого раздела', 'склад, где пересорт при отгрузке'],
-    [
-      'пункт списка «Что меняется»',
-      'ридер видит сотни меток за секунду, не нужно искать код на каждой вещи',
-    ],
-    ['текст абзаца раздела', 'Клиент приходит не за технологией, а с проблемой'],
-    ['пункт с лишним в конце', 'инвентаризация занимает дни и отрывает людей от работы, и много'],
-    ['пустая строка', '   '],
-    ['одни знаки', ';.'],
-    ['скобка без начала', '(например, инструмент между сменами)'],
-  ])('%s: боль модели не передаётся', async (_case, pain) => {
-    expect(await painsLine([pain])).toBeNull();
-  });
-
-  it('вызов проверки: те же боли, что у ответа', async () => {
-    const { requests, agent } = ownerAgent({ ok: true, value: { ok: true, problems: [] } });
-    const company = confirmed(['тара уходит к партнёрам и не возвращается', 'выдуманная боль']);
-
-    await agent.reviewDraft(context({ company }), 'Добрый день.');
-
-    const data = lastTurn(requests);
-    expect(data).toContain('тара уходит к партнёрам и не возвращается');
-    expect(data).not.toContain('выдуманная боль');
-  });
-
-  it('ни одной боли из списка: строки о трудностях нет, рубрика остаётся, блок в контексте не меняется', async () => {
-    const { requests, agent } = ownerAgent(ANSWER);
-    const company = confirmed(['Выдуманная боль']);
+  it('боли справки идут в блок ответа как есть, до трёх, без фильтра по разделу 5; блок в контексте не меняется', async () => {
+    const { requests, agent } = agentWith(ANSWER);
+    const company = confirmed(PAINS);
     const ctx = context({ company });
 
     await agent.draftReply(ctx);
 
-    const data = lastTurn(requests);
-    expect(data).toContain('Рубрика: Склады.');
-    expect(data).not.toContain('Трудности');
+    expect(painsLineOf(requests)).toBe(
+      `Трудности, которые часто бывают у похожих компаний: ${PAINS.join('; ')}.`,
+    );
     expect(ctx.company).toBe(company);
   });
 
-  it('раздел найден: в лог при создании агента ничего', () => {
-    const { logs } = ownerAgent(ANSWER);
+  it('вызов проверки: те же боли, что у ответа', async () => {
+    const { requests, agent } = agentWith({ ok: true, value: { ok: true, problems: [] } });
 
-    expect(logs).toEqual([]);
-  });
+    await agent.reviewDraft(context({ company: confirmed(PAINS) }), 'Добрый день.');
 
-  it.each([
-    ['раздела нет', OWNER.replace('## 5. Какие задачи решаем', '## 5. Что болит у клиентов')],
-    ['в разделе нет списка', OWNER.replace(/\r\n- (?:вещи|инвентаризация|всё|тара)[^\r]*/gu, '')],
-    ['пустой документ', ''],
-  ])('%s: боли не передаются, при создании агента одно предупреждение', async (_case, owner) => {
-    const { logs } = ownerAgent(ANSWER, owner);
-
-    expect(logs).toEqual([expect.objectContaining({ level: 'warn', context: {} })]);
-    expect(logs[0]?.message).toContain('Раздел 5');
-    expect(await painsLine(['тара уходит к партнёрам и не возвращается'], owner)).toBeNull();
-  });
-
-  it('раздел 5 последний и список до конца документа: пункты проходят, предупреждения нет', async () => {
-    const owner = '## 5. Какие задачи решаем\n- тара уходит к партнёрам и не возвращается.';
-    const { logs } = ownerAgent(ANSWER, owner);
-
-    expect(logs).toEqual([]);
-    expect(await painsLine(['Тара уходит к партнёрам и не возвращается'], owner)).toContain(
-      'Тара уходит к партнёрам',
+    expect(painsLineOf(requests)).toBe(
+      `Трудности, которые часто бывают у похожих компаний: ${PAINS.join('; ')}.`,
     );
   });
 
-  it('документ владельца из knowledge: все девять пунктов раздела 5 проходят, со знаком на конце и без', async () => {
-    const owner = readFileSync(
-      new URL('../../../knowledge/tanbala-agent.md', import.meta.url),
-      'utf8',
-    );
-    const items = sectionFiveItems(owner);
-    const bare = items.map((item) => item.replace(/[;.]$/u, ''));
+  it('документ владельца без раздела 5: боли всё равно передаются', async () => {
+    const { requests, llm } = fakeLlm(ANSWER);
+    const knowledge = { ...KNOWLEDGE, owner: '# Tanbala' };
+    const agent = createAgent({ llm, knowledge, models: MODELS });
 
-    const withSigns = await painsLine(items, owner);
-    const withoutSigns = await painsLine(bare, owner);
+    await agent.draftReply(context({ company: confirmed(PAINS.slice(0, 1)) }));
 
-    expect(items).toHaveLength(9);
-    for (const pain of bare) {
-      expect(withSigns).toContain(pain);
-      expect(withoutSigns).toContain(pain);
-    }
+    expect(painsLineOf(requests)).toContain('Пересорт при отгрузке');
   });
 });
-
-/** Пункты списка между заголовком раздела 5 и «Что меняется»: разбор теста, независимый от агента. */
-function sectionFiveItems(owner: string): string[] {
-  const section = owner.split('## 5. Какие задачи решаем')[1]?.split('Что меняется')[0] ?? '';
-  return section
-    .split(/\r?\n/u)
-    .filter((line) => line.startsWith('- '))
-    .map((line) => line.slice(2).trim());
-}
 
 describe('normalizeInterest: что клиент сказал о компании', () => {
   it('поля о компании чистятся: пусто => null, боли без пустых и не больше трёх', () => {

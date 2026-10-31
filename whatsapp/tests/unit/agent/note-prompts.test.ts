@@ -10,7 +10,6 @@ import {
   KNOWLEDGE,
   MODELS,
   onlyRequest,
-  SILENT_LOGGER,
 } from './fakes.js';
 
 // Заметка для бота (указание коллеги, решение владельца 29.10.2026): доверенный текст менеджера идёт отдельным блоком
@@ -20,7 +19,7 @@ const NOTE: BotNote = { text: 'Ориентир от 1 500 000 тенге, ну�
 
 function agentWith(answer: unknown) {
   const { requests, llm } = fakeLlm({ ok: true, value: answer });
-  const agent = createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS, logger: SILENT_LOGGER });
+  const agent = createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS });
   return { requests, agent };
 }
 
