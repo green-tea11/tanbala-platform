@@ -1010,7 +1010,7 @@ describe('createHandoffService: рассказанное клиенту в ув�
     await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
 
     expect(h.notifications[0]?.text).toContain(
-      'Рассказано клиенту: метка без батарейки, антенны на входе и выходе',
+      'Рассказано клиенту: метка читается по радио, антенны на входе и выходе',
     );
   });
 
