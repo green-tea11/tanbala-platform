@@ -3,12 +3,15 @@
     migrate                         создать или обновить таблицы
     web [--port 8000] [--ui-port 8001]   API для бота и консоли на :8000 (/internal), интерфейс на :8001
     search --query склад [--city almaty] [--limit 5]   запуск поиска без интерфейса
+    recheck-pains [--dry-run]       перепроверить сохранённые боли по правилу 01.11.2026, без вызова API
 """
 
 import argparse
 import sys
 
-from tanbala_leads import db, pipeline
+import psycopg
+
+from tanbala_leads import db, maintenance, pipeline
 from tanbala_leads.settings import SettingsError, load_settings
 from tanbala_leads.steps import collect
 from tanbala_leads.steps.collect import CITIES
@@ -26,7 +29,26 @@ def _parser() -> argparse.ArgumentParser:
     search.add_argument("--query", required=True, help="что искать в 2ГИС, например «склад»")
     search.add_argument("--city", default="almaty", choices=sorted(CITIES))
     search.add_argument("--limit", type=int, default=5, help=f"сколько компаний, до {pipeline.MAX_COMPANIES_LIMIT}")
+    recheck = commands.add_parser("recheck-pains", help="перепроверить сохранённые боли: рубрика и адрес 2ГИС"
+                                                        " не доказательство; без вызова API, письма не меняются")
+    recheck.add_argument("--dry-run", action="store_true", help="только показать, что изменится")
     return parser
+
+
+# Разовые исправления данных: функция получает соединение и dry_run, возвращает строки отчёта.
+MAINTENANCE = {"recheck-pains": maintenance.recheck_pains}
+
+
+def _maintenance(dsn: str, command: str, dry_run: bool) -> int:
+    try:
+        with db.connect(dsn) as conn:
+            lines = MAINTENANCE[command](conn, dry_run=dry_run)
+    except psycopg.Error as exc:
+        print(f"База данных: {pipeline.safe_error(exc)}. Ничего не изменено.", file=sys.stderr)
+        return 1
+    for line in lines:
+        print(line)
+    return 0
 
 
 def _search(dsn: str, city: str, query: str, limit: int, budget: float) -> int:
@@ -58,6 +80,8 @@ def main(argv: list[str] | None = None) -> int:
                 applied = db.migrate(conn)
             print(f"Применены миграции: {applied}" if applied else "Схема актуальна, миграций нет.")
             return 0
+        if args.command in MAINTENANCE:
+            return _maintenance(dsn, args.command, args.dry_run)
         # parser-2gis должен запуститься, иначе запуск создался бы и сразу упал (как проверка в serve()).
         collect.check_parser_setup(settings.parser_2gis_bin, collect.parse_headless(settings.parser_2gis_headless))
         return _search(dsn, args.city, args.query, args.limit, pipeline.daily_budget(settings))

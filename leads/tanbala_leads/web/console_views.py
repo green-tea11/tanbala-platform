@@ -12,6 +12,7 @@ from typing import Any
 import psycopg
 
 from tanbala_leads import contact_policy, llm, pipeline
+from tanbala_leads.steps import qualify
 from tanbala_leads.steps.collect import CITIES
 from tanbala_leads.steps.send import MAX_TEST_SENDS_PER_DAY
 from tanbala_leads.web import console_queries as cq
@@ -290,6 +291,7 @@ def company_card(conn: psycopg.Connection, company_id: int, *, test_to: str | No
         "qualification": ({"fit": qualification["fit"], "fitLabel": FIT_LABELS.get(qualification["fit"]),
                            "score": qualification["score"], "segment": qualification["segment"],
                            "reason": qualification["reason"], "model": qualification["model"],
+                           "cardOnly": qualify.card_only(company),
                            "createdAt": iso(qualification["created_at"])} if qualification else None),
         "pains": pains_json(qualification["pains"]) if qualification else [],
         "contacts": [{"id": row["id"], "email": row["email"], "sourcePage": row["source_page"],

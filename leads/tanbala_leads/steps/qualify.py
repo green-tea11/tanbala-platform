@@ -91,10 +91,13 @@ maybe, если похоже, но данных мало; no, если учит�
 - reason: одно-два коротких предложения на русском, почему подходит или нет. Только факты из карточки и сайта, \
 ничего не придумывай. Без тире.
 - pains: до трёх болей из списка, которые вероятнее всего есть у этой компании. К каждой боли evidence: \
-дословная цитата из <company> или <site>, от 3 до 25 слов, без изменений, которая на неё указывает (склады на \
+дословная цитата от 3 до 25 слов, без изменений, которая на неё указывает (склады на \
 нескольких объектах, ответственное хранение, инвентаризация, кладовщик или учётчик в вакансиях, возвратная тара, \
-архив, много оборудования или инструмента). source: 2gis, если цитата из <company>; site, если из <site>. \
-Если подходящей цитаты нет, боль не указывай: пустой список лучше выдуманной боли.
+архив, много оборудования или инструмента). Цитату бери только из текста <site> или из строки «Реклама в 2ГИС» \
+в <company>: название, рубрики, адрес и «Особенности» карточки боль не доказывают (рубрику «Складское хранение» \
+носят тысячи компаний). source: 2gis, если цитата из рекламы в 2ГИС; site, если из <site>. \
+Если подходящей цитаты нет, боль не указывай: пустой список лучше выдуманной боли. Если нет ни сайта, ни рекламы \
+в 2ГИС, pains пустой список, а fit не выше maybe: по одной карточке судить уверенно нельзя.
 """
 
 
@@ -110,6 +113,11 @@ def _ad_text(raw: dict | None) -> str | None:
 def _attributes(raw: dict | None) -> list[str]:
     return [attr["name"] for group in (raw or {}).get("attribute_groups") or []
             for attr in group.get("attributes") or [] if attr.get("name")][:10]
+
+
+def _branches(count: int | None) -> str:
+    """Число филиалов из 2ГИС. Неизвестное не превращаем в «1»: модель решила бы, что точка одна."""
+    return "неизвестно" if count is None else str(count)
 
 
 def _card_extras(raw: dict | None) -> list[str]:
@@ -128,7 +136,7 @@ def build_input(company: dict) -> str:
         f"Рубрики: {company.get('rubric') or 'не указаны'}",
         f"Город: {company.get('city') or 'не указан'}",
         f"Адрес: {company.get('address') or 'не указан'}",
-        f"Филиалов: {company.get('branches_count') or 1}",
+        f"Филиалов: {_branches(company.get('branches_count'))}",
         f"Сайт: {company.get('website') or 'нет'}",
         *_card_extras(company.get("raw")),
     ]
@@ -138,12 +146,28 @@ def build_input(company: dict) -> str:
 
 
 def evidence_sources(company: dict) -> dict[str, str]:
-    """Где искать цитату: значения карточки 2ГИС и текст сайта, без подписей полей и заглушек вроде
-    «сайт не найден». В том же виде, что в промпте (as_data), потому что модель цитирует его."""
-    raw = company.get("raw")
-    card = [company.get("rubric"), company.get("address"), _ad_text(raw), ", ".join(_attributes(raw))]
+    """Где искать цитату: реклама компании в 2ГИС и текст сайта, без подписей полей и заглушек вроде
+    «сайт не найден». В том же виде, что в промпте (as_data), потому что модель цитирует его.
+
+    Рубрика, адрес и «Особенности» карточки не доказательство (решение владельца 01.11.2026): «Складское хранение,
+    Железнодорожные грузоперевозки» носят тысячи компаний, а боль «цифры в 1С не сходятся с полками» это не доказывает.
+    """
+    ad_text = str(_ad_text(company.get("raw")) or "").strip()
     site_text = (company.get("site_text") or "").strip()[:MAX_SITE_CHARS]
-    return {"2gis": as_data("\n".join(value for value in card if value)), "site": as_data(site_text)}
+    return {"2gis": as_data(ad_text), "site": as_data(site_text)}
+
+
+def has_evidence_text(sources: dict[str, str]) -> bool:
+    """Есть ли где искать цитату: текст сайта или реклама в 2ГИС (sources из evidence_sources)."""
+    return any(text.strip() for text in sources.values())
+
+
+def card_only(company: dict) -> bool:
+    """Оценка только по карточке 2ГИС: нет ни текста сайта, ни рекламы, и боль доказать нечем.
+
+    Нужны поля site_text и raw (реклама в raw.ads.text), как у строки companies.
+    """
+    return not has_evidence_text(evidence_sources(company))
 
 
 def _normalized(text: str) -> str:
@@ -180,8 +204,20 @@ def _parse_pains(items: object, sources: dict[str, str]) -> list[dict]:
     return sorted(best.values(), key=lambda pain: not pain["verified"])[:MAX_PAINS]
 
 
+def recheck_pains(pains: object, sources: dict[str, str]) -> list[dict]:
+    """Боли по источникам evidence_sources: найдена ли цитата и где, порядок и лимит как у нового ответа.
+
+    Нет ни сайта, ни рекламы в 2ГИС: болей нет. Так проверяется и ответ модели, и боли, сохранённые раньше
+    (команда recheck-pains, без вызова API).
+    """
+    return _parse_pains(pains, sources) if has_evidence_text(sources) else []
+
+
 def parse_answer(data: dict, sources: dict[str, str]) -> dict:
-    """Проверить ответ модели: схема гарантирует поля, а диапазоны и цитаты проверяем сами."""
+    """Проверить ответ модели: схема гарантирует поля, а диапазоны и цитаты проверяем сами.
+
+    Только карточка 2ГИС (нет ни сайта, ни рекламы): болей нет, fit не выше maybe, что бы ни ответила модель.
+    """
     fit, score, segment, reason = data.get("fit"), data.get("score"), data.get("segment"), data.get("reason")
     if fit not in FITS:
         raise llm.LLMError(f"qualify: неизвестный fit {fit!r}")
@@ -191,8 +227,10 @@ def parse_answer(data: dict, sources: dict[str, str]) -> dict:
         raise llm.LLMError(f"qualify: неизвестная отрасль {segment!r}")
     if not isinstance(reason, str) or not reason.strip():
         raise llm.LLMError("qualify: пустая причина")
+    if fit == "yes" and not has_evidence_text(sources):
+        fit = "maybe"
     return {"fit": fit, "score": score, "segment": segment, "reason": reason.strip(),
-            "pains": _parse_pains(data.get("pains"), sources)}
+            "pains": recheck_pains(data.get("pains"), sources)}
 
 
 def qualify_company(conn: psycopg.Connection, company_id: int, *, client, owner_doc: str,

@@ -9,7 +9,7 @@ from psycopg.rows import dict_row
 
 from tanbala_leads.internal import lookup
 from tanbala_leads.internal import normalize as norm
-from tanbala_leads.steps.qualify import MAX_PAINS, PAIN_SOURCES
+from tanbala_leads.steps.qualify import MAX_PAINS, PAIN_SOURCES, card_only
 
 MAX_NAME_CHARS = 200
 MAX_RUBRIC_CHARS = 200
@@ -21,9 +21,9 @@ MAX_SUBJECT_CHARS = 200
 # Сначала убрать невидимые символы: иначе ivan@<нулевая ширина>sklad.kz прошёл бы мимо поиска почт.
 MAX_RAW_CHARS = 20_000
 
-# Последняя оценка компании, как в карточке интерфейса.
+# Последняя оценка компании, как в карточке интерфейса. Текст сайта и raw только для card_only, наружу не идут.
 BRIEF_SQL = """
-SELECT c.id, c.name, c.city, c.rubric, q.segment, q.fit, q.score, q.reason, q.pains
+SELECT c.id, c.name, c.city, c.rubric, c.site_text, c.raw, q.segment, q.fit, q.score, q.reason, q.pains
 FROM companies c
 LEFT JOIN LATERAL (
     SELECT segment, fit, score, reason, pains FROM qualifications
@@ -67,12 +67,17 @@ def clear_whatsapp_marks(conn: psycopg.Connection, company_id: int) -> None:
 
 
 def company_brief(conn: psycopg.Connection, company_id: int) -> dict | None:
-    """Справка по контракту или None, если компании нет."""
+    """Справка по контракту или None, если компании нет.
+
+    card_only: оценка только по карточке 2ГИС (нет ни сайта, ни рекламы), боли у неё не подтвердить и в справке их
+    нет, даже если старая оценка их сохранила (до recheck-pains). null, если компанию ещё не оценивали.
+    """
     with conn.cursor(row_factory=dict_row) as cursor:
         row = cursor.execute(BRIEF_SQL, (company_id,)).fetchone()
     if row is None:
         return None
     letter = lookup.last_letter(conn, company_id)
+    only_card = card_only(row) if row["fit"] is not None else None
     return {
         "id": row["id"],
         "name": norm.clean_text(row["name"], MAX_NAME_CHARS) or "",
@@ -82,7 +87,8 @@ def company_brief(conn: psycopg.Connection, company_id: int) -> dict | None:
         "fit": row["fit"],
         "fit_score": row["score"],
         "reason": _without_contacts(row["reason"], MAX_REASON_CHARS),
-        "pains": _pains(row["pains"]),
+        "card_only": only_card,
+        "pains": [] if only_card else _pains(row["pains"]),
         "emailed": letter is not None,
         "emailed_at": letter.sent_at if letter else None,
         "email_subject": _without_contacts(letter.subject, MAX_SUBJECT_CHARS) if letter else None,

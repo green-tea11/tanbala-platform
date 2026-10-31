@@ -68,7 +68,8 @@ def test_schema_lists_every_segment():
 def test_qualify_company_saves_answer_and_status(db_conn, fit, status):
     db.migrate(db_conn)
     company_id = db_conn.execute(
-        "INSERT INTO companies (name, rubric, status) VALUES ('Asklad', 'Складское хранение', 'crawled') RETURNING id"
+        "INSERT INTO companies (name, rubric, site_text, status) VALUES ('Asklad', 'Складское хранение',"
+        " 'Аренда контейнеров под склад.', 'crawled') RETURNING id"
     ).fetchone()[0]
     client = fake_client({**GOOD, "fit": fit})
     seen = []
@@ -192,3 +193,64 @@ def test_verified_pain_is_kept_even_if_model_listed_it_third():
 
     # Повтор той же боли с настоящей цитатой заменяет выдуманную, обе боли подтверждены.
     assert [(pain["pain"], pain["verified"]) for pain in parsed["pains"]] == [(qualify.PAINS[0], True), (PAIN, True)]
+
+
+# Ревью 01.11.2026: рубрика, адрес и «Особенности» карточки 2ГИС не доказательство боли
+
+@pytest.mark.parametrize("evidence", ["Складское хранение", "Ангарская улица, 115г", "Оплата через банк"])
+def test_rubric_address_and_attributes_are_not_evidence(evidence):
+    assert qualify.locate_evidence(evidence, qualify.evidence_sources(COMPANY)) is None
+
+
+def test_2gis_ad_text_is_still_evidence():
+    assert qualify.locate_evidence("Склад от 1000 кв.м", qualify.evidence_sources(COMPANY)) == "2gis"
+
+
+def test_prompt_says_rubric_and_address_prove_nothing():
+    assert "рубрики, адрес" in qualify.INSTRUCTIONS and "Реклама в 2ГИС" in qualify.INSTRUCTIONS
+
+
+CARD_ONLY = {**COMPANY, "site_text": None, "raw": {"attribute_groups": [{"attributes": [{"name": "Склад"}]}]}}
+
+
+@pytest.mark.parametrize(("fit", "expected"), [("yes", "maybe"), ("maybe", "maybe"), ("no", "no")])
+def test_card_only_answer_has_no_pains_and_fit_at_most_maybe(fit, expected):
+    answer = {**GOOD, "fit": fit, "pains": [{"pain": PAIN, "evidence": "Складское хранение", "source": "2gis"}]}
+
+    parsed = qualify.parse_answer(answer, qualify.evidence_sources(CARD_ONLY))
+
+    assert qualify.card_only(CARD_ONLY) is True
+    assert (parsed["fit"], parsed["pains"], parsed["score"]) == (expected, [], GOOD["score"])
+
+
+@pytest.mark.parametrize("company", [COMPANY, {**COMPANY, "raw": None}, {**COMPANY, "site_text": "  "}],
+                         ids=["site-and-ad", "site-only", "ad-only"])
+def test_site_text_or_ad_text_is_not_card_only(company):
+    assert qualify.card_only(company) is False
+
+
+def test_blank_site_and_blank_ad_are_card_only():
+    assert qualify.card_only({**COMPANY, "site_text": " \n", "raw": {"ads": {"text": "  "}}}) is True
+
+
+@pytest.mark.parametrize(("branches", "line"), [(None, "Филиалов: неизвестно"), (0, "Филиалов: 0"), (3, "Филиалов: 3")])
+def test_unknown_branch_count_is_not_shown_as_one(branches, line):
+    assert line in qualify.build_input({**COMPANY, "branches_count": branches})
+
+
+def test_recheck_unverifies_rubric_quote_and_keeps_site_quote():
+    stored = [
+        {"pain": qualify.PAINS[3], "evidence": "Складское хранение", "source": "2gis", "verified": True},
+        {"pain": PAIN, "evidence": "Ответственное хранение", "source": "site", "verified": True},
+    ]
+
+    rechecked = qualify.recheck_pains(stored, qualify.evidence_sources(COMPANY))
+
+    assert [(pain["pain"], pain["source"], pain["verified"]) for pain in rechecked] == [
+        (PAIN, "site", True), (qualify.PAINS[3], "2gis", False)]
+
+
+def test_recheck_drops_all_pains_of_card_only_company():
+    stored = [{"pain": PAIN, "evidence": "Складское хранение", "source": "2gis", "verified": True}]
+
+    assert qualify.recheck_pains(stored, qualify.evidence_sources(CARD_ONLY)) == []

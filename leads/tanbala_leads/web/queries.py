@@ -198,8 +198,8 @@ def fetch_company(conn, company_id: int) -> dict[str, Any] | None:
     return _row(conn, (
         "SELECT c.id, c.name, c.city, c.rubric, c.address, c.phones, c.website, c.website_domain, c.source_url,"
         " c.search_query,"
-        " c.branches_count, c.site_text, c.status, c.last_error, c.run_id, c.created_at, c.whatsapp_contacted_at,"
-        " c.requested_via,"
+        " c.branches_count, c.site_text, c.raw, c.status, c.last_error, c.run_id, c.created_at,"
+        " c.whatsapp_contacted_at, c.requested_via,"
         f" {COMPANY_BLOCKED} AS blocked FROM companies c WHERE c.id = %s"), (company_id,))
 
 

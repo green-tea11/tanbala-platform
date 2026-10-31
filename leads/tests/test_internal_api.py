@@ -175,10 +175,12 @@ def api_db(db_conn):
     return db_conn, make_client(connect)
 
 
-def add_company(conn, name, *, city="Алматы", rubric="Складские услуги", phones=(), domain=None) -> int:
+def add_company(conn, name, *, city="Алматы", rubric="Складские услуги", phones=(), domain=None,
+                site_text=None) -> int:
     return conn.execute(
-        "INSERT INTO companies (name, city, rubric, phones, website_domain) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-        (name, city, rubric, list(phones), domain),
+        "INSERT INTO companies (name, city, rubric, phones, website_domain, site_text) VALUES (%s, %s, %s, %s, %s, %s)"
+        " RETURNING id",
+        (name, city, rubric, list(phones), domain, site_text),
     ).fetchone()[0]
 
 
@@ -321,8 +323,10 @@ def test_names_from_sites_come_back_cleaned(api_db):
 
 # ---------- справка о компании ----------
 
-BRIEF_FIELDS = {"id", "name", "city", "rubric", "segment", "fit", "fit_score", "reason", "pains", "emailed",
-                "emailed_at", "email_subject"}
+BRIEF_FIELDS = {"id", "name", "city", "rubric", "segment", "fit", "fit_score", "reason", "card_only", "pains",
+                "emailed", "emailed_at", "email_subject"}
+# Текст сайта, по которому оценка не «только карточка 2ГИС»: без него боли в справку не идут.
+SITE_TEXT = "Склады 11 400 м². Требуется кладовщик на склад. Отгрузка паллет каждый день."
 
 
 @pytest.mark.parametrize("company_id", ["abc", "0", "-1", "٣", "1.5", "99999999999999999999"])
@@ -361,7 +365,7 @@ def test_brief_of_unknown_company_is_404(api_db):
 @pytest.mark.db
 def test_brief_gives_only_verified_pains_and_no_notes_letters_or_addresses(api_db):
     conn, client = api_db
-    company_id = add_company(conn, "Платформа-А", domain="platforma.kz")
+    company_id = add_company(conn, "Платформа-А", domain="platforma.kz", site_text=SITE_TEXT)
     contact_id = add_contact(conn, company_id, "director.ivanov@platforma.kz")
     conn.execute("INSERT INTO drafts (company_id, contact_id, subject, body) VALUES (%s, %s, 'Тема черновика',"
                  " '[Проверить: директор Иванов]\nЗдравствуйте! Текст письма')", (company_id, contact_id))
@@ -380,7 +384,7 @@ def test_brief_gives_only_verified_pains_and_no_notes_letters_or_addresses(api_d
     assert result == {
         "id": company_id, "name": "Платформа-А", "city": "Алматы", "rubric": "Складские услуги",
         "segment": "Склад, логистика, дистрибуция", "fit": "yes", "fit_score": 80,
-        "reason": "Склад и филиалы, считают вручную.",
+        "reason": "Склад и филиалы, считают вручную.", "card_only": False,
         "pains": [{"pain": "Инвентаризация занимает дни и отрывает людей", "evidence": "Склады 11 400 м²",
                    "source": "site"}],
         "emailed": False, "emailed_at": None, "email_subject": None,
@@ -394,7 +398,7 @@ def test_brief_gives_only_verified_pains_and_no_notes_letters_or_addresses(api_d
 def test_brief_gives_up_to_three_verified_pains_in_stored_order(api_db):
     """Решение владельца 30.10.2026: до трёх болей вместо двух, по-прежнему только подтверждённые."""
     conn, client = api_db
-    company_id = add_company(conn, "Платформа-А")
+    company_id = add_company(conn, "Платформа-А", site_text=SITE_TEXT)
     stored = [
         ("Инвентаризация занимает дни и отрывает людей", "Склады 11 400 м²", True),
         ("Вещи теряются, никто не знает, где они", "выдуманная цитата", False),
@@ -415,7 +419,7 @@ def test_brief_gives_up_to_three_verified_pains_in_stored_order(api_db):
 @pytest.mark.db
 def test_brief_hides_contacts_inside_site_texts(api_db):
     conn, client = api_db
-    company_id = add_company(conn, "Платформа-А")
+    company_id = add_company(conn, "Платформа-А", site_text=SITE_TEXT)
     add_qualification(conn, company_id, [
         {"pain": "Инвентаризация занимает дни и отрывает людей", "evidence": "звоните +7 (727) 355-10-20,"
          " пишите ivan@​platforma.kz", "source": "2gis", "verified": True},
@@ -436,6 +440,37 @@ def test_brief_of_company_not_yet_qualified(api_db):
 
     assert (result["fit"], result["fit_score"], result["reason"], result["segment"], result["pains"]) == (
         None, None, None, None, [])
+    assert result["card_only"] is None
+
+
+VERIFIED_PAIN = {"pain": "Цифры в 1С не сходятся с тем, что на полках",
+                 "evidence": "Складское хранение, Железнодорожные грузоперевозки", "source": "2gis", "verified": True}
+
+
+@pytest.mark.db
+def test_brief_marks_card_only_assessment_and_drops_its_pains(api_db):
+    """Ревью 01.11.2026: без сайта и рекламы в 2ГИС боль не доказать; старая оценка с болью из рубрики в справку
+    её не отдаёт, а бот видит, что оценка только по карточке."""
+    conn, client = api_db
+    company_id = add_company(conn, "Платформа-А", rubric="Складское хранение, Железнодорожные грузоперевозки")
+    add_qualification(conn, company_id, [VERIFIED_PAIN], fit="maybe")
+
+    result = brief(client, company_id)
+
+    assert (result["card_only"], result["pains"], result["fit"]) == (True, [], "maybe")
+
+
+@pytest.mark.db
+def test_brief_with_2gis_ad_text_is_not_card_only(api_db):
+    conn, client = api_db
+    company_id = add_company(conn, "Платформа-А")
+    conn.execute("UPDATE companies SET raw = %s WHERE id = %s",
+                 (psycopg.types.json.Jsonb({"ads": {"text": "Ответственное хранение паллет"}}), company_id))
+    add_qualification(conn, company_id, [{**VERIFIED_PAIN, "evidence": "Ответственное хранение паллет"}])
+
+    result = brief(client, company_id)
+
+    assert result["card_only"] is False and len(result["pains"]) == 1
 
 
 @pytest.mark.db
