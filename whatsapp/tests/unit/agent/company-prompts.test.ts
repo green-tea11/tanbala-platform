@@ -19,7 +19,7 @@ describe('инструкции: компания клиента', () => {
   it('ответ: о компании только по данным, один раз, только в answer, без объяснения, откуда известно', () => {
     const text = instruction('reply');
     expect(text).toContain(
-      'Верни JSON с полями outcome, text, stopRequested, companyQuestion и aboutPrice.',
+      'Верни JSON с полями outcome, text, stopRequested, companyQuestion, aboutPrice, stage и usedFacts.',
     );
     expect(text).toMatch(/aboutPrice: true, если клиент в последних сообщениях спрашивал цену/);
     expect(text).toMatch(
@@ -27,7 +27,7 @@ describe('инструкции: компания клиента', () => {
     );
     expect(text).toMatch(/что уже известно о клиенте и его компании/);
     expect(text).toMatch(
-      /один раз и только в исходе answer: этот вопрос входит в первую группу \(компания и чем она занимается\)/,
+      /один раз и только в исходе answer; в таком сообщении других вопросов не задавай/,
     );
     expect(text).toMatch(/В companyQuestion верни confirm.*name.*иначе none/);
     expect(text).toMatch(/Не говори клиенту, откуда известно название компании/);
