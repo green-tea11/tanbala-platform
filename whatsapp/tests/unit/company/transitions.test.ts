@@ -398,6 +398,53 @@ describe('withBrief', () => {
   });
 });
 
+describe('afterReplySent: вопрос об официальном названии', () => {
+  const asking = makeState({
+    freeStepsAtMs: NOW - 5000,
+    statedName: 'Тинькофф',
+    nameAskedAtMs: NOW - 5000,
+    research: { status: 'failed', reason: 'not_in_2gis', finishedAtMs: NOW - 1000 },
+  });
+
+  it('модель вернула name, когда блок просил официальное название: вопрос отмечен', () => {
+    const next = afterReplySent(
+      deepFreeze(asking),
+      'name',
+      'Подскажите, как компания называется официально?',
+      NOW,
+    );
+
+    expect(next.officialNameAskedAtMs).toBe(NOW);
+  });
+
+  it('модель забыла companyQuestion, но в тексте вопрос об официальном названии: тоже отмечен', () => {
+    const next = afterReplySent(asking, 'none', 'А как компания называется официально?', NOW);
+
+    expect(next.officialNameAskedAtMs).toBe(NOW);
+  });
+
+  it('другой ответ без вопроса о названии: не отмечен, то же состояние', () => {
+    expect(afterReplySent(asking, 'none', 'Расскажите, что у вас на хранении?', NOW)).toBe(asking);
+  });
+
+  it('блок не просил официальное название: вопрос о названии его не отмечает', () => {
+    const next = afterReplySent(
+      makeState({ freeStepsAtMs: NOW - 5000 }),
+      'name',
+      'Подскажите, как компания называется официально?',
+      NOW,
+    );
+
+    expect(next).toMatchObject({ nameAskedAtMs: NOW, officialNameAskedAtMs: null });
+  });
+
+  it('уже спрашивали: время первого вопроса не меняется', () => {
+    const asked = { ...asking, officialNameAskedAtMs: NOW - 100 };
+
+    expect(afterReplySent(asked, 'name', 'Как компания называется официально?', NOW)).toBe(asked);
+  });
+});
+
 describe('withStatedCompany', () => {
   const mention = (name: string | null, city: string | null, aliases: readonly string[] = []) => ({
     name,

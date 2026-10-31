@@ -11,6 +11,7 @@ import type {
 import type { BusinessProfileResult } from '../domain/ports.js';
 import { clipText } from './clip-text.js';
 import { normalizeName } from './normalize-name.js';
+import { asksOfficialName, mayAskOfficialName } from './official-name.js';
 import { domainFromProfile } from './profile-domain.js';
 import { candidateInReply, type ReplyMention } from './reply-mention.js';
 
@@ -138,11 +139,26 @@ function replyMention(
 }
 
 /**
+ * Блок просил спросить официальное название (mayAskOfficialName), и ответ его спросил: модель вернула name или в
+ * тексте есть «официально» (asksOfficialName). Время вопроса записывается один раз.
+ */
+function markOfficialNameAsked(
+  state: ChatCompanyState,
+  question: CompanyQuestion,
+  sentText: string,
+  nowMs: number,
+): ChatCompanyState {
+  if (!mayAskOfficialName(state)) return state;
+  if (question !== 'name' && !asksOfficialName(sentText)) return state;
+  return { ...state, officialNameAskedAtMs: nowMs };
+}
+
+/**
  * Ответ бота ушёл клиенту. Кандидат ещё не спрошен, а модель отметила вопрос confirm или его название стоит в
  * предложении-вопросе (см. candidateInReply): вопрос задан, ждём ответа. Название только упомянуто: время вопроса
  * без ожидания (вопрос больше не задаётся, а «да» на другой вопрос компанию не подтвердит). Иначе ожидание прошлого
  * вопроса снимается (ответ на пачку ушёл, «да» или «нет» в ней не было). name: время вопроса о названии (его по
- * тексту не угадываем).
+ * тексту не угадываем), а если блок просил официальное название, ещё и время этого вопроса (markOfficialNameAsked).
  */
 export function afterReplySent(
   state: ChatCompanyState,
@@ -155,7 +171,8 @@ export function afterReplySent(
     mention === 'none'
       ? stopAwaiting(state)
       : markCandidateAsked(state, nowMs, mention === 'asked');
-  return question === 'name' ? markNameAsked(marked, nowMs) : marked;
+  const official = markOfficialNameAsked(marked, question, sentText, nowMs);
+  return question === 'name' ? markNameAsked(official, nowMs) : official;
 }
 
 /** Клиент не ответил на вопрос о кандидате: ожидание снимается, и вопрос больше не задаётся. */

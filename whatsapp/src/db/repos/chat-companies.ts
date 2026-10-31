@@ -137,6 +137,9 @@ const storedSchema: z.ZodType<StoredCompanyState> = z.object({
   nameAskedAtMs: timeMs.nullable(),
   research: researchSchema.nullable(),
   researchStartedAtMs: timeMs.nullable().default(null),
+  officialNameAskedAtMs: timeMs.nullable().default(null),
+  officialResearchStartedAtMs: timeMs.nullable().default(null),
+  researchName: nullableText.default(null),
   adoptFailures: counter,
   confirmedPains: z.array(z.string()),
 });
@@ -161,6 +164,9 @@ export function emptyCompanyState(chatId: ChatId): ChatCompanyState {
     nameAskedAtMs: null,
     research: null,
     researchStartedAtMs: null,
+    officialNameAskedAtMs: null,
+    officialResearchStartedAtMs: null,
+    researchName: null,
     adoptFailures: 0,
     confirmedPains: [],
   };
@@ -175,7 +181,8 @@ export function emptyCompanyState(chatId: ChatId): ChatCompanyState {
  * проверки и вариантов названия в старых записях нет: 0, null и пустой список.
  * save: записывает состояние целиком (по state.chatId), справку без неиспользуемых полей; чата нет => ошибка
  * внешнего ключа, как у остальных репозиториев.
- * countResearchStarts: отметки researchStartedAtMs всех чатов позже границы; испорченная запись не считается.
+ * countResearchStarts: отметки researchStartedAtMs и officialResearchStartedAtMs (вторая проверка по официальному
+ * названию) всех чатов позже границы, каждая отдельным запуском; испорченная запись не считается.
  * Только подготовленные запросы.
  */
 export function createChatCompaniesRepo(db: Database.Database, logger: Logger): ChatCompaniesRepo {
@@ -190,12 +197,17 @@ export function createChatCompaniesRepo(db: Database.Database, logger: Logger): 
   );
   // CASE, а не AND: json_extract на тексте не JSON бросает ошибку, а порядок условий в AND SQLite не обещает.
   const countStarts = db
-    .prepare<[number], number>(
-      `SELECT count(*) FROM chat_companies
-       WHERE CASE WHEN json_valid(state)
-         THEN json_type(state, '$.researchStartedAtMs') = 'integer'
-           AND json_extract(state, '$.researchStartedAtMs') > ?
-         ELSE 0 END`,
+    .prepare<{ sinceMs: number }, number>(
+      `SELECT
+         coalesce(sum(CASE WHEN json_valid(state)
+           THEN json_type(state, '$.researchStartedAtMs') = 'integer'
+             AND json_extract(state, '$.researchStartedAtMs') > @sinceMs
+           ELSE 0 END), 0)
+       + coalesce(sum(CASE WHEN json_valid(state)
+           THEN json_type(state, '$.officialResearchStartedAtMs') = 'integer'
+             AND json_extract(state, '$.officialResearchStartedAtMs') > @sinceMs
+           ELSE 0 END), 0)
+       FROM chat_companies`,
     )
     .pluck();
   return {
@@ -216,7 +228,7 @@ export function createChatCompaniesRepo(db: Database.Database, logger: Logger): 
     },
     countResearchStarts(sinceMs: number): number {
       assertTimeMs(sinceMs, 'sinceMs');
-      return countStarts.get(sinceMs) ?? 0;
+      return countStarts.get({ sinceMs }) ?? 0;
     },
   };
 }

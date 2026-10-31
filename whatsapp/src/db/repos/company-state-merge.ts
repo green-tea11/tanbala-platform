@@ -49,6 +49,7 @@ export function mergeCompanyStates<T extends StoredCompanyState>(
   const rejectedIds = [...new Set([...older.rejectedIds, ...fresher.rejectedIds])];
   const confirmed = fresher.confirmed ?? older.confirmed;
   const named = fresher.statedName === null ? older : fresher;
+  const researched = fresher.research === null ? older : fresher;
   return {
     ...fresher,
     profileKind: profile.profileKind,
@@ -65,8 +66,14 @@ export function mergeCompanyStates<T extends StoredCompanyState>(
     confirmed,
     briefFailures: Math.max(fresher.briefFailures, older.briefFailures),
     nameAskedAtMs: fresher.nameAskedAtMs ?? older.nameAskedAtMs,
-    research: fresher.research ?? older.research,
+    research: researched.research,
+    researchName: researched.researchName,
     researchStartedAtMs: laterTime(fresher.researchStartedAtMs, older.researchStartedAtMs),
+    officialNameAskedAtMs: fresher.officialNameAskedAtMs ?? older.officialNameAskedAtMs,
+    officialResearchStartedAtMs: laterTime(
+      fresher.officialResearchStartedAtMs,
+      older.officialResearchStartedAtMs,
+    ),
     adoptFailures: Math.max(fresher.adoptFailures, older.adoptFailures),
     confirmedPains:
       fresher.confirmedPains.length > 0 ? fresher.confirmedPains : older.confirmedPains,

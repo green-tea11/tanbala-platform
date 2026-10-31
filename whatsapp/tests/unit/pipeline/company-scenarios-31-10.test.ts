@@ -122,6 +122,74 @@ describe('31.10: пока идёт проверка новой компании'
   });
 });
 
+const OFFICIAL_JOB_ID = '6b2f3c4d-5e6f-4a71-8b9c-0d1e2f3a4b5c';
+const ASK_OFFICIAL =
+  'Всё просто. На каждую вещь на хранении клеится метка, а антенны на входе и выходе сами отмечают, что пришло и что ушло. Подскажите, как компания называется официально?';
+const OFFICIAL_LINE = '«Подскажите, как компания называется официально?» (companyQuestion: name)';
+const NOT_FOUND =
+  'Компанию клиента найти не удалось. О компании больше не спрашивай и ничего о ней не утверждай. Боль бери из consult.md по бизнесу клиента.';
+
+describe('31.10: проверка новой компании ничего не нашла', () => {
+  it('один вопрос об официальном названии, вторая проверка по ответу, снова ничего: боли отрасли, о компании больше не спрашивать', async () => {
+    const s = createScenario({
+      api: {
+        research: (body) =>
+          json(202, {
+            job_id: (body as { name: string }).name === 'Тинькофф' ? JOB_ID : OFFICIAL_JOB_ID,
+          }),
+        status: () => json(200, { status: 'failed', brief: null, reason: 'not_in_2gis' }),
+      },
+    });
+
+    await s.say('Здравствуйте', turn(answer(INTRO, 'intro', 'name')));
+    const named = await s.say(
+      'Тинькофф, банки',
+      turn(answer(HOOK, 'hook'), {
+        companyName: 'Тинькофф',
+        companyAliases: [T_BANK, 'Tinkoff'],
+        profile: BANK,
+      }),
+    );
+    const asked = await s.say(
+      'Нет, расскажите подробнее',
+      turn(answer(ASK_OFFICIAL, 'explain', 'name')),
+    );
+    const official = await s.say(
+      'АО Тинькофф Банк',
+      turn(answer(EXPLAIN, 'explain'), { companyName: 'АО Тинькофф Банк' }),
+    );
+    const after = await s.say('Склад и архив', turn(answer(HOOK, 'details')));
+    const later = await s.say('Интересно, а что дальше?', turn(answer(EXPLAIN, 'details')));
+
+    // Первая проверка: по названию клиента и его вариантам.
+    expect(named.api.filter((call) => call.method === 'POST').map((call) => call.body)).toEqual([
+      { name: 'Тинькофф', aliases: [T_BANK, 'Tinkoff'], city: null, phone: null, domain: null },
+    ]);
+    // Проверка ничего не нашла: один раз спросить официальное название.
+    expect(asked.data('reply')).toContain(OFFICIAL_LINE);
+    expect(asked.toClient).toEqual([ASK_OFFICIAL]);
+    expect(s.state().officialNameAskedAtMs).toBe(asked.atMs);
+    // Клиент назвал официальное название: поиск и вторая, последняя проверка по нему.
+    expect(official.data('reply')).not.toContain(OFFICIAL_LINE);
+    expect(official.api.map((call) => `${call.method} ${call.path}`)).toEqual([
+      'GET /internal/lookup',
+      'POST /internal/research',
+    ]);
+    expect(official.api[1]?.body).toMatchObject({ name: 'АО Тинькофф Банк' });
+    // Снова ничего: о компании больше не спрашивать, боль из отрасли.
+    for (const reply of [after, later]) {
+      expect(reply.data('reply')).toContain(NOT_FOUND);
+      expect(reply.data('reply')).not.toMatch(/официально|companyQuestion: name/u);
+    }
+    expect(later.api).toEqual([]);
+    expect(s.api.filter((call) => call.method === 'POST')).toHaveLength(2);
+    expect(s.state()).toMatchObject({
+      research: { status: 'failed', reason: 'not_in_2gis' },
+      officialResearchStartedAtMs: official.atMs,
+    });
+  });
+});
+
 describe('31.10: «Тинькофф, банки», в базе почты бренд «Т-Банк»', () => {
   it('поиск по «Тинькофф» пуст, по варианту «Т-Банк» найден: компания подтверждена без вопроса, следующий ответ видит боли справки', async () => {
     const s = createScenario({

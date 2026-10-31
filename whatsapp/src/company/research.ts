@@ -15,6 +15,7 @@ import { isTransientBriefFailure } from './api-failures.js';
 import type { CompanyEnv } from './env.js';
 import { logFailure } from './log.js';
 import { statedNames } from './lookup-step.js';
+import { normalizeName } from './normalize-name.js';
 import { offerFound } from './offer.js';
 import { searchPhone } from './search-phone.js';
 import { candidateFromBrief, isRunning, type RunningResearch } from './transitions.js';
@@ -236,17 +237,53 @@ function mayHaveStarted(result: CompanyApiResult<ResearchStart>): boolean {
 }
 
 /**
- * Запуск проверки новой компании (один раз на чат). Сначала свой дневной предел на весь бот: за 24 часа уже
- * RESEARCH_MAX_STARTS_PER_DAY запусков => проверка не запускается, состояние то же (повтор позже), предупреждение
- * без названий. Иначе отметка запуска пишется в базу до запроса (так предел видит запуск, пока ждём ответа) и
- * снимается, если запуск не мог начать работу в проекте B. Компания уже есть: см. adoptReadyCompany; задача
- * поставлена: queued; отказ: см. refuseResearch.
+ * Какая проверка в чате: первая (по названию клиента) или вторая, по официальному названию. У каждой своя отметка
+ * запуска (researchStartedAtMs и officialResearchStartedAtMs): дневной предел на весь бот считает обе.
+ */
+export type ResearchSlot = 'first' | 'official';
+
+function startedAtOf(state: ChatCompanyState, slot: ResearchSlot): number | null {
+  return slot === 'first' ? state.researchStartedAtMs : state.officialResearchStartedAtMs;
+}
+
+function withStartedAt(
+  state: ChatCompanyState,
+  slot: ResearchSlot,
+  startedAtMs: number | null,
+): ChatCompanyState {
+  return slot === 'first'
+    ? { ...state, researchStartedAtMs: startedAtMs }
+    : { ...state, officialResearchStartedAtMs: startedAtMs };
+}
+
+/** Ответ на запуск: компания уже есть (adoptReadyCompany), задача поставлена (queued) или отказ (refuseResearch). */
+function afterStart(
+  env: CompanyEnv,
+  chatId: ChatId,
+  state: ChatCompanyState,
+  result: CompanyApiResult<ResearchStart>,
+): ChatCompanyState | Promise<ChatCompanyState> {
+  if (!result.ok) return refuseResearch(env, chatId, state, result.failure);
+  if (result.value.kind === 'done') {
+    return adoptReadyCompany(env, chatId, state, result.value.companyId);
+  }
+  return queueResearch(env, chatId, state, result.value.jobId);
+}
+
+/**
+ * Запуск проверки новой компании: первая на чат или вторая по официальному названию (slot). Сначала свой дневной
+ * предел на весь бот: за 24 часа уже RESEARCH_MAX_STARTS_PER_DAY запусков => проверка не запускается, состояние то же
+ * (повтор позже), предупреждение без названий. Иначе отметка запуска этой проверки пишется в базу до запроса (так
+ * предел видит запуск, пока ждём ответа) и снимается, если запуск не мог начать работу в проекте B. Компания уже
+ * есть: см. adoptReadyCompany; задача поставлена: queued; отказ: см. refuseResearch. Проверка записана (не повтор
+ * позже): запоминается её название после нормализации (researchName).
  */
 export async function startResearch(
   env: CompanyEnv,
   chat: Chat,
   state: ChatCompanyState,
   name: string,
+  slot: ResearchSlot = 'first',
 ): Promise<ChatCompanyState> {
   const nowMs = env.clock.now();
   const windowStartMs = Math.max(0, nowMs - RESEARCH_WINDOW_MS);
@@ -257,15 +294,12 @@ export async function startResearch(
     );
     return state;
   }
-  const reserved = { ...state, researchStartedAtMs: nowMs };
+  const reserved = withStartedAt(state, slot, nowMs);
   env.repo.save(reserved, nowMs);
   const result = await env.directory.startResearch(researchRequest(chat, state, name));
   const started = mayHaveStarted(result)
     ? reserved
-    : { ...reserved, researchStartedAtMs: state.researchStartedAtMs };
-  if (!result.ok) return refuseResearch(env, chat.id, started, result.failure);
-  if (result.value.kind === 'done') {
-    return adoptReadyCompany(env, chat.id, started, result.value.companyId);
-  }
-  return queueResearch(env, chat.id, started, result.value.jobId);
+    : withStartedAt(reserved, slot, startedAtOf(state, slot));
+  const next = await afterStart(env, chat.id, started, result);
+  return next.research === started.research ? next : { ...next, researchName: normalizeName(name) };
 }

@@ -61,6 +61,9 @@ function fullState(chatId: ChatId): ChatCompanyState {
       checkedAtMs: NOW + 6,
     },
     researchStartedAtMs: NOW,
+    officialNameAskedAtMs: NOW + 7,
+    officialResearchStartedAtMs: NOW + 8,
+    researchName: 'платформа а',
     adoptFailures: 2,
     confirmedPains: ['Инвентаризация занимает дни', 'Пересорт при приёмке'],
   });
@@ -150,6 +153,9 @@ describe('createChatCompaniesRepo: чтение и запись', () => {
       nameAskedAtMs: null,
       research: null,
       researchStartedAtMs: null,
+      officialNameAskedAtMs: null,
+      officialResearchStartedAtMs: null,
+      researchName: null,
       adoptFailures: 0,
       confirmedPains: [],
     });
@@ -272,6 +278,9 @@ describe('createChatCompaniesRepo: чтение и запись', () => {
       'researchStartedAtMs',
       'adoptFailures',
       'statedAliases',
+      'officialNameAskedAtMs',
+      'officialResearchStartedAtMs',
+      'researchName',
     ].reduce((stored, key) => omit(stored, key), storedOf(full));
     insertRaw(db, chatId, JSON.stringify(old));
 
@@ -463,17 +472,24 @@ describe('createChatCompaniesRepo: испорченная запись', () => {
 describe('createChatCompaniesRepo: дневной предел проверок новых компаний', () => {
   let nextChat = 0;
 
-  /** Новый чат с отметкой запуска проверки в atMs (null: не запускал). */
+  /**
+   * Новый чат с отметкой запуска проверки в atMs (null: не запускал) и, если задано, второй проверки по официальному
+   * названию в officialAtMs.
+   */
   function chatWithStart(
     db: Database.Database,
     repo: ChatCompaniesRepo,
     atMs: number | null,
+    officialAtMs: number | null = null,
   ): void {
     nextChat += 1;
     const chatId = insertChat(db, {
       replyJid: `77000001${String(nextChat).padStart(3, '0')}@s.whatsapp.net` as Jid,
     });
-    repo.save(makeState({ chatId, researchStartedAtMs: atMs }), NOW);
+    repo.save(
+      makeState({ chatId, researchStartedAtMs: atMs, officialResearchStartedAtMs: officialAtMs }),
+      NOW,
+    );
   }
 
   it('записей нет: ноль', () => {
@@ -491,6 +507,15 @@ describe('createChatCompaniesRepo: дневной предел проверок 
     chatWithStart(db, repo, null);
 
     expect(repo.countResearchStarts(NOW - 1000)).toBe(2);
+  });
+
+  it('вторая проверка по официальному названию считается отдельным запуском: предел на весь бот не обойти', () => {
+    const { db, repo } = setup();
+    chatWithStart(db, repo, NOW - 500, NOW);
+    chatWithStart(db, repo, NOW - 5000, NOW - 100);
+    chatWithStart(db, repo, NOW - 5000, NOW - 5000);
+
+    expect(repo.countResearchStarts(NOW - 1000)).toBe(3);
   });
 
   it('испорченная запись (не JSON) не ломает счёт и не считается', () => {

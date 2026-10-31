@@ -296,6 +296,118 @@ describe('identifyAfterReply: шаг г, варианты названия (ре
   });
 });
 
+describe('identifyAfterReply: вторая проверка по официальному названию (решение владельца 30.10.2026)', () => {
+  /** Первая проверка по «Тинькофф» не нашла компанию, бот спросил официальное название. */
+  function afterOfficialQuestion(overrides: Partial<ChatCompanyState> = {}): ChatCompanyState {
+    return named({
+      statedName: 'Тинькофф',
+      lookedUpName: 'тинькофф',
+      researchName: 'тинькофф',
+      researchStartedAtMs: NOW - 10 * MINUTE_MS,
+      research: { status: 'failed', reason: 'not_in_2gis', finishedAtMs: NOW - 5 * MINUTE_MS },
+      officialNameAskedAtMs: NOW - MINUTE_MS,
+      ...overrides,
+    });
+  }
+
+  it('клиент назвал официальное название: поиск по нему, ничего нет, вторая проверка с отдельной отметкой запуска', async () => {
+    const h = createHarness({
+      state: afterOfficialQuestion({ statedName: 'АО «Тинькофф Банк»' }),
+      directory: { lookup: () => ok([]), startResearch: () => QUEUED },
+    });
+
+    await h.service.identifyAfterReply(makeChat());
+
+    expect(h.directory.lookups()).toEqual([{ by: 'name', name: 'АО «Тинькофф Банк»' }]);
+    expect(h.directory.calls.find((call) => call.method === 'startResearch')).toMatchObject({
+      request: { name: 'АО «Тинькофф Банк»' },
+    });
+    expect(h.repo.current()).toMatchObject({
+      researchStartedAtMs: NOW - 10 * MINUTE_MS,
+      officialResearchStartedAtMs: NOW,
+      researchName: 'тинькофф банк',
+      research: { status: 'queued', jobId: jobIdOf('job-1') },
+    });
+  });
+
+  it('клиент повторил то же название: второй проверки нет', async () => {
+    const h = createHarness({
+      state: afterOfficialQuestion({ statedName: 'ТОО «Тинькофф»' }),
+      directory: { startResearch: () => QUEUED },
+    });
+
+    await h.service.identifyAfterReply(makeChat());
+
+    expect(h.directory.calls).toEqual([]);
+  });
+
+  it('вторая проверка уже была: третьей нет, даже если клиент назвал ещё одно название', async () => {
+    const h = createHarness({
+      state: afterOfficialQuestion({
+        statedName: 'Третье',
+        researchName: 'второе',
+        officialResearchStartedAtMs: NOW - 2 * MINUTE_MS,
+      }),
+      directory: { lookup: () => ok([]), startResearch: () => QUEUED },
+    });
+
+    await h.service.identifyAfterReply(makeChat());
+
+    expect(h.directory.count('startResearch')).toBe(0);
+  });
+
+  it('официальное название не спрашивали: проверка по-прежнему одна на чат', async () => {
+    const h = createHarness({
+      state: afterOfficialQuestion({ statedName: 'Бета', officialNameAskedAtMs: null }),
+      directory: { lookup: () => ok([]), startResearch: () => QUEUED },
+    });
+
+    await h.service.identifyAfterReply(makeChat());
+
+    expect(h.directory.count('startResearch')).toBe(0);
+  });
+
+  it('дневной предел на весь бот исчерпан (вторые проверки других чатов тоже в счёт): вторая проверка позже', async () => {
+    const h = createHarness({
+      state: afterOfficialQuestion({ statedName: 'Тинькофф Банк' }),
+      directory: { lookup: () => ok([]), startResearch: () => QUEUED },
+    });
+    // Свой первый запуск и 9 запусков в 5 других чатах: в каждом первая и вторая проверка, всего 10 за сутки.
+    for (let index = 0; index < 5; index += 1) {
+      h.repo.seed(
+        makeState({
+          chatId: chatIdOf(200 + index),
+          researchStartedAtMs: NOW - 60 * MINUTE_MS,
+          officialResearchStartedAtMs: index < 4 ? NOW - 30 * MINUTE_MS : null,
+        }),
+      );
+    }
+
+    await h.service.identifyAfterReply(makeChat());
+    expect(h.directory.count('startResearch')).toBe(0);
+    h.clock.advance(24 * 60 * MINUTE_MS);
+    await h.service.identifyAfterReply(makeChat());
+
+    expect(h.directory.count('startResearch')).toBe(1);
+    expect(h.repo.current().officialResearchStartedAtMs).toBe(NOW + 24 * 60 * MINUTE_MS);
+  });
+
+  it('запуск не дошёл до проекта B (сеть): отметка второй проверки снимается, повтор позже', async () => {
+    const h = createHarness({
+      state: afterOfficialQuestion({ statedName: 'Тинькофф Банк' }),
+      directory: { lookup: () => ok([]), startResearch: () => fail('unavailable') },
+    });
+
+    await h.service.identifyAfterReply(makeChat());
+
+    expect(h.repo.current()).toMatchObject({
+      officialResearchStartedAtMs: null,
+      researchName: 'тинькофф',
+      research: { status: 'failed', reason: 'not_in_2gis' },
+    });
+  });
+});
+
 describe('identifyAfterReply: проверка новой компании', () => {
   it('компания не найдена: запускается проверка с названием, городом, номером и доменом', async () => {
     const h = createHarness({

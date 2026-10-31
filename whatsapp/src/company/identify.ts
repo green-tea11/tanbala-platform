@@ -7,6 +7,7 @@ import { logFailure } from './log.js';
 import { lookupCompany, lookupStatedNames, statedNames } from './lookup-step.js';
 import { normalizeName } from './normalize-name.js';
 import { offerFound } from './offer.js';
+import { mayResearchOfficialName } from './official-name.js';
 import { recheckCandidate } from './recheck.js';
 import { startResearch } from './research.js';
 import { candidateFromLookup } from './transitions.js';
@@ -22,7 +23,8 @@ const MAX_LOGO_NAME_CHARS = 200;
  * нормализации то же): повторный поиск не нужен, но проверка новой компании, которой ещё не было, запускается (так
  * повторяется запуск, не дошедший до проекта B). Поиск не получил ответа по существу (см. LookupOutcome retry):
  * ничего не запоминается и проверка не запускается, повтор позже. Не нашли ни по названию, ни по вариантам и проверки
- * ещё не было: запуск проверки новой компании (один раз на чат) с теми же вариантами.
+ * ещё не было: запуск проверки новой компании с теми же вариантами. Первая ничего не нашла, бот спросил официальное
+ * название, клиент назвал новое: вторая и последняя проверка в чате (mayResearchOfficialName).
  */
 async function identifyByName(
   env: CompanyEnv,
@@ -44,7 +46,10 @@ async function identifyByName(
       return offerFound(env, chat.id, searched, found);
     }
   }
-  return searched.research === null ? startResearch(env, chat, searched, name) : searched;
+  if (searched.research === null) return startResearch(env, chat, searched, name);
+  return mayResearchOfficialName(searched, name)
+    ? startResearch(env, chat, searched, name, 'official')
+    : searched;
 }
 
 /** Кандидат по названию, прочитанному с логотипа на фото профиля; null: фото нет, название не прочитано или не найдено. */

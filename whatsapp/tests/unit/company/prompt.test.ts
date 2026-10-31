@@ -90,6 +90,63 @@ describe('buildPrompt: компания неизвестна', () => {
   );
 });
 
+describe('buildPrompt: официальное название (решение владельца 30.10.2026)', () => {
+  const NOT_IN_2GIS = { status: 'failed', reason: 'not_in_2gis', finishedAtMs: NOW } as const;
+  const named = { ...STEPS_DONE, statedName: 'Тинькофф', nameAskedAtMs: NOW - 5000 } as const;
+
+  it('проверка по названию клиента не нашла компанию в 2ГИС: один раз спросить официальное название', () => {
+    expect(buildPrompt(makeState({ ...named, research: NOT_IN_2GIS }))).toEqual({
+      kind: 'ask_official',
+    });
+  });
+
+  it('проверка нашла не ту компанию (клиент от неё отказался): спросить официальное название', () => {
+    const research = { status: 'done', companyId: companyIdOf(51), finishedAtMs: NOW } as const;
+
+    expect(buildPrompt(makeState({ ...named, research, rejectedIds: [companyIdOf(51)] }))).toEqual({
+      kind: 'ask_official',
+    });
+  });
+
+  it('официальное название уже спрашивали, а компании нет: больше о компании не спрашивать', () => {
+    expect(
+      buildPrompt(
+        makeState({ ...named, research: NOT_IN_2GIS, officialNameAskedAtMs: NOW - 1000 }),
+      ),
+    ).toEqual({ kind: 'not_found' });
+  });
+
+  it('вторая проверка не удалась по другой причине: тоже больше не спрашивать', () => {
+    const research = { status: 'failed', reason: 'rate_limited', finishedAtMs: NOW } as const;
+
+    expect(
+      buildPrompt(makeState({ ...named, research, officialNameAskedAtMs: NOW - 1000 })),
+    ).toEqual({ kind: 'not_found' });
+  });
+
+  it('вторая проверка идёт: поиск, а не вопрос', () => {
+    expect(
+      buildPrompt(makeState({ ...named, research: RUNNING, officialNameAskedAtMs: NOW - 1000 })),
+    ).toEqual({ kind: 'searching' });
+  });
+
+  it.each([
+    ['дневной предел проверок', 'rate_limited'],
+    ['сбой проекта B', 'error'],
+    ['город не поддерживается', 'city_unsupported'],
+  ] as const)(
+    'проверка не удалась (%s): официальное название не спрашивается',
+    (_label, reason) => {
+      const research = { status: 'failed', reason, finishedAtMs: NOW } as const;
+
+      expect(buildPrompt(makeState({ ...named, research }))).toEqual({
+        kind: 'unknown',
+        askName: false,
+      });
+    },
+  );
+});
+
 describe('buildPrompt: кандидат', () => {
   it.each<[CandidateSource, boolean]>([
     ['message', true],

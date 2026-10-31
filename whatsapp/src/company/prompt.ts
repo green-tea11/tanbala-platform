@@ -4,6 +4,7 @@ import type {
   CompanyPrompt,
   ConfirmedCompany,
 } from '../domain/company.js';
+import { mayAskOfficialName } from './official-name.js';
 import { promptPains, promptRubric } from './pains.js';
 import { isRunning } from './transitions.js';
 
@@ -55,13 +56,16 @@ function mayAskName(state: ChatCompanyState): boolean {
 
 /**
  * Блок о компании для вызовов ответа, проверки и оценки интереса. Порядок: подтверждённая компания, кандидат
- * (спрошенный и нет), идущая проверка новой компании, иначе компания неизвестна (название можно один раз спросить,
- * когда остальные шаги пройдены).
+ * (спрошенный и нет), идущая проверка новой компании, проверка ничего не нашла (один раз спросить официальное
+ * название), официальное название уже спрашивали (о компании больше не спрашивать), иначе компания неизвестна
+ * (название можно один раз спросить, когда остальные шаги пройдены).
  */
 export function buildPrompt(state: ChatCompanyState): CompanyPrompt {
   const { confirmed, candidate, research } = state;
   if (confirmed !== null) return confirmedPrompt(confirmed);
   if (candidate !== null) return candidatePrompt(candidate);
   if (isRunning(research)) return { kind: 'searching' };
+  if (mayAskOfficialName(state)) return { kind: 'ask_official' };
+  if (state.officialNameAskedAtMs !== null) return { kind: 'not_found' };
   return { kind: 'unknown', askName: mayAskName(state) };
 }

@@ -202,7 +202,7 @@ export interface MemoryRepo extends ChatCompaniesRepo {
 
 /**
  * Репозиторий в памяти по документации порта ChatCompaniesRepo: записи нет => пустое состояние; дневной предел
- * проверок считает отметки researchStartedAtMs всех чатов. Все состояния заморожены: сервис, который изменил бы
+ * проверок считает отметки researchStartedAtMs и officialResearchStartedAtMs всех чатов. Все состояния заморожены: сервис, который изменил бы
  * состояние на месте, а не собрал новое, упал бы ошибкой.
  */
 export function createMemoryRepo(events: string[] = []): MemoryRepo {
@@ -230,7 +230,9 @@ export function createMemoryRepo(events: string[] = []): MemoryRepo {
       stored.set(state.chatId, state);
     },
     countResearchStarts: (sinceMs) =>
-      [...stored.values()].filter((state) => (state.researchStartedAtMs ?? -1) > sinceMs).length,
+      [...stored.values()]
+        .flatMap((state) => [state.researchStartedAtMs, state.officialResearchStartedAtMs])
+        .filter((startedAtMs) => (startedAtMs ?? -1) > sinceMs).length,
     seed: (state) => {
       stored.set(state.chatId, deepFreeze(state));
     },

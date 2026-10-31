@@ -256,7 +256,7 @@ describe('prepare: опрос идущей проверки новой комп�
     });
   });
 
-  it('завершена, но клиент уже отклонил эту компанию: кандидата нет, проверка done', async () => {
+  it('завершена, но клиент уже отклонил эту компанию: кандидата нет, проверка done, бот спросит официальное название', async () => {
     const h = createHarness({
       state: stateWithResearch(running(MINUTE_MS, 10 * SECOND_MS), {
         rejectedIds: [companyIdOf(51)],
@@ -268,7 +268,7 @@ describe('prepare: опрос идущей проверки новой комп�
 
     const turn = await h.service.prepare(makeChat(), []);
 
-    expect(turn.prompt).toEqual({ kind: 'unknown', askName: false });
+    expect(turn.prompt).toEqual({ kind: 'ask_official' });
     expect(h.repo.current()).toMatchObject({
       candidate: null,
       research: { status: 'done', companyId: companyIdOf(51) },
@@ -322,7 +322,10 @@ describe('prepare: опрос идущей проверки новой комп�
 
       const turn = await h.service.prepare(makeChat(), []);
 
-      expect(turn.prompt).toEqual({ kind: 'unknown', askName: false });
+      // 2ГИС не нашёл карточку: бот один раз спросит официальное название; другие причины вопросом не помочь.
+      expect(turn.prompt).toEqual(
+        reason === 'not_in_2gis' ? { kind: 'ask_official' } : { kind: 'unknown', askName: false },
+      );
       expect(h.repo.current().research).toEqual({ status: 'failed', reason, finishedAtMs: NOW });
     },
   );
