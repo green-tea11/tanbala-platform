@@ -23,7 +23,7 @@ import {
   type ReplyFlowDeps,
   type ReplyVerdict,
 } from '../../../src/pipeline/reply-flow.js';
-import { questionText } from '../../../src/pipeline/safe-questions.js';
+import { questionText, REACTIONS } from '../../../src/pipeline/safe-questions.js';
 
 // Агент и репозиторий поддельные; шаги пишутся в общий журнал calls, по нему видно порядок.
 
@@ -383,7 +383,9 @@ describe('pipeline/reply-flow: ответ проходит проверки', ()
   });
 
   it('номер сильной стороны в тексте убирает код до проверок: без повтора, ревью и клиент получают текст без него', async () => {
-    const h = setup({ drafts: [answerDraft('Учёт подбираем F7 под задачу (F8). Что вы храните?')] });
+    const h = setup({
+      drafts: [answerDraft('Учёт подбираем F7 под задачу (F8). Что вы храните?')],
+    });
 
     const verdict = await flow(h);
 
@@ -493,7 +495,7 @@ describe('pipeline/reply-flow: повтор с замечаниями', () => {
 
     const verdict = await flow(h);
 
-    expect(verdict).toEqual(sent(questionText('hook', false)));
+    expect(verdict).toEqual(sent(`${REACTIONS.greeting} ${questionText('hook', false)}`));
     expect(h.calls).toEqual(['assess', 'draft', 'save', 'review', 'draft:retry', 'review']);
   });
 
@@ -503,7 +505,7 @@ describe('pipeline/reply-flow: повтор с замечаниями', () => {
 
     const verdict = await flow(h);
 
-    expect(verdict).toEqual(sent(questionText('hook', false)));
+    expect(verdict).toEqual(sent(`${REACTIONS.greeting} ${questionText('hook', false)}`));
     expect(h.reviewDraft).not.toHaveBeenCalled();
   });
 
@@ -618,7 +620,9 @@ describe('pipeline/reply-flow: передачу решает вызов отве
       assessment: assessed('hot'),
     });
 
-    await expect(flow(h)).resolves.toEqual(sent(questionText('hook', false)));
+    await expect(flow(h)).resolves.toEqual(
+      sent(`${REACTIONS.greeting} ${questionText('hook', false)}`),
+    );
   });
 
   it('клиент не горячий: ревью зовётся как обычно', async () => {

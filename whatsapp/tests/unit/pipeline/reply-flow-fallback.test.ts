@@ -13,7 +13,11 @@ import type {
   TurnSignals,
 } from '../../../src/domain/types.js';
 import { decideReply, requestDraft, type ReplyFlowDeps } from '../../../src/pipeline/reply-flow.js';
-import { INTRO_BUSINESS_QUESTION, questionText } from '../../../src/pipeline/safe-questions.js';
+import {
+  INTRO_BUSINESS_QUESTION,
+  questionText,
+  REACTIONS,
+} from '../../../src/pipeline/safe-questions.js';
 
 // Два провала проверок (пункт 2 задания 29.10.2026): чат не уходит менеджеру, клиенту уходит фиксированный безопасный
 // вопрос (с 30.10.2026 один открытый по этапу и первому недостающему для расчёта), не тот, что бот уже задавал.
@@ -67,12 +71,19 @@ const EVERYTHING: ClientProfile = {
   oneCName: 'УТ 11',
 };
 
+/** Бот в чате ещё не писал: перед готовым вопросом приветствие (пункт 3 задания 01.11.2026). */
+function greeted(question: string): string {
+  return `${REACTIONS.greeting} ${question}`;
+}
+
 /** Бот уже на этапе деталей: безопасный вопрос о недостающем для расчёта. */
 const ON_DETAILS: ChatProgress = { priceAsks: 0, refused: false, lastStage: 'details' };
 
 interface Case {
   readonly drafts?: readonly string[];
   readonly problems?: readonly string[];
+  /** Итоги проверки по вызовам (последний повторяется); есть поле => problems не читается. */
+  readonly reviews?: readonly ReviewResult[];
   readonly profile?: ClientProfile;
   readonly signals?: TurnSignals;
   readonly lastBot?: string;
@@ -112,9 +123,10 @@ function run(c: Case) {
       reviewDraft: () => {
         reviews += 1;
         const problems = c.problems ?? [];
+        const scripted = c.reviews?.[Math.min(reviews, c.reviews.length) - 1];
         return Promise.resolve<LlmResult<ReviewResult>>({
           ok: true,
-          value: problems.length === 0 ? { ok: true } : { ok: false, problems },
+          value: scripted ?? (problems.length === 0 ? { ok: true } : { ok: false, problems }),
         });
       },
       assessInterest: () =>
@@ -166,20 +178,20 @@ describe('pipeline/reply-flow: два провала проверок дают �
   it('проверка кодом дважды: вопрос знакомства (бизнес неизвестен), чат у бота', async () => {
     const r = await run({ drafts: [PRICED, PRICED] });
 
-    expect(r.verdict).toEqual({ kind: 'send', text: INTRO_BUSINESS_QUESTION });
+    expect(r.verdict).toEqual({ kind: 'send', text: greeted(INTRO_BUSINESS_QUESTION) });
   });
 
   it('ревью дважды: тот же безопасный вопрос; сам вопрос второй раз не проверяется', async () => {
     const r = await run({ drafts: [CLEAN, CLEAN], problems: ['Утверждение не из документов'] });
 
-    expect(r.verdict).toEqual({ kind: 'send', text: INTRO_BUSINESS_QUESTION });
+    expect(r.verdict).toEqual({ kind: 'send', text: greeted(INTRO_BUSINESS_QUESTION) });
     expect(r.reviews()).toBe(2);
   });
 
   it('бизнес известен, бот ещё не был на крючке: вопрос, знает ли клиент RFID', async () => {
     const r = await run({ profile: { ...EMPTY, business: 'склад' } });
 
-    expect(r.verdict).toEqual({ kind: 'send', text: questionText('hook', false) });
+    expect(r.verdict).toEqual({ kind: 'send', text: greeted(questionText('hook', false)) });
   });
 
   it('прошлым сообщением бот спросил, что на хранении: этот вопрос второй раз не задаётся', async () => {
@@ -189,7 +201,11 @@ describe('pipeline/reply-flow: два провала проверок дают �
       progress: ON_DETAILS,
     });
 
-    expect(r.verdict).toEqual({ kind: 'send', text: questionText('itemCount', false) });
+    // Бизнес клиент назвал в этом ходе: реакция о расчёте.
+    expect(r.verdict).toEqual({
+      kind: 'send',
+      text: `${REACTIONS.newData} ${questionText('itemCount', false)}`,
+    });
   });
 
   it('клиент спросил цену: перед вопросом фраза об ориентире, сигналы хода записываются', async () => {
@@ -208,7 +224,7 @@ describe('pipeline/reply-flow: два провала проверок дают �
 
     expect(r.verdict).toEqual({
       kind: 'send',
-      text: questionText('intro', false),
+      text: greeted(questionText('intro', false)),
       companyQuestion: 'name',
     });
   });
@@ -237,6 +253,18 @@ describe('pipeline/reply-flow: два провала проверок дают �
     });
   });
 
+  it('бот уже писал, нового для расчёта нет: реакция «Спасибо!» перед вопросом', async () => {
+    const r = await run({
+      lastBot: 'Расскажите, что у вас лежит на хранении и в каком виде?',
+      progress: ON_DETAILS,
+    });
+
+    expect(r.verdict).toEqual({
+      kind: 'send',
+      text: `${REACTIONS.thanks} ${INTRO_BUSINESS_QUESTION}`,
+    });
+  });
+
   it('в лог код вопроса, без текста черновика и вопроса', async () => {
     const r = await run({});
 
@@ -244,5 +272,57 @@ describe('pipeline/reply-flow: два провала проверок дают �
     expect(dump).toContain('"question":"intro"');
     expect(dump).not.toContain('500 000');
     expect(dump).not.toContain('Расскажите');
+  });
+});
+
+describe('pipeline/reply-flow: второй черновик с замечаниями только о стиле (пункт 3 задания 01.11.2026)', () => {
+  const STYLE: ReviewResult = {
+    ok: false,
+    problems: ['Вопрос о новом в месяц уже задавался прошлым сообщением'],
+    styleOnly: true,
+  };
+  const FACT: ReviewResult = {
+    ok: false,
+    problems: ['«Расхождения видны сразу» нет в документах'],
+  };
+  const SECOND = 'Остатки в 1С часто расходятся с полками. Сколько нового приходит за месяц?';
+
+  it('«склад»: первый с замечанием о фактах, второй только о стиле => второй уходит клиенту', async () => {
+    const r = await run({ drafts: [CLEAN, SECOND], reviews: [FACT, STYLE] });
+
+    expect(r.verdict).toEqual({ kind: 'send', text: SECOND });
+    expect(r.reviews()).toBe(2);
+    expect(r.logs).toContainEqual({
+      context: { chatId: CHAT_ID, problems: 1 },
+      message: `Замечания проверки только о стиле, ответ уходит клиенту: чат #${CHAT_ID}`,
+    });
+  });
+
+  it('оба раза только о стиле => уходит второй черновик, а не первый', async () => {
+    const r = await run({ drafts: [CLEAN, SECOND], reviews: [STYLE, STYLE] });
+
+    expect(r.verdict).toEqual({ kind: 'send', text: SECOND });
+  });
+
+  it('второй с замечанием о фактах => не уходит: готовый вопрос с реакцией', async () => {
+    const r = await run({ drafts: [CLEAN, SECOND], reviews: [STYLE, FACT] });
+
+    expect(r.verdict).toEqual({ kind: 'send', text: greeted(INTRO_BUSINESS_QUESTION) });
+  });
+
+  it('замечание проверки без пометки вида считается замечанием о фактах (fail-closed)', async () => {
+    const r = await run({
+      drafts: [CLEAN, SECOND],
+      reviews: [STYLE, { ok: false, problems: ['Повтор вопроса'] }],
+    });
+
+    expect(r.verdict).toEqual({ kind: 'send', text: greeted(INTRO_BUSINESS_QUESTION) });
+  });
+
+  it('второй не прошёл проверки кодом => до проверки не доходит и не уходит, даже если первый был только о стиле', async () => {
+    const r = await run({ drafts: [CLEAN, PRICED], reviews: [STYLE] });
+
+    expect(r.verdict).toEqual({ kind: 'send', text: greeted(INTRO_BUSINESS_QUESTION) });
+    expect(r.reviews()).toBe(1);
   });
 });

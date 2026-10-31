@@ -3,6 +3,7 @@ import type { CheckFinding } from '../../../src/checks/code-checks.js';
 import type { ReplyDraft, ReplyHandoffOutcome, ReviewedText } from '../../../src/domain/types.js';
 import {
   decideAction,
+  styleOnly,
   type Decision,
   type DecisionInput,
   type DraftGate,
@@ -255,5 +256,59 @@ describe('pipeline/decide: без проверки текст не уходит'
 
     expect(input).toEqual(before);
     expect(decision.kind === 'retry' && decision.feedback).not.toBe(findings);
+  });
+});
+
+describe('pipeline/decide: замечания проверки только о стиле (пункт 3 задания 01.11.2026)', () => {
+  const STYLE_ONLY: DraftGate = {
+    kind: 'reviewed',
+    review: { ok: false, problems: ['Вопрос уже задавался прошлым сообщением'], styleOnly: true },
+  };
+
+  it('попытка 1: повтор с замечаниями, как при любом замечании', () => {
+    expect(decideAction(withText(ANSWER, STYLE_ONLY, 1))).toEqual({
+      kind: 'retry',
+      feedback: ['Вопрос уже задавался прошлым сообщением'],
+    });
+  });
+
+  it('попытка 2, ответ: уходит клиенту этот текст', () => {
+    expect(decideAction(withText(ANSWER, STYLE_ONLY, 2))).toEqual({
+      kind: 'send',
+      text: TEXT as ReviewedText,
+    });
+  });
+
+  it('попытка 2, замечание о фактах или без пометки вида: check_failed, как раньше', () => {
+    const factAndStyle: DraftGate = {
+      kind: 'reviewed',
+      review: { ok: false, problems: ['Повтор', 'Обещан срок'], styleOnly: false },
+    };
+
+    expect(decideAction(withText(ANSWER, factAndStyle, 2))).toEqual({
+      kind: 'handoff',
+      reason: 'check_failed',
+    });
+    expect(decideAction(withText(ANSWER, REVIEW_FAILED, 2))).toEqual({
+      kind: 'handoff',
+      reason: 'check_failed',
+    });
+  });
+
+  it.each(HANDOFF_OUTCOMES)(
+    'попытка 2, сообщение передачи %s: текст не уходит, фиксированная фраза',
+    (outcome) => {
+      expect(decideAction(withText(handoffText(outcome), STYLE_ONLY, 2))).toEqual({
+        kind: 'handoff',
+        reason: outcome,
+      });
+    },
+  );
+
+  it('styleOnly: только у ревью с пометкой; проверки кодом и пройденное ревью не в счёт', () => {
+    expect(styleOnly(STYLE_ONLY)).toBe(true);
+    expect(styleOnly(CODE_FAILED)).toBe(false);
+    expect(styleOnly(PASSED)).toBe(false);
+    expect(styleOnly(REVIEW_FAILED)).toBe(false);
   });
 });

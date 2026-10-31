@@ -116,3 +116,82 @@ describe('пункт 2: номер сильной стороны в тексте
     expect(s.storage.chats.getProgress(s.chatId()).toldFacts).toEqual(['F5']);
   });
 });
+
+/** Черновики хода 3 «склад»: первый с фактом не из документов и повтором вопроса, второй только с повтором. */
+const WAREHOUSE_FIRST =
+  'Остатки в 1С Управление торговлей 11 постоянно не сходятся с фактом, это частая история. Данные идут в 1С сами, поэтому расхождения видны сразу. Расскажите, сколько нового товара приходит к вам за месяц?';
+const WAREHOUSE_SECOND =
+  'Остатки в 1С постоянно не сходятся с фактом, на ответственном хранении это обычная история. Антенны на въездах сами отмечают, что пришло и что ушло. Расскажите, какой объём новой техники у вас принимается в течение месяца?';
+
+describe('пункт 3: после двух замечаний проверки не голый вопрос и не передача', () => {
+  it('«склад»: второй черновик только с замечанием о стиле уходит клиенту, чат остаётся у бота', async () => {
+    const s = createScenario({ api: null });
+    await s.say('Здравствуйте, мы ответственное хранение в Астане.', turn(['Вопрос?'], WAREHOUSE));
+
+    const third = await s.say(WAREHOUSE_DETAILS, {
+      replies: [WAREHOUSE_FIRST, WAREHOUSE_SECOND],
+      interests: [{ level: 'warm', profile: WAREHOUSE_AFTER }],
+      reviews: [
+        [
+          { kind: 'style', text: 'Вопрос о новом за месяц уже задан прошлым сообщением.' },
+          { kind: 'fact', text: '«Расхождения видны сразу» нет в документах.' },
+        ],
+        [{ kind: 'style', text: 'Вопрос о новом за месяц повторён тем же смыслом.' }],
+      ],
+    });
+
+    expect(third.outcome).toEqual({ kind: 'replied' });
+    expect(third.toClient).toEqual([WAREHOUSE_SECOND]);
+    expect(third.toManager).toEqual([]);
+    expect(s.storage.chats.getById(s.chatId())?.control).toEqual({ status: 'bot', by: null });
+    // Проверка видела выжимку и что ещё не хватает: повторить вопрос о недостающем один раз можно.
+    expect(third.data('review')).toContain(
+      'Для расчёта ещё не хватает: сколько нового приходит в месяц.',
+    );
+    expect(third.data('review')).toContain('Проходы: вероятно два въезда');
+  });
+
+  it('оба раза замечание о фактах: готовый вопрос с реакцией на новое для расчёта, без передачи', async () => {
+    const s = createScenario({ api: null });
+    await s.say('Здравствуйте, мы ответственное хранение в Астане.', turn(['Вопрос?'], WAREHOUSE));
+
+    const third = await s.say(WAREHOUSE_DETAILS, {
+      replies: [WAREHOUSE_FIRST, WAREHOUSE_FIRST],
+      interests: [{ level: 'warm', profile: WAREHOUSE_AFTER }],
+      problems: ['«Расхождения видны сразу» нет в документах.'],
+    });
+
+    expect(third.outcome).toEqual({ kind: 'replied' });
+    expect(third.toClient).toEqual([
+      'Спасибо, это важно для расчёта. Расскажите, сколько нового товара приходит к вам за месяц?',
+    ]);
+    expect(third.toManager).toEqual([]);
+  });
+});
+
+/** Так бот «склад» спросил прошлым ходом: о новом в месяц и о проходах. */
+const WAREHOUSE_ASKED =
+  'Антенны на входе и выходе видят всю партию сразу, сканировать по одной не нужно. Расскажите, сколько нового товара приходит к вам за месяц и сколько проходов нужно учитывать?';
+
+describe('пункт 3: «спросить нечего» больше не бывает, если недостающее спрашивали один раз', () => {
+  it('«склад» как в прогоне: о новом в месяц бот уже спрашивал, оба черновика с замечанием о фактах => тот же вопрос другими словами, без передачи', async () => {
+    const s = createScenario({ api: null });
+    await s.say(
+      'Здравствуйте, мы ответственное хранение в Астане.',
+      turn([WAREHOUSE_ASKED], WAREHOUSE),
+    );
+
+    const third = await s.say(WAREHOUSE_DETAILS, {
+      replies: [WAREHOUSE_FIRST, WAREHOUSE_FIRST],
+      interests: [{ level: 'warm', profile: WAREHOUSE_AFTER }],
+      problems: ['«Расхождения видны сразу» нет в документах.'],
+    });
+
+    expect(third.outcome).toEqual({ kind: 'replied' });
+    expect(third.toClient).toEqual([
+      'Спасибо, это важно для расчёта. Расскажите, сколько нового товара приходит к вам за месяц?',
+    ]);
+    expect(third.toManager).toEqual([]);
+    expect(s.storage.chats.getById(s.chatId())?.control).toEqual({ status: 'bot', by: null });
+  });
+});

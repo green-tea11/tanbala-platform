@@ -1,4 +1,10 @@
-import { calcMissing, ESTIMATE_LATER, recommendStage, type CalcField } from '../agent/stage.js';
+import {
+  calcKnown,
+  calcMissing,
+  ESTIMATE_LATER,
+  recommendStage,
+  type CalcField,
+} from '../agent/stage.js';
 import type { CompanyQuestion } from '../domain/company.js';
 import type { ClientProfile, ConversationStage, ReviewedText } from '../domain/types.js';
 
@@ -180,16 +186,84 @@ function stageQuestions(input: SafeQuestionInput): readonly QuestionKey[] {
 
 /**
  * Безопасный вопрос вместо черновика, который дважды не прошёл проверки (решение владельца 30.10.2026): один открытый
- * вопрос по рекомендуемому этапу и первому недостающему для расчёта, который бот ещё не задавал в чате. Спросить нечего
- * => null (тогда передача check_failed). aboutPrice: перед вопросом фраза об ориентире.
+ * вопрос по рекомендуемому этапу и первому недостающему для расчёта, который бот ещё не задавал в чате. Все такие
+ * уже заданы => недостающее для расчёта, о котором бот спрашивал ровно один раз и не этими словами (secondAsk). Спросить
+ * нечего => null (тогда передача check_failed). aboutPrice: перед вопросом фраза об ориентире.
  */
 export function nextSafeQuestion(
   input: SafeQuestionInput,
   aboutPrice: boolean,
 ): SafeQuestion | null {
   const asked = alreadyAsked(input);
-  const key = stageQuestions(input).find((candidate) => !asked.has(candidate));
+  const keys = stageQuestions(input);
+  const key = keys.find((candidate) => !asked.has(candidate)) ?? secondAsk(keys, input);
   return key === undefined ? null : safeQuestionOf(key, aboutPrice, input);
+}
+
+/**
+ * Повтор вопроса о недостающем для расчёта (пункт 3 задания 01.11.2026, consult.md, раздел 6: если клиент не ответил
+ * на часть вопроса, спроси недостающее другими словами, один раз): бот спрашивал об этом ровно в одном сообщении, и
+ * готовый текст не совпадает с тем, что уже было. Знакомство и крючок не повторяются.
+ */
+function secondAsk(
+  keys: readonly QuestionKey[],
+  input: SafeQuestionInput,
+): QuestionKey | undefined {
+  const texts = input.botTexts ?? (input.lastBotText === null ? [] : [input.lastBotText]);
+  return keys.find(
+    (key) =>
+      key !== 'intro' &&
+      key !== 'hook' &&
+      texts.filter((text) => askedKeys(text).has(key)).length === 1 &&
+      !texts.some((text) => text.includes(QUESTIONS[key])),
+  );
+}
+
+/**
+ * Короткие нейтральные реакции перед готовым вопросом (пункт 3 задания 01.11.2026): без пересказа слов клиента и без
+ * фактов о нас, только из того, что известно системе. «Спасибо!» как в примере consult.md, раздел 7.
+ */
+export const REACTIONS = {
+  /** Бот в этом чате ещё не писал: первое сообщение. */
+  greeting: 'Здравствуйте!',
+  /** Клиент в этом ходе назвал новое для расчёта (по выжимке). */
+  newData: 'Спасибо, это важно для расчёта.',
+  /** Иначе. */
+  thanks: 'Спасибо!',
+} as const;
+
+/** Что известно для выбора реакции. */
+export interface ReactionInput {
+  /** Выжимка до этого хода. */
+  readonly before: ClientProfile;
+  /** Выжимка после оценки этого хода (без оценки та же). */
+  readonly after: ClientProfile;
+  /** Бот уже писал клиенту в окне истории. */
+  readonly botWrote: boolean;
+}
+
+/**
+ * Реакция по данным: первое сообщение бота => приветствие; по выжимке этого хода для расчёта стало известно новое =>
+ * «Спасибо, это важно для расчёта.»; иначе «Спасибо!».
+ */
+export function reactionOf(input: ReactionInput): string {
+  if (!input.botWrote) return REACTIONS.greeting;
+  const known = new Set(calcKnown(input.before));
+  const learned = calcKnown(input.after).some((field) => !known.has(field));
+  return learned ? REACTIONS.newData : REACTIONS.thanks;
+}
+
+/**
+ * Готовый вопрос с реакцией перед ним, чтобы клиент не получил голый вопрос без отклика на свои слова (пункт 3
+ * задания 01.11.2026). На ходу с вопросом цены реакции нет: перед вопросом уже фраза об ориентире.
+ */
+export function withReaction(
+  question: SafeQuestion,
+  reaction: string,
+  aboutPrice: boolean,
+): SafeQuestion {
+  if (aboutPrice) return question;
+  return { ...question, text: `${reaction} ${question.text}` as ReviewedText };
 }
 
 /**

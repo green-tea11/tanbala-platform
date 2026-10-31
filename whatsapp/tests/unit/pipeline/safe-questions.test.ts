@@ -9,7 +9,11 @@ import {
   calcSafeQuestion,
   QUESTION_KEYS,
   questionText,
+  REACTIONS,
+  reactionOf,
+  withReaction,
   type QuestionKey,
+  type SafeQuestion,
   type SafeQuestionInput,
 } from '../../../src/pipeline/safe-questions.js';
 
@@ -115,6 +119,117 @@ describe('pipeline/safe-questions: тексты', () => {
     const all = QUESTION_KEYS.map((key) => questionText(key, true)).join(' ');
 
     expect(all).not.toMatch(/металл|жидкост|помещени|коробки, паллеты/u);
+  });
+});
+
+describe('pipeline/safe-questions: реакция перед готовым вопросом (пункт 3 задания 01.11.2026)', () => {
+  const ASKED: SafeQuestion = { key: 'items', text: questionText('items', false) };
+
+  it('три фиксированные фразы, без «Понятно» и пересказа слов клиента', () => {
+    expect(REACTIONS).toEqual({
+      greeting: 'Здравствуйте!',
+      newData: 'Спасибо, это важно для расчёта.',
+      thanks: 'Спасибо!',
+    });
+  });
+
+  it.each(Object.values(REACTIONS))(
+    'реакция «%s» с любым вопросом проходит проверки кодом, без двоеточий и тире',
+    (reaction) => {
+      for (const key of QUESTION_KEYS) {
+        const text = withReaction({ key, text: questionText(key, false) }, reaction, false).text;
+        expect(codeFindings(text, false)).toEqual([]);
+        expect(text).not.toMatch(/[:—–]/u);
+      }
+    },
+  );
+
+  it('бот ещё не писал: приветствие', () => {
+    expect(reactionOf({ before: EMPTY, after: FULL, botWrote: false })).toBe(REACTIONS.greeting);
+  });
+
+  it('по выжимке этого хода стало известно новое для расчёта: «Спасибо, это важно для расчёта.»', () => {
+    const before = { ...EMPTY, business: 'склад' };
+    const after = { ...before, passages: 'два въезда', inferred: ['passages' as const] };
+
+    expect(reactionOf({ before, after, botWrote: true })).toBe(REACTIONS.newData);
+  });
+
+  it('нового для расчёта нет (другое поле или то же самое): «Спасибо!»', () => {
+    const before = { ...EMPTY, business: 'склад' };
+
+    expect(reactionOf({ before, after: before, botWrote: true })).toBe(REACTIONS.thanks);
+    expect(reactionOf({ before, after: { ...before, area: '4000 м²' }, botWrote: true })).toBe(
+      REACTIONS.thanks,
+    );
+  });
+
+  it('withReaction: реакция перед вопросом, вопрос о компании сохраняется', () => {
+    const intro: SafeQuestion = {
+      key: 'intro',
+      text: questionText('intro', false),
+      companyQuestion: 'name',
+    };
+
+    expect(withReaction(ASKED, REACTIONS.thanks, false)).toEqual({
+      key: 'items',
+      text: `Спасибо! ${TEXTS.items}`,
+    });
+    expect(withReaction(intro, REACTIONS.greeting, false)).toEqual({
+      key: 'intro',
+      text: `Здравствуйте! ${TEXTS.intro}`,
+      companyQuestion: 'name',
+    });
+  });
+
+  it('ход с вопросом цены: реакции нет, перед вопросом и так фраза об ориентире', () => {
+    const priced: SafeQuestion = { key: 'items', text: questionText('items', true) };
+
+    expect(withReaction(priced, REACTIONS.thanks, true)).toBe(priced);
+  });
+});
+
+describe('pipeline/safe-questions: недостающее можно спросить ещё раз, один раз и другими словами', () => {
+  /** «Склад» 01.11.2026: не хватает только нового в месяц, бот прошлым ходом спрашивал о нём своими словами. */
+  const WAREHOUSE: ClientProfile = { ...FULL, monthlyIntake: null };
+  const MODEL_ASKED =
+    'Антенны на входе и выходе видят всю партию сразу. Расскажите, сколько нового товара приходит к вам за месяц и сколько проходов нужно учитывать?';
+  const DETAILS = { lastStage: 'details' as const };
+
+  it('спрошено один раз словами модели: готовый вопрос о том же, а не «спросить нечего»', () => {
+    const question = nextSafeQuestion(
+      input(WAREHOUSE, { ...DETAILS, botTexts: [MODEL_ASKED] }),
+      false,
+    );
+
+    expect(question).toEqual({ key: 'monthlyIntake', text: TEXTS.monthlyIntake });
+  });
+
+  it('спрошено дважды или готовым текстом: снова не спрашивается, null', () => {
+    const twice = input(WAREHOUSE, { ...DETAILS, botTexts: [MODEL_ASKED, MODEL_ASKED] });
+    const fixed = input(WAREHOUSE, { ...DETAILS, botTexts: [TEXTS.monthlyIntake] });
+
+    expect(nextSafeQuestion(twice, false)).toBeNull();
+    expect(nextSafeQuestion(fixed, false)).toBeNull();
+  });
+
+  it('незаданный вопрос по-прежнему первым, повтор только когда незаданных нет', () => {
+    const profile = { ...WAREHOUSE, city: null };
+    const question = nextSafeQuestion(
+      input(profile, { ...DETAILS, botTexts: [MODEL_ASKED] }),
+      false,
+    );
+
+    expect(question?.key).toBe('city');
+  });
+
+  it('знакомство не повторяется: неизвестен только бизнес, о нём уже спрашивали => null', () => {
+    const onlyBusiness = input(
+      { ...FULL, business: null },
+      { ...DETAILS, botTexts: ['Расскажите, из какой вы компании, чем занимаетесь?'] },
+    );
+
+    expect(nextSafeQuestion(onlyBusiness, false)).toBeNull();
   });
 });
 

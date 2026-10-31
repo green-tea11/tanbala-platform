@@ -25,7 +25,13 @@ import { interestCallData, interestSchema, normalizeInterest } from './interest.
 import type { Knowledge } from './knowledge.js';
 import { profileText } from './profile.js';
 import { buildSystem, buildTurns, noteBlock } from './prompts.js';
-import { recommendStage, stageReplyData, taskUnderstood } from './stage.js';
+import {
+  CALC_LABELS,
+  calcMissing,
+  recommendStage,
+  stageReplyData,
+  taskUnderstood,
+} from './stage.js';
 import {
   EMPTY_DRAFT_REVIEW,
   normalizeReview,
@@ -287,6 +293,29 @@ function replyCallData(
   return parts.filter((part) => part !== null).join('\n\n');
 }
 
+/** Строка проверки: оценка этого хода не получилась, выжимка ниже собрана до последнего сообщения клиента. */
+const REVIEW_STALE_LINE =
+  'Выжимка ниже собрана до последнего сообщения клиента: что он назвал в нём, в ней может не быть.';
+
+/**
+ * Выжимка о клиенте для проверки (пункт 3 задания 01.11.2026): переписка в вызове только из последних сообщений, а
+ * выжимка собрана по всему разговору, поэтому проверка не считает выдумкой сказанное раньше и видит, чего ещё не
+ * хватает для расчёта (такой вопрос можно один раз повторить другими словами). Строки системы раньше значений из слов
+ * клиента, как в данных ответа.
+ */
+function reviewProfileData(context: ConversationContext): string {
+  const missing = calcMissing(context.profile).map((field) => CALC_LABELS[field]);
+  return [
+    context.profileStale === true ? REVIEW_STALE_LINE : null,
+    missing.length === 0
+      ? 'Для расчёта известно всё.'
+      : `Для расчёта ещё не хватает: ${missing.join(', ')}. Если клиент на прошлый вопрос об этом не ответил, один раз спросить снова другими словами не нарушение.`,
+    profileText(context.profile),
+  ]
+    .filter((line) => line !== null)
+    .join('\n');
+}
+
 /** Один вызов LLM: что в нём общее для трёх назначений (история, лимит токенов, чат) и что своё (модель, инструкция). */
 type Ask = <T>(
   purpose: LlmPurpose,
@@ -338,8 +367,9 @@ function createAsk(deps: AgentDeps): Ask {
  * draftReply: модель models.reply, данные вызова: строки об этапе (этап, недостающее для расчёта, рассказанное, вопросы
  * цены), блок о компании, текущая выжимка и замечания проверки (feedback); схема replyDraftSchema, ответ нормализуется в
  * ReplyDraft.
- * reviewDraft: модель models.review, данные вызова: что допустимо о компании клиента и текст черновика (не репликой
- * assistant); схема reviewSchema, противоречия снимает normalizeReview. Пустой черновик не проходит и LLM не вызывает.
+ * reviewDraft: модель models.review, данные вызова: что допустимо о компании клиента, выжимка и недостающее для расчёта
+ * (reviewProfileData) и текст черновика (не репликой assistant); схема reviewSchema с видом каждого замечания (fact или
+ * style), противоречия снимает normalizeReview. Пустой черновик не проходит и LLM не вызывает.
  * В блоке о компании ответа и проверки до трёх болей справки, как их отдал сервис компании (без цифр).
  * assessInterest: модель models.interest, данные вызова: текущий уровень, выжимка и вопрос «Вы из компании X?»;
  * схема interestSchema, normalizeInterest чистит поля и сохраняет известное раньше.
@@ -366,7 +396,12 @@ export function createAgent(deps: AgentDeps): Agent {
       if (draftText.trim() === '') {
         return { ok: true, value: EMPTY_DRAFT_REVIEW };
       }
-      const callData = reviewCallData(draftText, kind, companyReviewData(context.company));
+      const callData = reviewCallData(
+        draftText,
+        kind,
+        companyReviewData(context.company),
+        reviewProfileData(context),
+      );
       const result = await ask('review', reviewSchema, context, callData);
       return result.ok ? { ok: true, value: normalizeReview(result.value) } : result;
     },

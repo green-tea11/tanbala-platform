@@ -6,6 +6,7 @@ import type {
   BudgetScope,
   ChatId,
   ChatProgress,
+  ClientProfile,
   HandoffNotice,
   InterestAssessment,
   LlmResult,
@@ -22,7 +23,13 @@ import type {
 } from '../domain/types.js';
 import { HANDOFF_TEXT, HOT_PRICE_HANDOFF_TEXT } from '../messaging/outbox.js';
 import { answerPartOf, clientAsksNow } from './answer-part.js';
-import { decideAction, type Decision, type DraftGate, type TextDraft } from './decide.js';
+import {
+  decideAction,
+  styleOnly,
+  type Decision,
+  type DraftGate,
+  type TextDraft,
+} from './decide.js';
 import {
   earlyHotFallback,
   earlyHotRemark,
@@ -32,7 +39,7 @@ import {
   type TurnSituation,
 } from './handoff-gate.js';
 import { handoffReasonText, handoffWhyOf } from './handoff-reason.js';
-import { nextSafeQuestion } from './safe-questions.js';
+import { nextSafeQuestion, reactionOf, withReaction, type SafeQuestion } from './safe-questions.js';
 
 /** Что нужно ходу ответа от остальной системы: агент, запись оценки интереса, часы и лог. */
 export interface ReplyFlowDeps {
@@ -135,6 +142,8 @@ interface Flow {
   readonly deps: ReplyFlowDeps;
   readonly context: ConversationContext;
   readonly gate: TurnSituation;
+  /** Выжимка до этого хода: по ней видно, назвал ли клиент новое для расчёта (реакция перед готовым вопросом). */
+  readonly before: ClientProfile;
 }
 
 /**
@@ -255,7 +264,12 @@ export async function decideReply(
   const scope = budgetScopeOf([drafted.draft, drafted.assessment]);
   if (scope !== null) return { kind: 'limit', scope };
   const gate = turnSituation(context, assessment, drafted.draft);
-  const flow: Flow = { deps, context: replyContextOf(context, assessment), gate };
+  const flow: Flow = {
+    deps,
+    context: replyContextOf(context, assessment),
+    gate,
+    before: context.profile,
+  };
   const first = await judgeResult(flow, drafted.draft, 1, null);
   const judged = first.kind === 'verdict' ? first.verdict : await retryOnce(flow, first);
   const verdict = withHotPhrase(gate, isCheckFailed(judged) ? afterCheckFailed(flow) : judged);
@@ -313,11 +327,24 @@ function afterCheckFailed(flow: Flow): ReplyVerdict {
     );
     return CHECK_FAILED;
   }
-  const { key, text, companyQuestion } = question;
   deps.logger.info(
-    { chatId, question: key, aboutPrice: gate.signals.priceAsked },
+    { chatId, question: question.key, aboutPrice: gate.signals.priceAsked },
     `Черновик дважды не прошёл проверки, клиенту уходит безопасный вопрос: чат #${chatId}`,
   );
+  return sendQuestion(flow, question);
+}
+
+/**
+ * Готовый вопрос уходит с короткой реакцией перед ним (safe-questions.reactionOf, пункт 3 задания 01.11.2026): не голый
+ * вопрос без отклика на слова клиента. На ходу с вопросом цены перед вопросом фраза об ориентире, реакции нет.
+ */
+function sendQuestion(flow: Flow, question: SafeQuestion): SendVerdict {
+  const reaction = reactionOf({
+    before: flow.before,
+    after: flow.gate.profile,
+    botWrote: lastBotTextOf(flow.context.history) !== null,
+  });
+  const { text, companyQuestion } = withReaction(question, reaction, flow.gate.signals.priceAsked);
   return companyQuestion === undefined
     ? { kind: 'send', text }
     : { kind: 'send', text, companyQuestion };
@@ -489,6 +516,7 @@ async function judge(flow: Flow, draft: ReplyDraft, attempt: Attempt): Promise<J
     attempt,
   });
   logDroppedText(flow, draft, decision);
+  logStyleOnly(flow, checked.gate, decision);
   if (draft.outcome !== 'answer') return judgementOf(decision, keep);
   return judgementOf(decision, keep, draft.companyQuestion, marksOf(draft));
 }
@@ -540,10 +568,7 @@ function early(flow: Flow, attempt: Attempt): Judgement {
 }
 
 function fallbackVerdict(flow: Flow): SendVerdict {
-  const { text, companyQuestion } = earlyHotFallback(flow.gate, botTextsOf(flow.context.history));
-  return companyQuestion === undefined
-    ? { kind: 'send', text }
-    : { kind: 'send', text, companyQuestion };
+  return sendQuestion(flow, earlyHotFallback(flow.gate, botTextsOf(flow.context.history)));
 }
 
 /**
@@ -599,6 +624,17 @@ function keepOf(draft: TextDraft): ReplyVerdict | null {
 /** Повод передачи по исходу ответа; aboutPrice остаётся только у hot (фраза о цене) и только если true. */
 function replyNotice(reason: ReplyHandoffOutcome, aboutPrice: boolean | undefined): HandoffNotice {
   return reason === 'hot' && aboutPrice === true ? { reason, aboutPrice } : { reason };
+}
+
+/** Второй ответ с замечаниями проверки только о стиле уходит клиенту (decide.styleOnly): в лог ID чата и число замечаний. */
+function logStyleOnly(flow: Flow, gate: DraftGate, decision: Decision): void {
+  if (decision.kind !== 'send' || !styleOnly(gate)) return;
+  const { chatId } = flow.context;
+  const problems = gate.kind === 'reviewed' && !gate.review.ok ? gate.review.problems.length : 0;
+  flow.deps.logger.info(
+    { chatId, problems },
+    `Замечания проверки только о стиле, ответ уходит клиенту: чат #${chatId}`,
+  );
 }
 
 /** Текст модели при исходе передачи не прошёл проверки: пишется причина, клиенту уйдёт фиксированная фраза. */

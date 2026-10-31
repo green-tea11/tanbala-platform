@@ -22,7 +22,7 @@ import {
   type ReplyFlowDeps,
   type ReplyVerdict,
 } from '../../../src/pipeline/reply-flow.js';
-import { questionText } from '../../../src/pipeline/safe-questions.js';
+import { questionText, REACTIONS } from '../../../src/pipeline/safe-questions.js';
 import { EMPTY_PROFILE } from '../agent/fakes.js';
 
 // Когда код передаёт чат (решение владельца 30.10.2026): а) финал, модель вернула hot и для расчёта известно всё; б) клиент
@@ -259,20 +259,26 @@ describe('а) ранний hot: для расчёта известно не вс
   it('повтор снова hot: безопасный вопрос о первом недостающем, без фразы об ориентире', async () => {
     const r = await run({ drafts: [hot(), hot()], profile: TASK });
 
-    expect(r.verdict).toEqual(sentWith(questionText('monthlyIntake', false)));
+    expect(r.verdict).toEqual(
+      sentWith(`${REACTIONS.greeting} ${questionText('monthlyIntake', false)}`),
+    );
     expect(r.calls).toEqual(['assess', 'draft', 'save', 'draft:retry']);
   });
 
   it('повтор не получился (сбой LLM): тот же безопасный вопрос, а не передача', async () => {
     const r = await run({ drafts: [hot(), { ok: false, failure: 'unavailable' }], profile: TASK });
 
-    expect(r.verdict).toEqual(sentWith(questionText('monthlyIntake', false)));
+    expect(r.verdict).toEqual(
+      sentWith(`${REACTIONS.greeting} ${questionText('monthlyIntake', false)}`),
+    );
   });
 
   it('повтор не прошёл проверку: безопасный вопрос вместо check_failed', async () => {
     const r = await run({ drafts: [hot(), answer()], profile: TASK, problems: ['Назван срок'] });
 
-    expect(r.verdict).toEqual(sentWith(questionText('monthlyIntake', false)));
+    expect(r.verdict).toEqual(
+      sentWith(`${REACTIONS.greeting} ${questionText('monthlyIntake', false)}`),
+    );
   });
 
   it('о чём бот уже спрашивал, безопасный вопрос не повторяет', async () => {
@@ -283,7 +289,7 @@ describe('а) ранний hot: для расчёта известно не вс
       history: [bot(1, asked), client(2, 'Не знаю')],
     });
 
-    expect(r.verdict).toEqual(sentWith(questionText('passages', false)));
+    expect(r.verdict).toEqual(sentWith(`${REACTIONS.newData} ${questionText('passages', false)}`));
   });
 
   it('в лог только ID чата, попытка, коды недостающего и числа, без текста', async () => {

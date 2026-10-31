@@ -5,7 +5,7 @@ import type { Knowledge } from '../../../src/agent/knowledge.js';
 import type { ModelsConfig } from '../../../src/config/env.js';
 import type { Logger } from '../../../src/domain/ports.js';
 import type { ChatId, ClientProfile, ReviewedText } from '../../../src/domain/types.js';
-import { INTRO_BUSINESS_QUESTION } from '../../../src/pipeline/safe-questions.js';
+import { INTRO_BUSINESS_QUESTION, REACTIONS } from '../../../src/pipeline/safe-questions.js';
 import {
   decideReply,
   requestDraft,
@@ -140,7 +140,10 @@ describe('pipeline/reply-flow с настоящим агентом', () => {
       problems: ['Названа цена, её нет в знаниях'],
     });
 
-    expect(verdict).toEqual({ kind: 'send', text: INTRO_BUSINESS_QUESTION });
+    expect(verdict).toEqual({
+      kind: 'send',
+      text: `${REACTIONS.greeting} ${INTRO_BUSINESS_QUESTION}`,
+    });
     expect(model.purposes()).toEqual(['interest', 'reply', 'review', 'reply', 'review']);
     const retry = model.requests[3]?.turns.at(-1)?.text ?? '';
     expect(retry).toContain('Названа цена, её нет в знаниях');

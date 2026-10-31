@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { ReviewResult } from '../domain/types.js';
+import type { ReviewProblemKind, ReviewResult } from '../domain/types.js';
 import { cleanLine } from './clean-text.js';
 
 /** Замечания уходят модели при повторе черновика: короткие и немногочисленные, иначе они сами станут промптом. */
@@ -12,7 +12,8 @@ const GENERAL_PROBLEM =
 
 /**
  * Схема ответа проверки: плоский объект, все поля обязательны (structured outputs вместо запрещённого prefill).
- * Без transform: вход и выход совпадают. Противоречия в ответе снимает normalizeReview.
+ * Без transform: вход и выход совпадают. Противоречия в ответе снимает normalizeReview. У каждого замечания вид
+ * (пункт 3 задания 01.11.2026): fact или style.
  */
 export const reviewSchema = z.object({
   ok: z
@@ -21,30 +22,45 @@ export const reviewSchema = z.object({
       'true, если черновик можно отправлять клиенту; false, если есть хотя бы одно нарушение.',
     ),
   problems: z
-    .array(z.string())
-    .describe(
-      'По одному короткому замечанию на каждое нарушение: что не так и как исправить. При ok true пустой список.',
-    ),
+    .array(
+      z.object({
+        kind: z
+          .enum(['fact', 'style'])
+          .describe(
+            'fact: факт не из документов, обещание, цена или срок, утверждение о компании клиента, запретная тема; style: повтор вопроса, несколько вопросов подряд, тон. Сомневаешься: fact.',
+          ),
+        text: z.string().describe('Что не так и как исправить, одной фразой.'),
+      }),
+    )
+    .describe('По одному замечанию на каждое нарушение. При ok true пустой список.'),
 });
+
+/** Одно замечание модели до нормализации. */
+export interface RawReviewProblem {
+  readonly kind: ReviewProblemKind;
+  readonly text: string;
+}
 
 /** Ответ модели до нормализации. */
 export interface RawReview {
   readonly ok: boolean;
-  readonly problems: readonly string[];
+  readonly problems: readonly RawReviewProblem[];
 }
 
 /**
  * Нормализует ответ проверки один раз и fail-closed: замечания главнее флага. Есть замечания => ok false, даже если
- * модель написала ok true. ok false без замечаний => одно общее замечание. Замечания после cleanLine: одна строка,
- * не длиннее 300 знаков, не больше пяти. ok true остаётся только без единого замечания.
+ * модель написала ok true. ok false без замечаний => одно общее замечание (вида fact). Замечания после cleanLine: одна
+ * строка, не длиннее 300 знаков, не больше пяти. ok true остаётся только без единого замечания. styleOnly: все замечания
+ * модели вида style, считая пустые и не вошедшие в пять (любое fact снимает пометку).
  */
 export function normalizeReview(raw: RawReview): ReviewResult {
   const problems = raw.problems
-    .map((problem) => cleanLine(problem, MAX_PROBLEM_CHARS))
+    .map((problem) => cleanLine(problem.text, MAX_PROBLEM_CHARS))
     .filter((problem) => problem !== '')
     .slice(0, MAX_PROBLEMS);
   if (problems.length > 0) {
-    return { ok: false, problems };
+    const styleOnly = raw.problems.every((problem) => problem.kind === 'style');
+    return styleOnly ? { ok: false, problems, styleOnly } : { ok: false, problems };
   }
   return raw.ok ? { ok: true } : { ok: false, problems: [GENERAL_PROBLEM] };
 }
@@ -65,16 +81,19 @@ const HANDOFF_TITLE =
 
 /**
  * Данные вызова проверки: что известно о компании клиента (companyData, если есть: какие вопросы и данные о ней
- * допустимы), затем текст черновика, который нужно проверить, с подписью, обычный ли это ответ или сообщение
- * о передаче (пункт 6 инструкции проверки опирается на эту подпись). Черновик последним, поэтому его конец
- * однозначен: дальше только закрытие блока. Угловые скобки в нём заменяет buildTurns.
+ * допустимы), выжимка о клиенте и чего ещё не хватает для расчёта (profileData, если есть: пункт 3 задания 01.11.2026,
+ * чтобы проверка не считала выдумкой сказанное раньше окна переписки), затем текст черновика, который нужно проверить,
+ * с подписью, обычный ли это ответ или сообщение о передаче (пункт 6 инструкции проверки опирается на эту подпись).
+ * Черновик последним, поэтому его конец однозначен: дальше только закрытие блока. Угловые скобки в нём заменяет
+ * buildTurns.
  */
 export function reviewCallData(
   draftText: string,
   kind: DraftKind = 'answer',
   companyData: string | null = null,
+  profileData: string | null = null,
 ): string {
   const title = kind === 'handoff' ? HANDOFF_TITLE : ANSWER_TITLE;
   const draft = `${title}\n${draftText.trim()}`;
-  return companyData === null ? draft : `${companyData}\n\n${draft}`;
+  return [companyData, profileData, draft].filter((part) => part !== null).join('\n\n');
 }

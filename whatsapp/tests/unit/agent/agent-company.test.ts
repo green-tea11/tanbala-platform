@@ -131,12 +131,15 @@ describe('reviewDraft и assessInterest: компания клиента', () =>
     expect(data.trimEnd().endsWith('Вы из компании Альфа, правильно?\n</данные>')).toBe(true);
   });
 
-  it('проверка без компании: данные как раньше', async () => {
+  it('проверка без компании: блока о компании нет, данные с недостающего для расчёта', async () => {
     const { requests, agent } = agentWith({ ok: true, value: { ok: true, problems: [] } });
 
     await agent.reviewDraft(context(), 'Добрый день.');
 
-    expect(lastTurn(requests)).toContain('<данные>\nЧерновик ответа клиенту');
+    const turn = lastTurn(requests);
+    expect(turn).toContain('<данные>\nДля расчёта ещё не хватает: чем занимается клиент');
+    expect(turn).toContain('\n\nЧерновик ответа клиенту, его нужно проверить:\nДобрый день.');
+    expect(turn).not.toMatch(/компани[ия] клиента/u);
   });
 
   it('оценка интереса видит, что бот спросил «Вы из компании X?»', async () => {

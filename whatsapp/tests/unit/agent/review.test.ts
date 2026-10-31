@@ -2,13 +2,19 @@ import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { describe, expect, it } from 'vitest';
 import { createAgent } from '../../../src/agent/agent.js';
 import { buildSystem } from '../../../src/agent/prompts.js';
-import { normalizeReview, reviewCallData, type RawReview } from '../../../src/agent/review.js';
+import {
+  normalizeReview,
+  reviewCallData,
+  type RawReview,
+  type RawReviewProblem,
+} from '../../../src/agent/review.js';
 import type { LlmResult, ReviewResult } from '../../../src/domain/types.js';
 import {
   ANY_DASH,
   CHAT_ID,
   CLIENT_TEXT,
   context,
+  EMPTY_PROFILE,
   fakeLlm,
   KNOWLEDGE,
   MODELS,
@@ -18,6 +24,16 @@ import {
 const DRAFT = 'Цена зависит от задачи. Какой у вас бизнес?';
 const HANDOFF_DRAFT = 'Да, проводим интеграцию с вашей 1С. Уточню у коллеги и вернусь к вам.';
 const PASSED: RawReview = { ok: true, problems: [] };
+
+/** Замечание о фактах: такой черновик клиенту не уходит. */
+function fact(text: string): RawReviewProblem {
+  return { kind: 'fact', text };
+}
+
+/** Замечание о стиле разговора: повтор вопроса, два вопроса, тон. */
+function style(text: string): RawReviewProblem {
+  return { kind: 'style', text };
+}
 const LEFT_ANGLE = String.fromCharCode(0x2039);
 const RIGHT_ANGLE = String.fromCharCode(0x203a);
 
@@ -96,7 +112,7 @@ describe('createAgent: reviewDraft, запрос', () => {
     );
   });
 
-  it('схема проверки: плоский объект ok и problems, все поля обязательны', async () => {
+  it('схема проверки: плоский объект ok и problems, у замечания вид и текст, все поля обязательны', async () => {
     const { requests } = await review({ ok: true, value: PASSED });
     const { schema } = onlyRequest(requests);
 
@@ -105,7 +121,12 @@ describe('createAgent: reviewDraft, запрос', () => {
       additionalProperties: false,
       required: ['ok', 'problems'],
     });
-    expect(schema.safeParse({ ok: false, problems: ['Назван срок'] }).success).toBe(true);
+    expect(schema.safeParse({ ok: false, problems: [fact('Назван срок')] }).success).toBe(true);
+    expect(schema.safeParse({ ok: false, problems: [style('Два вопроса')] }).success).toBe(true);
+    expect(schema.safeParse({ ok: false, problems: ['Назван срок'] }).success).toBe(false);
+    expect(schema.safeParse({ ok: false, problems: [{ kind: 'tone', text: 'Тон' }] }).success).toBe(
+      false,
+    );
     expect(schema.safeParse(PASSED).success).toBe(true);
     expect(schema.safeParse({ ok: true }).success).toBe(false);
     expect(schema.safeParse({ ok: 'да', problems: [] }).success).toBe(false);
@@ -134,12 +155,15 @@ describe('createAgent: reviewDraft, результат', () => {
   it('замечания модели доходят до результата', async () => {
     const { result } = await review({
       ok: true,
-      value: { ok: false, problems: ['Назван срок внедрения', 'Названа модель ридера'] },
+      value: {
+        ok: false,
+        problems: [fact('Назван срок внедрения'), style('Два вопроса подряд')],
+      },
     });
 
     expect(result).toEqual({
       ok: true,
-      value: { ok: false, problems: ['Назван срок внедрения', 'Названа модель ридера'] },
+      value: { ok: false, problems: ['Назван срок внедрения', 'Два вопроса подряд'] },
     });
   });
 
@@ -166,18 +190,22 @@ describe('normalizeReview', () => {
     ['нет замечаний', PASSED, { ok: true }],
     [
       'ok true вместе с замечанием: противоречие, замечание главнее (fail-closed)',
-      { ok: true, problems: ['Назван срок'] },
+      { ok: true, problems: [fact('Назван срок')] },
       { ok: false, problems: ['Назван срок'] },
     ],
     [
       'ok false: пустые замечания отбрасываются',
-      { ok: false, problems: ['Цена в тексте', '  ', ''] },
+      { ok: false, problems: [fact('Цена в тексте'), fact('  '), fact('')] },
       { ok: false, problems: ['Цена в тексте'] },
     ],
-    ['ok true и только пустые замечания', { ok: true, problems: ['  ', '\n'] }, { ok: true }],
+    [
+      'ok true и только пустые замечания',
+      { ok: true, problems: [fact('  '), style('\n')] },
+      { ok: true },
+    ],
     [
       'пробелы по краям убираются',
-      { ok: false, problems: ['  Назван срок \n'] },
+      { ok: false, problems: [fact('  Назван срок \n')] },
       { ok: false, problems: ['Назван срок'] },
     ],
   ];
@@ -188,7 +216,7 @@ describe('normalizeReview', () => {
 
   it.each([
     ['пустой список', []],
-    ['только пустые строки', ['  ', '\n\t']],
+    ['только пустые строки', [style('  '), style('\n\t')]],
   ])('ok false без замечаний (%s) => одно общее замечание', (_name, problems) => {
     const result = normalizeReview({ ok: false, problems });
 
@@ -201,7 +229,9 @@ describe('normalizeReview', () => {
   it('замечания: каждое одной строкой, не длиннее 300 знаков, всего не больше пяти', () => {
     const raw: RawReview = {
       ok: false,
-      problems: ['Первое\nвторое', 'д'.repeat(400), 'три', 'четыре', 'пять', 'шесть', 'семь'],
+      problems: ['Первое\nвторое', 'д'.repeat(400), 'три', 'четыре', 'пять', 'шесть', 'семь'].map(
+        fact,
+      ),
     };
 
     const problems = problemsOf(normalizeReview(raw));
@@ -211,9 +241,91 @@ describe('normalizeReview', () => {
     expect(Array.from(problems[1] ?? '')).toHaveLength(300);
     expect(problems.slice(2)).toEqual(['три', 'четыре', 'пять']);
   });
+
+  it('все замечания о стиле: styleOnly; хоть одно о фактах: нет (пункт 3 задания 01.11.2026)', () => {
+    expect(
+      normalizeReview({ ok: false, problems: [style('Вопрос повторён'), style('Два вопроса')] }),
+    ).toEqual({ ok: false, problems: ['Вопрос повторён', 'Два вопроса'], styleOnly: true });
+    expect(
+      normalizeReview({ ok: false, problems: [style('Вопрос повторён'), fact('Обещание')] }),
+    ).toEqual({ ok: false, problems: ['Вопрос повторён', 'Обещание'] });
+  });
+
+  it('styleOnly fail-closed: пустое замечание о фактах и шестое замечание о фактах тоже считаются', () => {
+    const emptyFact = normalizeReview({ ok: false, problems: [style('Повтор'), fact('  ')] });
+    const sixthFact = normalizeReview({
+      ok: false,
+      problems: [...['1', '2', '3', '4', '5'].map(style), fact('Цена')],
+    });
+    const general = normalizeReview({ ok: false, problems: [] });
+
+    expect(emptyFact).toEqual({ ok: false, problems: ['Повтор'] });
+    expect(sixthFact).toEqual({ ok: false, problems: ['1', '2', '3', '4', '5'] });
+    expect(general.ok || general.styleOnly === true).toBe(false);
+  });
+});
+
+describe('createAgent: reviewDraft видит выжимку (пункт 3 задания 01.11.2026)', () => {
+  it('недостающее для расчёта и выжимка идут перед черновиком: сказанное раньше окна переписки не выдумка', async () => {
+    const { requests, llm } = fakeLlm({ ok: true, value: PASSED });
+    const agent = createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS });
+    const profile = { ...EMPTY_PROFILE, business: 'склад', city: 'Астана', has1C: true };
+
+    await agent.reviewDraft(context({ profile }), DRAFT);
+
+    const data = onlyRequest(requests).turns.at(-1)?.text.split('<данные>\n')[1] ?? '';
+    expect(data).toMatch(
+      /^Для расчёта ещё не хватает: что лежит на хранении, сколько этого примерно, сколько нового приходит в месяц, сколько проходов нужно учитывать\. Если клиент на прошлый вопрос об этом не ответил, один раз спросить снова другими словами не нарушение\.\nЧто клиент рассказал о себе/u,
+    );
+    expect(data).toContain('Бизнес: склад\nГород: Астана');
+    expect(data).toContain('1С: есть, конфигурация не выяснена');
+    expect(data.indexOf('Город: Астана')).toBeLessThan(data.indexOf(`Черновик ответа клиенту`));
+    expect(data).not.toContain('Выжимка ниже собрана до');
+  });
+
+  it('оценка этого хода не получилась (profileStale): проверка знает, что выжимка старая', async () => {
+    const { requests, llm } = fakeLlm({ ok: true, value: PASSED });
+    const agent = createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS });
+
+    await agent.reviewDraft(context({ profileStale: true }), DRAFT);
+
+    expect(onlyRequest(requests).turns.at(-1)?.text).toContain(
+      '<данные>\nВыжимка ниже собрана до последнего сообщения клиента: что он назвал в нём, в ней может не быть.\nДля расчёта ещё не хватает',
+    );
+  });
+
+  it('для расчёта известно всё: так и сказано', async () => {
+    const { requests, llm } = fakeLlm({ ok: true, value: PASSED });
+    const agent = createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS });
+    const profile = {
+      ...EMPTY_PROFILE,
+      business: 'склад',
+      items: 'техника',
+      itemCount: '3000',
+      monthlyIntake: '200',
+      passages: 'два въезда',
+      has1C: false,
+      city: 'Астана',
+    };
+
+    await agent.reviewDraft(context({ profile }), DRAFT);
+
+    expect(onlyRequest(requests).turns.at(-1)?.text).toContain(
+      '<данные>\nДля расчёта известно всё.\nЧто клиент рассказал о себе',
+    );
+  });
 });
 
 describe('reviewCallData', () => {
+  it('блок о компании, затем выжимка, черновик последним', () => {
+    expect(reviewCallData('Вопрос?', 'answer', 'Компания', 'Выжимка')).toBe(
+      'Компания\n\nВыжимка\n\nЧерновик ответа клиенту, его нужно проверить:\nВопрос?',
+    );
+    expect(reviewCallData('Вопрос?', 'answer', null, 'Выжимка')).toBe(
+      'Выжимка\n\nЧерновик ответа клиенту, его нужно проверить:\nВопрос?',
+    );
+  });
+
   it('подписывает проверяемый текст и убирает пробелы по краям черновика', () => {
     const data = reviewCallData('  Какой у вас бизнес?  \n');
 

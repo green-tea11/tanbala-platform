@@ -71,7 +71,8 @@ const GENERIC_FEEDBACK =
  * Решение о передаче принимает вызов ответа (исход черновика), а не оценка интереса: уровень интереса здесь не
  * участвует. handoff_outcome: complaint (со stopRequested) и исходы передачи без текста передаются по своей причине
  * с фиксированной фразой. text: проверки кодом или второй вызов не пройдены: попытка 1 => retry с замечаниями
- * (нарушения кода или замечания проверки), попытка 2 => для ответа handoff check_failed, для исхода передачи та же
+ * (нарушения кода или замечания проверки), попытка 2 => для ответа handoff check_failed (но ответ, у которого проверки
+ * кодом пройдены, а замечания проверки только о стиле, styleOnly, уходит клиенту), для исхода передачи та же
  * причина без текста (клиенту уйдёт фиксированная фраза, причина не меняется). Проверки пройдены => answer даёт
  * send, исход передачи даёт handoff с этим текстом вместо фиксированной фразы. Здесь и только здесь текст
  * приводится к ReviewedText. Без ревью текст не отправляется никогда. Передача hot без текста с aboutPrice черновика
@@ -82,7 +83,16 @@ export function decideAction(input: DecisionInput): Decision {
   const { draft, gate, attempt } = input;
   const feedback = feedbackOf(gate);
   if (feedback === null) return passed(draft);
-  return attempt === 1 ? { kind: 'retry', feedback } : exhausted(draft);
+  if (attempt === 1) return { kind: 'retry', feedback };
+  return draft.outcome === 'answer' && styleOnly(gate) ? passed(draft) : exhausted(draft);
+}
+
+/**
+ * Проверки кодом пройдены, а у проверки только замечания о стиле разговора (повтор вопроса, два вопроса, тон): такой
+ * второй ответ уходит клиенту (пункт 3 задания 01.11.2026). Замечание о фактах или нарушение кода => нет.
+ */
+export function styleOnly(gate: DraftGate): boolean {
+  return gate.kind === 'reviewed' && !gate.review.ok && gate.review.styleOnly === true;
 }
 
 function handoffFor(draft: Exclude<ReplyDraft, { readonly outcome: 'answer' }>): Decision {

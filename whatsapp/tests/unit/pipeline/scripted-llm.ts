@@ -57,14 +57,18 @@ export interface LlmScript {
    * о компании.
    */
   readonly interests?: readonly [InterestScript, ...InterestScript[]];
-  /** Замечания проверки черновика; по умолчанию их нет и проверка пройдена. */
+  /** Замечания проверки черновика (вида fact); по умолчанию их нет и проверка пройдена. */
   readonly problems?: readonly string[];
   /**
    * Замечания проверки по вызовам: на каждый вызов следующий список, последний повторяется; пустой список: проверка
-   * пройдена. Есть поле => problems не читается.
+   * пройдена. Строка: замечание вида fact. Есть поле => problems не читается.
    */
-  readonly reviews?: readonly (readonly string[])[];
+  readonly reviews?: readonly (readonly ReviewProblemScript[])[];
 }
+
+/** Замечание проверки: строка (вид fact) или вид и текст. */
+export type ReviewProblemScript =
+  string | { readonly kind: 'fact' | 'style'; readonly text: string };
 
 /** Запрос без схемы: то, что тест может сравнить. */
 export type RecordedRequest = Pick<
@@ -169,7 +173,12 @@ export function scriptedLlm(script: LlmScript): ScriptedLlm {
       case 'review': {
         const problems = nth(script.reviews, reviewCalls) ?? script.problems ?? [];
         reviewCalls += 1;
-        return { ok: problems.length === 0, problems };
+        return {
+          ok: problems.length === 0,
+          problems: problems.map((problem) =>
+            typeof problem === 'string' ? { kind: 'fact', text: problem } : problem,
+          ),
+        };
       }
       case 'interest': {
         const interest = nth(script.interests, interestCalls);

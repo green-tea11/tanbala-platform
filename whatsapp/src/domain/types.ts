@@ -479,9 +479,22 @@ export type ReplyDraft =
     }
   | { readonly outcome: Extract<HandoffReason, 'complaint'>; readonly stopRequested: boolean };
 
+/**
+ * Вид замечания проверки (пункт 3 задания 01.11.2026). fact: утверждение не из документов, обещание, цена и сроки,
+ * утверждение о компании клиента, запретная тема; такой черновик клиенту не уходит никогда. style: повтор вопроса,
+ * два вопроса подряд, тон; второй черновик только с такими замечаниями уходит, если прошёл проверки кодом.
+ */
+export type ReviewProblemKind = 'fact' | 'style';
+
 /** Итог проверки черновика вторым вызовом LLM: нет ли фактов не из знаний, цен, скидок, сроков, объёмов. */
 export type ReviewResult =
-  { readonly ok: true } | { readonly ok: false; readonly problems: readonly string[] };
+  | { readonly ok: true }
+  | {
+      readonly ok: false;
+      readonly problems: readonly string[];
+      /** Все замечания вида style; нет поля => есть замечание о фактах (fail-closed). */
+      readonly styleOnly?: boolean;
+    };
 
 /** Оценка интереса клиента и обновлённая выжимка (третий вызов LLM). */
 export interface InterestAssessment {
