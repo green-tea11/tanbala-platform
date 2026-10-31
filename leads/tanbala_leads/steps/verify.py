@@ -4,6 +4,9 @@
 отвечает unknown. Такие адреса считаем годными, отсеиваем только invalid.
 """
 
+import threading
+import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -14,6 +17,8 @@ from psycopg.types.json import Jsonb
 VERIFY_RESULTS = ("safe", "risky", "invalid", "unknown")
 REACHER_TIMEOUT_SECONDS = 90
 MAX_EMAILS_PER_COMPANY = 3
+# Окно счёта проверок: минута Reacher (RCH__THROTTLE__MAX_REQUESTS_PER_MINUTE) и секунда запаса.
+RATE_WINDOW_SECONDS = 61.0
 
 
 class ReacherUnavailable(RuntimeError):
@@ -30,6 +35,36 @@ class EmailCheck:
     raw: dict
     # Сбой самого Reacher, а не ответ про адрес: результат не сохраняется.
     failed: bool = False
+
+
+class RateLimiter:
+    """Не больше limit проверок за любые window секунд: wait() ждёт, пока место освободится.
+
+    Reacher сам пропускает не больше REACHER_MAX_PER_MINUTE проверок в минуту, лишние отклоняет (первый запуск на
+    сервере 30.10.2026: 10 проверок за 21 секунду, следующие отклонены, адреса остались непроверенными).
+    """
+
+    def __init__(self, limit: int, *, window: float = RATE_WINDOW_SECONDS,
+                 clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep):
+        if limit < 1:
+            raise ValueError("limit должен быть не меньше 1")
+        self._limit = limit
+        self._window = window
+        self._clock = clock
+        self._sleep = sleep
+        self._calls: deque[float] = deque()
+        self._lock = threading.Lock()
+
+    def wait(self) -> None:
+        with self._lock:
+            while True:
+                now = self._clock()
+                while self._calls and now - self._calls[0] >= self._window:
+                    self._calls.popleft()
+                if len(self._calls) < self._limit:
+                    self._calls.append(now)
+                    return
+                self._sleep(self._window - (now - self._calls[0]))
 
 
 def _parse(email: str, data: dict) -> EmailCheck:

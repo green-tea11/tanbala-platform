@@ -12,6 +12,7 @@ ENV_NAMES: dict[str, str] = {
     "database_url": "DATABASE_URL",
     "reacher_url": "REACHER_URL",
     "reacher_secret": "REACHER_SECRET",
+    "reacher_max_per_minute": "REACHER_MAX_PER_MINUTE",
     "parser_2gis_bin": "PARSER_2GIS_BIN",
     "parser_2gis_headless": "PARSER_2GIS_HEADLESS",
     "llm_log_path": "LLM_LOG_PATH",
@@ -34,6 +35,7 @@ ENV_NAMES: dict[str, str] = {
 
 DEFAULTS: dict[str, str] = {
     "reacher_url": "http://127.0.0.1:8080",
+    "reacher_max_per_minute": "10",
     "parser_2gis_bin": ".venv-2gis/Scripts/parser-2gis.exe",
     "llm_log_path": "logs/llm_calls.jsonl",
     "daily_api_budget_usd": "1.00",
@@ -54,6 +56,7 @@ class Settings:
     database_url: str = field(default="", repr=False)
     reacher_url: str = ""
     reacher_secret: str = field(default="", repr=False)
+    reacher_max_per_minute: str = ""
     parser_2gis_bin: str = ""
     parser_2gis_headless: str = ""
     llm_log_path: str = ""

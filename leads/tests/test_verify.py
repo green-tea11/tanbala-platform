@@ -4,7 +4,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from tanbala_leads import db
+from tanbala_leads import db, pipeline
+from tanbala_leads.settings import SettingsError, load_settings
 from tanbala_leads.steps import verify
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -97,3 +98,94 @@ def test_reacher_failure_leaves_address_for_next_time(db_conn):
         verify.verify_company(db_conn, company_id, reacher_down)
 
     assert db_conn.execute("SELECT verify_result FROM contacts").fetchone()[0] is None
+
+
+# ---------- не больше REACHER_MAX_PER_MINUTE проверок в минуту ----------
+
+
+class FakeTime:
+    """Часы и сон без настоящего ожидания: sleep двигает часы."""
+
+    def __init__(self):
+        self.now = 0.0
+        self.slept: list[float] = []
+
+    def clock(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.slept.append(round(seconds, 3))
+        self.now += seconds
+
+
+def test_limiter_waits_when_the_minute_is_full():
+    # Первый запуск на сервере 30.10.2026: 10 проверок за 21 с, одиннадцатую Reacher отклонил (лимит в минуту).
+    fake = FakeTime()
+    limiter = verify.RateLimiter(10, window=61.0, clock=fake.clock, sleep=fake.sleep)
+
+    for _ in range(10):
+        limiter.wait()
+        fake.now += 2.0
+    assert fake.slept == []
+
+    limiter.wait()  # одиннадцатая: ждёт, пока первой проверке исполнится 61 с
+    assert fake.slept == [41.0] and fake.now == 61.0
+    limiter.wait()  # двенадцатая: вторая проверка была в 2 с
+    assert fake.slept == [41.0, 2.0]
+
+
+def test_limiter_does_not_wait_when_checks_are_rare():
+    fake = FakeTime()
+    limiter = verify.RateLimiter(2, window=61.0, clock=fake.clock, sleep=fake.sleep)
+
+    for _ in range(5):
+        limiter.wait()
+        fake.now += 31.0
+
+    assert fake.slept == []
+
+
+def test_limiter_refuses_zero():
+    with pytest.raises(ValueError):
+        verify.RateLimiter(0)
+
+
+def make_settings(per_minute: str | None) -> object:
+    env = {"VENMART_ANTHROPIC_KEY": "sk-ant-test", "REACHER_SECRET": "test"}
+    if per_minute is not None:
+        env["REACHER_MAX_PER_MINUTE"] = per_minute
+    return load_settings(env)
+
+
+def test_reacher_limit_comes_from_settings_with_default_ten():
+    assert pipeline.reacher_per_minute(make_settings(None)) == 10
+    assert pipeline.reacher_per_minute(make_settings("6")) == 6
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "десять", "1.5"])
+def test_bad_reacher_limit_is_a_clear_settings_error(value):
+    with pytest.raises(SettingsError, match="REACHER_MAX_PER_MINUTE"):
+        pipeline.reacher_per_minute(make_settings(value))
+
+
+def test_real_deps_check_email_waits_for_the_limiter(monkeypatch):
+    order = []
+
+    class SpyLimiter:
+        def __init__(self, limit):
+            order.append(("limit", limit))
+
+        def wait(self):
+            order.append("wait")
+
+    def fake_check(email, *, base_url, secret):
+        order.append(("check", email, secret))
+        return "checked"
+
+    monkeypatch.setattr(verify, "RateLimiter", SpyLimiter)
+    monkeypatch.setattr(verify, "check_email", fake_check)
+
+    deps = pipeline.default_deps(make_settings("7"))
+
+    assert deps.check_email("info@pel.kz") == "checked"
+    assert order == [("limit", 7), "wait", ("check", "info@pel.kz", "test")]

@@ -18,7 +18,7 @@ from psycopg import sql
 from psycopg.rows import dict_row
 
 from tanbala_leads import PROJECT_ROOT, browsers, db, knowledge, llm
-from tanbala_leads.settings import Settings, load_settings
+from tanbala_leads.settings import Settings, SettingsError, load_settings
 from tanbala_leads.steps import collect, crawl, draft, qualify, verify
 from tanbala_leads.steps.collect import CITIES
 
@@ -180,6 +180,14 @@ class Deps:
 RESEARCH_PARSER_TIMEOUT_SECONDS = 5 * 60
 
 
+def reacher_per_minute(settings: Settings) -> int:
+    """REACHER_MAX_PER_MINUTE числом от 1: столько же проверок в минуту пропускает сам Reacher (docker-compose.yml)."""
+    value = settings.require("reacher_max_per_minute")
+    if not value.isdigit() or int(value) < 1:
+        raise SettingsError("REACHER_MAX_PER_MINUTE должен быть целым числом от 1, например 10. Исправьте его в .env.")
+    return int(value)
+
+
 def default_deps(settings: Settings, limits: browsers.BrowserLimits | None = None, *, urgent: bool = False) -> Deps:
     """Настоящие зависимости: parser-2gis, crawl4ai, Reacher, Claude API.
 
@@ -191,6 +199,12 @@ def default_deps(settings: Settings, limits: browsers.BrowserLimits | None = Non
     limits = limits or browsers.limits_from_settings(settings)
     client = llm.make_client(settings)
     secret = settings.require("reacher_secret")
+    reacher_limit = verify.RateLimiter(reacher_per_minute(settings))
+
+    def check_email(email: str) -> verify.EmailCheck:
+        reacher_limit.wait()
+        return verify.check_email(email, base_url=settings.reacher_url, secret=secret)
+
     parser_timeout = RESEARCH_PARSER_TIMEOUT_SECONDS if urgent else collect.PARSER_TIMEOUT_SECONDS
     headless = collect.parse_headless(settings.parser_2gis_headless)
     return Deps(
@@ -199,7 +213,7 @@ def default_deps(settings: Settings, limits: browsers.BrowserLimits | None = Non
                                                                            headless=headless),
                                     urgent=urgent),
         crawl=limits.sites.guard(lambda url: asyncio.run(crawl_site(url)), urgent=urgent),
-        check_email=lambda email: verify.check_email(email, base_url=settings.reacher_url, secret=secret),
+        check_email=check_email,
         client=client,
         owner_doc=knowledge.load_owner_doc(),
         settings=settings,
