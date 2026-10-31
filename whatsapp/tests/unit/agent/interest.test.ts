@@ -188,7 +188,10 @@ describe('createAgent: assessInterest, запрос', () => {
     // Так отвечает модель: вместо null у текстовых полей пустая строка.
     const asModel = (fields: object) =>
       Object.fromEntries(
-        Object.entries(fields).map(([key, value]) => [key, value === null && key !== 'has1C' ? '' : value]),
+        Object.entries(fields).map(([key, value]) => [
+          key,
+          value === null && key !== 'has1C' ? '' : value,
+        ]),
       );
     const full = asModel({ ...NOTHING_NEW, ...NO_COMPANY, ...NO_SIGNALS });
     expect(schema.safeParse({ ...full, business: null }).success).toBe(false);

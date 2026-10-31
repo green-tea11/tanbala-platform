@@ -70,7 +70,8 @@ export type CheckCode =
   | 'voice'
   | 'estimate_phrase'
   | 'filler'
-  | 'repeat_fact';
+  | 'repeat_fact'
+  | 'fact_number';
 
 /** Одно нарушение: код и понятное описание с фрагментом текста. */
 export interface CheckFinding {
@@ -418,20 +419,34 @@ export function checkRepeatedFacts(
 ): readonly CheckFinding[] {
   const told = new Set(toldFacts);
   if (usedFacts.length === 0 || usedFacts.some((id) => !told.has(id))) return [];
+  const untold = STRENGTH_IDS.filter((id) => !told.has(id));
+  // Всё уже рассказано: новой стороны взять неоткуда, и отказ только сломал бы длинный разговор (ревью этапа 2).
+  if (untold.length === 0) return [];
   const used = new Set(usedFacts);
   const repeated = STRENGTH_IDS.filter((id) => used.has(id));
-  const untold = STRENGTH_IDS.filter((id) => !told.has(id));
   const verb = repeated.length === 1 ? 'была' : 'были';
-  const advice =
-    untold.length === 0
-      ? 'Все сильные стороны уже рассказаны, не повторяй их'
-      : `Расскажи ту, которой ещё не было: ${untold.join(', ')}`;
   return [
     {
       code: 'repeat_fact',
-      detail: `в сообщении нет новой сильной стороны: ${repeated.join(', ')} уже ${verb} в этом чате. ${advice}`,
+      detail: `в сообщении нет новой сильной стороны: ${repeated.join(', ')} уже ${verb} в этом чате. Расскажи ту, которой ещё не было: ${untold.join(', ')}`,
     },
   ];
+}
+
+/** Номер сильной стороны F1–F10 отдельным словом: «F3», «(F10)», но не «F12», «FF3» и «4F1». */
+const FACT_NUMBER = /(?<![\p{L}\p{N}])F(?:10|[1-9])(?![\p{L}\p{N}])/iu;
+
+const FACT_NUMBER_REASON =
+  'номера сильных сторон (F1, F2 и дальше) нужны системе: пиши их только в usedFacts, клиенту в тексте не пиши';
+
+/**
+ * Номер сильной стороны в тексте клиенту (ревью этапа 2): данные вызова ответа и замечание repeat_fact называют стороны
+ * номерами, и модель может перенести номер в текст. Без учёта регистра: «f3» тоже номер.
+ */
+export function checkFactNumbers(text: string): readonly CheckFinding[] {
+  return FACT_NUMBER.test(text.normalize('NFKC'))
+    ? [{ code: 'fact_number', detail: FACT_NUMBER_REASON }]
+    : [];
 }
 
 /**
@@ -623,6 +638,7 @@ export function runCodeChecks(
     ...checkHomoglyphs(form),
     ...checkLength(text),
     ...checkFiller(text),
+    ...checkFactNumbers(text),
     ...(options.priceTurn === false ? checkEstimatePhrase(text, false) : []),
     ...(options.usedFacts === undefined || options.toldFacts === undefined
       ? []

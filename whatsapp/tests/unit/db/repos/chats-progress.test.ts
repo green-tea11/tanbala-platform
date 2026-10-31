@@ -102,7 +102,7 @@ describe('createChatsRepo: этап и рассказанные сильные �
     expect(repo.getProgress(chatId)).toEqual({ priceAsks: 0, refused: false });
   });
 
-  it('recordReply: этап последнего ответа заменяется, сильные стороны объединяются без дублей по порядку F1…F10', () => {
+  it('recordReply: этап сменяется более дальним, сильные стороны объединяются без дублей по порядку F1…F10', () => {
     const { repo, chatId, otherChatId } = setup();
 
     repo.recordReply(chatId, { stage: 'hook', usedFacts: ['F4', 'F2'] });
@@ -115,6 +115,20 @@ describe('createChatsRepo: этап и рассказанные сильные �
       lastStage: 'explain',
     });
     expect(repo.getProgress(otherChatId)).toEqual({ priceAsks: 0, refused: false });
+  });
+
+  it('recordReply: этап только вперёд, ответ на более раннем этапе разговор назад не возвращает (ревью этапа 2)', () => {
+    const { repo, chatId } = setup();
+    repo.recordReply(chatId, { stage: 'explain', usedFacts: [] });
+
+    repo.recordReply(chatId, { stage: 'intro', usedFacts: [] });
+    expect(repo.getProgress(chatId)).toMatchObject({ lastStage: 'explain' });
+    repo.recordReply(chatId, { stage: 'hook', usedFacts: [] });
+    expect(repo.getProgress(chatId)).toMatchObject({ lastStage: 'explain' });
+    repo.recordReply(chatId, { stage: 'final', usedFacts: [] });
+    expect(repo.getProgress(chatId)).toMatchObject({ lastStage: 'final' });
+    repo.recordReply(chatId, { stage: 'details', usedFacts: [] });
+    expect(repo.getProgress(chatId)).toMatchObject({ lastStage: 'final' });
   });
 
   it('recordReply без этапа (черновик без поля) этап не стирает; без сильных сторон их не меняет', () => {

@@ -118,6 +118,12 @@ interface PanelQuery {
 
 const CHAT_STATUSES: readonly ChatStatus[] = ['bot', 'manager'];
 
+/**
+ * Этапы через запятую по порядку разговора: позиция этапа в строке растёт с этапом (названия не входят друг в друга),
+ * так SQL сравнивает этапы без таблицы. Значения из кода, не от модели: в SQL вставляются как текст запроса.
+ */
+const STAGE_ORDER = CONVERSATION_STAGES.join(',');
+
 /** Кто может передать чат менеджеру (StatusChange со статусом manager). */
 const MANAGER_AUTHORS = ['bot', 'phone', 'panel'] as const;
 
@@ -186,8 +192,9 @@ const UPSERT_PROFILE = `INSERT INTO client_profiles
  * (отрицательный LIMIT в SQLite значит «без лимита»), статус только bot или manager.
  * getProgress, recordTurn и resetProgress: ход разговора о цене в колонках chats (price_asks, refused_answers);
  * getProgress ещё говорит, передавался ли чат менеджеру хоть раз (handedOff, только если да: запись в handoffs), какие
- * сильные стороны уже рассказаны (told_facts, только если есть) и этап последнего ответа (last_stage, только если
- * есть). recordReply: этап заменяется (null не меняет), сильные стороны объединяются; resetProgress их не трогает;
+ * сильные стороны уже рассказаны (told_facts, только если есть) и самый дальний этап ответов бота (last_stage, только
+ * если есть). recordReply: этап меняется только на более дальний (null и этап раньше не меняют: ответ о письме на
+ * знакомстве после крючка не вернёт разговор назад), сильные стороны объединяются; resetProgress их не трогает;
  * getNote и setNote: заметка для бота (bot_note, bot_note_at_ms). Неизвестный чат => явная ошибка.
  */
 export function createChatsRepo(db: Database.Database): ChatsRepo {
@@ -344,9 +351,13 @@ function prepareStatements(db: Database.Database) {
          EXISTS (SELECT 1 FROM handoffs h WHERE h.chat_id = c.id) AS handed_off
        FROM chats c WHERE c.id = ?`,
     ),
-    // Объединение без дублей; испорченный JSON в базе считается пустым, неизвестные номера отсеивает чтение.
+    // Этап только вперёд: порядок этапов по позиции в строке STAGE_ORDER. Объединение без дублей; испорченный JSON в
+    // базе считается пустым, неизвестные номера отсеивает чтение.
     recordReply: db.prepare<{ id: ChatId; stage: string | null; facts: string }>(
-      `UPDATE chats SET last_stage = coalesce(@stage, last_stage),
+      `UPDATE chats SET last_stage = CASE
+           WHEN @stage IS NOT NULL AND (last_stage IS NULL
+             OR instr('${STAGE_ORDER}', @stage) > instr('${STAGE_ORDER}', last_stage)) THEN @stage
+           ELSE last_stage END,
          told_facts = (SELECT json_group_array(value) FROM (
            SELECT value FROM json_each(CASE WHEN json_valid(told_facts) THEN told_facts ELSE '[]' END)
            UNION SELECT value FROM json_each(@facts)))

@@ -9,7 +9,7 @@ import {
   type ReplyFlowDeps,
   type ReplyVerdict,
 } from '../../../src/pipeline/reply-flow.js';
-import { questionText } from '../../../src/pipeline/safe-questions.js';
+import { INTRO_BUSINESS_QUESTION } from '../../../src/pipeline/safe-questions.js';
 
 // Защитная ветка конвейера: по правилу decideAction на второй попытке повтора нет. Если бы решение всё же вернуло
 // повтор (ошибка в правиле), текст без проверки не должен уйти клиенту. Решение подменено, остальное настоящее.
@@ -95,7 +95,7 @@ describe('pipeline/reply-flow: повтор на второй попытке н�
       text: 'Учёт подбираем под задачу. Что вы храните?',
     });
 
-    expect(verdict).toEqual({ kind: 'send', text: questionText('intro', false) });
+    expect(verdict).toEqual({ kind: 'send', text: INTRO_BUSINESS_QUESTION });
   });
 
   it('исход передачи: тот же случай оставляет причину и фиксированную фразу, текст не уходит', async () => {

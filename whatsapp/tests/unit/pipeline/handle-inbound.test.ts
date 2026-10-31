@@ -19,7 +19,7 @@ import {
   type PipelineOutcome,
 } from '../../../src/pipeline/handle-inbound.js';
 import { MAX_AUDIO_BYTES } from '../../../src/voice/transcriber.js';
-import { questionText } from '../../../src/pipeline/safe-questions.js';
+import { INTRO_BUSINESS_QUESTION } from '../../../src/pipeline/safe-questions.js';
 import {
   ALLOWLIST,
   answer,
@@ -566,7 +566,7 @@ describe('pipeline/handle-inbound: проверки, оценка интерес
     expect(outcome).toEqual({ kind: 'replied' });
     expect(h.handOff).not.toHaveBeenCalled();
     expect(h.feedbacks[1]).toEqual(['срок']);
-    expect(h.outbox.sendBotReply).toHaveBeenCalledWith(CHAT_ID, questionText('intro', false), 'A1');
+    expect(h.outbox.sendBotReply).toHaveBeenCalledWith(CHAT_ID, INTRO_BUSINESS_QUESTION, 'A1');
   });
 
   it('уходит ровно тот текст, который проверен: после нормализации, и пауза считается по нему', async () => {

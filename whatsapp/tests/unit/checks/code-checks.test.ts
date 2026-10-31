@@ -11,6 +11,7 @@ import {
   checkLinks,
   checkMarkup,
   checkPrices,
+  checkFactNumbers,
   checkRepeatedFacts,
   checkStopWords,
   checkStyle,
@@ -1483,7 +1484,7 @@ describe('checkRepeatedFacts: в сообщении нет новой сильн
     expect(codes(withFacts(['F2'], ['F2']))).toEqual(new Set(['repeat_fact']));
   });
 
-  it('все сильные стороны уже рассказаны: замечание не повторять их', () => {
+  it('все сильные стороны уже рассказаны: нарушения нет, новой взять неоткуда (ревью этапа 2)', () => {
     const all: readonly StrengthId[] = [
       'F1',
       'F2',
@@ -1497,9 +1498,8 @@ describe('checkRepeatedFacts: в сообщении нет новой сильн
       'F10',
     ];
 
-    expect(details(checkRepeatedFacts(['F6'], all))).toBe(
-      'в сообщении нет новой сильной стороны: F6 уже была в этом чате. Все сильные стороны уже рассказаны, не повторяй их',
-    );
+    expect(checkRepeatedFacts(['F6'], all)).toEqual([]);
+    expect(withFacts(['F2', 'F6'], all)).toEqual([]);
   });
 
   it.each([
@@ -1514,6 +1514,27 @@ describe('checkRepeatedFacts: в сообщении нет новой сильн
   it('без номеров черновика или рассказанного проверка повтора не идёт', () => {
     expect(withFacts(undefined, ['F2'])).toEqual([]);
     expect(withFacts(['F2'], undefined)).toEqual([]);
+  });
+});
+
+describe('checkFactNumbers: номера сильных сторон не уходят клиенту (ревью этапа 2)', () => {
+  it.each([
+    'Антенны на входе сами отмечают приход (F3). Сколько проходов нужно учитывать?',
+    'Это F10 в нашем списке.',
+    'f2 и F5 расскажу подробнее.',
+  ])('«%s» нарушение', (text) => {
+    const findings = checkFactNumbers(text);
+    expect(codes(findings)).toEqual(new Set(['fact_number']));
+    expect(details(findings)).toMatch(/номера сильных сторон/);
+    expect(codes(run(text)).has('fact_number')).toBe(true);
+  });
+
+  it.each([
+    'Склад F12 на втором этаже, 1С 8.3.',
+    'Модель FF3 и окно 4F1 не номера.',
+    'Ридер видит сотни меток за секунду.',
+  ])('«%s» не нарушение', (text) => {
+    expect(checkFactNumbers(text)).toEqual([]);
   });
 });
 

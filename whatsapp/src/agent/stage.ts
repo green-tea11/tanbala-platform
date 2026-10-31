@@ -21,7 +21,7 @@ export const CALC_FIELDS: readonly CalcField[] = [
 /** Недостающее для расчёта человеческими словами: для данных вызова ответа. */
 export const CALC_LABELS: Readonly<Record<CalcField, string>> = {
   business: 'чем занимается клиент',
-  items: 'что лежит на хранении и в каком виде',
+  items: 'что лежит на хранении',
   itemCount: 'сколько этого примерно',
   monthlyIntake: 'сколько нового приходит в месяц',
   passages: 'сколько проходов нужно учитывать',
@@ -45,7 +45,7 @@ const FROM_HOOK: readonly ConversationStage[] = ['hook', 'explain', 'details', '
 export interface StageInput {
   /** Выжимка до этого хода. */
   readonly profile: ClientProfile;
-  /** Этап последнего отправленного ответа бота; null: бот ещё не отвечал текстом модели. */
+  /** Самый дальний этап отправленных ответов бота; null: бот ещё не отвечал текстом модели. */
   readonly lastStage: ConversationStage | null;
   /** Чат уже передавался коллеге (по любой причине). */
   readonly handedOff: boolean;
@@ -71,9 +71,9 @@ export function calcMissing(profile: ClientProfile): readonly CalcField[] {
 
 /**
  * Этап по правилам владельца (30.10.2026), по порядку: нет бизнеса => знакомство; бот ещё ни разу не был на крючке или
- * дальше => крючок; последний ответ на крючке => как это работает; не хватает чего-то для расчёта => боли и детали;
+ * дальше => крючок; дальше крючка ещё не ушёл => как это работает; не хватает чего-то для расчёта => боли и детали;
  * всё известно => финал, но если чат уже передавался коллеге, финал не предлагается (боли и детали). «Ни разу не был
- * на крючке» судится по этапу последнего ответа: хранится только он.
+ * на крючке» судится по самому дальнему этапу ответов: хранится только он.
  */
 function stageOf(input: StageInput, missing: readonly CalcField[]): ConversationStage {
   if (missing.includes('business')) return 'intro';

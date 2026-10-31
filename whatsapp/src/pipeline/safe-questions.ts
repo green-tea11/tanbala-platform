@@ -36,12 +36,22 @@ const QUESTIONS: Readonly<Record<QuestionKey, string>> = {
 };
 
 /**
+ * Знакомство, когда о компании спрашивать не нужно (ревью этапа 2): название уже известно (клиент назвал или подтвердил)
+ * или блок о компании спрашивать о ней не разрешает. Тогда только чем она занимается.
+ */
+export const INTRO_BUSINESS_QUESTION = 'Расскажите, чем занимается ваша компания?';
+
+/** На ходу с вопросом цены перед вопросом фраза об ориентире. */
+function withEstimate(question: string, aboutPrice: boolean): ReviewedText {
+  return (aboutPrice ? `${ESTIMATE_LATER} ${question}` : question) as ReviewedText;
+}
+
+/**
  * Готовый вопрос; на ходу с вопросом цены перед ним фраза об ориентире. Проходит проверки кодом (это проверяют тесты),
  * поэтому к ReviewedText приводится здесь, как проверенный текст модели.
  */
 export function questionText(key: QuestionKey, aboutPrice: boolean): ReviewedText {
-  const question = QUESTIONS[key];
-  return (aboutPrice ? `${ESTIMATE_LATER} ${question}` : question) as ReviewedText;
+  return withEstimate(QUESTIONS[key], aboutPrice);
 }
 
 const ONE_C = String.raw`1\s?[сc](?!\p{L})`;
@@ -65,10 +75,14 @@ const ASKED: Readonly<Record<QuestionKey, { readonly match: RegExp; readonly exc
     itemCount: {
       match:
         /сколько[^?]{0,40}(?:вещей|позиций|товар|единиц|штук|наименований|sku|меток|предметов|паллет|коробок)/iu,
-      exclude: /нового|(?:в|за)\s{1,3}месяц/iu,
+      exclude: /нового|(?:в|за)\s{1,3}месяц|двер|вход|выход|ворот|проход/iu,
     },
     monthlyIntake: { match: /сколько нового|(?:в|за)\s{1,3}месяц|поступа/iu },
-    passages: { match: /проход|сколько[^?]{0,20}(?:входов|выходов|ворот|дверей)/iu },
+    // «Проход» отдельным словом: «проходит за месяц» не вопрос о проходах (ревью этапа 2).
+    passages: {
+      match:
+        /(?<!\p{L})проход(?:а|ы|ов|ам|ами|ах)?(?!\p{L})|сколько[^?]{0,20}(?:входов|выходов|ворот|дверей)/iu,
+    },
     has1C: {
       match: new RegExp(
         String.raw`(?:есть|используете|работаете|ведёте|ведете)[^?]{0,20}${ONE_C}|как(?:ая|ой|ую)[^?]{0,20}${ONE_C}|конфигурац`,
@@ -104,7 +118,7 @@ export interface SafeQuestionInput {
   readonly lastBotText: string | null;
   /** Все прошлые ответы бота в окне истории; нет поля => только lastBotText. */
   readonly botTexts?: readonly string[];
-  /** Этап последнего отправленного ответа бота; нет поля => бот ещё не отвечал текстом модели. */
+  /** Самый дальний этап отправленных ответов бота; нет поля => бот ещё не отвечал текстом модели. */
   readonly lastStage?: ConversationStage | null;
   /** Чат уже передавался коллеге; нет поля => нет. */
   readonly handedOff?: boolean;
@@ -128,16 +142,19 @@ function calcQuestions(profile: ClientProfile): readonly QuestionKey[] {
   return calcMissing(profile).map((field) => (field === 'business' ? 'intro' : field));
 }
 
-/** Вопрос знакомства спрашивает и название компании: отметка, если о компании сейчас можно спросить. */
+/**
+ * Вопрос знакомства спрашивает и название компании, только если о ней сейчас можно спросить (компания недостающая в
+ * минимуме), с отметкой; иначе только чем она занимается (ревью этапа 2: не переспрашивать названную компанию).
+ */
 function safeQuestionOf(
   key: QuestionKey,
   aboutPrice: boolean,
   input: SafeQuestionInput,
 ): SafeQuestion {
-  const text = questionText(key, aboutPrice);
-  return key === 'intro' && input.minimum.missing.includes('company')
-    ? { key, text, companyQuestion: 'name' }
-    : { key, text };
+  if (key !== 'intro') return { key, text: questionText(key, aboutPrice) };
+  return input.minimum.missing.includes('company')
+    ? { key, text: questionText(key, aboutPrice), companyQuestion: 'name' }
+    : { key, text: withEstimate(INTRO_BUSINESS_QUESTION, aboutPrice) };
 }
 
 /** Этапы, на которых бот ещё не спросил, знает ли клиент RFID. */

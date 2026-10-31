@@ -13,7 +13,7 @@ import type {
   TurnSignals,
 } from '../../../src/domain/types.js';
 import { decideReply, requestDraft, type ReplyFlowDeps } from '../../../src/pipeline/reply-flow.js';
-import { questionText } from '../../../src/pipeline/safe-questions.js';
+import { INTRO_BUSINESS_QUESTION, questionText } from '../../../src/pipeline/safe-questions.js';
 
 // Два провала проверок (пункт 2 задания 29.10.2026): чат не уходит менеджеру, клиенту уходит фиксированный безопасный
 // вопрос (с 30.10.2026 один открытый по этапу и первому недостающему для расчёта), не тот, что бот уже задавал.
@@ -166,13 +166,13 @@ describe('pipeline/reply-flow: два провала проверок дают �
   it('проверка кодом дважды: вопрос знакомства (бизнес неизвестен), чат у бота', async () => {
     const r = await run({ drafts: [PRICED, PRICED] });
 
-    expect(r.verdict).toEqual({ kind: 'send', text: questionText('intro', false) });
+    expect(r.verdict).toEqual({ kind: 'send', text: INTRO_BUSINESS_QUESTION });
   });
 
   it('ревью дважды: тот же безопасный вопрос; сам вопрос второй раз не проверяется', async () => {
     const r = await run({ drafts: [CLEAN, CLEAN], problems: ['Утверждение не из документов'] });
 
-    expect(r.verdict).toEqual({ kind: 'send', text: questionText('intro', false) });
+    expect(r.verdict).toEqual({ kind: 'send', text: INTRO_BUSINESS_QUESTION });
     expect(r.reviews()).toBe(2);
   });
 

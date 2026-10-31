@@ -4,6 +4,7 @@ import type { ClientProfile, PhoneDigits } from '../../../src/domain/types.js';
 import { handoffMinimum } from '../../../src/handoff/minimum.js';
 import {
   askedKeys,
+  INTRO_BUSINESS_QUESTION,
   ESTIMATE_LATER,
   minimumSafeQuestion,
   nextSafeQuestion,
@@ -146,8 +147,36 @@ describe('pipeline/safe-questions: о чём бот уже спрашивал', 
 });
 
 describe('pipeline/safe-questions: какой вопрос задать вместо отклонённого черновика', () => {
-  it('бизнес неизвестен: знакомство', () => {
-    expect(nextSafeQuestion(input(EMPTY), false)).toEqual({ key: 'intro', text: TEXTS.intro });
+  it('бизнес неизвестен, о компании спрашивать не нужно: знакомство только о том, чем она занимается (ревью этапа 2)', () => {
+    expect(nextSafeQuestion(input(EMPTY), false)).toEqual({
+      key: 'intro',
+      text: INTRO_BUSINESS_QUESTION,
+    });
+    expect(nextSafeQuestion(input(EMPTY), true)?.text).toBe(
+      `${ESTIMATE_LATER} ${INTRO_BUSINESS_QUESTION}`,
+    );
+    expect(codeFindings(INTRO_BUSINESS_QUESTION, false)).toEqual([]);
+    expect(askedKeys(INTRO_BUSINESS_QUESTION)).toEqual(new Set(['intro']));
+  });
+
+  it('компания названа (известно название): знакомство не переспрашивает компанию', () => {
+    const named = input(EMPTY, {
+      minimum: handoffMinimum({ profile: EMPTY, companyName: 'Тинькофф', companyAskable: true }),
+    });
+
+    expect(nextSafeQuestion(named, false)).toEqual({
+      key: 'intro',
+      text: INTRO_BUSINESS_QUESTION,
+    });
+  });
+
+  it.each([
+    ['Сколько единиц товара проходит за месяц?', ['monthlyIntake']],
+    ['Через сколько дверей идёт товар?', ['passages']],
+    ['Сколько проходов нужно учитывать?', ['passages']],
+    ['Сколько у вас проходов и входов?', ['passages']],
+  ] as const)('«%s» распознаётся как %j, без лишнего (ревью этапа 2)', (text, keys) => {
+    expect([...askedKeys(text)]).toEqual(keys);
   });
 
   it('о компании можно спросить: вопрос знакомства отмечается как вопрос о названии', () => {
