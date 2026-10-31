@@ -267,7 +267,18 @@ def test_lookup_by_short_brand_puts_the_name_that_starts_with_it_first(api_db):
     add_company(conn, "Kustom Group")
 
     found = lookup(client, name="ТОО Kusto")
-    assert [(c["id"], c["match_by"], c["match_score"]) for c in found] == [(kusto, "name", 0.85), (mks, "name", 0.72)]
+    assert mks and [(c["id"], c["match_by"], c["match_score"]) for c in found] == [(kusto, "name", 0.85)]
+
+
+@pytest.mark.db
+def test_same_name_is_not_crowded_out_by_names_that_start_with_it(api_db):
+    # Ревью 31.10.2026: с «Alser Service Center» (0.85) рядом с «Alser» (0.9) разрыв мал, и бот не выбрал бы никого.
+    conn, client = api_db
+    alser = add_company(conn, "Alser, сеть магазинов")
+    add_company(conn, "Alser Service Center, сервисный центр")
+
+    found = lookup(client, name="Alser")
+    assert [(c["id"], c["match_score"]) for c in found] == [(alser, 0.9)]
 
 
 @pytest.mark.db

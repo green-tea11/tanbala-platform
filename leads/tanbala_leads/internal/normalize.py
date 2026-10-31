@@ -13,10 +13,9 @@ MAX_PHONE_CHARS = 32
 MAX_NAME_CHARS = 200
 MAX_CITY_CHARS = 100
 PHONE_DIGITS = 11
-# Совпадение по целым словам (name_match): короче четырёх букв не ищем, «ао», «ип» и подобное шумят.
-MIN_WORD_MATCH_CHARS = 4
+# Совпадение по целым словам в начале названия (name_match): от трёх букв, чтобы находились DHL, Jet, ПЭК.
+MIN_WORD_MATCH_CHARS = 3
 WORD_PREFIX_SIMILARITY = 0.95
-WORD_INSIDE_SIMILARITY = 0.8
 LEGAL_FORMS = frozenset("тоо ип ао зао оао пао ооо llp llc ltd jsc inc".split())
 QUOTES_RE = re.compile(r"[«»\"'“”„‘’`]")
 NOT_WORD_RE = re.compile(r"[^\w]+")
@@ -117,27 +116,23 @@ def name_similarity(left: str, right: str) -> float:
     return max(as_text, as_words)
 
 
-def _word_match(query: str, name: str) -> float:
-    """Слова запроса целиком в названии: в начале WORD_PREFIX_SIMILARITY, дальше WORD_INSIDE_SIMILARITY, иначе 0."""
+def word_prefix_match(query: str, name: str) -> float:
+    """Название начинается со слов запроса целиком (и длиннее его): WORD_PREFIX_SIMILARITY, иначе 0."""
     query_words, name_words = query.split(), name.split()
     if len("".join(query_words)) < MIN_WORD_MATCH_CHARS or len(query_words) >= len(name_words):
         return 0.0
-    size = len(query_words)
-    if name_words[:size] == query_words:
-        return WORD_PREFIX_SIMILARITY
-    if any(name_words[start:start + size] == query_words for start in range(1, len(name_words) - size + 1)):
-        return WORD_INSIDE_SIMILARITY
-    return 0.0
+    return WORD_PREFIX_SIMILARITY if name_words[:len(query_words)] == query_words else 0.0
 
 
 def name_match(query: str, name: str) -> float:
     """Насколько название компании name подходит к запросу бота query (оба нормализованы), 0..1.
 
-    Похожесть строк (name_similarity) или короткое имя бренда целыми словами (живой тест 31.10.2026: клиент написал
-    «kusto», в базе «Kusto Logistics Management»): название начинается со слов запроса — 0.95, слова стоят дальше
-    («Mks Kusto Logistics») — 0.8. Ровно 1.0 только у одинаковых названий: «та же компания» (find_known) не меняется.
+    Похожесть строк (name_similarity) или короткое имя бренда (живой тест 31.10.2026: клиент написал «kusto», в базе
+    «Kusto Logistics Management»): название начинается со слов запроса целиком — 0.95. Слово в середине («Mks Kusto
+    Logistics») не в счёт: по нему проверка из WhatsApp платно оценивала бы чужую компанию до вопроса клиенту (ревью
+    31.10.2026). Ровно 1.0 только у одинаковых названий: «та же компания» (find_known) не меняется.
     """
-    return max(name_similarity(query, name), _word_match(query, name))
+    return max(name_similarity(query, name), word_prefix_match(query, name))
 
 
 def _visible(char: str) -> str:

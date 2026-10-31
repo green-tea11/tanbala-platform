@@ -135,6 +135,13 @@ def test_short_brand_picks_the_only_card_that_starts_with_it():
     assert research.best_card(cards, request) == cards[2]
 
 
+def test_brand_word_inside_another_name_is_not_a_match():
+    # Иначе проверка платно оценила бы «Mks Kusto Logistics» до вопроса клиенту (ревью 31.10.2026).
+    request = research.Request(name="kusto", city="almaty", phone=None, domain=None)
+
+    assert research.best_card([collect.parse_item(MKS_KUSTO)], request) is None
+
+
 def test_short_brand_shared_by_two_companies_is_ambiguous():
     request = research.Request(name="kusto", city="almaty", phone=None, domain=None)
     cards = [collect.parse_item(item) for item in (DIAMOND, KUSTO_HOME, KUSTO_LOGISTICS, MKS_KUSTO)]

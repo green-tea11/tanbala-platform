@@ -83,10 +83,11 @@ def test_short_brand_matches_by_whole_words_but_never_as_the_same_name():
     # Живой тест 31.10.2026: клиент написал «kusto», в базе «Kusto Logistics Management, компания».
     assert norm.name_match("kusto", "kusto logistics management") == norm.WORD_PREFIX_SIMILARITY
     assert norm.name_match("kusto logistics", "kusto logistics management") == norm.WORD_PREFIX_SIMILARITY
-    assert norm.name_match("kusto", "mks kusto logistics") == norm.WORD_INSIDE_SIMILARITY
+    assert norm.name_match("kusto", "mks kusto logistics") < 0.7  # слово в середине не в счёт
+    assert norm.name_match("dhl", "dhl international kazakhstan") == norm.WORD_PREFIX_SIMILARITY
     assert norm.name_match("kusto", "kustom logistics") < 0.7  # не целое слово
     assert norm.name_match("kusto", "logistics kustoo") < 0.7
-    assert norm.name_match("ост", "ост логистик") < 0.7  # короче четырёх букв по словам не ищем
+    assert norm.name_match("ас", "ас логистик") < 0.7  # короче трёх букв по словам не ищем
     assert norm.name_match("kusto logistics management", "kusto") < 0.7  # название короче запроса
     assert norm.name_match("платформа а", "платформа а") == 1.0
     assert norm.name_match("kusto", "kusto") == 1.0
