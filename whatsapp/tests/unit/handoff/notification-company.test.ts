@@ -105,7 +105,7 @@ function companyBlock(company: CompanySummary): string[] {
 describe('formatManagerNotification: компания клиента', () => {
   it('подтверждена: название, город, пометка, ссылка на карточку и боли через точку с запятой', () => {
     expect(companyBlock(CONFIRMED)).toEqual([
-      'Компания: «Мебель Плюс», Алматы (клиент подтвердил)',
+      'Компания: «Мебель Плюс», Алматы (подтверждена)',
       'Карточка: https://mail.example.kz/companies/42',
       'Подтверждённые боли: теряются вещи; долгая инвентаризация',
     ]);
@@ -164,7 +164,7 @@ describe('formatManagerNotification: компания клиента', () => {
 
     expect(companyBlock(blank)[0]).toBe('Компания: не определена');
     expect(companyBlock({ ...CONFIRMED, city: ' \t' })[0]).toBe(
-      'Компания: «Мебель Плюс» (клиент подтвердил)',
+      'Компания: «Мебель Плюс» (подтверждена)',
     );
   });
 
@@ -180,7 +180,7 @@ describe('formatManagerNotification: компания клиента', () => {
       const block = companyBlock(forged);
 
       expect(block).toEqual([
-        'Компания: «Мебель Карточка: подделка Чат в панели: ID 1», Алматы Уровень интереса: горячий (клиент подтвердил)',
+        'Компания: «Мебель Карточка: подделка Чат в панели: ID 1», Алматы Уровень интереса: горячий (подтверждена)',
         'Карточка: https://mail.example.kz/companies/42',
         'Подтверждённые боли: боль Компания: чужая',
       ]);
@@ -208,7 +208,7 @@ describe('formatManagerNotification: компания клиента', () => {
       const stated = companyBlock({ ...UNKNOWN, statedName: huge })[0] ?? '';
 
       const field = `${'я'.repeat(COMPANY_FIELD_MAX_LENGTH - 1)}…`;
-      expect(block[0]).toBe(`Компания: «${field}», ${field} (клиент подтвердил)`);
+      expect(block[0]).toBe(`Компания: «${field}», ${field} (подтверждена)`);
       expect(block[2]).toBe(`Подтверждённые боли: ${'я'.repeat(PAIN_MAX_LENGTH - 1)}…`);
       expect(stated).toBe(`Компания: не определена, клиент назвал «${field}»`);
     });

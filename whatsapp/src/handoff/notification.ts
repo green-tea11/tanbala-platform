@@ -236,7 +236,7 @@ function companyLines(summary: CompanySummary): readonly string[] {
 function companyWords(summary: CompanySummary): string {
   const name = companyField(summary.name);
   const place = `«${name}»${cityPart(summary.city)}`;
-  if (name !== '' && summary.status === 'confirmed') return `${place} (клиент подтвердил)`;
+  if (name !== '' && summary.status === 'confirmed') return `${place} (подтверждена)`;
   if (name !== '' && summary.status === 'candidate') {
     return `возможно ${place} (клиент не подтвердил)`;
   }

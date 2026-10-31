@@ -447,7 +447,7 @@ describe('сценарии владельца: вопрос цены', () => {
     expect(price.toManager).toHaveLength(1);
     const notice = price.toManager[0] ?? '';
     expect(notice).toContain('Передача чата менеджеру: горячий клиент.');
-    expect(notice).toContain(`Компания: «${SKLAD}», Алматы (клиент подтвердил)`);
+    expect(notice).toContain(`Компания: «${SKLAD}», Алматы (подтверждена)`);
     expect(notice).toContain(`Карточка: ${EMAIL_UI_URL}/companies/${SKLAD_ID}`);
     expect(notice).toContain(`Подтверждённые боли: ${PAIN_MIXUP}`);
     // Что для расчёта известно и чего не хватает (решение владельца 30.10.2026).

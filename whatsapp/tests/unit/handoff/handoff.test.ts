@@ -1048,7 +1048,7 @@ describe('createHandoffService: компания клиента в уведом�
     expect(h.summaries).toEqual([CHAT_ID]);
     expect(h.notifications[0]?.text).toBe(notificationFor({ reason: 'hot' }, CONFIRMED_SUMMARY));
     expect(h.notifications[0]?.text).toContain(
-      'Компания: «Мебель Плюс», Алматы (клиент подтвердил)\nКарточка: https://mail.example.kz/companies/42',
+      'Компания: «Мебель Плюс», Алматы (подтверждена)\nКарточка: https://mail.example.kz/companies/42',
     );
   });
 
