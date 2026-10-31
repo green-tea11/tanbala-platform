@@ -1,6 +1,6 @@
 import { LevelPill, Panel, Unavailable } from '../components/Bits';
 import { IconExternal } from '../components/Icons';
-import { clockTime, safeExternalUrl } from '../lib/format';
+import { clockTime, lowerFirst, safeExternalUrl } from '../lib/format';
 import { Link } from '../lib/router';
 import { isUnavailable, type CalcState, type ClientCard, type ChatCard, type LeadsCompanyCard, type Pain } from '../lib/types';
 
@@ -56,7 +56,7 @@ export function BotFacts({ card, now }: { readonly card: ChatCard; readonly now:
       ) : (
         <p className="empty">Бот пока ничего не выяснил.</p>
       )}
-      {unknown.length > 0 ? <p className="facts-inline muted">Не выяснено: {unknown.map((f) => f.label.toLowerCase()).join(', ')}.</p> : null}
+      {unknown.length > 0 ? <p className="facts-inline muted">Не выяснено: {unknown.map((f) => lowerFirst(f.label)).join(', ')}.</p> : null}
       {card.note ? (
         <p className="bot-note">
           <b>Заметка для бота</b> · {clockTime(card.note.at, now)}
@@ -154,7 +154,8 @@ export function CompanyFacts({ client, now }: { readonly client: ClientCard; rea
       {bot.state === 'unknown' || bot.state === 'off' || bot.state === 'not_read' ? (
         <p className="empty">{bot.statedName ? `Клиент назвал «${bot.statedName}», в почтовой базе не найдено.` : 'Компания клиента не определена.'}</p>
       ) : null}
-      {bot.research ? <p className="facts-inline muted">Проверка новой компании: {bot.research.label}.</p> : null}
+      {/* Итог проверки нужен, пока компания не найдена: после кандидата или подтверждения он про прежнее название. */}
+      {bot.research && !bot.confirmed && !bot.candidate ? <p className="facts-inline muted">Проверка новой компании: {bot.research.label}.</p> : null}
       {leads && isUnavailable(leads) ? <Unavailable source="leads" /> : null}
       {leads && 'notFound' in leads ? <p className="empty">{leads.message}</p> : null}
       {leadsCard ? <LeadsData leads={leadsCard} now={now} /> : null}
@@ -168,7 +169,7 @@ export function LettersFacts({ client, now }: { readonly client: ClientCard; rea
   const card = leads && !isUnavailable(leads) && !('notFound' in leads) ? leads : null;
   if (card === null) return null;
   return (
-    <Panel id="letters" title="Письма компании" count={card.history.length}>
+    <Panel id="letters" title="Письма компании" count={card.history.length + (card.draft ? 1 : 0)}>
       {card.draft ? (
         <Link to={`/letters/${card.draft.id}`} className="row-link">
           <div className="row compact-row">
@@ -183,7 +184,7 @@ export function LettersFacts({ client, now }: { readonly client: ClientCard; rea
         </Link>
       ) : null}
       {card.history.length === 0 ? (
-        <p className="empty">Этой компании ещё не писали.</p>
+        <p className="empty">{card.draft ? 'Отправленных писем ещё не было.' : 'Этой компании ещё не писали.'}</p>
       ) : (
         <ul className="rows history">
           {card.history.map((item) => (

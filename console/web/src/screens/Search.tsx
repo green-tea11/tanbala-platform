@@ -100,7 +100,7 @@ export function SearchScreen({ owner }: { readonly owner: boolean }) {
     const estimate = total * opts.usdPerCompany;
     setConfirm({
       title: 'Начать поиск?',
-      body: <><p>{industries.join(', ')}: до {total} компаний в городе {opts.cities.find((c) => c.code === (city || opts.defaults.city))?.name}.</p><p>Примерно {usd(estimate)} за компании плюс {opts.usdFirstRun < 0.005 ? 'меньше цента' : `около ${usd(opts.usdFirstRun)}`} на первый запуск за 5 минут. Бюджет проверяется только при старте.</p></>,
+      body: <><p>{industries.join(', ')}: до {total} компаний в городе {opts.cities.find((c) => c.code === (city || opts.defaults.city))?.name}.</p><p>Расход Claude примерно {usd(estimate + opts.usdFirstRun)}. Дневной бюджет проверяется только при старте.</p></>,
       confirmLabel: 'Начать поиск',
       run: async () => { const result = await action.run('/api/runs', { query: industries.join(', '), city: city || opts.defaults.city, count: perQuery }); if (result.ok) { active.refresh(); runs.refresh(); } },
     });

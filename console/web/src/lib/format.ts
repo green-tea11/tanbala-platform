@@ -112,3 +112,8 @@ export function personHue(id: number): number {
   const HUES = [205, 150, 30, 340, 95, 265, 10, 180];
   return HUES[Math.abs(id) % HUES.length] ?? 205;
 }
+
+/** Подпись поля внутри фразы: первая буква строчная, сокращения («1С», «ИНН») как есть. */
+export function lowerFirst(label: string): string {
+  return /^(\d|[A-ZА-ЯЁ]{2})/.test(label) ? label : label.charAt(0).toLowerCase() + label.slice(1);
+}

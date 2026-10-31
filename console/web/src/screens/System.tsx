@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Panel, Unavailable } from '../components/Bits';
 import { ConfirmSheet, OutcomeLine, Pager, PageTitle, useAction, useQueryParams, type ConfirmRequest } from '../components/Ui';
 import { apiPost } from '../lib/api';
+import { auditAction, auditOutcome, auditTarget } from '../lib/audit-labels';
 import { clockTime, count, usd } from '../lib/format';
 import { Link, useRouter } from '../lib/router';
 import { POLL_MS, usePoll } from '../lib/usePoll';
@@ -127,9 +128,9 @@ export function SystemScreen() {
             <tr key={row.id}>
               <td className="num">{clockTime(row.at, now)}</td>
               <td>{row.actor}<div className="cell-sub">{row.ip ?? ''}</div></td>
-              <td>{row.action}</td>
-              <td>{row.target?.startsWith('chat:') ? <Link to={`/chats/${row.target.slice(5)}`} className="text-link">{row.target}</Link> : row.target ?? '—'}</td>
-              <td className={row.outcome && /fail|denied|refused|error/.test(row.outcome) ? 'bad-text' : undefined}>{row.outcome ?? '—'}</td>
+              <td>{auditAction(row.action)}</td>
+              <td>{row.target?.startsWith('chat:') ? <Link to={`/chats/${row.target.slice(5)}`} className="text-link">{auditTarget(row.target)}</Link> : auditTarget(row.target)}</td>
+              <td className={row.outcome && /fail|denied|refused|error/.test(row.outcome) ? 'bad-text' : undefined}>{auditOutcome(row.outcome)}</td>
             </tr>
           ))}</tbody>
         </table>
