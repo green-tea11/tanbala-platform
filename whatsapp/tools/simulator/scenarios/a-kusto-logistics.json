@@ -1,0 +1,77 @@
+{
+  "description": "Логистическая компания сначала называет короткий бренд «kusto», потом официальное название «Kusto Logistics Management». Повтор живого чата 7669 от 31.10.2026: там проверка новой компании по «kusto» не нашла 2ГИС, бот спросил официальное название, затем подтвердил компанию.",
+  "phone": "77000000001",
+  "pushName": "Ерлан",
+  "turns": [
+    { "text": "Здравствуйте" },
+    {
+      "text": "Компания, kusto, занимаемся логистикой,",
+      "fake": {
+        "interest": {
+          "level": "warm",
+          "companyName": "kusto",
+          "companyAliases": ["Кусто"],
+          "profile": { "business": "Логистика" }
+        }
+      }
+    },
+    {
+      "text": "Я примерно видел информацию, но полного понимания нет, как у вас идет учёт?",
+      "fake": {
+        "reply": {
+          "text": "Метку клеят на вещь, а антенны на входе и выходе сами отмечают приход и уход. Подскажите, вы из компании Kusto Logistics Management?",
+          "companyQuestion": "confirm",
+          "stage": "explain"
+        }
+      }
+    },
+    {
+      "comment": "В живом чате бот запустил проверку новой компании по «kusto»: даём ей закончиться до следующего сообщения",
+      "waitForResearchMs": 150000
+    },
+    {
+      "waitMs": 3000,
+      "text": "Kusto logistics management",
+      "fake": {
+        "interest": {
+          "companyName": "Kusto Logistics Management",
+          "companyAliases": ["Kusto Logistics", "Кусто Логистикс"],
+          "companyAnswer": "yes"
+        }
+      }
+    },
+    {
+      "waitMs": 5000,
+      "text": "ручная",
+      "fake": { "interest": { "profile": { "currentTracking": "Ручная проверка" } } }
+    },
+    { "waitMs": 3000, "text": "да", "fake": { "interest": { "companyAnswer": "yes" } } },
+    {
+      "waitMs": 8000,
+      "text": "Храним товары клиентов на паллетах, примерно 3000 паллетомест, склад в Алматы. 1С есть, Управление торговлей",
+      "fake": {
+        "interest": {
+          "profile": {
+            "items": "Товары клиентов на паллетах",
+            "packaging": "Паллеты",
+            "itemCount": "3000 паллетомест",
+            "city": "Алматы",
+            "premises": "Склад",
+            "has1C": true,
+            "oneCName": "Управление торговлей"
+          }
+        }
+      }
+    },
+    {
+      "waitMs": 5000,
+      "text": "Пересчёт у нас раз в месяц, занимает пару дней. А сколько это будет стоить примерно?",
+      "fake": {
+        "interest": {
+          "priceAsked": true,
+          "profile": { "problem": "Пересчёт занимает пару дней", "problemAgreed": true }
+        }
+      }
+    }
+  ]
+}

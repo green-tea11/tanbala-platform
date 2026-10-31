@@ -1,0 +1,57 @@
+{
+  "description": "Бот предлагает не ту компанию: по короткому «kusto» почта находит Kusto Logistics Management (оценка 0.85), бот спрашивает «Вы из компании ...?», клиент отвечает «нет, это не мы» и называет свою. Ждём: кандидат отклонён навсегда, справка по нему в промпт не идёт, по новому названию поиск и проверка новой компании.",
+  "phone": "77000000006",
+  "pushName": "Алия",
+  "turns": [
+    {
+      "text": "Добрый день, мы kusto, нужна консультация по учёту товара",
+      "fake": {
+        "interest": { "level": "warm", "companyName": "kusto", "companyAliases": ["Кусто"] }
+      }
+    },
+    {
+      "waitMs": 6000,
+      "text": "Магазин одежды, два зала и небольшой склад",
+      "fake": {
+        "interest": { "profile": { "business": "Магазин одежды", "premises": "Два зала и склад" } },
+        "reply": {
+          "text": "Спасибо. Подскажите, вы из компании Kusto Logistics Management, Алматы?",
+          "companyQuestion": "confirm",
+          "stage": "intro"
+        }
+      }
+    },
+    {
+      "waitMs": 6000,
+      "text": "Нет, это не мы. Мы Kusto Fashion, магазин одежды в Астане",
+      "fake": {
+        "interest": {
+          "companyAnswer": "no",
+          "companyName": "Kusto Fashion",
+          "companyCity": "Астана",
+          "companyAliases": ["Кусто Фэшн"],
+          "profile": { "city": "Астана" }
+        }
+      }
+    },
+    { "waitForResearchMs": 150000 },
+    {
+      "waitMs": 3000,
+      "text": "Учёт ведём в 1С Розница, товара около 8 тысяч единиц",
+      "fake": {
+        "interest": {
+          "profile": { "has1C": true, "oneCName": "1С Розница", "itemCount": "около 8 тысяч" }
+        }
+      }
+    },
+    {
+      "waitMs": 6000,
+      "text": "Металла и жидкостей нет, в основном одежда на вешалках и обувь в коробках",
+      "fake": {
+        "interest": {
+          "profile": { "items": "Одежда и обувь", "packaging": "Вешалки и коробки", "material": "Нет металла и жидкостей" }
+        }
+      }
+    }
+  ]
+}

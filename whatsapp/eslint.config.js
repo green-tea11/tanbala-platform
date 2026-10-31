@@ -3,7 +3,8 @@ import { defineConfig } from 'eslint/config';
 import tseslint from 'typescript-eslint';
 
 export default defineConfig(
-  { ignores: ['dist/', 'coverage/', 'data/', 'node_modules/'] },
+  // tools/simulator: инструмент разработки на .mjs вне сборки и tsconfig (README там же), печатает в консоль.
+  { ignores: ['dist/', 'coverage/', 'data/', 'node_modules/', 'tools/simulator/'] },
   js.configs.recommended,
   tseslint.configs.recommendedTypeChecked,
   {
