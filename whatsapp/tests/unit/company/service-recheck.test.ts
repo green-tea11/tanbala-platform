@@ -46,11 +46,20 @@ const UNASKED = MAGNUM;
 const ASKED_NO_ANSWER = { ...MAGNUM, askedAtMs: NOW - MINUTE_MS, awaitingAnswer: false };
 const AWAITING = { ...MAGNUM, askedAtMs: NOW - MINUTE_MS, awaitingAnswer: true };
 
+/**
+ * Клиент назвал город Караганду, а найденная по его словам «Бета» в Астане: не подтверждение без вопроса, а новый
+ * кандидат (подтверждение без вопроса проверяет service-confirm-by-name.test.ts).
+ */
 function withCandidate(
   candidate: ChatCandidate,
   overrides: Partial<ChatCompanyState> = {},
 ): ChatCompanyState {
-  return makeState({ freeStepsAtMs: NOW - MINUTE_MS, candidate, ...overrides });
+  return makeState({
+    freeStepsAtMs: NOW - MINUTE_MS,
+    statedCity: 'Караганда',
+    candidate,
+    ...overrides,
+  });
 }
 
 describe('identifyAfterReply: клиент назвал компанию при кандидате, варианты названия', () => {
@@ -233,7 +242,7 @@ describe('prepare: найденный бесплатными шагами кан
 
   it('клиент уже назвал другую компанию (API тогда не отвечало), поиск по его названию нашёл другой ID: предлагается она', async () => {
     const h = createHarness({
-      state: makeState({ statedName: 'Бета' }),
+      state: makeState({ statedName: 'Бета', statedCity: 'Караганда' }),
       directory: {
         lookup: lookupBy({ phone: ok([makeCandidate()]), name: ok([BETA_FOUND]) }),
       },

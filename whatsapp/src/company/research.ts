@@ -15,6 +15,7 @@ import { isTransientBriefFailure } from './api-failures.js';
 import type { CompanyEnv } from './env.js';
 import { logFailure } from './log.js';
 import { statedNames } from './lookup-step.js';
+import { offerFound } from './offer.js';
 import { searchPhone } from './search-phone.js';
 import { candidateFromBrief, isRunning, type RunningResearch } from './transitions.js';
 
@@ -64,7 +65,8 @@ function failResearch(
 
 /**
  * Проверка закончилась успешно. Кандидат из справки появляется, только если компанию не отклонял клиент, нет
- * подтверждённой компании и нет другого кандидата (его, возможно, уже спрашивали).
+ * подтверждённой компании и нет другого кандидата (его, возможно, уже спрашивали). Найден уверенно по словам клиента
+ * (offerFound): сразу подтверждён, справку с отметкой «клиент писал в WhatsApp» запрашивает ensureBrief.
  */
 function finishResearch(
   env: CompanyEnv,
@@ -83,7 +85,8 @@ function finishResearch(
     { chatId, step: 'research', status: 'done', offered: offer },
     'Проверка новой компании завершена',
   );
-  return { ...state, research, candidate: offer ? candidateFromBrief(brief) : state.candidate };
+  const done = { ...state, research };
+  return offer ? offerFound(env, chatId, done, candidateFromBrief(brief)) : done;
 }
 
 function applyStatus(

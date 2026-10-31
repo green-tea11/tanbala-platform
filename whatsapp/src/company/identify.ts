@@ -1,10 +1,12 @@
 import type { ChatCandidate, ChatCompanyState } from '../domain/company.js';
 import type { Chat } from '../domain/types.js';
 import { clipText } from './clip-text.js';
+import { ensureBrief } from './brief.js';
 import { contactJid, type CompanyEnv } from './env.js';
 import { logFailure } from './log.js';
 import { lookupCompany, lookupStatedNames, statedNames } from './lookup-step.js';
 import { normalizeName } from './normalize-name.js';
+import { offerFound } from './offer.js';
 import { recheckCandidate } from './recheck.js';
 import { startResearch } from './research.js';
 import { candidateFromLookup } from './transitions.js';
@@ -38,7 +40,8 @@ async function identifyByName(
     searched = { ...state, lookedUpName: normalized };
     if (outcome.kind === 'found') {
       env.logger.info({ chatId: chat.id, step: 'message' }, 'Найден кандидат компании');
-      return { ...searched, candidate: candidateFromLookup(outcome.candidate, 'message') };
+      const found = candidateFromLookup(outcome.candidate, 'message');
+      return offerFound(env, chat.id, searched, found);
     }
   }
   return searched.research === null ? startResearch(env, chat, searched, name) : searched;
@@ -103,14 +106,16 @@ function identifyStep(
 /**
  * После ответа клиенту, пока компания не подтверждена. Кандидата нет: шаг г (название со слов клиента, затем проверка
  * новой компании) или, когда клиент компанию не называл, шаг д (логотип). Кандидат есть: поиск по названию клиента
- * может заменить его другой найденной компанией (recheckCandidate). Состояние пишется только если оно изменилось.
+ * может заменить его другой найденной компанией (recheckCandidate). Найденное по словам клиента уверенно сразу
+ * подтверждается (offerFound): тогда здесь же запрашивается справка. Состояние пишется только если оно изменилось.
  */
 export async function identifyChat(env: CompanyEnv, chat: Chat): Promise<void> {
   const before = env.repo.get(chat.id);
   if (before.confirmed !== null) return;
-  const after =
+  const found =
     before.candidate === null
       ? await identifyStep(env, chat, before)
       : await recheckCandidate(env, chat.id, before);
+  const after = await ensureBrief(env, chat.id, found);
   if (after !== before) env.repo.save(after, env.clock.now());
 }

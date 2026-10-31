@@ -19,11 +19,15 @@ import { createHarness, fail, lidChat, lookupBy, ok } from './fakes.js';
 
 const FREE_DONE = { freeStepsAtMs: NOW - MINUTE_MS };
 
+/**
+ * Клиент назвал компанию и город Караганду, а найденная по названию карточка в Алматы: компания не подтверждается без
+ * вопроса (это проверяет service-confirm-by-name.test.ts), здесь проверяется поиск и кандидат.
+ */
 function named(overrides: Partial<ChatCompanyState> = {}): ChatCompanyState {
   return makeState({
     ...FREE_DONE,
     statedName: 'Платформа-А',
-    statedCity: 'Алматы',
+    statedCity: 'Караганда',
     ...overrides,
   });
 }
@@ -308,7 +312,7 @@ describe('identifyAfterReply: проверка новой компании', () 
         request: {
           name: 'Платформа-А',
           aliases: [],
-          city: 'Алматы',
+          city: 'Караганда',
           phone: '77000000001',
           domain: 'sklad.kz',
         },

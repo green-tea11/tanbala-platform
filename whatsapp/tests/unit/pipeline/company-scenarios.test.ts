@@ -232,7 +232,7 @@ describe('сценарии владельца: как находится ком�
     });
   });
 
-  it('4. найдена по названию из слов клиента: поиск после ответа, в следующей реплике блок кандидата с городом', async () => {
+  it('4. найдена по названию из слов клиента, но город карточки другой: поиск после ответа, в следующей реплике блок кандидата с городом', async () => {
     const romashka = candidateJson({
       id: 34,
       name: 'ТОО Ромашка',
@@ -244,8 +244,8 @@ describe('сценарии владельца: как находится ком�
     });
 
     const named = await s.say(
-      'Мы Ромашка из Алматы, нужен учёт товара',
-      reply(PLAIN, 'none', { companyName: 'Ромашка', companyCity: 'Алматы' }),
+      'Мы Ромашка из Шымкента, нужен учёт товара',
+      reply(PLAIN, 'none', { companyName: 'Ромашка', companyCity: 'Шымкент' }),
     );
     const next = await s.say(
       'Товар храним на двух складах',
@@ -265,7 +265,7 @@ describe('сценарии владельца: как находится ком�
     );
     expect(s.state()).toMatchObject({
       statedName: 'Ромашка',
-      statedCity: 'Алматы',
+      statedCity: 'Шымкент',
       candidate: { id: 34, source: 'message', askedAtMs: next.atMs, awaitingAnswer: true },
     });
   });
@@ -308,10 +308,8 @@ describe('сценарии владельца: ответ клиента на в
       },
     });
 
-    const named = await s.say(
-      'Мы ТОО Береке из Караганды',
-      reply(PLAIN, 'none', { companyName: BEREKE, companyCity: 'Караганда' }),
-    );
+    // Город клиент не назвал: проверка идёт в городе по умолчанию, найденную компанию бот уточняет вопросом.
+    const named = await s.say('Мы ТОО Береке', reply(PLAIN, 'none', { companyName: BEREKE }));
     const polled = await s.say('Товар храним на одном складе', reply(ASK_BEREKE, 'confirm'));
     const confirmed = await s.say(
       'Да, это мы',
@@ -326,7 +324,7 @@ describe('сценарии владельца: ответ клиента на в
     expect(named.api[2]?.body).toEqual({
       name: BEREKE,
       aliases: [],
-      city: 'Караганда',
+      city: null,
       // Обычный аккаунт: личный номер в проверку новой компании не уходит.
       phone: null,
       domain: null,
@@ -338,7 +336,7 @@ describe('сценарии владельца: ответ клиента на в
     expect(confirmed.llm.purposes()).toEqual(['interest', 'reply', 'review']);
     expect(requestLines(confirmed.api)).toEqual([`GET /internal/companies/${BEREKE_ID}/brief`]);
     const data = confirmed.data('reply');
-    expect(data).toContain(`Компания клиента (клиент подтвердил): «${BEREKE}».`);
+    expect(data).toContain(`Компания клиента: «${BEREKE}».`);
     expect(data).toContain('Рубрика: Оптовая торговля.');
     expect(data).toContain(
       `Трудности, которые часто бывают у похожих компаний: ${PAIN_INVENTORY}.`,

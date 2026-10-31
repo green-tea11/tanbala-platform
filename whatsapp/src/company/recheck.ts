@@ -3,13 +3,15 @@ import type { ChatId } from '../domain/types.js';
 import type { CompanyEnv } from './env.js';
 import { lookupStatedNames, statedNames } from './lookup-step.js';
 import { normalizeName } from './normalize-name.js';
+import { offerFound } from './offer.js';
 import { candidateFromLookup } from './transitions.js';
 
 /**
  * Клиент назвал компанию, а кандидат уже есть (по профилю, номеру, логотипу, прошлому названию или проверке) и ответа
  * на вопрос о нём не ждём (не спрошен или спрошен без ответа): поиск по названию клиента, один раз на название
  * (lookedUpName). Нашлась другая компания (другой ID): старый кандидат снимается без отклонения (клиент от него не
- * отказывался), предлагается новый с источником message. Ищут по названию клиента, затем по его вариантам. Тот же ID, ничего или неоднозначно: кандидат остаётся,
+ * отказывался), предлагается новый с источником message (найден уверенно: сразу подтверждён, см. offerFound). Ищут
+ * по названию клиента, затем по его вариантам. Тот же ID, ничего или неоднозначно: кандидат остаётся,
  * строгое несовпадение названий его не снимает («Magnum» и «Magnum Cash&Carry»). Временный сбой поиска: состояние то
  * же, поиск повторится. Поиска нет, если название клиента после нормализации пустое или совпадает с кандидатом.
  */
@@ -32,5 +34,5 @@ export async function recheckCandidate(
     { chatId, step: 'message' },
     'Клиент назвал другую компанию: кандидат заменён найденной по его словам',
   );
-  return { ...searched, candidate: candidateFromLookup(outcome.candidate, 'message') };
+  return offerFound(env, chatId, searched, candidateFromLookup(outcome.candidate, 'message'));
 }

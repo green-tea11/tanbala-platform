@@ -116,9 +116,10 @@ async function runFreeSteps(
 
 /**
  * Что делать перед ответом на пачку клиента: бесплатные шаги определения компании, поиск по названию клиента, если
- * он уже назвал компанию, а кандидат есть (recheckCandidate: другой ID заменяет кандидата до ответа), справка
- * подтверждённой компании (если её ещё нет) и опрос идущей проверки новой компании. Состояние пишется только если оно
- * изменилось. Возвращает блок промпта и признак «ждём ответ клиента на вопрос о кандидате».
+ * он уже назвал компанию, а кандидат есть (recheckCandidate: другой ID заменяет кандидата до ответа), опрос идущей
+ * проверки новой компании и справка подтверждённой компании (если её ещё нет; компания, подтверждённая опросом без
+ * вопроса, получает её в этом же ходе). Состояние пишется только если оно изменилось. Возвращает блок промпта и
+ * признак «ждём ответ клиента на вопрос о кандидате».
  */
 export async function prepareTurn(
   env: CompanyEnv,
@@ -128,8 +129,8 @@ export async function prepareTurn(
   const before = env.repo.get(chat.id);
   const found = await runFreeSteps(env, chat, messages, before);
   const searched = await recheckCandidate(env, chat.id, found);
-  const briefed = await ensureBrief(env, chat.id, searched);
-  const state = await pollResearch(env, chat.id, briefed);
+  const polled = await pollResearch(env, chat.id, searched);
+  const state = await ensureBrief(env, chat.id, polled);
   if (state !== before) env.repo.save(state, env.clock.now());
   return { prompt: buildPrompt(state), awaitingAnswer: state.candidate?.awaitingAnswer ?? false };
 }

@@ -305,7 +305,11 @@ describe('applyAssessment: слова клиента', () => {
       },
     });
 
-    const prompt = await h.service.applyAssessment(CHAT_ID, mention({ name: 'ТОО «Бета»' }));
+    // Город клиента не тот, что в карточке: не подтверждение без вопроса, а новый кандидат.
+    const prompt = await h.service.applyAssessment(
+      CHAT_ID,
+      mention({ name: 'ТОО «Бета»', city: 'Астана' }),
+    );
     await h.service.identifyAfterReply(makeChat());
 
     expect(prompt).toMatchObject({ kind: 'candidate', name: 'Платформа-А' });
@@ -338,7 +342,10 @@ describe('applyAssessment: слова клиента', () => {
       },
     });
 
-    const prompt = await h.service.applyAssessment(CHAT_ID, mention({ name: 'Бета' }));
+    const prompt = await h.service.applyAssessment(
+      CHAT_ID,
+      mention({ name: 'Бета', city: 'Астана' }),
+    );
     await h.service.identifyAfterReply(makeChat());
 
     expect(prompt.kind).toBe('asked');

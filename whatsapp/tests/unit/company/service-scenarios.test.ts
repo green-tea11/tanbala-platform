@@ -119,7 +119,7 @@ describe('сценарий: найден по номеру', () => {
 });
 
 describe('сценарий: название из слов клиента', () => {
-  it('бот спрашивает название, клиент называет, компания найдена, подтверждена', async () => {
+  it('бот спрашивает название, клиент называет его с городом, компания найдена уверенно: подтверждена без вопроса', async () => {
     const h = createHarness({
       directory: {
         lookup: lookupBy({ name: ok([makeCandidate({ matchBy: 'name', matchScore: 0.9 })]) }),
@@ -133,19 +133,18 @@ describe('сценарий: название из слов клиента', () =
       chat: noPhone,
       mention: { ...NO_ANSWER, name: 'Платформа-А', city: 'Алматы' },
     });
-    const third = await conversation(h, { chat: noPhone, question: 'confirm' });
-    const fourth = await conversation(h, { chat: noPhone, mention: YES });
+    const third = await conversation(h, { chat: noPhone });
 
     expect(first.turn.prompt).toEqual({ kind: 'unknown', askName: true });
     expect(second.turn.prompt).toEqual({ kind: 'unknown', askName: false });
-    expect(third.turn.prompt).toEqual({
-      kind: 'candidate',
-      name: 'Платформа-А',
-      city: 'Алматы',
-      withCity: true,
+    expect(third.turn).toMatchObject({
+      prompt: { kind: 'confirmed', name: 'Платформа-А', rubric: 'Складское хранение' },
+      awaitingAnswer: false,
     });
-    expect(fourth.prompt).toMatchObject({ kind: 'confirmed', rubric: 'Складское хранение' });
+    expect(h.directory.count('brief')).toBe(1);
     expect(h.repo.current()).toMatchObject({
+      candidate: null,
+      confirmed: { name: 'Платформа-А', city: 'Алматы' },
       statedName: 'Платформа-А',
       statedCity: 'Алматы',
       lookedUpName: 'платформа а',

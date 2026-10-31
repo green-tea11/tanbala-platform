@@ -36,7 +36,7 @@ function confirmedData(prompt: Extract<CompanyPrompt, { readonly kind: 'confirme
       : [
           `Трудности, которые часто бывают у похожих компаний: ${prompt.pains.map(plain).join('; ')}.`,
         ];
-  return [`Компания клиента (клиент подтвердил): «${plain(prompt.name)}».`, ...rubric, ...pains];
+  return [`Компания клиента: «${plain(prompt.name)}».`, ...rubric, ...pains];
 }
 
 function emailedLine(emailed: boolean): string {
