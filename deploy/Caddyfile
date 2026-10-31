@@ -1,5 +1,6 @@
-# Caddy для сервера Tanbala (PS.KZ, 91.201.215.210), панели wa. и leads. открыты. Копия: /etc/caddy/Caddyfile, ставит
-# её install.sh (шаг caddy), когда есть оба файла паролей wa и leads; до этого там Caddyfile.closed.
+# Caddy для сервера Tanbala (PS.KZ, 91.201.215.210). Копия: /etc/caddy/Caddyfile, ставит её install.sh (шаг caddy),
+# когда есть оба файла паролей wa и leads; до этого там Caddyfile.closed. С этапа Б (31.10.2026, «ок» владельца) wa. и
+# leads. ведут на единую панель panel.tanbala.kz; старые панели работают на своих портах, их не удаляли.
 # HTTPS и сертификаты Caddy получает и продлевает сам (нужны DNS и открытые порты 80 и 443).
 # Пароли basic auth здесь не хранятся: строки «имя хэш» лежат в /etc/caddy/auth/wa.caddy, leads.caddy и panel.caddy
 # (root:caddy, права 640), как их создать — deploy/env.md. Глобальные опции и (common) — в caddy/common.caddy.
@@ -11,34 +12,28 @@ import /opt/tanbala/deploy/caddy/site.caddy
 # caddy/panel.caddy, если есть /etc/caddy/auth/panel.caddy, иначе caddy/panel.closed.caddy (503).
 import /etc/caddy/panel-site.caddy
 
-# Панель WhatsApp-бота: пароль Caddy, затем свой вход панели (два слоя, решение владельца 29.10.2026).
+# Бывшая панель бота: перенаправление на panel (этап Б). 302, а не 301: браузер не запоминает его навсегда, откат —
+# прежний блок с basic_auth и reverse_proxy 127.0.0.1:3100 (git). Ссылка на чат /chats/{id} ведёт на тот же чат:
+# номера чатов у панели бота и у консоли одни. Пароль Caddy больше не нужен: у panel свой пароль и вход.
 wa.tanbala.kz {
 	import common
-	basic_auth {
-		import /etc/caddy/auth/wa.caddy
-	}
-	# 127.0.0.1, а не localhost: панель слушает только IPv4. Пароль Caddy (Authorization) панели не передаём.
-	# Host, X-Forwarded-For и X-Forwarded-Proto Caddy передаёт сам; панель верит им только от 127.0.0.1.
-	reverse_proxy 127.0.0.1:3100 {
-		header_up Host wa.tanbala.kz
-		header_up -Authorization
+	route {
+		@chat path_regexp chat ^/chats/(\d{1,12})$
+		redir @chat https://panel.tanbala.kz/chats/{re.chat.1} 302
+		redir https://panel.tanbala.kz/ 302
 	}
 }
 
-# Интерфейс почты (127.0.0.1:8001): пароль Caddy. Внутренний API почты (8000) Caddy не видит вовсе (nftables),
-# а путь с internal снаружи — 404 ещё до пароля и до приложения. Интерфейс и сам отвечает 404 на такие пути.
+# Бывший интерфейс почты: перенаправление на panel (этап Б). Ссылки из уведомлений менеджеру
+# (EMAIL_UI_URL + /companies/{id}) открывают ту же компанию. Путь с internal снаружи — по-прежнему 404; route нужен:
+# в стандартном порядке Caddy redir идёт раньше respond, и /internal ушёл бы в перенаправление.
 leads.tanbala.kz {
 	import common
 	route {
 		@internal path_regexp internal (?i)(^|/)internal([/;]|$)
 		respond @internal 404
-		basic_auth {
-			import /etc/caddy/auth/leads.caddy
-		}
-		# Host всегда имя интерфейса (PUBLIC_UI_HOST): другие имена интерфейс не пускает.
-		reverse_proxy 127.0.0.1:8001 {
-			header_up Host leads.tanbala.kz
-			header_up -Authorization
-		}
+		@card path_regexp card ^/companies/(\d{1,19})$
+		redir @card https://panel.tanbala.kz/companies/{re.card.1} 302
+		redir https://panel.tanbala.kz/ 302
 	}
 }

@@ -5,7 +5,7 @@
 # Шаги:
 #   system    пакеты (Python venv, sqlite3, Docker, Caddy, Google Chrome, Node) и пользователи служб
 #   configs   /opt/tanbala/deploy и contract, Caddy, nftables, службы и таймеры systemd, fail2ban, журналы, apt
-#   caddy     Caddyfile: wa. и leads. закрыты (503), пока нет обоих их паролей Caddy, иначе открыты; panel. — свой
+#   caddy     Caddyfile: wa. и leads. закрыты (503), пока нет обоих их паролей Caddy, иначе ведут на panel; panel. — свой
 #             режим (открыт, когда есть его файл паролей), wa. и leads. не закрывает. Его зовёт open-panels.sh
 #   db        Postgres и Reacher в Docker; нужен /opt/tanbala/leads/.env (deploy/env.md)
 #   leads     код почты, .venv и .venv-2gis, Chromium для crawl4ai; .env, data/, logs/ не трогает
@@ -240,7 +240,7 @@ step_caddy() {
 	# reload идёт через сокет API из Caddyfile; если Caddy ещё на старом адресе API, нужен restart.
 	systemctl reload caddy || systemctl restart caddy
 	if [[ $file == Caddyfile ]]; then
-		echo "Caddy: wa. и leads. открыты, пароли Caddy на месте"
+		echo "Caddy: wa. и leads. ведут на panel.tanbala.kz (этап Б)"
 	else
 		echo "Caddy: wa. и leads. закрыты (503), пока нет обоих их паролей Caddy (open-panels.sh)"
 	fi

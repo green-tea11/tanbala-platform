@@ -40,6 +40,12 @@ expect() {
 	got=$(code "$@")
 	if [[ $got == "$want" ]]; then ok "$what"; else bad "$what: ждали $want, пришло $got"; fi
 }
+# Перенаправление 302 на адрес want (этап Б: wa. и leads. ведут на panel).
+expect_redirect() {
+	local what=$1 url=$2 want=$3 got
+	got=$(curl -s -o /dev/null -m 10 -w '%{http_code} %{redirect_url}' "$url" || true)
+	if [[ $got == "302 $want" ]]; then ok "$what"; else bad "$what: ждали 302 $want, пришло $got"; fi
+}
 
 skip() { printf 'ПРОПУСК %s\n' "$*"; }
 
@@ -89,15 +95,19 @@ else
 	skip "бот не привязан по QR (этап 4): служба, панель и API бота не проверяются"
 fi
 
-# Снаружи, через Caddy и настоящий сертификат: без пароля — 401, внутренний API — 404. До паролей — 503 на всё.
+# Снаружи, через Caddy и настоящий сертификат. До паролей wa. и leads. — 503 на всё. С паролями (этап Б) оба имени
+# ведут на panel, ссылки на компанию и чат — на ту же компанию и тот же чат, внутренний API — 404.
 if grep -q '^# РЕЖИМ: закрыто' /etc/caddy/Caddyfile; then
 	expect 503 "https://leads.tanbala.kz закрыт до паролей Caddy" https://leads.tanbala.kz/
 	expect 503 "внутренний API снаружи не виден" https://leads.tanbala.kz/internal/lookup
 	expect 503 "https://wa.tanbala.kz закрыт до паролей Caddy" https://wa.tanbala.kz/
 else
-	expect 401 "https://leads.tanbala.kz закрыт паролем" https://leads.tanbala.kz/
+	expect_redirect "https://leads.tanbala.kz ведёт на panel" https://leads.tanbala.kz/ https://panel.tanbala.kz/
+	expect_redirect "ссылка на компанию ведёт на неё же в panel" https://leads.tanbala.kz/companies/1 \
+		https://panel.tanbala.kz/companies/1
 	expect 404 "внутренний API снаружи не виден" https://leads.tanbala.kz/internal/lookup
-	expect 401 "https://wa.tanbala.kz закрыт паролем" https://wa.tanbala.kz/
+	expect_redirect "https://wa.tanbala.kz ведёт на panel" https://wa.tanbala.kz/ https://panel.tanbala.kz/
+	expect_redirect "ссылка на чат ведёт на него же в panel" https://wa.tanbala.kz/chats/1 https://panel.tanbala.kz/chats/1
 fi
 # panel. — свой режим (install.sh, шаг caddy): закрыт (503), пока нет его паролей Caddy.
 if grep -qs '^# РЕЖИМ: закрыто' "$PANEL_SITE"; then
