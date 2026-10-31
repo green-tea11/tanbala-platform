@@ -343,6 +343,13 @@ SCHEMA_V7 = """
 ALTER TABLE companies ADD COLUMN whatsapp_contacted_at timestamptz;
 """
 
+SCHEMA_V8 = """
+-- Другие названия компании от WhatsApp-бота (старое название, латиница), решение владельца 30.10.2026:
+-- 2ГИС ищет по имени, затем по каждому варианту. Не больше трёх: вместе с именем до четырёх поисков на задачу.
+ALTER TABLE research_jobs ADD COLUMN aliases text[] NOT NULL DEFAULT '{}'
+    CHECK (cardinality(aliases) <= 3);
+"""
+
 MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     (1, "init", SCHEMA_V1),
     (2, "runs_and_llm_calls", SCHEMA_V2),
@@ -351,6 +358,7 @@ MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     (5, "test_sends", SCHEMA_V5),
     (6, "whatsapp_research", SCHEMA_V6),
     (7, "whatsapp_contacted_at", SCHEMA_V7),
+    (8, "research_aliases", SCHEMA_V8),
 )
 
 

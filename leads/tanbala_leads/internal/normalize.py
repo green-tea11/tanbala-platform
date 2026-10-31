@@ -95,6 +95,13 @@ def parse_name(value: str) -> str:
     return name
 
 
+def parse_alias(value: str) -> str | None:
+    """Другое название компании от бота (поле aliases): проверки как у name, но пустое после нормализации
+    («», «ТОО») не ошибка, а None: такой вариант просто отбрасывается.
+    """
+    return normalize_name(_checked(value, MAX_NAME_CHARS)) or None
+
+
 def name_similarity(left: str, right: str) -> float:
     """Похожесть нормализованных названий 0..1: по строке и по словам в любом порядке."""
     if not left or not right:
