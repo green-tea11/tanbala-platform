@@ -1,8 +1,8 @@
-import { Initial, LevelPill, Unavailable } from '../components/Bits';
+import { Initial, LevelPill, StaleNote, Unavailable } from '../components/Bits';
 import { Chips, Pager, PageTitle, SearchBox, Select, useQueryParams } from '../components/Ui';
 import { clockTime, minutesSince, nameOf, phoneLabel, waitDuration } from '../lib/format';
 import { Link, useRouter } from '../lib/router';
-import { usePoll } from '../lib/usePoll';
+import { POLL_MS, usePoll } from '../lib/usePoll';
 import { isUnavailable, type ChatStatus, type Level, type Section } from '../lib/types';
 
 const REPLY_TARGET_MIN = 15;
@@ -44,7 +44,7 @@ export function ChatsScreen() {
   const { params, set } = useQueryParams();
   const { navigate } = useRouter();
   const query = params.toString();
-  const poll = usePoll<Section<ChatList>>(`/api/chats${query ? `?${query}` : ''}`, 15_000);
+  const poll = usePoll<Section<ChatList>>(`/api/chats${query ? `?${query}` : ''}`, POLL_MS.live);
   const data = poll.data;
   const status = params.get('status') ?? '';
   const now = poll.updatedAt ?? Date.now();
@@ -78,6 +78,7 @@ export function ChatsScreen() {
         />
         <SearchBox value={params.get('q') ?? ''} placeholder="Имя или номер" maxLength={64} onSubmit={(q) => set({ q })} />
       </div>
+      <StaleNote poll={poll} />
 
       {data && isUnavailable(data) ? (
         <section className="panel"><div className="panel-body"><Unavailable source="wa" /></div></section>
@@ -159,7 +160,7 @@ const BAD_STATUSES = new Set(['failed', 'no_manager', 'skipped_limit']);
 export function NotificationsScreen() {
   const { params, set } = useQueryParams();
   const query = params.toString();
-  const poll = usePoll<Section<Page<NotificationRow>>>(`/api/notifications${query ? `?${query}` : ''}`, 30_000);
+  const poll = usePoll<Section<Page<NotificationRow>>>(`/api/notifications${query ? `?${query}` : ''}`, POLL_MS.background);
   const data = poll.data;
   const now = poll.updatedAt ?? Date.now();
   return (

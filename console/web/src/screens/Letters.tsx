@@ -1,11 +1,10 @@
 import { useEffect, useState } from 'react';
-import { Panel, Unavailable } from '../components/Bits';
+import { Panel, StaleNote, Unavailable } from '../components/Bits';
 import { IconCheck, IconCross, IconExternal } from '../components/Icons';
 import { Chips, ConfirmSheet, OutcomeLine, Pager, PageTitle, useAction, useQueryParams, type ConfirmRequest } from '../components/Ui';
-import { apiGet } from '../lib/api';
 import { clockTime, safeExternalUrl } from '../lib/format';
 import { Link, useRouter } from '../lib/router';
-import { usePoll } from '../lib/usePoll';
+import { POLL_MS, usePoll } from '../lib/usePoll';
 import { isUnavailable, type Pain, type Section } from '../lib/types';
 
 interface LetterRow {
@@ -192,19 +191,18 @@ export function LettersScreen({ selectedId, owner }: { readonly selectedId: numb
   const { params, set } = useQueryParams();
   const { navigate } = useRouter();
   const query = params.toString();
-  const listPoll = usePoll<Section<LetterList>>(`/api/letters${query ? `?${query}` : ''}`, 30_000);
-  const [letter, setLetter] = useState<Section<Letter> | null>(null);
+  const listPoll = usePoll<Section<LetterList>>(`/api/letters${query ? `?${query}` : ''}`, POLL_MS.live);
   const [notice, setNotice] = useState<string | null>(null);
   const list = listPoll.data && !isUnavailable(listPoll.data) ? listPoll.data : null;
-  const firstId = list?.items[0]?.id ?? null;
-  const shownId = selectedId ?? firstId;
-
-  useEffect(() => {
-    if (shownId === null) { setLetter(null); return; }
-    let live = true;
-    void apiGet<Section<Letter>>(`/api/letters/${shownId}`).then((result) => { if (live && result.ok) setLetter(result.data); });
-    return () => { live = false; };
-  }, [shownId]);
+  // Без выбранного письма открыто первое в очереди. Новые письма сверху его не подменяют, пока оно в списке.
+  const [autoId, setAutoId] = useState<number | null>(null);
+  const autoListed = autoId !== null && (list?.items.some((row) => row.id === autoId) ?? false);
+  const shownId = selectedId ?? (autoListed ? autoId : (list?.items[0]?.id ?? null));
+  // Пока список не прочитан, закреплённое письмо не сбрасывается.
+  useEffect(() => { if (selectedId === null && list) setAutoId(shownId); }, [selectedId, shownId, list]);
+  const detail = usePoll<Section<Letter>>(shownId === null ? null : `/api/letters/${shownId}`, POLL_MS.live, { background: selectedId === null });
+  // Пока грузится новое письмо, прежнее под его строкой в списке не показывается.
+  const letter = detail.data && (isUnavailable(detail.data) || detail.data.id === shownId) ? detail.data : null;
 
   const onDone = (decided: boolean, message?: string): void => {
     listPoll.refresh();
@@ -212,8 +210,8 @@ export function LettersScreen({ selectedId, owner }: { readonly selectedId: numb
     if (decided && list) {
       const next = list.items.find((row) => row.id !== shownId);
       if (next) navigate(`/letters/${next.id}${query ? `?${query}` : ''}`);
-    } else if (shownId !== null) {
-      void apiGet<Section<Letter>>(`/api/letters/${shownId}`).then((result) => { if (result.ok) setLetter(result.data); });
+    } else {
+      detail.refresh();
     }
   };
 
@@ -230,7 +228,8 @@ export function LettersScreen({ selectedId, owner }: { readonly selectedId: numb
           </div>
           <div className="letters-detail">
             {notice ? <OutcomeLine outcome={{ tone: 'ok', text: notice }} /> : null}
-            {letter && !isUnavailable(letter) ? <LetterView letter={letter} owner={owner} onDone={onDone} /> : letter ? <Unavailable source="leads" /> : list.items.length ? <p className="muted">Загрузка письма…</p> : null}
+            <StaleNote poll={listPoll.error ? listPoll : detail} />
+            {letter && !isUnavailable(letter) ? <LetterView letter={letter} owner={owner} onDone={onDone} /> : letter ? <Unavailable source="leads" /> : detail.error?.error === 'not_found' ? <p className="empty">Письмо не найдено.</p> : shownId !== null ? <p className="muted">Загрузка письма…</p> : null}
           </div>
         </div>
       ) : null}

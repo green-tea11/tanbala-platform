@@ -1,9 +1,9 @@
-import { useMemo, useState } from 'react';
-import { Panel, Unavailable } from '../components/Bits';
+import { useEffect, useMemo, useState } from 'react';
+import { Panel, StaleNote, Unavailable } from '../components/Bits';
 import { Chips, ConfirmSheet, OutcomeLine, Pager, PageTitle, useAction, useQueryParams, type ConfirmRequest } from '../components/Ui';
 import { clockTime, minutesSince, usd, waitDuration } from '../lib/format';
 import { Link } from '../lib/router';
-import { usePoll } from '../lib/usePoll';
+import { POLL_MS, usePoll } from '../lib/usePoll';
 import { isUnavailable, type Run, type Section } from '../lib/types';
 
 interface SearchOptions {
@@ -17,6 +17,7 @@ interface SearchOptions {
 
 interface RunRow extends Run {
   readonly createdAt: string;
+  readonly finishedAt: string | null;
   readonly finished: boolean;
   readonly lettersPending: number;
   readonly cost: { readonly usd: number | null; readonly text: string };
@@ -35,7 +36,7 @@ function RunCard({ run, now }: { readonly run: RunRow; readonly now: number }) {
   return (
     <div className="run-card">
       <div className="row-line1"><span className="who">Поиск №{run.id}, {run.cityName}</span><span className={`pill ${run.status === 'failed' ? 'bad' : run.finished ? 'ok' : 'info'}`}>{run.statusLabel}</span></div>
-      <p className="row-line2 wrap">{run.industries.join(', ')} · до {run.maxCompanies} на отрасль · {run.startedAt ? `идёт ${waitDuration(minutesSince(run.startedAt, now))}` : clockTime(run.createdAt, now)}</p>
+      <p className="row-line2 wrap">{run.industries.join(', ')} · до {run.maxCompanies} на отрасль · {run.finished ? `закончен ${clockTime(run.finishedAt ?? run.createdAt, now)}` : run.startedAt ? `идёт ${waitDuration(minutesSince(run.startedAt, now))}` : `в очереди с ${clockTime(run.createdAt, now)}`}</p>
       <ol className="stage-list">
         {run.stages.map((stage) => (
           <li key={stage.code} className={stage.state}>
@@ -59,11 +60,26 @@ export function SearchScreen({ owner }: { readonly owner: boolean }) {
   const { params, set } = useQueryParams();
   const tab = params.get('tab') === 'research' ? 'research' : 'runs';
   const options = usePoll<Section<SearchOptions>>('/api/search/options', 0);
-  const active = usePoll<Section<RunRow | null>>('/api/runs/active', 2_000);
+  // Ход идущего запуска раз в 2 с; пока поиска нет — раз в 5 с, чтобы заметить запуск с другого устройства.
+  const [running, setRunning] = useState(false);
+  const active = usePoll<Section<RunRow | null>>('/api/runs/active', running ? POLL_MS.progress : POLL_MS.live);
+  const activeRun = active.data && !isUnavailable(active.data) ? active.data : null;
+  useEffect(() => setRunning(activeRun !== null), [activeRun !== null]); // eslint-disable-line react-hooks/exhaustive-deps
   const selectedRunId = Number(params.get('run') ?? '0') || null;
-  const selected = usePoll<Section<RunRow>>(selectedRunId ? `/api/runs/${selectedRunId}` : '/api/runs/active', selectedRunId ? 0 : -1);
-  const runs = usePoll<Section<Page<RunRow>>>(`/api/runs?page=${params.get('page') ?? '1'}`, 30_000);
-  const research = usePoll<Section<Page<ResearchRow>>>(`/api/research-jobs?page=${params.get('page') ?? '1'}`, tab === 'research' ? 15_000 : 0);
+  // Запуск закончился на глазах: в «Сейчас» остаётся его итог, а не пустое «Поиск сейчас не идёт».
+  const [lastActiveId, setLastActiveId] = useState<number | null>(null);
+  useEffect(() => { if (activeRun) setLastActiveId(activeRun.id); }, [activeRun?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Только после настоящего ответа «поиск не идёт», а не при сбое почты.
+  const idle = active.data === null && active.updatedAt !== null;
+  const shownRunId = selectedRunId ?? (idle ? lastActiveId : null);
+  // Идущий запуск — ход раз в 2 с, законченный — изредка (письма одобряют, расход дописывается).
+  const [shownFinished, setShownFinished] = useState(false);
+  const selected = usePoll<Section<RunRow>>(shownRunId ? `/api/runs/${shownRunId}` : null, shownFinished ? POLL_MS.background : POLL_MS.progress, { background: selectedRunId === null });
+  const selectedRun = selected.data && !isUnavailable(selected.data) && selected.data.id === shownRunId ? selected.data : null;
+  useEffect(() => setShownFinished(selectedRun?.finished ?? false), [selectedRun?.finished]);
+  // Читается только открытая вкладка истории.
+  const runs = usePoll<Section<Page<RunRow>>>(tab === 'runs' ? `/api/runs?page=${params.get('page') ?? '1'}` : null, POLL_MS.live);
+  const research = usePoll<Section<Page<ResearchRow>>>(tab === 'research' ? `/api/research-jobs?page=${params.get('page') ?? '1'}` : null, POLL_MS.live);
   const action = useAction();
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
   const opts = options.data && !isUnavailable(options.data) ? options.data : null;
@@ -72,7 +88,6 @@ export function SearchScreen({ owner }: { readonly owner: boolean }) {
   const [perQuery, setPerQuery] = useState(5);
   const industries = useMemo(() => splitIndustries(queryText), [queryText]);
   const total = industries.length * perQuery;
-  const activeRun = active.data && !isUnavailable(active.data) ? active.data : null;
   const now = active.updatedAt ?? Date.now();
   const tooMany = opts ? industries.length > opts.limits.maxQueries || total > opts.limits.maxTotal : false;
 
@@ -117,9 +132,9 @@ export function SearchScreen({ owner }: { readonly owner: boolean }) {
             </form>
           )}
         </Panel>
-        <Panel id="active-run" title={selectedRunId ? `Запуск №${selectedRunId}` : 'Сейчас'} aside={selectedRunId ? <button type="button" className="btn small ghost" onClick={() => set({ run: null })}>К идущему</button> : null}>
-          {selectedRunId && selected.error ? <p className="empty">Запуск №{selectedRunId} не найден.</p> : selectedRunId && selected.data && !isUnavailable(selected.data) && selected.data !== null ? <RunCard run={selected.data} now={now} /> : active.data && isUnavailable(active.data) ? <Unavailable source="leads" /> : activeRun ? <RunCard run={activeRun} now={now} /> : <p className="empty">Поиск сейчас не идёт.</p>}
-          {active.error && active.error.error === 'network' ? <p className="hint">{active.error.message}</p> : null}
+        <Panel id="active-run" title={selectedRunId ? `Запуск №${selectedRunId}` : activeRun || !shownRunId ? 'Сейчас' : 'Последний запуск'} aside={selectedRunId ? <button type="button" className="btn small ghost" onClick={() => set({ run: null })}>К идущему</button> : null}>
+          {selectedRunId && selected.error?.error === 'not_found' ? <p className="empty">Запуск №{selectedRunId} не найден.</p> : shownRunId && selectedRun ? <RunCard run={selectedRun} now={now} /> : shownRunId && selected.data && isUnavailable(selected.data) ? <Unavailable source="leads" /> : shownRunId ? <p className="muted">Загрузка…</p> : active.data && isUnavailable(active.data) ? <Unavailable source="leads" /> : activeRun ? <RunCard run={activeRun} now={now} /> : <p className="empty">Поиск сейчас не идёт.</p>}
+          <StaleNote poll={active} />
         </Panel>
       </div>
 

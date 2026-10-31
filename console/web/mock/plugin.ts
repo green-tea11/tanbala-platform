@@ -100,6 +100,8 @@ function handle(req: IncomingMessage, res: ServerResponse): boolean {
     if (make) { send(res, 200, make()); return true; }
     const companyId = id(/^\/api\/companies\/(\d{1,9})$/);
     if (companyId !== null) { const c = companyFixture(now, companyId); if (c) send(res, 200, c); else send(res, 404, { error: 'not_found', message: 'Компании нет.' }); return true; }
+    const runId = id(/^\/api\/runs\/(\d{1,9})$/);
+    if (runId !== null) { const r = runs.list.items.find((item) => item.id === runId); if (r) send(res, 200, r); else send(res, 404, { error: 'not_found', message: 'Запуск не найден.' }); return true; }
     const letterId = id(/^\/api\/letters\/(\d{1,9})$/);
     if (letterId !== null) { const l = letterFixture(now, letterId); if (l) send(res, 200, l); else send(res, 404, { error: 'not_found', message: 'Письма нет.' }); return true; }
   }

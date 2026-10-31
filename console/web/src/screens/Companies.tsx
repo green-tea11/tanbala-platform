@@ -1,10 +1,10 @@
 import { useState } from 'react';
-import { Panel, Unavailable } from '../components/Bits';
+import { Panel, StaleNote, Unavailable } from '../components/Bits';
 import { IconExternal } from '../components/Icons';
 import { Chips, ConfirmSheet, OutcomeLine, Pager, PageTitle, SearchBox, Select, useAction, useQueryParams, type ConfirmRequest } from '../components/Ui';
 import { clockTime, count, nameOf, safeExternalUrl, usd } from '../lib/format';
 import { Link, useRouter } from '../lib/router';
-import { usePoll } from '../lib/usePoll';
+import { POLL_MS, usePoll } from '../lib/usePoll';
 import { isUnavailable, type Pain, type Section } from '../lib/types';
 
 interface CompanyRow {
@@ -42,7 +42,7 @@ export function CompaniesScreen() {
   const { params, set } = useQueryParams();
   const { navigate } = useRouter();
   const query = params.toString();
-  const poll = usePoll<Section<CompanyList>>(`/api/companies${query ? `?${query}` : ''}`, 0);
+  const poll = usePoll<Section<CompanyList>>(`/api/companies${query ? `?${query}` : ''}`, POLL_MS.live);
   const data = poll.data;
   const list = data && !isUnavailable(data) ? data : null;
   const cardCode = ['drafted', 'approved', 'rejected'].includes(params.get('status') ?? '') ? (params.get('status') ?? '') : params.get('status') ? '' : 'all';
@@ -67,6 +67,7 @@ export function CompaniesScreen() {
         <Select label="Порядок" value={params.get('sort') ?? 'new'} onChange={(value) => set({ sort: value === 'new' ? null : value })} options={[{ value: 'new', label: 'Новые сверху' }, { value: 'score', label: 'По оценке' }, { value: 'letter', label: 'По письму' }]} />
         <SearchBox value={params.get('q') ?? ''} placeholder="Название или рубрика" maxLength={100} onSubmit={(q) => set({ q })} />
       </div>
+      <StaleNote poll={poll} />
 
       {data && isUnavailable(data) ? (
         <section className="panel"><div className="panel-body"><Unavailable source="leads" /></div></section>
@@ -141,7 +142,7 @@ interface CompanyCardData {
 }
 
 export function CompanyScreen({ id, owner }: { readonly id: number; readonly owner: boolean }) {
-  const poll = usePoll<CompanyCardData>(`/api/companies/${id}`, 0);
+  const poll = usePoll<CompanyCardData>(`/api/companies/${id}`, POLL_MS.live);
   const action = useAction();
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
   const data = poll.data;
@@ -186,6 +187,7 @@ export function CompanyScreen({ id, owner }: { readonly id: number; readonly own
         ) : null}
       />
       <OutcomeLine outcome={action.outcome} />
+      <StaleNote poll={poll} />
       {c.requestedVia === 'whatsapp' ? <p className="notice warn" style={{ marginBottom: 16 }}>Компанию добавила проверка из WhatsApp: в рассылку она не попадает.</p> : null}
       {c.whatsappContactedAt ? <p className="notice info" style={{ marginBottom: 16 }}>Клиент уже писал в WhatsApp ({clockTime(c.whatsappContactedAt, now)}). Проверьте, нужно ли письмо.</p> : null}
       {card.blocked ? <p className="notice bad" style={{ marginBottom: 16 }}>В списке «не писать»: письма этой компании одобрить нельзя.</p> : null}

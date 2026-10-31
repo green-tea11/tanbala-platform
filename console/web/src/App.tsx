@@ -4,7 +4,7 @@ import { apiPost } from './lib/api';
 import { Shell, type NavCounts } from './components/Shell';
 import { loadSession } from './lib/api';
 import { matchPath, useRouter } from './lib/router';
-import { usePoll, type PollState } from './lib/usePoll';
+import { POLL_MS, SESSION_RESTORED_EVENT, usePoll, type PollState } from './lib/usePoll';
 import { isUnavailable, type Home, type Session } from './lib/types';
 import { ChatsScreen, NotificationsScreen } from './screens/Chats';
 import { ClientScreen } from './screens/Client';
@@ -14,9 +14,6 @@ import { HomeScreen } from './screens/Home';
 import { LettersScreen } from './screens/Letters';
 import { SearchScreen } from './screens/Search';
 import { LoginScreen, MoreScreen, SystemScreen } from './screens/System';
-
-const HOME_POLL_MS = 15_000;
-const BACKGROUND_POLL_MS = 60_000;
 
 const TITLES: Readonly<Record<string, string>> = {
   '/': 'Требует внимания',
@@ -90,7 +87,8 @@ function routeFor(path: string, session: Session, home: PollState<Home>, onLogou
 function Workspace({ session, onLogout, onExpired }: { readonly session: Session; readonly onLogout: () => void; readonly onExpired: () => void }) {
   const { path } = useRouter();
   const onHome = path === '/';
-  const home = usePoll<Home>('/api/home', onHome ? HOME_POLL_MS : BACKGROUND_POLL_MS);
+  // На главной — как рабочий экран; на других экранах — для значков меню (ждут ответа, письма).
+  const home = usePoll<Home>('/api/home', onHome ? POLL_MS.live : POLL_MS.background);
   const route = routeFor(path, session, home, onLogout);
 
   useEffect(() => {
@@ -123,6 +121,8 @@ export function App() {
       if (result.ok) {
         setSession(result.data);
         setState('ready');
+        // Вход слоем поверх экрана: опросы, остановленные концом сессии, читают данные снова.
+        window.dispatchEvent(new Event(SESSION_RESTORED_EVENT));
       } else if (result.failure.error === 'no_session') {
         setSession(null);
         setState('login');

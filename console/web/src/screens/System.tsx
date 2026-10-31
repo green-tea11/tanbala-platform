@@ -4,7 +4,7 @@ import { ConfirmSheet, OutcomeLine, Pager, PageTitle, useAction, useQueryParams,
 import { apiPost } from '../lib/api';
 import { clockTime, count, usd } from '../lib/format';
 import { Link, useRouter } from '../lib/router';
-import { usePoll } from '../lib/usePoll';
+import { POLL_MS, usePoll } from '../lib/usePoll';
 import { isUnavailable, type BotStatus, type LeadsSummary, type Section, type SpendTotal } from '../lib/types';
 
 interface SpendDays { readonly days: readonly ({ readonly day: string } & SpendTotal)[]; readonly total: SpendTotal }
@@ -37,11 +37,11 @@ function SpendTable({ spend }: { readonly spend: SystemSpend }) {
 
 export function SystemScreen() {
   const { params, set } = useQueryParams();
-  const status = usePoll<{ botStatus: Section<BotStatus & { pairingAttempts24h?: number; linkedAt?: string | null; research24h?: { count: number; limit: number } }>; leadsSummary: Section<LeadsSummary> }>('/api/system', 30_000);
-  const spend = usePoll<SystemSpend>('/api/system/spend', 0);
-  const audit = usePoll<{ items: readonly AuditRow[]; total: number; page: number; pages: number; pageSize: number }>(`/api/system/audit?page=${params.get('page') ?? '1'}`, 0);
-  const users = usePoll<{ items: readonly UserRow[] }>('/api/system/users', 0);
-  const sessions = usePoll<{ items: readonly SessionRow[] }>('/api/system/sessions', 0);
+  const status = usePoll<{ botStatus: Section<BotStatus & { pairingAttempts24h?: number; linkedAt?: string | null; research24h?: { count: number; limit: number } }>; leadsSummary: Section<LeadsSummary> }>('/api/system', POLL_MS.background);
+  const spend = usePoll<SystemSpend>('/api/system/spend', POLL_MS.rare);
+  const audit = usePoll<{ items: readonly AuditRow[]; total: number; page: number; pages: number; pageSize: number }>(`/api/system/audit?page=${params.get('page') ?? '1'}`, POLL_MS.rare);
+  const users = usePoll<{ items: readonly UserRow[] }>('/api/system/users', POLL_MS.rare);
+  const sessions = usePoll<{ items: readonly SessionRow[] }>('/api/system/sessions', POLL_MS.rare);
   const action = useAction();
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
   const now = status.updatedAt ?? Date.now();

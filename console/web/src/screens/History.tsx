@@ -3,7 +3,7 @@ import { Panel, Unavailable } from '../components/Bits';
 import { OutcomeLine, Pager, PageTitle, useAction, useQueryParams } from '../components/Ui';
 import { clockTime } from '../lib/format';
 import { Link } from '../lib/router';
-import { usePoll } from '../lib/usePoll';
+import { POLL_MS, usePoll } from '../lib/usePoll';
 import { isUnavailable, type Section } from '../lib/types';
 
 interface Page<T> { readonly items: readonly T[]; readonly total: number; readonly page: number; readonly pages: number; readonly pageSize: number }
@@ -58,8 +58,8 @@ function ImportForm({ kind, title, hint, onDone }: { readonly kind: 'written' | 
 
 export function HistoryScreen({ owner }: { readonly owner: boolean }) {
   const { params, set } = useQueryParams();
-  const history = usePoll<Section<Page<HistoryRow>>>(`/api/history?page=${params.get('hpage') ?? '1'}`, 0);
-  const blocked = usePoll<Section<Page<BlockedRow>>>(`/api/blocked?page=${params.get('bpage') ?? '1'}`, 0);
+  const history = usePoll<Section<Page<HistoryRow>>>(`/api/history?page=${params.get('hpage') ?? '1'}`, POLL_MS.background);
+  const blocked = usePoll<Section<Page<BlockedRow>>>(`/api/blocked?page=${params.get('bpage') ?? '1'}`, POLL_MS.background);
   const now = history.updatedAt ?? Date.now();
   const refresh = (): void => { history.refresh(); blocked.refresh(); };
   return (

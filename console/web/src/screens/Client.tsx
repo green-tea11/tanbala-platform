@@ -1,14 +1,12 @@
 import { useState } from 'react';
-import { LevelPill, Skeleton, Unavailable } from '../components/Bits';
+import { LevelPill, Skeleton, StaleNote, Unavailable } from '../components/Bits';
 import { IconPhone } from '../components/Icons';
 import { nameOf, phoneLabel, telHref, waHref } from '../lib/format';
 import { Link } from '../lib/router';
-import { usePoll } from '../lib/usePoll';
+import { POLL_MS, usePoll } from '../lib/usePoll';
 import { isUnavailable, type BotStatus, type ClientCard, type Home, type Section } from '../lib/types';
 import { Composer, Messages } from './ClientConversation';
 import { BotFacts, CompanyFacts, HandoffFacts, LettersFacts } from './ClientFacts';
-
-const CHAT_POLL_MS = 5_000;
 
 type Tab = 'chat' | 'client' | 'company';
 
@@ -24,7 +22,7 @@ interface ClientScreenProps {
 }
 
 export function ClientScreen({ chatId, home }: ClientScreenProps) {
-  const poll = usePoll<Section<ClientCard>>(`/api/clients/${chatId}`, CHAT_POLL_MS);
+  const poll = usePoll<Section<ClientCard>>(`/api/clients/${chatId}`, POLL_MS.live);
   const [tab, setTab] = useState<Tab>('chat');
   const now = poll.updatedAt ?? Date.now();
   const botStatus: BotStatus | null = home && !isUnavailable(home.botStatus) ? home.botStatus : null;
@@ -77,6 +75,7 @@ export function ClientScreen({ chatId, home }: ClientScreenProps) {
           {wa ? <a className="btn" href={wa} target="_blank" rel="noopener noreferrer">WhatsApp</a> : null}
         </div>
       </div>
+      <StaleNote poll={poll} />
 
       <div className="client-tabs segmented" role="tablist" aria-label="Разделы клиента">
         {TABS.map((item) => (

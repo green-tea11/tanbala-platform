@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { initialOf, personHue } from '../lib/format';
 import type { Home, Level } from '../lib/types';
+import type { PollState } from '../lib/usePoll';
 
 /** Инициал человека на бледной подложке его оттенка (подложка — личность, не данные). */
 export function Initial({ id, name }: { readonly id: number; readonly name: string | null }) {
@@ -56,6 +57,13 @@ export function Panel({ title, count, aside, foot, className, id, children }: Pa
       {foot ? <footer className="panel-foot">{foot}</footer> : null}
     </section>
   );
+}
+
+/** Очередное чтение не прошло, на экране прежние данные: одна строка, экран и набранный текст остаются. */
+export function StaleNote({ poll }: { readonly poll: PollState<unknown> }) {
+  if (poll.data === null || poll.error === null) return null;
+  if (poll.error.error !== 'network' && poll.error.error !== 'unavailable') return null;
+  return <p className="hint" role="status">{poll.error.message}</p>;
 }
 
 /** Раздел недоступен: почта или бот не отвечают — одна фраза в рамке блока. */
