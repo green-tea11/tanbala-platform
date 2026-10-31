@@ -206,6 +206,31 @@ describe('карточка клиента', () => {
     });
   });
 
+  it('причина передачи, «для расчёта» и рассказанное клиенту от бота доходят до интерфейса как есть (31.10.2026)', async () => {
+    const harness = await start();
+    const bot = chatCard({ state: 'unknown' });
+    const calc = {
+      known: [{ key: 'items', label: 'что лежит на хранении', inferred: false }],
+      missing: [{ key: 'city', label: 'город' }],
+    };
+    const toldFacts = [{ id: 'F4', label: 'ручной сканер' }];
+    const levelReason = 'Третий раз спрашивает цену. Клиент: «Так сколько?»';
+    harness.backends.on('GET wa:/chats/12', {
+      ...bot,
+      chat: { ...bot.chat, toldFacts },
+      profile: { ...bot.profile, calc, levelReason },
+    });
+    const session = await harness.signIn('manager', 'manager');
+
+    const card = (await harness.request('GET', '/api/clients/12', { session })).json<{
+      chat: { chat: { toldFacts: unknown }; profile: { calc: unknown; levelReason: unknown } };
+    }>();
+
+    expect(card.chat.profile.calc).toEqual(calc);
+    expect(card.chat.profile.levelReason).toBe(levelReason);
+    expect(card.chat.chat.toldFacts).toEqual(toldFacts);
+  });
+
   it('только кандидат: его карточка с пометкой «не подтверждено»', async () => {
     const harness = await start();
     harness.backends.on(

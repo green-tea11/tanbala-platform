@@ -23,6 +23,7 @@ import {
 } from './console-http.js';
 import {
   chatRowJson,
+  calcJson,
   cleanOrNull,
   companyJson,
   controlJson,
@@ -36,6 +37,7 @@ import {
   phoneOf,
   profileFieldsJson,
   rejectedJson,
+  toldFactsJson,
 } from './console-json.js';
 import { parseBefore, parseChatFilter, parseConsolePage } from './console-params.js';
 import { pageJson, PREFIX } from './console-routes-status.js';
@@ -118,7 +120,11 @@ function companySummaryOf(context: ConsoleContext, chatId: ChatId): CompanySumma
   }
 }
 
-/** Карточка чата: всё, что показывает старая карточка, плюс история передач, время смены статуса и ход разговора. */
+/**
+ * Карточка чата: всё, что показывает старая карточка, плюс история передач, время смены статуса и ход разговора;
+ * рассказанные клиенту сильные стороны (chat.toldFacts) и что для расчёта известно и чего не хватает (profile.calc).
+ * Причина оценки (levelReason) с 30.10.2026 при передаче чата ботом: причина передачи своими словами с цитатой клиента.
+ */
 function chatCardJson(context: ConsoleContext, chat: Chat): Record<string, unknown> {
   const { chats, reads, handoffs, notifications, rejectedDrafts } = context.deps;
   const meta = reads.chatMeta(chat.id);
@@ -140,9 +146,11 @@ function chatCardJson(context: ConsoleContext, chat: Chat): Record<string, unkno
       priceAsks: progress.priceAsks,
       refusedAnswers: progress.refused,
       handedOff: progress.handedOff === true,
+      toldFacts: toldFactsJson(progress.toldFacts ?? []),
     },
     profile: {
       fields: profileFieldsJson(chat.profile),
+      calc: calcJson(chat.profile),
       problemAgreed: chat.profile.problemAgreed,
       levelReason: cleanOrNull(profileMeta?.reason ?? null),
       updatedAt: isoOrNull(profileMeta?.updatedAtMs),

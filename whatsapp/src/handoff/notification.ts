@@ -1,4 +1,11 @@
 import { profileEntries } from '../agent/profile.js';
+import {
+  CALC_LABELS,
+  calcKnown,
+  calcMissing,
+  STRENGTH_LABELS,
+  type CalcField,
+} from '../agent/stage.js';
 import type { CompanySummary } from '../domain/company.js';
 import type {
   BacklogChat,
@@ -8,9 +15,9 @@ import type {
   HandoffReason,
   InterestLevel,
   PhoneDigits,
+  StrengthId,
 } from '../domain/types.js';
 import { companyCardHref } from './card-link.js';
-import { companyNameOf, minimumReport } from './minimum.js';
 
 /** Причина в уведомлении: для лимита обязательно указать, какой лимит исчерпан. */
 export type NotificationReason =
@@ -30,6 +37,8 @@ export type ManagerNotificationInput = NotificationReason & {
   readonly phone: PhoneDigits | null;
   readonly level: InterestLevel;
   readonly profile: ClientProfile;
+  /** Сильные стороны, уже рассказанные клиенту (ChatProgress.toldFacts); нет поля => ни одной. */
+  readonly toldFacts?: readonly StrengthId[];
   /** ID чата в панели. */
   readonly chatId: ChatId;
   /**
@@ -118,9 +127,9 @@ const LIMIT_PHRASES: Readonly<Record<BudgetScope, string>> = {
  * уровень и все поля выжимки (agent/profile.profileEntries: компания, вещи, материал, город, помещение, число вещей,
  * 1С и остальное) с пометкой «всё со слов клиента». Нет номера: «номер скрыт» и ID чата, по которому
  * чат ищут в панели. Лимит (reason 'limit'): «бот замолчал в этом чате» с названием настройки, ID чата и номер те же.
- * При передаче (не лимит) после выжимки и пустой строки идут две строки о минимуме для оценки цены (решение владельца
- * 29.10.2026): что собрано и что выяснить не удалось (minimumLines), затем с данными о компании блок о компании
- * (companyLines).
+ * При передаче (не лимит) после выжимки и пустой строки идут три строки (решение владельца 30.10.2026): что для расчёта
+ * известно и чего не хватает (agent/stage.ts) и что из сильных сторон уже рассказано клиенту (calcLines), затем с
+ * данными о компании блок о компании (companyLines: подтверждённые боли там).
  * Имя, каждое поле выжимки и тексты о компании недоверенные (клиент, модель, сайты и 2ГИС): одной строкой (переводы
  * строк, управляющие и невидимые символы убираются), без ссылок, с лимитом длины, поэтому подделать строки шаблона
  * или доставить менеджеру чужую ссылку нельзя.
@@ -139,7 +148,7 @@ export function formatManagerNotification(input: ManagerNotificationInput): stri
     ...profileEntries(input.profile).map(
       ({ label, value }) => `${label}: ${knownOr(value, PROFILE_FIELD_MAX_LENGTH, NOT_KNOWN)}`,
     ),
-    ...(input.reason === 'limit' ? [] : ['', ...minimumLines(input.profile, company)]),
+    ...(input.reason === 'limit' ? [] : ['', ...calcLines(input.profile, input.toldFacts ?? [])]),
     ...(company === null ? [] : ['', ...companyLines(company)]),
   ].join('\n');
 }
@@ -151,13 +160,31 @@ function detailLines(input: ManagerNotificationInput): readonly string[] {
   return detail === '' ? [] : [`Причина: ${detail}`];
 }
 
+const NOTHING = 'ничего';
+const ALL_KNOWN = 'всё известно';
+
 /**
- * Что собрано из минимума для оценки цены и что выяснить не удалось. Подписи свои (handoff/minimum.ts), название
- * компании в строки не попадает: только отметка, известно ли оно.
+ * Что для расчёта известно и чего не хватает (agent/stage.ts) подписями, без значений (значения выше, в выжимке); известное
+ * по выводу из слов клиента помечено «(вероятно)». Затем рассказанные сильные стороны короткими названиями. Подписи свои,
+ * недоверенного текста в этих строках нет.
  */
-function minimumLines(profile: ClientProfile, company: CompanySummary | null): readonly string[] {
-  const report = minimumReport({ profile, companyName: companyNameOf(company) });
-  return [`Для оценки цены собрано: ${report.collected}`, `Не удалось выяснить: ${report.missing}`];
+function calcLines(profile: ClientProfile, toldFacts: readonly StrengthId[]): readonly string[] {
+  const inferred = new Set<string>(profile.inferred);
+  const known = (field: CalcField): string =>
+    inferred.has(field) ? `${CALC_LABELS[field]} (вероятно)` : CALC_LABELS[field];
+  const words = (labels: readonly string[], empty: string): string =>
+    labels.length === 0 ? empty : labels.join(', ');
+  return [
+    `Для расчёта известно: ${words(calcKnown(profile).map(known), NOTHING)}`,
+    `Для расчёта не хватает: ${words(
+      calcMissing(profile).map((field) => CALC_LABELS[field]),
+      ALL_KNOWN,
+    )}`,
+    `Рассказано клиенту: ${words(
+      toldFacts.map((id) => STRENGTH_LABELS[id]),
+      NOTHING,
+    )}`,
+  ];
 }
 
 /**

@@ -14,7 +14,7 @@ import type {
   ReplyDraft,
   TurnSignals,
 } from '../domain/types.js';
-import { companyAskable } from '../handoff/minimum.js';
+import { companyAskable } from './company-name.js';
 import { calcSafeQuestion, type SafeQuestion } from './safe-questions.js';
 
 /** Какой по счёту вопрос цены передаёт чат без понятной задачи (решение владельца 30.10.2026, было четыре). */

@@ -380,6 +380,65 @@ const CONFIRMED: CompanySummary = {
   statedName: 'Склад',
 };
 
+describe('API консоли: карточка чата, для расчёта и рассказанное клиенту (решение владельца 30.10.2026)', () => {
+  it('профиль: что для расчёта известно (с выводами) и чего не хватает; чат: рассказанные сильные стороны', async () => {
+    const c = createConsoleHarness({ data: { chats: [CHAT] } });
+    c.getProgress.mockReturnValue({ priceAsks: 0, refused: false, toldFacts: ['F2', 'F6'] });
+
+    const body = jsonOf(await c.request({ url: `${BASE}/chats/1` }));
+
+    const profile = body['profile'] as Record<string, unknown>;
+    expect(profile['calc']).toEqual({
+      known: [
+        { key: 'business', label: 'чем занимается клиент', inferred: false },
+        { key: 'items', label: 'что лежит на хранении', inferred: false },
+        { key: 'itemCount', label: 'сколько этого примерно', inferred: true },
+        { key: 'monthlyIntake', label: 'сколько нового приходит в месяц', inferred: false },
+        { key: 'passages', label: 'сколько проходов нужно учитывать', inferred: true },
+        { key: 'has1C', label: 'есть ли 1С и какая', inferred: true },
+        { key: 'city', label: 'город', inferred: false },
+      ],
+      missing: [],
+    });
+    expect((body['chat'] as Record<string, unknown>)['toldFacts']).toEqual([
+      { id: 'F2', label: 'сотни меток за секунду' },
+      { id: 'F6', label: 'интеграция с 1С' },
+    ]);
+  });
+
+  it('ничего не известно: всё в недостающем по порядку разговора', async () => {
+    const empty = makeChat(1, {
+      profile: {
+        ...CHAT.profile,
+        business: null,
+        items: null,
+        itemCount: null,
+        monthlyIntake: null,
+        passages: null,
+        has1C: null,
+        city: null,
+        inferred: [],
+      },
+    });
+    const c = createConsoleHarness({ data: { chats: [empty] } });
+
+    const body = jsonOf(await c.request({ url: `${BASE}/chats/1` }));
+
+    expect((body['profile'] as Record<string, unknown>)['calc']).toEqual({
+      known: [],
+      missing: [
+        { key: 'business', label: 'чем занимается клиент' },
+        { key: 'items', label: 'что лежит на хранении' },
+        { key: 'itemCount', label: 'сколько этого примерно' },
+        { key: 'monthlyIntake', label: 'сколько нового приходит в месяц' },
+        { key: 'passages', label: 'сколько проходов нужно учитывать' },
+        { key: 'has1C', label: 'есть ли 1С и какая' },
+        { key: 'city', label: 'город' },
+      ],
+    });
+  });
+});
+
 describe('API консоли: карточка чата', () => {
   it('всё, что показывает старая карточка, и больше; тексты без скрытых символов', async () => {
     const c = createConsoleHarness({
@@ -441,6 +500,7 @@ describe('API консоли: карточка чата', () => {
       priceAsks: 2,
       refusedAnswers: true,
       handedOff: true,
+      toldFacts: [],
     });
     const profile = body['profile'] as { fields: Record<string, unknown>[] } & Record<
       string,

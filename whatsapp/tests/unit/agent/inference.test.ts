@@ -2,14 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { normalizeInterest, type RawInterest } from '../../../src/agent/interest.js';
 import { profileEntries, profileText } from '../../../src/agent/profile.js';
 import { buildSystem } from '../../../src/agent/prompts.js';
+import { calcKnown, calcMissing } from '../../../src/agent/stage.js';
 import type { ClientProfile } from '../../../src/domain/types.js';
-import { minimumReport } from '../../../src/handoff/minimum.js';
 import { formatManagerNotification } from '../../../src/handoff/notification.js';
 import type { ChatId } from '../../../src/domain/types.js';
 import { EMPTY_PROFILE, KNOWLEDGE } from './fakes.js';
 
 // Выводы из слов клиента с пометкой «вероятно» (пункт 4 задания 29.10.2026): «С 1С интегрируется?» значит
-// «1С: вероятно есть, конфигурация не выяснена», а не «не выяснено». Вывод считается выясненным для минимума, пока
+// «1С: вероятно есть, конфигурация не выяснена», а не «не выяснено». Вывод считается известным для расчёта, пока
 // клиент не скажет иначе.
 
 const NOTHING: RawInterest = {
@@ -157,7 +157,7 @@ describe('выжимка словами: пометка «вероятно»', (
     expect(text).toContain('«вероятно» перед значением: вывод из слов клиента');
   });
 
-  it('уведомление менеджеру: «1С: вероятно есть», в собранном минимуме «(вероятно)»', () => {
+  it('уведомление менеджеру: «1С: вероятно есть», в известном для расчёта «(вероятно)»', () => {
     const text = formatManagerNotification({
       reason: 'hot',
       name: null,
@@ -168,15 +168,13 @@ describe('выжимка словами: пометка «вероятно»', (
     });
 
     expect(text).toContain('1С: вероятно есть, конфигурация не выяснена');
-    expect(text).toContain('Для оценки цены собрано: есть ли 1С (вероятно)');
+    expect(text).toContain('Для расчёта известно: есть ли 1С и какая (вероятно)');
     expect(text).toContain('«вероятно»: вывод из его слов');
   });
 
-  it('вывод считается собранным для минимума', () => {
-    const report = minimumReport({ profile: INFERRED_1C, companyName: null });
-
-    expect(report.collected).toBe('есть ли 1С (вероятно)');
-    expect(report.missing).not.toContain('есть ли 1С');
+  it('вывод считается известным для расчёта', () => {
+    expect(calcKnown(INFERRED_1C)).toEqual(['has1C']);
+    expect(calcMissing(INFERRED_1C)).not.toContain('has1C');
   });
 });
 

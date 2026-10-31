@@ -522,8 +522,10 @@ openHandoff {reason, reasonLabel, level, openedAt} | null, company {state, id, n
 
 `GET /internal/console/chats/{id}` — всё, что показывает старая карточка, и больше:
 
-- `chat`: имя, номер, статус, кто решил и подпись, когда, уровень, создан, `priceAsks, refusedAnswers, handedOff`.
-- `profile`: `fields [{key, label, value, inferred}]` (14 полей), `problemAgreed`, `levelReason`, `updatedAt`.
+- `chat`: имя, номер, статус, кто решил и подпись, когда, уровень, создан, `priceAsks, refusedAnswers, handedOff`,
+  `toldFacts [{id, label}]` (с 31.10.2026).
+- `profile`: `fields [{key, label, value, inferred}]` (14 полей), `calc {known, missing}` (с 31.10.2026),
+  `problemAgreed`, `levelReason`, `updatedAt`.
 - `note {text, at} | null`; `openHandoff`; `handoffs` (история: `id, reason, reasonLabel, level, openedAt,
   resolvedAt`); `lastNotification {kind, kindLabel, status, statusLabel, attempts, at, text} | null`.
 - `company` — сводка бота целиком: состояние («подтверждена», «кандидат», «не определена», «функция выключена»,
@@ -599,6 +601,25 @@ Host не `127.0.0.1:<порт>`/`localhost:<порт>` → 400; `X-Forwarded-*`
   `statusChangedAt`; `resumed` в ответе возврата; `message` у `already_bot`; `from`, `to`, `skippedLines` у расхода;
   `lastNotification` — уведомление целиком (ещё `id`, `updatedAt`, `chatId`); у компании `stateLabel`, `cardUrl`
   (только http/https), `research {status, reason?, label, startedAt, finishedAt}`.
+- Передача чата менеджеру (решение владельца 30.10.2026, добавлено 31.10.2026, ничего не убрано и не переименовано):
+  - `levelReason` (в карточке и в `attention.hot`): когда чат передаёт бот (горячий клиент, просьба о человеке, жалоба,
+    нет ответа в документах), это причина передачи своими словами с цитатой последнего сообщения клиента, например
+    «Третий раз спрашивает цену. Клиент: «Так сколько?»». Тексты: «Всё для расчёта известно, клиент готов к
+    расчёту.», «Спрашивает цену, сроки или договор, задача понятна.», «Третий раз спрашивает цену.», «Дважды подряд
+    уходит от вопросов.», «Просит живого человека.», «Жалуется.», «Ответа нет в документах.», затем «Клиент: «…»»
+    (цитата одной строкой до 150 знаков). При технических причинах (`check_failed`, `llm_error`, лимит) и без передачи
+    это по-прежнему причина оценки интереса.
+  - `profile.calc`: что нужно для расчёта (чем занимается клиент, что лежит на хранении, сколько этого, сколько нового
+    в месяц, сколько проходов, есть ли 1С и какая, город) по порядку разговора: `known [{key, label, inferred}]` —
+    известно (`inferred: true` — вывод из слов клиента, консоль пишет «вероятно»), `missing [{key, label}]` — чего не
+    хватает; пустой `missing` — для расчёта известно всё. Ключи: `business, items, itemCount, monthlyIntake, passages,
+    has1C, city`. Значения полей — в `fields`.
+  - `chat.toldFacts`: сильные стороны, уже рассказанные клиенту, по порядку F1…F10: `id` и короткое название
+    («метка без батарейки», «сотни меток за секунду», «антенны на входе и выходе», «ручной сканер», «метка называет
+    себя товаром», «интеграция с 1С», «своя веб-платформа», «под ключ», «лучше штрихкода», «не госмаркировка»).
+  - Уведомление менеджеру (`lastNotification.text`, `notifications`): строка «Причина: …» сразу после заголовка;
+    вместо строк о минимуме для оценки цены — «Для расчёта известно: …», «Для расчёта не хватает: …» и «Рассказано
+    клиенту: …».
 - `name` — имя из профиля WhatsApp без скрытых символов, нет имени → `null` (подпись «без имени» ставит консоль).
   `phone` — цифры без «+», только `@lid` → `null`.
 - Скрытые символы: в JSON консоли имена, сообщения, выжимка, причина уровня, заметка, черновики и замечания,
@@ -700,7 +721,8 @@ Host не `127.0.0.1:<порт>`/`localhost:<порт>` → 400; `X-Forwarded-*`
   "chat": {"id": 12, "name": "Алия", "phone": "77010000001", "phoneHidden": false, "status": "manager",
     "statusBy": "bot", "statusLabel": "Ведёт менеджер (передал бот)", "statusChangedAt": "2026-10-26T10:03:00.000Z",
     "level": "hot", "levelLabel": "горячий", "createdAt": "2026-10-26T09:59:00.000Z", "priceAsks": 1,
-    "refusedAnswers": false, "handedOff": true},
+    "refusedAnswers": false, "handedOff": true,
+    "toldFacts": [{"id": "F4", "label": "ручной сканер"}, {"id": "F6", "label": "интеграция с 1С"}]},
   "profile": {
     "fields": [
       {"key": "business", "label": "Бизнес", "value": "Магазин одежды", "inferred": false},
@@ -718,7 +740,17 @@ Host не `127.0.0.1:<порт>`/`localhost:<порт>` → 400; `X-Forwarded-*`
       {"key": "oneC", "label": "1С", "value": "есть, конфигурация не выяснена", "inferred": true},
       {"key": "specifics", "label": "Особенности", "value": null, "inferred": false}
     ],
-    "problemAgreed": true, "levelReason": "Спросил цену после рассказа о складе",
+    "calc": {
+      "known": [{"key": "business", "label": "чем занимается клиент", "inferred": false},
+        {"key": "items", "label": "что лежит на хранении", "inferred": false},
+        {"key": "itemCount", "label": "сколько этого примерно", "inferred": false},
+        {"key": "has1C", "label": "есть ли 1С и какая", "inferred": true},
+        {"key": "city", "label": "город", "inferred": false}],
+      "missing": [{"key": "monthlyIntake", "label": "сколько нового приходит в месяц"},
+        {"key": "passages", "label": "сколько проходов нужно учитывать"}]
+    },
+    "problemAgreed": true,
+    "levelReason": "Спрашивает цену, сроки или договор, задача понятна. Клиент: «Так сколько будет стоить?»",
     "updatedAt": "2026-10-26T10:02:50.000Z"
   },
   "note": null,

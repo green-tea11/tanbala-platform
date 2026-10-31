@@ -20,10 +20,10 @@ import type {
   WaMessageId,
 } from '../domain/types.js';
 import type { HandOffRequest, HandoffService } from '../handoff/handoff.js';
-import { companyNameOf } from '../handoff/minimum.js';
 import { isChatAllowlisted } from '../messaging/allowlist.js';
 import type { Outbox, SendBlocked } from '../messaging/outbox.js';
 import type { ClientBatch } from './batcher.js';
+import { companyNameOf } from './company-name.js';
 import { draftWithCompany } from './company-turn.js';
 import {
   decideReply,

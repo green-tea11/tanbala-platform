@@ -10,6 +10,7 @@ import type {
   PhoneDigits,
   ReplyHandoffOutcome,
   ReviewedText,
+  StrengthId,
   WaMessageId,
 } from '../domain/types.js';
 import type { Outbox } from '../messaging/outbox.js';
@@ -273,6 +274,7 @@ async function tellManager(deps: HandoffDeps, chat: Chat, request: NotifiedReque
       phone: phoneOf(chat),
       level: chat.level,
       profile: chat.profile,
+      ...(kind === 'handoff' ? { toldFacts: toldFactsOf(deps, chat.id) } : {}),
       chatId: chat.id,
       company: kind === 'handoff' ? companyOf(deps, chat.id) : null,
     });
@@ -282,6 +284,22 @@ async function tellManager(deps: HandoffDeps, chat: Chat, request: NotifiedReque
       { err: error, chatId: chat.id, kind },
       'Уведомление менеджеру не записано: чат отмечен в панели',
     );
+  }
+}
+
+/**
+ * Рассказанные клиенту сильные стороны для уведомления (решение владельца 30.10.2026). Сбой чтения (база) передачу не
+ * останавливает: уведомление уходит с «Рассказано клиенту: ничего», в лог ID чата и имя ошибки.
+ */
+function toldFactsOf(deps: HandoffDeps, chatId: ChatId): readonly StrengthId[] {
+  try {
+    return deps.chats.getProgress(chatId).toldFacts ?? [];
+  } catch (error: unknown) {
+    deps.logger.warn(
+      { chatId, errorName: errorNameOf(error) },
+      'Ход разговора не прочитан: уведомление менеджеру без рассказанного клиенту',
+    );
+    return [];
   }
 }
 

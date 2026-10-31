@@ -36,6 +36,23 @@ export const CALC_LABELS: Readonly<Record<CalcField, string>> = {
   city: 'город',
 };
 
+/**
+ * Короткие названия сильных сторон (knowledge/consult.md, раздел 2) для менеджера: уведомление и панель (решение
+ * владельца 30.10.2026). Клиенту номера и эти названия не пишутся.
+ */
+export const STRENGTH_LABELS: Readonly<Record<StrengthId, string>> = {
+  F1: 'метка без батарейки',
+  F2: 'сотни меток за секунду',
+  F3: 'антенны на входе и выходе',
+  F4: 'ручной сканер',
+  F5: 'метка называет себя товаром',
+  F6: 'интеграция с 1С',
+  F7: 'своя веб-платформа',
+  F8: 'под ключ',
+  F9: 'лучше штрихкода',
+  F10: 'не госмаркировка',
+};
+
 /** Номер и название этапа по-русски для данных вызова ответа. */
 const STAGE_TITLES: Readonly<Record<ConversationStage, string>> = {
   intro: '1 знакомство',
@@ -82,6 +99,11 @@ export function taskUnderstood(profile: ClientProfile): boolean {
 /** Чего не хватает для расчёта по выжимке; вывод с пометкой «вероятно» считается известным. */
 export function calcMissing(profile: ClientProfile): readonly CalcField[] {
   return CALC_FIELDS.filter((field) => !isKnown(field, profile));
+}
+
+/** Что для расчёта уже известно по выжимке, по порядку CALC_FIELDS (вывод «вероятно» тоже). */
+export function calcKnown(profile: ClientProfile): readonly CalcField[] {
+  return CALC_FIELDS.filter((field) => isKnown(field, profile));
 }
 
 /**

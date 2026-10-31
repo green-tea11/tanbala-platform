@@ -2,7 +2,24 @@ import { LevelPill, Panel, Unavailable } from '../components/Bits';
 import { IconExternal } from '../components/Icons';
 import { clockTime, safeExternalUrl } from '../lib/format';
 import { Link } from '../lib/router';
-import { isUnavailable, type ClientCard, type ChatCard, type LeadsCompanyCard, type Pain } from '../lib/types';
+import { isUnavailable, type CalcState, type ClientCard, type ChatCard, type LeadsCompanyCard, type Pain } from '../lib/types';
+
+/** Для расчёта: всё известно или чего не хватает; известное по выводу помечено «вероятно». */
+function CalcLine({ calc }: { readonly calc: CalcState }) {
+  const known = calc.known.map((item) => (item.inferred ? `${item.label} (вероятно)` : item.label));
+  return (
+    <p className="facts-inline">
+      {calc.missing.length === 0 ? (
+        <b>Для расчёта известно всё.</b>
+      ) : (
+        <>
+          <b>Для расчёта не хватает:</b> {calc.missing.map((item) => item.label).join(', ')}.
+        </>
+      )}
+      {calc.missing.length > 0 && known.length > 0 ? <span className="muted"> Известно: {known.join(', ')}.</span> : null}
+    </p>
+  );
+}
 
 /** Что выяснил бот: оценка интереса и выжимка; невыясненное — одной строкой. */
 export function BotFacts({ card, now }: { readonly card: ChatCard; readonly now: number }) {
@@ -14,6 +31,10 @@ export function BotFacts({ card, now }: { readonly card: ChatCard; readonly now:
         <LevelPill level={card.chat.level} />
         <span>{card.profile.levelReason ?? 'Причина оценки не записана.'}</span>
       </div>
+      {card.profile.calc ? <CalcLine calc={card.profile.calc} /> : null}
+      {card.chat.toldFacts && card.chat.toldFacts.length > 0 ? (
+        <p className="facts-inline muted">Рассказано клиенту: {card.chat.toldFacts.map((fact) => fact.label).join(', ')}.</p>
+      ) : null}
       {card.profile.problemAgreed || card.chat.priceAsks > 0 ? (
         <p className="facts-inline muted">
           {card.profile.problemAgreed ? 'Клиент согласен, что трудность есть.' : null}

@@ -87,7 +87,7 @@ const ISOLATE = String.fromCodePoint(0x2066);
 const WITHOUT_COMPANY = formatManagerNotification(BASE);
 
 /** Начало уведомления до строк о минимуме для оценки цены: от компании оно не зависит. */
-const PROFILE_PART = WITHOUT_COMPANY.slice(0, WITHOUT_COMPANY.indexOf('\n\nДля оценки цены'));
+const PROFILE_PART = WITHOUT_COMPANY.slice(0, WITHOUT_COMPANY.indexOf('\n\nДля расчёта'));
 
 /**
  * Строки, которые блок о компании добавил в конец (без пустой строки-разделителя). Выжимка та же, что без компании;
@@ -95,7 +95,7 @@ const PROFILE_PART = WITHOUT_COMPANY.slice(0, WITHOUT_COMPANY.indexOf('\n\nДл�
  */
 function companyBlock(company: CompanySummary): string[] {
   const text = formatManagerNotification({ ...BASE, company });
-  expect(text.startsWith(`${PROFILE_PART}\n\nДля оценки цены собрано: `)).toBe(true);
+  expect(text.startsWith(`${PROFILE_PART}\n\nДля расчёта известно: `)).toBe(true);
   const lines = text.split('\n');
   const start = lines.findIndex((line) => line.startsWith('Компания: '));
   expect(lines[start - 1]).toBe('');

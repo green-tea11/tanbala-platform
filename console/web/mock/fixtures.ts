@@ -216,11 +216,29 @@ export function clientFixture(now: number, chatId: number) {
       id: chat.id, name: chat.name, phone: chat.phone, phoneHidden: chat.phone === null, status: chat.status,
       statusBy: chat.statusBy, statusLabel: chat.statusLabel, statusChangedAt: t(16), level: chat.level,
       levelLabel: LEVEL_LABELS[chat.level], createdAt: t(58), priceAsks: chatId === 12 ? 2 : 0, refusedAnswers: false, handedOff: chat.status === 'manager',
+      toldFacts: chatId === 12 ? [{ id: 'F2', label: 'сотни меток за секунду' }, { id: 'F4', label: 'ручной сканер' }, { id: 'F6', label: 'интеграция с 1С' }] : [],
     },
     profile: {
       fields,
+      calc:
+        chatId === 12
+          ? {
+              known: [
+                { key: 'business', label: 'чем занимается клиент', inferred: false },
+                { key: 'items', label: 'что лежит на хранении', inferred: false },
+                { key: 'itemCount', label: 'сколько этого примерно', inferred: false },
+                { key: 'has1C', label: 'есть ли 1С и какая', inferred: true },
+                { key: 'city', label: 'город', inferred: false },
+              ],
+              missing: [
+                { key: 'monthlyIntake', label: 'сколько нового приходит в месяц' },
+                { key: 'passages', label: 'сколько проходов нужно учитывать' },
+              ],
+            }
+          : { known: [], missing: [{ key: 'business', label: 'чем занимается клиент' }] },
       problemAgreed: chatId === 12,
-      levelReason: chatId === 12 ? 'Согласилась, что инвентаризация — проблема, второй раз спросила цену' : null,
+      levelReason:
+        chatId === 12 ? 'Спрашивает цену, сроки или договор, задача понятна. Клиент: «Так сколько будет стоить на 3 000 паллет?»' : null,
       updatedAt: t(17),
     },
     note: null,

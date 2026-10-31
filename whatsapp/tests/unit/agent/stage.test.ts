@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   CALC_FIELDS,
+  calcKnown,
   calcMissing,
   ESTIMATE_LATER,
   recommendStage,
   stageReplyData,
+  STRENGTH_LABELS,
   taskUnderstood,
   type StageInput,
 } from '../../../src/agent/stage.js';
@@ -233,5 +235,31 @@ describe('agent/stage: строка о вопросе цены, сроков и 
     expect(lines[1]).toBe('Для расчёта известно всё.');
     expect(lines[2]).toMatch(/^Задача клиента понятна/);
     expect(lines[3]).toBe('До этого сообщения клиент спрашивал цену 1 раз.');
+  });
+});
+
+describe('agent/stage: для менеджера (уведомление и панель)', () => {
+  it('что для расчёта известно: по порядку полей, остальное в недостающем', () => {
+    const profile = { ...FULL, monthlyIntake: null, city: '  ' };
+
+    expect(calcKnown(profile)).toEqual(['business', 'items', 'itemCount', 'passages', 'has1C']);
+    expect(calcMissing(profile)).toEqual(['monthlyIntake', 'city']);
+    expect(calcKnown(EMPTY_PROFILE)).toEqual([]);
+  });
+
+  it('короткие названия всех сильных сторон F1…F10 владельца, без тире и двоеточий', () => {
+    expect(STRENGTH_LABELS).toEqual({
+      F1: 'метка без батарейки',
+      F2: 'сотни меток за секунду',
+      F3: 'антенны на входе и выходе',
+      F4: 'ручной сканер',
+      F5: 'метка называет себя товаром',
+      F6: 'интеграция с 1С',
+      F7: 'своя веб-платформа',
+      F8: 'под ключ',
+      F9: 'лучше штрихкода',
+      F10: 'не госмаркировка',
+    });
+    expect(Object.values(STRENGTH_LABELS).join(' ')).not.toMatch(/[—–:]/u);
   });
 });

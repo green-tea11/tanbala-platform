@@ -6,6 +6,7 @@ import type {
   Chat,
   ChatControl,
   ChatId,
+  ChatProgress,
   HandoffNotice,
   Jid,
   ManagerNotificationKind,
@@ -106,6 +107,8 @@ interface SetupOptions {
   readonly company?: CompanySummary | Error;
   /** Снятие ожидания ответа о компании падает этой ошибкой. */
   readonly stopAwaitingError?: Error;
+  /** Ход разговора чата (рассказанные сильные стороны) или ошибка его чтения; по умолчанию ничего не рассказано. */
+  readonly progress?: ChatProgress | Error;
 }
 
 interface Harness {
@@ -160,7 +163,11 @@ function setup(options: SetupOptions = {}): Harness {
     saveAssessment: unexpected,
     listForPanel: unexpected,
     countForPanel: unexpected,
-    getProgress: unexpected,
+    getProgress: () => {
+      const progress = options.progress ?? { priceAsks: 0, refused: false };
+      if (progress instanceof Error) throw progress;
+      return progress;
+    },
     recordTurn: unexpected,
     recordReply: unexpected,
     resetProgress: (id) => {
@@ -993,6 +1000,42 @@ describe('createHandoffService: handOff без фразы клиенту', () =>
     ]);
     expect(h.notices).toEqual([]);
     expect(h.notifications).toEqual([]);
+  });
+});
+
+describe('createHandoffService: рассказанное клиенту в уведомлении (решение владельца 30.10.2026)', () => {
+  it('сильные стороны из хода разговора короткими названиями', async () => {
+    const h = setup({ progress: { priceAsks: 0, refused: false, toldFacts: ['F1', 'F3'] } });
+
+    await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
+
+    expect(h.notifications[0]?.text).toContain(
+      'Рассказано клиенту: метка без батарейки, антенны на входе и выходе',
+    );
+  });
+
+  it('ход разговора прочитать не удалось: уведомление и фраза уходят, «ничего», в лог ID и имя ошибки', async () => {
+    const h = setup({ progress: new TypeError('база недоступна') });
+
+    await h.service.handOff(CHAT_ID, { reason: 'hot', replyToWaId: IN_1 });
+
+    expect(h.notifications[0]?.text).toContain('Рассказано клиенту: ничего');
+    expect(h.notices).toHaveLength(1);
+    expect(h.logs).toContainEqual(
+      expect.objectContaining({
+        level: 'warn',
+        context: { chatId: CHAT_ID, errorName: 'TypeError' },
+      }),
+    );
+  });
+
+  it('лимит: ход разговора не читается, строк для расчёта нет', async () => {
+    const h = setup({ progress: new TypeError('не должен читаться') });
+
+    await h.service.handOff(CHAT_ID, { reason: 'limit', scope: 'chat' });
+
+    expect(h.notifications[0]?.text).not.toContain('Рассказано клиенту');
+    expect(h.logs.filter((entry) => entry.level === 'warn')).toEqual([]);
   });
 });
 

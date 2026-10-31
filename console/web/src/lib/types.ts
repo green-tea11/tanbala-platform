@@ -244,6 +244,18 @@ export interface BotCompany {
   readonly statedName: string | null;
 }
 
+/** Сильная сторона Tanbala, уже рассказанная клиенту: номер F1…F10 и короткое название. */
+export interface ToldFact {
+  readonly id: string;
+  readonly label: string;
+}
+
+/** Что для расчёта известно (inferred: вывод из слов клиента) и чего не хватает, по порядку разговора. */
+export interface CalcState {
+  readonly known: readonly { readonly key: string; readonly label: string; readonly inferred: boolean }[];
+  readonly missing: readonly { readonly key: string; readonly label: string }[];
+}
+
 export interface ChatCard {
   readonly chat: {
     readonly id: number;
@@ -258,10 +270,15 @@ export interface ChatCard {
     readonly levelLabel: string | null;
     readonly createdAt: string;
     readonly priceAsks: number;
+    /** Сильные стороны, уже рассказанные клиенту (бот с 31.10.2026); у бота старше поля нет. */
+    readonly toldFacts?: readonly ToldFact[];
   };
   readonly profile: {
     readonly fields: readonly ProfileField[];
+    /** Что для расчёта известно и чего не хватает (бот с 31.10.2026); у бота старше поля нет. */
+    readonly calc?: CalcState;
     readonly problemAgreed: boolean;
+    /** Причина оценки; при передаче чата ботом причина передачи своими словами с цитатой клиента. */
     readonly levelReason: string | null;
     readonly updatedAt: string | null;
   };

@@ -1,4 +1,5 @@
 import { profileEntries } from '../agent/profile.js';
+import { CALC_LABELS, calcKnown, calcMissing, STRENGTH_LABELS } from '../agent/stage.js';
 import type { CompanyPain, CompanySummary, ResearchState } from '../domain/company.js';
 import type { ConsoleChatRow, HandoffHistoryRow } from '../domain/console.js';
 import type {
@@ -12,6 +13,7 @@ import type {
   RejectionSource,
   StoredMessage,
   StoredRejectedDraft,
+  StrengthId,
 } from '../domain/types.js';
 import { companyCardHref } from '../handoff/card-link.js';
 import { jidToPhone } from '../whatsapp/jid.js';
@@ -207,6 +209,26 @@ export function profileFieldsJson(profile: ClientProfile): readonly Record<strin
     value: cleanOrNull(rawValue(profile, key))?.trim() ?? null,
     inferred: isInferred(profile, key),
   }));
+}
+
+/**
+ * Для расчёта (agent/stage.ts, решение владельца 30.10.2026): что известно (inferred: вывод из слов клиента, консоль
+ * пишет «вероятно») и чего не хватает, по порядку разговора; подписи свои, без значений (значения в fields).
+ */
+export function calcJson(profile: ClientProfile): Record<string, unknown> {
+  return {
+    known: calcKnown(profile).map((key) => ({
+      key,
+      label: CALC_LABELS[key],
+      inferred: profile.inferred.includes(key),
+    })),
+    missing: calcMissing(profile).map((key) => ({ key, label: CALC_LABELS[key] })),
+  };
+}
+
+/** Сильные стороны, уже рассказанные клиенту: номер и короткое название (agent/stage.STRENGTH_LABELS). */
+export function toldFactsJson(told: readonly StrengthId[]): readonly Record<string, unknown>[] {
+  return told.map((id) => ({ id, label: STRENGTH_LABELS[id] }));
 }
 
 export function noteJson(note: BotNote | null): Record<string, unknown> | null {
