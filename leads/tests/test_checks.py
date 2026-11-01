@@ -475,8 +475,8 @@ def sentences(count: int) -> tuple[str, ...]:
     return tuple(f"Это предложение номер {n}." for n in range(1, count + 1))
 
 
-@pytest.mark.parametrize("count", [0, 1, 5, 7, 13, 20])
-def test_length_fails_outside_8_to_12(count):
+@pytest.mark.parametrize("count", [0, 1, 5, 7, 14, 20])
+def test_length_fails_outside_8_to_13(count):
     # Arrange / Act
     result = check_length(make_body(*sentences(count)))
     # Assert
@@ -484,8 +484,8 @@ def test_length_fails_outside_8_to_12(count):
     assert f"предложений: {count}," in details_text(result)
 
 
-@pytest.mark.parametrize("count", [8, 9, 10, 11, 12])
-def test_length_passes_for_8_to_12(count):
+@pytest.mark.parametrize("count", [8, 9, 10, 11, 12, 13])
+def test_length_passes_for_8_to_13(count):
     assert check_length(make_body(*sentences(count))).passed
 
 
@@ -498,8 +498,8 @@ def test_length_does_not_count_greeting_notes_and_signature():
 
 
 def test_length_does_not_count_sign_off_and_name():
-    # Arrange: без подписи 12 предложений; «С уважением, Арман» тринадцатым не считается
-    body = make_body(*sentences(12), signature="С уважением,\nАрман Серикбаев")
+    # Arrange: без подписи 13 предложений; «С уважением, Арман» четырнадцатым не считается
+    body = make_body(*sentences(13), signature="С уважением,\nАрман Серикбаев")
     # Act / Assert
     assert check_length(body).passed
 

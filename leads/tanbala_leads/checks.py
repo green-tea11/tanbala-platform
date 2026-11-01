@@ -12,8 +12,9 @@ class CheckResult:
 
 
 # Письмо по образцу владельца (01.11.2026): представление, боль, «Как это работает?», «Мы берём на себя…», призыв.
+# С 02.11.2026 в «Как это работает?» ещё фраза про стационарные антенны, отсюда 13.
 MIN_SENTENCES = 8
-MAX_SENTENCES = 12
+MAX_SENTENCES = 13
 MAX_NAME_LENGTH = 40
 CONTEXT_CHARS = 25
 SIGN_OFF = "С уважением,"
@@ -223,7 +224,7 @@ def _count_sentences(text: str) -> int:
 
 
 def check_length(body: str) -> CheckResult:
-    """Первое письмо: 8–12 предложений без приветствия, заметок и подписи («Как это работает?» тоже предложение)."""
+    """Первое письмо: 8–13 предложений без приветствия, заметок и подписи («Как это работает?» тоже предложение)."""
     count = _count_sentences(_main_text(body))
     if MIN_SENTENCES <= count <= MAX_SENTENCES:
         return CheckResult("length", True)

@@ -76,9 +76,17 @@ def test_instructions_follow_owner_format():
 
     for part in ("«Здравствуйте!»", "«Меня зовут Арман, я представляю Tanbala.»", "«Как это работает?»",
                  "«Мы берём на себя весь процесс.»", "«Напишите нам в WhatsApp по номеру +7 747 959 72 38.»",
-                 "«С уважением,»", "двоеточия и точки с запятой", "8–12"):
+                 "«С уважением,»", "двоеточия и точки с запятой", "8–13"):
         assert part in text
     assert "двоеточие)" not in text and "я из Tanbala" not in text
+
+
+def test_instructions_ask_for_stationary_antennas():
+    # Просьба владельца 02.11.2026: в письме сказать, что приход и уход учитываются сами, антеннами на входе и выходе.
+    text = draft.INSTRUCTIONS.format(name="Арман", whatsapp="+7 747 959 72 38")
+
+    assert "стационарные антенны на входе и выходе" in text
+    assert "что пришло на склад и что ушло" in text
 
 
 def test_compose_puts_notes_on_top_and_signature_at_bottom():
