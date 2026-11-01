@@ -9,8 +9,9 @@ psycopg = pytest.importorskip("psycopg")
 TEST_ADDRESS = "bogdansm2000@gmail.com"
 BODY = (
     "[Проверить: нет данных о складе]\n"
-    "Здравствуйте!\n\nМеня зовут Арман, я из Tanbala.\n\n"
-    "Арман\nTanbala, направление ТОО «VenMart»\nWhatsApp: +77479597238"
+    "Здравствуйте!\n\nМеня зовут Арман, я представляю Tanbala.\n\n"
+    "Напишите нам в WhatsApp по номеру +7 747 959 72 38.\n\n"
+    "С уважением,\nАрман"
 )
 
 
@@ -94,6 +95,17 @@ def test_test_message_goes_only_to_test_address_and_mentions_real_one():
     assert "info@pel.kz" in text and "не отправлялось" in text
     assert "[Проверить" not in text
     assert "info@pel.kz" not in str(message["To"])
+
+
+def test_test_message_keeps_letter_and_new_signature_under_notice():
+    message = send.build_test_message(subject="Учёт склада", body=BODY, real_to="info@pel.kz",
+                                      test_to=TEST_ADDRESS, from_addr="tanbala@venmart.kz", from_name="Арман")
+
+    notice, letter = message.get_content().split("-" * 40 + "\n\n", 1)
+    assert "В рабочем режиме письмо ушло бы на: info@pel.kz." in notice
+    assert letter.rstrip("\n") == send.strip_reviewer_notes(BODY)
+    assert letter.rstrip("\n").endswith("по номеру +7 747 959 72 38.\n\nС уважением,\nАрман")
+    assert "VenMart" not in letter
 
 
 # Отправка из базы

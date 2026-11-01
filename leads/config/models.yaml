@@ -11,7 +11,7 @@ tasks:
     max_tokens: 2048
     effort: low
 
-  first_email:      # черновик первого письма, 5–8 предложений
+  first_email:      # черновик первого письма, 8–12 предложений
     model: claude-haiku-5-5
     max_tokens: 4096
     effort: medium

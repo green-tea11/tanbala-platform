@@ -3,23 +3,29 @@ from types import SimpleNamespace
 
 import pytest
 
-from tanbala_leads import db
-from tanbala_leads.settings import load_settings
+from tanbala_leads import checks, db
+from tanbala_leads.settings import SettingsError, load_settings
 from tanbala_leads.steps import draft
 
 SETTINGS = load_settings({"AGENT_NAME": "Арман", "AGENT_WHATSAPP": "+77479597238"})
 
+# Письмо по образцу владельца 01.11.2026: без тире, двоеточий и точек с запятой, номер группами через пробел.
 CLEAN_BODY = (
     "Здравствуйте!\n\n"
-    "Меня зовут Арман, я из Tanbala. Мы ставим учёт вещей на RFID-метках под ключ.\n\n"
-    "На каждый контейнер клеится метка. Ридер видит сотни меток за секунду, и всё сразу попадает в 1С. "
-    "Пересчёт идёт обходом со сканером.\n\n"
-    "Всё делаем сами: подбираем оборудование, проводим тесты, связываем с вашей 1С и обучаем сотрудников.\n\n"
-    "Если пересчёт у вас занимает много времени, напишите нам в WhatsApp: +77479597238. "
-    "Расскажите в двух словах о задаче."
+    "Меня зовут Арман, я представляю Tanbala. Мы внедряем складской учёт на основе RFID-меток под ключ, "
+    "от подбора оборудования до интеграции с 1С и обучения сотрудников.\n\n"
+    "Если пересчёт контейнеров занимает несколько дней, RFID помогает ускорить его и упростить контроль.\n\n"
+    "Как это работает? На каждый контейнер наносится метка. Ручной считыватель распознаёт много меток "
+    "одновременно. Сотрудник проходит вдоль площадки, и система сверяет данные с учётом в 1С.\n\n"
+    "Мы берём на себя весь процесс. Подбираем оборудование, тестируем его на вашем складе, настраиваем обмен "
+    "данными с 1С и обучаем команду.\n\n"
+    "Напишите нам в WhatsApp по номеру +7 747 959 72 38. Расскажите, что вы храните и как сейчас считаете "
+    "остатки, и мы предложим решение под ваши задачи."
 )
 CLEAN = {"subject": "Учёт склада без ручного пересчёта", "body": CLEAN_BODY, "notes": []}
-WITH_DASH = {**CLEAN, "body": CLEAN_BODY.replace("под ключ.", "под ключ — быстро."), "notes": ["Проверить склад"]}
+WITH_DASH = {**CLEAN, "body": CLEAN_BODY.replace("под ключ,", "под ключ —"), "notes": ["Проверить склад"]}
+WITH_COLON = {**CLEAN, "body": CLEAN_BODY.replace("в WhatsApp по номеру", "в WhatsApp:")}
+OLD_FORMAT = {**CLEAN, "body": CLEAN_BODY + "\n\nАрман\nTanbala, направление ТОО «VenMart»\nWhatsApp: +77479597238"}
 
 
 def fake_client(*answers: dict):
@@ -37,8 +43,42 @@ def fake_client(*answers: dict):
     return SimpleNamespace(messages=SimpleNamespace(create=create), calls=calls)
 
 
-def test_signature_comes_from_settings():
-    assert draft.build_signature(SETTINGS) == "Арман\nTanbala, направление ТОО «VenMart»\nWhatsApp: +77479597238"
+def test_signature_is_sign_off_and_name_from_settings():
+    assert draft.build_signature(SETTINGS) == "С уважением,\nАрман"
+    other = load_settings({"AGENT_NAME": "Айгерим", "AGENT_WHATSAPP": "+77001234567"})
+    assert draft.build_signature(other) == "С уважением,\nАйгерим"
+
+
+def test_signature_has_no_company_line_or_number_and_passes_check():
+    signature = draft.build_signature(SETTINGS)
+
+    assert "VenMart" not in signature and "WhatsApp" not in signature and "747" not in signature
+    assert checks.check_signature(f"Здравствуйте!\n\nТекст письма.\n\n{signature}").passed
+
+
+@pytest.mark.parametrize("number", ["+77479597238", "8 747 959 72 38", "+7 (747) 959-72-38"])
+def test_letter_number_is_grouped_with_spaces(number):
+    settings = load_settings({"AGENT_NAME": "Арман", "AGENT_WHATSAPP": number})
+
+    assert draft.letter_whatsapp(settings) == "+7 747 959 72 38"
+
+
+@pytest.mark.parametrize("number", ["", "+7 747 959", "+1 202 555 0100"])
+def test_bad_letter_number_is_a_settings_error(number):
+    settings = load_settings({"AGENT_NAME": "Арман", "AGENT_WHATSAPP": number})
+
+    with pytest.raises(SettingsError, match="AGENT_WHATSAPP"):
+        draft.letter_whatsapp(settings)
+
+
+def test_instructions_follow_owner_format():
+    text = draft.INSTRUCTIONS.format(name="Арман", whatsapp="+7 747 959 72 38")
+
+    for part in ("«Здравствуйте!»", "«Меня зовут Арман, я представляю Tanbala.»", "«Как это работает?»",
+                 "«Мы берём на себя весь процесс.»", "«Напишите нам в WhatsApp по номеру +7 747 959 72 38.»",
+                 "«С уважением,»", "двоеточия и точки с запятой", "8–12"):
+        assert part in text
+    assert "двоеточие)" not in text and "я из Tanbala" not in text
 
 
 def test_compose_puts_notes_on_top_and_signature_at_bottom():
@@ -46,6 +86,15 @@ def test_compose_puts_notes_on_top_and_signature_at_bottom():
 
     assert body.startswith("[Проверить: нет данных о складе )]\n")
     assert body.endswith("\n\nПодпись")
+
+
+def test_multiline_note_stays_on_one_line_and_out_of_letter():
+    answer = {**CLEAN, "notes": ["склад свой\nили арендный: уточнить"]}
+
+    body = draft.compose_body(answer, draft.build_signature(SETTINGS))
+
+    assert body.startswith("[Проверить: склад свой или арендный: уточнить]\nЗдравствуйте!")
+    assert all(result.passed for result in checks.run_all(CLEAN["subject"], body, whatsapp="+77479597238"))
 
 
 @pytest.fixture
@@ -93,10 +142,23 @@ def test_clean_draft_is_saved_with_passing_checks(db_conn, company):
     subject, body, checks = db_conn.execute("SELECT subject, body, check_result FROM drafts WHERE id = %s",
                                             (draft_id,)).fetchone()
     assert subject == CLEAN["subject"]
-    assert body.endswith("WhatsApp: +77479597238")
+    assert body == CLEAN_BODY + "\n\nС уважением,\nАрман"
     assert all(item["passed"] for item in checks)
+    assert {item["name"] for item in checks} >= {"dashes", "colons", "semicolons", "signature", "contacts"}
     assert len(client.calls) == 1
     assert db_conn.execute("SELECT status FROM companies").fetchone()[0] == "drafted"
+
+
+@pytest.mark.db
+def test_prompt_gives_name_and_number_with_spaces(db_conn, company):
+    add_contact(db_conn, company, "info@pel.kz", "safe")
+    client = fake_client(CLEAN)
+
+    draft.draft_first_email(db_conn, company, client=client, owner_doc="Документ", settings=SETTINGS)
+
+    instructions = client.calls[0]["system"][-1]["text"]
+    assert "«Меня зовут Арман, я представляю Tanbala.»" in instructions
+    assert "по номеру +7 747 959 72 38" in instructions and "+77479597238" not in instructions
 
 
 @pytest.mark.db
@@ -110,6 +172,33 @@ def test_failed_checks_get_one_retry_with_problems(db_conn, company):
     assert "тире" in client.calls[1]["messages"][0]["content"]
     body = db_conn.execute("SELECT body FROM drafts WHERE id = %s", (draft_id,)).fetchone()[0]
     assert "—" not in body
+
+
+@pytest.mark.db
+def test_colon_in_draft_gets_retry_and_is_fixed(db_conn, company):
+    add_contact(db_conn, company, "info@pel.kz", "safe")
+    client = fake_client(WITH_COLON, CLEAN)
+
+    draft_id = draft.draft_first_email(db_conn, company, client=client, owner_doc="Документ", settings=SETTINGS)
+
+    problems = client.calls[1]["messages"][0]["content"].split("<problems>", 1)[1]
+    assert "colons" in problems and "двоеточие" in problems and "WhatsApp: +7 747" in problems
+    body, results = db_conn.execute("SELECT body, check_result FROM drafts WHERE id = %s", (draft_id,)).fetchone()
+    assert "WhatsApp:" not in body and all(item["passed"] for item in results)
+
+
+@pytest.mark.db
+def test_old_signature_from_model_fails_checks_and_is_kept_if_retry_is_no_better(db_conn, company):
+    add_contact(db_conn, company, "info@pel.kz", "safe")
+    client = fake_client(OLD_FORMAT, OLD_FORMAT)
+
+    draft_id = draft.draft_first_email(db_conn, company, client=client, owner_doc="Документ", settings=SETTINGS)
+
+    assert len(client.calls) == 2
+    problems = client.calls[1]["messages"][0]["content"].split("<problems>", 1)[1]
+    assert "signature" in problems and "colons" in problems and "contacts" in problems
+    results = db_conn.execute("SELECT check_result FROM drafts WHERE id = %s", (draft_id,)).fetchone()[0]
+    assert {item["name"] for item in results if not item["passed"]} == {"colons", "signature", "contacts"}
 
 
 @pytest.mark.db
@@ -150,6 +239,17 @@ def test_missing_signature_settings_stop_before_paid_call(db_conn, company):
 
     with pytest.raises(Exception, match="AGENT_NAME"):
         draft.draft_first_email(db_conn, company, client=client, owner_doc="Д", settings=load_settings({}))
+    assert client.calls == []
+
+
+@pytest.mark.db
+def test_bad_whatsapp_number_stops_before_paid_call(db_conn, company):
+    add_contact(db_conn, company, "info@pel.kz", "safe")
+    client = fake_client(CLEAN)
+    settings = load_settings({"AGENT_NAME": "Арман", "AGENT_WHATSAPP": "+7 747 959"})
+
+    with pytest.raises(SettingsError, match="AGENT_WHATSAPP"):
+        draft.draft_first_email(db_conn, company, client=client, owner_doc="Д", settings=settings)
     assert client.calls == []
 
 

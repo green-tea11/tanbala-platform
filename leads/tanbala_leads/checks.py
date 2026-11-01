@@ -11,11 +11,13 @@ class CheckResult:
     details: tuple[str, ...] = ()
 
 
-MIN_SENTENCES = 5
-MAX_SENTENCES = 8
+# Письмо по образцу владельца (01.11.2026): представление, боль, «Как это работает?», «Мы берём на себя…», призыв.
+MIN_SENTENCES = 8
+MAX_SENTENCES = 12
 MAX_NAME_LENGTH = 40
 CONTEXT_CHARS = 25
-COMPANY_LINE = "Tanbala, направление ТОО «VenMart»"
+SIGN_OFF = "С уважением,"
+PHONE_DIGITS = 11  # 7 и 10 цифр
 ALLOWED_LINK_HOSTS = frozenset({"wa.me", "api.whatsapp.com"})
 ALLOWED_CAPS = frozenset({"RFID", "ТОО", "БИН", "ИИН"})
 
@@ -24,7 +26,9 @@ _NOTE_LINE = re.compile(r"^\[(?:Проверить|Ответить лично):
 _GREETING = re.compile(
     r"^(?:здравствуйте|добрый день|добрый вечер|доброе утро)\b[^.!?]{0,40}[!.,]?$", _FLAGS
 )
-_PHONE_LINE = re.compile(r"^WhatsApp: \+7(?: ?\d){10}$")
+# Строка подписи: «С уважением,», «С уважением» или «С уважением, Арман», но не «С уважением к вашему времени…».
+_SIGN_OFF_LINE = re.compile(r"^с\s+уважением\s*(?:,.*)?$", _FLAGS)
+_VENMART = re.compile(r"venmart|венмарт", _FLAGS)
 _SENTENCE_END = re.compile(r"(?<=[.!?…])\s+(?=[«\"(]?[А-ЯЁA-Z0-9])")
 
 
@@ -76,12 +80,10 @@ def _with_subject(subject: str, body: str) -> str:
 
 
 def _signature_start(lines: list[str]) -> int:
-    """Индекс первой строки подписи (имя над строкой «Tanbala, ...»), иначе len(lines)."""
+    """Индекс первой строки подписи (последняя строка «С уважением,»), иначе len(lines)."""
     for index in range(len(lines) - 1, -1, -1):
-        if lines[index].strip().startswith("Tanbala,"):
-            while index > 0 and not lines[index - 1].strip():
-                index -= 1
-            return max(index - 1, 0)
+        if _SIGN_OFF_LINE.match(lines[index].strip()):
+            return index
     return len(lines)
 
 
@@ -107,6 +109,23 @@ def check_dashes(body: str) -> CheckResult:
     """Нет тире в тексте письма: «—», «–» и дефис между пробелами. Дефис в слове можно."""
     text = _client_text(body)
     return _result("dashes", _scan(text, _DASH_PATTERNS, "тире"))
+
+
+# --- двоеточия и точки с запятой (решение владельца 01.11.2026) ---
+
+# «://» в ссылке не знак препинания: ссылки проверяет check_links.
+_COLON = re.compile(r":(?!//)")
+_SEMICOLON = re.compile(";")
+
+
+def check_colons(body: str) -> CheckResult:
+    """Нет двоеточий в тексте письма: ни «WhatsApp: +7…», ни «так: …», ни «10:00». Вместо них точка или запятая."""
+    return _result("colons", _scan(_client_text(body), [_COLON], "двоеточие"))
+
+
+def check_semicolons(body: str) -> CheckResult:
+    """Нет точек с запятой в тексте письма. Вместо них точка или запятая."""
+    return _result("semicolons", _scan(_client_text(body), [_SEMICOLON], "точка с запятой"))
 
 
 # --- цены ---
@@ -204,7 +223,7 @@ def _count_sentences(text: str) -> int:
 
 
 def check_length(body: str) -> CheckResult:
-    """Первое письмо: 5–8 предложений без приветствия, заметок и подписи."""
+    """Первое письмо: 8–12 предложений без приветствия, заметок и подписи («Как это работает?» тоже предложение)."""
     count = _count_sentences(_main_text(body))
     if MIN_SENTENCES <= count <= MAX_SENTENCES:
         return CheckResult("length", True)
@@ -221,24 +240,25 @@ def _name_problem(name: str) -> str | None:
         return "нет строки с именем"
     if "[" in name or "]" in name:
         return f"в подписи заглушка: «{name}»"
-    if len(name) > MAX_NAME_LENGTH or re.search(r"\d|[.!?:]$", name):
+    if len(name) > MAX_NAME_LENGTH or re.search(r"\d|[.!?:;,]$", name):
         return f"строка имени похожа не на имя: «{name}»"
     return None
 
 
 def check_signature(body: str) -> CheckResult:
-    """Подпись: имя, «Tanbala, направление ТОО «VenMart»», «WhatsApp: +7 и 10 цифр» (последние 3 строки)."""
-    lines = [line.strip() for line in body.splitlines() if line.strip()]
-    if len(lines) < 3:
-        return CheckResult("signature", False, ("нет подписи из трёх строк",))
-    name, company, phone = lines[-3:]
+    """Подпись в двух последних строках: «С уважением,» и имя. Номера и «направление ТОО «VenMart»» в письме нет."""
+    lines = [line.strip() for line in _client_text(body).splitlines() if line.strip()]
+    if len(lines) < 2:
+        return CheckResult("signature", False, (f"нет подписи «{SIGN_OFF}» и имени",))
+    sign_off, name = lines[-2:]
     problems = []
+    if sign_off != SIGN_OFF:
+        problems.append(f"предпоследняя строка должна быть «{SIGN_OFF}», а не «{sign_off}»")
     if (problem := _name_problem(name)) is not None:
         problems.append(problem)
-    if company != COMPANY_LINE:
-        problems.append(f"вторая строка подписи должна быть «{COMPANY_LINE}», а не «{company}»")
-    if not _PHONE_LINE.match(phone):
-        problems.append(f"третья строка должна быть «WhatsApp: +7…» (10 цифр), а не «{phone}»")
+    if sum(1 for line in lines if _SIGN_OFF_LINE.match(line)) > 1:
+        problems.append(f"«{SIGN_OFF}» в письме больше одного раза")
+    problems += [f"«направление ТОО «VenMart»» в письме не пишем: «{line}»" for line in lines if _VENMART.search(line)]
     return _result("signature", problems)
 
 
@@ -320,23 +340,54 @@ _WA_NUMBER = re.compile(r"(?:wa\.me/|api\.whatsapp\.com/send/?\?phone=)\+?(\d{10
 def _phone_digits(phone: str) -> str:
     """Номер без форматирования, 8 в начале приводится к 7."""
     digits = re.sub(r"\D", "", phone)
-    return "7" + digits[1:] if len(digits) == 11 and digits.startswith("8") else digits
+    return "7" + digits[1:] if len(digits) == PHONE_DIGITS and digits.startswith("8") else digits
+
+
+def format_whatsapp(phone: str) -> str:
+    """Номер для письма группами через пробел: «+77479597238» и «8 747 959-72-38» дают «+7 747 959 72 38».
+
+    ValueError, если это не номер +7 и 10 цифр.
+    """
+    digits = _phone_digits(phone)
+    if len(digits) != PHONE_DIGITS or not digits.startswith("7"):
+        raise ValueError("номер WhatsApp должен быть +7 и 10 цифр")
+    return f"+7 {digits[1:4]} {digits[4:7]} {digits[7:9]} {digits[9:]}"
+
+
+def _own_number_problems(text: str, own: str, whatsapp: str) -> list[str]:
+    """Наш номер в письме есть (в призыве) и записан группами через пробел, как его даёт format_whatsapp."""
+    written = [m.group(0) for m in _ANY_PHONE.finditer(text) if _phone_digits(m.group(0)) == own]
+    try:
+        spaced = format_whatsapp(whatsapp)
+    except ValueError:
+        spaced = None
+    if not written:
+        return [f"нет нашего номера WhatsApp «{spaced or whatsapp}» в призыве"]
+    if spaced is None:
+        return []
+    # Неразрывный пробел вместо обычного не ошибка: split() его тоже убирает.
+    return [f"наш номер пишем «{spaced}», а не «{number}»" for number in written if " ".join(number.split()) != spaced]
 
 
 def check_contacts(body: str, whatsapp: str) -> CheckResult:
-    """В письме только наш номер WhatsApp: чужой номер или ссылка wa.me могли прийти из текста сайта."""
+    """В письме только наш номер WhatsApp, и он записан как «+7 747 959 72 38».
+
+    Чужой номер или ссылка wa.me могли прийти из текста сайта; без нашего номера клиенту некуда написать.
+    """
     own = _phone_digits(whatsapp)
     text = _client_text(body)
     problems = [f"чужой номер: «{m.group(0)}»" for m in _ANY_PHONE.finditer(text) if _phone_digits(m.group(0)) != own]
     problems += [f"чужой WhatsApp: «{m.group(0)}»" for m in _WA_NUMBER.finditer(text)
                  if _phone_digits(m.group(1)) != own]
+    problems += _own_number_problems(text, own, whatsapp)
     return _result("contacts", problems)
 
 
 def run_all(subject: str, body: str, *, whatsapp: str | None = None) -> list[CheckResult]:
     """Прогнать все проверки (тема учитывается там, где у правил есть требования к теме).
 
-    whatsapp: наш номер; если он известен, в письме не должно быть других номеров и ссылок wa.me.
+    whatsapp: наш номер; если он известен, в письме должен быть он (группами через пробел), а других номеров
+    и ссылок wa.me быть не должно.
     """
     with_subject = _with_subject(subject, body)
     notes = check_notes(body)
@@ -347,6 +398,8 @@ def run_all(subject: str, body: str, *, whatsapp: str | None = None) -> list[Che
         )
     results = [
         check_dashes(with_subject),
+        check_colons(with_subject),
+        check_semicolons(with_subject),
         check_prices(with_subject),
         check_stop_words(subject, body),
         check_links(with_subject),

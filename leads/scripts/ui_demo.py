@@ -32,11 +32,11 @@ HOST = "127.0.0.1"
 PORT = 8002  # 8000 и 8001 заняты настоящим сервером: API и интерфейс
 FAKE_STEP_SECONDS = 3.0
 
-SIGNATURE = "С уважением,\nАрман\nTanbala, направление ТОО «VenMart»\nWhatsApp: +7 747 959 72 38"
+SIGNATURE = "С уважением,\nАрман"
 CHECKS_OK = [
     {"name": name, "passed": True, "details": []}
-    for name in ("dashes", "prices", "stop_words", "links", "length", "signature", "notes", "jargon", "style",
-                 "contacts")
+    for name in ("dashes", "colons", "semicolons", "prices", "stop_words", "links", "length", "signature", "notes",
+                 "jargon", "style", "contacts")
 ]
 
 

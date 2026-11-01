@@ -104,6 +104,8 @@ LETTER_FILTERS = (
 DEFAULT_LETTER_FILTER = "pending"
 CHECK_LABELS = {
     "dashes": "Тире",
+    "colons": "Двоеточия",
+    "semicolons": "Точка с запятой",
     "prices": "Цены",
     "stop_words": "Стоп-слова",
     "links": "Ссылки",
