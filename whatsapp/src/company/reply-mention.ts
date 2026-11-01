@@ -1,3 +1,4 @@
+import { shortCompanyName } from './name-match.js';
 import { normalizeName } from './normalize-name.js';
 
 /**
@@ -36,11 +37,12 @@ function asksAbout(sentence: string, normalized: string, wanted: string): boolea
 
 /**
  * Название кандидата в отправленном тексте ищется по предложениям, целыми словами, без регистра, кавычек и форм
- * собственности. Название в предложении-вопросе: asked; в любом другом месте: mentioned. Название из одних форм
+ * собственности, без хвоста карточки 2ГИС после запятой: так бот его и называет (shortCompanyName, пункт 5 задания
+ * 01.11.2026). Название в предложении-вопросе: asked; в любом другом месте: mentioned. Название из одних форм
  * собственности или пустое ни с чем не совпадает.
  */
 export function candidateInReply(text: string, name: string): ReplyMention {
-  const wanted = normalizeName(name);
+  const wanted = normalizeName(shortCompanyName(name));
   if (wanted === '') return 'none';
   const withName = text
     .trim()

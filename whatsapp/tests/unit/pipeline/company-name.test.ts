@@ -18,6 +18,7 @@ describe('pipeline/company-name: компания для вопроса знак
       {
         kind: 'confirmed',
         name: 'Береке',
+        city: null,
         rubric: null,
         pains: [],
         emailed: false,

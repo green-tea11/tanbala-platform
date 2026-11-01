@@ -52,3 +52,25 @@ describe('candidateInReply: кандидата в тексте нет', () => {
     expect(candidateInReply(text, name)).toBe('none');
   });
 });
+
+describe('candidateInReply: название карточки 2ГИС с хвостом после запятой (пункт 5 задания 01.11.2026)', () => {
+  const CARD = 'Kusto Logistics Management, компания';
+
+  it('бот спросил коротким названием: вопрос о кандидате узнаётся', () => {
+    expect(candidateInReply('Kusto Logistics Management, Алматы, верно?', CARD)).toBe('asked');
+    expect(candidateInReply('Вы из компании Kusto Logistics Management, правильно?', CARD)).toBe(
+      'asked',
+    );
+  });
+
+  it('коротким названием только упомянул: mentioned', () => {
+    expect(candidateInReply('В Kusto Logistics Management это обычная задача.', CARD)).toBe(
+      'mentioned',
+    );
+  });
+
+  it('короткое название из одного слова: без слова подтверждения вопрос не о компании', () => {
+    expect(candidateInReply('Склад у вас один?', 'Склад, компания')).toBe('mentioned');
+    expect(candidateInReply('Вы из компании Склад, правильно?', 'Склад, компания')).toBe('asked');
+  });
+});

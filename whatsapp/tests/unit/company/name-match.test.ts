@@ -4,6 +4,7 @@ import {
   MIN_CONFIRM_SIMILARITY,
   nameSimilarity,
   sameCity,
+  shortCompanyName,
 } from '../../../src/company/name-match.js';
 
 // Похожесть названий и совпадение городов для подтверждения компании без вопроса (решение владельца 30.10.2026).
@@ -87,5 +88,17 @@ describe('confidentNameMatch (ревью этапа 3)', () => {
     ['Автопарк 12', 'ТОО «Автопарк 12»'],
   ])('«%s» и «%s» одна компания', (client, card) => {
     expect(confidentNameMatch(client, card)).toBe(true);
+  });
+});
+
+describe('shortCompanyName: название без хвоста карточки 2ГИС (пункт 5 задания 01.11.2026)', () => {
+  it.each([
+    ['Kusto Logistics Management, компания', 'Kusto Logistics Management'],
+    ['Т-Банк, банк', 'Т-Банк'],
+    ['  ТОО «Склад Сервис», склад, ответственное хранение ', 'ТОО «Склад Сервис»'],
+    ['Платформа-А', 'Платформа-А'],
+    [', склад', ', склад'],
+  ])('«%s» => «%s»', (name, short) => {
+    expect(shortCompanyName(name)).toBe(short);
   });
 });

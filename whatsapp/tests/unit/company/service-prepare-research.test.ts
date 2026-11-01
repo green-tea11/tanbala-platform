@@ -59,6 +59,7 @@ describe('prepare: справка подтверждённой компании'
     expect(turn.prompt).toEqual({
       kind: 'confirmed',
       name: 'Платформа-А',
+      city: 'Алматы',
       rubric: 'Складское хранение',
       pains: ['Инвентаризация занимает дни и отрывает людей'],
       emailed: false,
@@ -92,6 +93,7 @@ describe('prepare: справка подтверждённой компании'
     expect(turn.prompt).toEqual({
       kind: 'confirmed',
       name: 'Платформа-А',
+      city: 'Алматы',
       rubric: null,
       pains: [],
       emailed: false,

@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { STALE_PROFILE_LINE } from '../../../src/agent/agent.js';
 import type { ClientProfile } from '../../../src/domain/types.js';
-import { createScenario } from './company-scenarios-harness.js';
+import {
+  CLIENT_PHONE,
+  createScenario,
+  json,
+  nothingFound,
+  type ApiRoutes,
+} from './company-scenarios-harness.js';
 import type { InterestScript, LlmScript } from './scripted-llm.js';
 
 // Прогон симулятора 01.11.2026 с настоящим Claude (сценарии «склад» и «Kusto»): примерно каждый шестой ход ответ не
@@ -193,5 +199,73 @@ describe('пункт 3: «спросить нечего» больше не бы
     ]);
     expect(third.toManager).toEqual([]);
     expect(s.storage.chats.getById(s.chatId())?.control).toEqual({ status: 'bot', by: null });
+  });
+});
+
+/** Карточка 2ГИС «Kusto»: название с хвостом после запятой, как в прогоне. */
+const KUSTO_ID = 41;
+const KUSTO_CARD = 'Kusto Logistics Management, компания';
+
+function kustoJson(): unknown {
+  return {
+    id: KUSTO_ID,
+    name: KUSTO_CARD,
+    city: 'Алматы',
+    rubric: 'Логистические услуги',
+    match_by: 'phone',
+    match_score: 1,
+    emailed: false,
+  };
+}
+
+const KUSTO_BY_PHONE: ApiRoutes = {
+  lookup: (query) =>
+    query['phone'] === CLIENT_PHONE ? json(200, { candidates: [kustoJson()] }) : nothingFound(),
+  brief: (id) =>
+    id === KUSTO_ID
+      ? json(200, {
+          ...(kustoJson() as Record<string, unknown>),
+          segment: null,
+          fit: null,
+          fit_score: null,
+          reason: null,
+          pains: [],
+          emailed_at: null,
+          email_subject: null,
+        })
+      : json(404, { error: 'not_found' }),
+};
+
+describe('пункт 5: данные подтверждённой компании доходят до бота, вопрос с чистым названием', () => {
+  it('«Kusto»: вопрос без «, компания»; после «да» город и рубрика в данных черновика, город не спрашивается', async () => {
+    const s = createScenario({ api: KUSTO_BY_PHONE });
+    const ask = 'Здравствуйте! Вы из компании Kusto Logistics Management, правильно?';
+
+    const hello = await s.say('Здравствуйте', {
+      replies: [{ outcome: 'answer', text: ask, companyQuestion: 'confirm', stage: 'intro' }],
+    });
+    const yes = await s.say('Да', {
+      replies: ['Расскажите, что у вас лежит на хранении и в каком виде?'],
+      interests: [{ level: 'warm', companyAnswer: 'yes' }],
+    });
+
+    expect(hello.data('reply')).toContain(
+      '«Вы из компании Kusto Logistics Management, правильно?»',
+    );
+    expect(hello.data('reply')).not.toContain('компания»');
+    expect(hello.toClient).toEqual([ask]);
+    const data = yes.data('reply');
+    expect(data).toContain(
+      'Компания клиента: «Kusto Logistics Management».\nГород компании: Алматы.',
+    );
+    expect(data).toContain('Город: вероятно Алматы');
+    expect(data).toContain('Бизнес: вероятно Логистические услуги');
+    expect(data).not.toMatch(/Для расчёта не хватает: [^\n]*город/u);
+    // Выжимка с городом и рубрикой сохранена: менеджер и следующие ходы видят их с «вероятно».
+    expect(s.storage.chats.getById(s.chatId())?.profile).toMatchObject({
+      city: 'Алматы',
+      business: 'Логистические услуги',
+      inferred: ['business', 'city'],
+    });
   });
 });

@@ -4,6 +4,7 @@ import type {
   CompanyPrompt,
   ConfirmedCompany,
 } from '../domain/company.js';
+import { shortCompanyName } from './name-match.js';
 import { mayAskOfficialName } from './official-name.js';
 import { promptPains, promptRubric } from './pains.js';
 import { isRunning } from './transitions.js';
@@ -17,31 +18,29 @@ export const OFF_PROMPT: CompanyPrompt = Object.freeze({ kind: 'off' });
  * номеру или логотипу: спрашивают только название.
  */
 function candidatePrompt(candidate: ChatCandidate): CompanyPrompt {
+  const name = shortCompanyName(candidate.name);
   if (candidate.askedAtMs !== null) {
-    return {
-      kind: 'asked',
-      name: candidate.name,
-      city: candidate.city,
-      awaitingAnswer: candidate.awaitingAnswer,
-    };
+    return { kind: 'asked', name, city: candidate.city, awaitingAnswer: candidate.awaitingAnswer };
   }
   return {
     kind: 'candidate',
-    name: candidate.name,
+    name,
     city: candidate.city,
     withCity: candidate.source === 'message' || candidate.source === 'research',
   };
 }
 
 /**
- * Подтверждённая компания: из справки только рубрика и боли (без цитат, источников и цифр), справки нет => пусто.
- * emailTold: мы писали компании, и бот уже сказал клиенту о письме.
+ * Подтверждённая компания: название без хвоста карточки 2ГИС и город карточки (пункт 5 задания 01.11.2026), из справки
+ * только рубрика и боли (без цитат, источников и цифр), справки нет => пусто. emailTold: мы писали компании, и бот уже
+ * сказал клиенту о письме.
  */
 function confirmedPrompt(confirmed: ConfirmedCompany, emailToldAtMs: number | null): CompanyPrompt {
   const emailed = confirmed.brief?.emailed ?? false;
   return {
     kind: 'confirmed',
-    name: confirmed.name,
+    name: shortCompanyName(confirmed.name),
+    city: confirmed.city,
     rubric: promptRubric(confirmed.brief),
     pains: promptPains(confirmed.brief),
     emailed,

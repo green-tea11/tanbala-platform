@@ -80,6 +80,7 @@ describe('сценарий: найден по домену, номер скры�
     expect(second.prompt).toEqual({
       kind: 'confirmed',
       name: 'Платформа-А',
+      city: 'Алматы',
       rubric: 'Складское хранение',
       pains: ['Инвентаризация занимает дни и отрывает людей'],
       emailed: false,
@@ -274,6 +275,7 @@ describe('сценарий: неизвестная компания, прове�
     expect(fifth.prompt).toMatchObject({
       kind: 'confirmed',
       name: 'Гамма-Склад',
+      city: 'Астана',
       rubric: 'Складское хранение',
     });
     expect(h.repo.current()).toMatchObject({

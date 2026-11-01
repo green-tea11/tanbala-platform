@@ -324,12 +324,14 @@ export type CompanyPrompt =
       readonly awaitingAnswer: boolean;
     }
   /**
-   * Компания подтверждена (клиентом или найдена по его словам уверенно): из справки только боли и рубрика (без
-   * evidence, source и цифр о клиенте), писали ли мы этой компании на почту и сказал ли бот об этом письме клиенту.
+   * Компания подтверждена (клиентом или найдена по его словам уверенно): город из карточки (пункт 5 задания
+   * 01.11.2026), из справки только боли и рубрика (без evidence, source и цифр о клиенте), писали ли мы этой компании на
+   * почту и сказал ли бот об этом письме клиенту. Название, как у кандидата, без хвоста карточки 2ГИС после запятой.
    */
   | {
       readonly kind: 'confirmed';
       readonly name: string;
+      readonly city: string | null;
       readonly rubric: string | null;
       readonly pains: readonly string[];
       readonly emailed: boolean;

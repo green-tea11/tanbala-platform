@@ -43,6 +43,7 @@ const CANDIDATE: CompanyPrompt = {
 const CONFIRMED: CompanyPrompt = {
   kind: 'confirmed',
   name: 'ТОО Склад',
+  city: null,
   rubric: 'Склады',
   pains: ['Пересорт при отгрузке'],
   emailed: false,

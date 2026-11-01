@@ -29,8 +29,12 @@ function confirmQuestion(prompt: Extract<CompanyPrompt, { readonly kind: 'candid
 
 type ConfirmedPrompt = Extract<CompanyPrompt, { readonly kind: 'confirmed' }>;
 
-/** Данные подтверждённой компании: название, рубрика и боли похожих компаний. */
+/**
+ * Данные подтверждённой компании: название, город (пункт 5 задания 01.11.2026: город карточки, клиента о нём не
+ * переспрашивают), рубрика и боли похожих компаний.
+ */
 function confirmedData(prompt: ConfirmedPrompt): string[] {
+  const city = prompt.city === null ? [] : [`Город компании: ${plain(prompt.city)}.`];
   const rubric = prompt.rubric === null ? [] : [`Рубрика: ${plain(prompt.rubric)}.`];
   const pains =
     prompt.pains.length === 0
@@ -38,7 +42,7 @@ function confirmedData(prompt: ConfirmedPrompt): string[] {
       : [
           `Трудности, которые часто бывают у похожих компаний: ${prompt.pains.map(plain).join('; ')}.`,
         ];
-  return [`Компания клиента: «${plain(prompt.name)}».`, ...rubric, ...pains];
+  return [`Компания клиента: «${plain(prompt.name)}».`, ...city, ...rubric, ...pains];
 }
 
 /** Строка о нашем письме для ответа: писали и бот ещё не говорил, уже сказал, не писали. */

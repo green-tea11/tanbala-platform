@@ -182,6 +182,7 @@ describe('draftReply и reviewDraft: боли справки (решение в�
     return {
       kind: 'confirmed',
       name: 'Альфа',
+      city: null,
       rubric: 'Склады',
       pains,
       emailed: false,

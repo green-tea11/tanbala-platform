@@ -1263,7 +1263,15 @@ describe('pipeline/reply-flow: название компании клиента 
   const WITH_NAME: readonly CompanyPrompt[] = [
     CANDIDATE,
     { kind: 'asked', name: NAME, city: null, awaitingAnswer: false },
-    { kind: 'confirmed', name: NAME, rubric: null, pains: [], emailed: false, emailTold: false },
+    {
+      kind: 'confirmed',
+      name: NAME,
+      city: null,
+      rubric: null,
+      pains: [],
+      emailed: false,
+      emailTold: false,
+    },
   ];
 
   function contextWith(company: CompanyPrompt): ConversationContext {

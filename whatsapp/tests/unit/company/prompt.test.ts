@@ -215,6 +215,7 @@ describe('buildPrompt: подтверждённая компания', () => {
     expect(buildPrompt(state)).toEqual({
       kind: 'confirmed',
       name: 'Платформа-А',
+      city: 'Алматы',
       rubric: 'Складское хранение',
       pains: ['Долгая инвентаризация', 'Пересорт при приёмке', 'Потери на складе'],
       emailed: true,
@@ -241,6 +242,7 @@ describe('buildPrompt: подтверждённая компания', () => {
     expect(buildPrompt(state)).toEqual({
       kind: 'confirmed',
       name: 'Платформа-А',
+      city: 'Алматы',
       rubric: null,
       pains: [],
       emailed: false,
@@ -420,5 +422,48 @@ describe('buildOffSummary', () => {
       research: null,
       statedName: null,
     });
+  });
+});
+
+describe('buildPrompt: название без хвоста карточки 2ГИС, город подтверждённой (пункт 5 задания 01.11.2026)', () => {
+  const CARD = 'Kusto Logistics Management, компания';
+
+  it('кандидат и спрошенный кандидат: название до первой запятой', () => {
+    const candidate = makeChatCandidate({ name: CARD, source: 'research' });
+
+    expect(buildPrompt(makeState({ candidate }))).toEqual({
+      kind: 'candidate',
+      name: 'Kusto Logistics Management',
+      city: 'Алматы',
+      withCity: true,
+    });
+    expect(
+      buildPrompt(makeState({ candidate: { ...candidate, askedAtMs: NOW, awaitingAnswer: true } })),
+    ).toEqual({
+      kind: 'asked',
+      name: 'Kusto Logistics Management',
+      city: 'Алматы',
+      awaitingAnswer: true,
+    });
+  });
+
+  it('подтверждённая: название до первой запятой и город карточки; города нет => null', () => {
+    const confirmed = makeConfirmed({ name: CARD });
+
+    expect(buildPrompt(makeState({ confirmed }))).toMatchObject({
+      kind: 'confirmed',
+      name: 'Kusto Logistics Management',
+      city: 'Алматы',
+    });
+    expect(buildPrompt(makeState({ confirmed: { ...confirmed, city: null } }))).toMatchObject({
+      kind: 'confirmed',
+      city: null,
+    });
+  });
+
+  it('сводка для менеджера по-прежнему с полным названием карточки', () => {
+    const state = makeState({ confirmed: makeConfirmed({ name: CARD }) });
+
+    expect(buildSummary(state, null)).toMatchObject({ status: 'confirmed', name: CARD });
   });
 });
