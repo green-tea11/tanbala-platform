@@ -433,7 +433,8 @@ export function checkRepeatedFacts(
   const repeated = STRENGTH_IDS.filter((id) => used.has(id) && told.has(id));
   if (repeated.length === 0) return [];
   const names = repeated.map((id) => `«${STRENGTH_LABELS[id]}»`).join(', ');
-  const what = repeated.length === 1 ? 'сильная сторона уже звучала' : 'сильные стороны уже звучали';
+  const what =
+    repeated.length === 1 ? 'сильная сторона уже звучала' : 'сильные стороны уже звучали';
   return [
     {
       code: 'repeat_fact',
@@ -461,11 +462,27 @@ export function checkFactNumbers(text: string): readonly CheckFinding[] {
 
 const FACT_ID = 'F(?:10|[1-9])';
 
-/** Номер или перечень номеров («F3, F4», «F5 и F6») отдельными словами, с пробелами перед ним. */
+/**
+ * Номер или перечень номеров («F3, F4», «F5 и F6», «F1-F3») отдельными словами, с пробелами перед ним. Тире и дефис
+ * внутри перечня уходят вместе с ним: иначе осталось бы «используем-.».
+ */
 const FACT_NUMBER_RUN = new RegExp(
-  String.raw`[ \t]*(?<![\p{L}\p{N}])${FACT_ID}(?:[ \t]*(?:,|[ \t]и)[ \t]*${FACT_ID})*(?![\p{L}\p{N}])`,
+  String.raw`[ \t]*(?<![\p{L}\p{N}])${FACT_ID}(?:[ \t]*(?:,|[ \t]и|[-‐‑‒–—―−])[ \t]*${FACT_ID})*(?![\p{L}\p{N}])`,
   'giu',
 );
+
+/**
+ * Следы неудачной вырезки (ревью 01.11.2026): скобка с запятой или пустая, дефис или тире у знака, короткий предлог
+ * или союз прямо перед знаком («Как в, метка»). Такой текст не отдаётся: номер остаётся, и черновик отклоняет
+ * fact_number, как раньше. Считаются только новые следы: «и, если нужно» модели до вырезки не в счёт (brokenCount).
+ */
+const BROKEN_AFTER_STRIP =
+  /[([][ \t]*[,.;:]|[-‐‑‒–—―−][ \t]*(?:[,.!?;:)\]]|$)|(?<![\p{L}\p{N}])(?:в|во|на|как|и|с|со|к|ко|о|об|по|из|у|до|за|от|для|при|про|без|а|но)[ \t]*[,.!?;:]/giu;
+
+/** Сколько следов вырезки в тексте. */
+function brokenCount(text: string): number {
+  return findAll(text, BROKEN_AFTER_STRIP).length;
+}
 
 /** Что остаётся после номера и убирается: пустые скобки, двойные пробелы, пробел перед знаком, лишние запятые. */
 const AFTER_STRIP: readonly (readonly [RegExp, string])[] = [
@@ -487,24 +504,33 @@ function nameRanges(
   return findAll(text, pattern).map((match) => [match.index, match.index + match[0].length]);
 }
 
+/** Что ещё нужно вырезке номеров: название компании клиента и его слова. */
+export interface StripOptions {
+  /** Номер внутри названия компании клиента («F1 Motors») остаётся. */
+  readonly companyName?: string | null;
+  /** Номер, который клиент написал сам («модели F1 и F2»), не вырезается: это его слова, а не номер стороны. */
+  readonly clientText?: string;
+}
+
 /**
  * Номера сильных сторон (F1–F10) в тексте клиенту убирает код, а не проверка (пункт 2 задания 01.11.2026): модель
  * переносит номер из данных вызова в текст («коробках F5 запись»), и из-за этого отклонялся годный черновик. Вместе
- * с номером уходят ставшие лишними скобки, пробелы и запятые. Номер внутри названия компании клиента (companyName,
- * как в maskCompanyName) остаётся. Номеров нет => тот же текст без изменений.
+ * с номером уходят ставшие лишними скобки, пробелы и запятые. Номер внутри названия компании клиента остаётся. Текст
+ * не меняется совсем (и номер отклонит fact_number, как раньше), если номера нет, если клиент сам писал номер вида
+ * F1–F10 или если после вырезки остались следы (BROKEN_AFTER_STRIP): клиенту не уходит обрывок фразы.
  */
-export function stripFactNumbers(
-  text: NormalizedText,
-  companyName?: string | null,
-): NormalizedText {
+export function stripFactNumbers(text: NormalizedText, options: StripOptions = {}): NormalizedText {
   if (!FACT_NUMBER.test(text)) return text;
-  const kept = nameRanges(text, companyName);
+  if (FACT_NUMBER.test(maskCompanyName(options.clientText ?? '', options.companyName))) {
+    return text;
+  }
+  const kept = nameRanges(text, options.companyName);
   const stripped = text.replace(FACT_NUMBER_RUN, (match: string, offset: number) =>
     kept.some(([start, end]) => offset + match.length > start && offset < end) ? match : '',
   );
   if (stripped === text) return text;
   const tidy = AFTER_STRIP.reduce((value, [pattern, to]) => value.replace(pattern, to), stripped);
-  return tidy.trim() as NormalizedText;
+  return brokenCount(tidy) > brokenCount(text) ? text : (tidy.trim() as NormalizedText);
 }
 
 /**

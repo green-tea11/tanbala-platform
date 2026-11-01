@@ -127,6 +127,11 @@ export interface SafeQuestionInput {
   readonly lastStage?: ConversationStage | null;
   /** Чат уже передавался коллеге; нет поля => нет. */
   readonly handedOff?: boolean;
+  /**
+   * Выжимка собрана до последнего сообщения клиента (оценка этого хода не получилась): повтор вопроса (secondAsk)
+   * не задаётся, клиент мог ответить на него как раз сейчас (ревью 01.11.2026). Нет поля => выжимка свежая.
+   */
+  readonly profileStale?: boolean;
 }
 
 /** Готовый вопрос: какой, текст и вопрос о названии компании, если он в тексте. */
@@ -196,7 +201,8 @@ export function nextSafeQuestion(
 ): SafeQuestion | null {
   const asked = alreadyAsked(input);
   const keys = stageQuestions(input);
-  const key = keys.find((candidate) => !asked.has(candidate)) ?? secondAsk(keys, input);
+  const fresh = keys.find((candidate) => !asked.has(candidate));
+  const key = fresh ?? (input.profileStale === true ? undefined : secondAsk(keys, input));
   return key === undefined ? null : safeQuestionOf(key, aboutPrice, input);
 }
 

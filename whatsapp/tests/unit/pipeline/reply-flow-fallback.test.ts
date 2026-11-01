@@ -87,6 +87,8 @@ interface Case {
   readonly profile?: ClientProfile;
   readonly signals?: TurnSignals;
   readonly lastBot?: string;
+  /** Кто написал lastBot; по умолчанию бот. */
+  readonly lastAuthor?: 'bot' | 'human_phone' | 'human_panel';
   readonly company?: CompanyPrompt;
   readonly companyName?: string | null;
   readonly progress?: ChatProgress;
@@ -151,7 +153,7 @@ function run(c: Case) {
           {
             id: 2,
             chatId: CHAT_ID,
-            author: 'bot' as const,
+            author: c.lastAuthor ?? ('bot' as const),
             kind: 'text' as const,
             text: c.lastBot,
             tsMs: NOW - 2,
@@ -250,6 +252,22 @@ describe('pipeline/reply-flow: два провала проверок дают �
       kind: 'handoff',
       notice: { reason: 'hot', aboutPrice: true },
       detail: expect.stringMatching(/^Спрашивает цену, сроки или договор/) as unknown,
+    });
+  });
+
+  it.each([
+    [
+      'писал только менеджер с телефона',
+      { lastBot: 'Добрый день, это Алия.', lastAuthor: 'human_phone' },
+    ],
+    ['писал только менеджер из панели', { lastBot: 'Добрый день.', lastAuthor: 'human_panel' }],
+    ['бот отвечал раньше окна истории', { progress: ON_DETAILS }],
+  ] as const)('%s: не приветствие, а «Спасибо!»', async (_name, c) => {
+    const r = await run(c);
+
+    expect(r.verdict).toEqual({
+      kind: 'send',
+      text: `${REACTIONS.thanks} ${INTRO_BUSINESS_QUESTION}`,
     });
   });
 

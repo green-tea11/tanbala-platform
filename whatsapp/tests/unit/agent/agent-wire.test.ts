@@ -30,7 +30,7 @@ const REPLIES = [
     stage: 'intro',
     usedFacts: ['F7', 'F7'],
   },
-  { ok: false, problems: [{ kind: 'fact', text: 'Назван срок внедрения' }] },
+  { ok: false, problems: [{ rule: '3', text: 'Назван срок внедрения' }] },
   {
     level: 'warm',
     business: 'магазин одежды',

@@ -4,6 +4,8 @@ import { createAgent } from '../../../src/agent/agent.js';
 import { buildSystem } from '../../../src/agent/prompts.js';
 import {
   normalizeReview,
+  problemKindOf,
+  REVIEW_RULES,
   reviewCallData,
   type RawReview,
   type RawReviewProblem,
@@ -25,14 +27,14 @@ const DRAFT = 'Цена зависит от задачи. Какой у вас �
 const HANDOFF_DRAFT = 'Да, проводим интеграцию с вашей 1С. Уточню у коллеги и вернусь к вам.';
 const PASSED: RawReview = { ok: true, problems: [] };
 
-/** Замечание о фактах: такой черновик клиенту не уходит. */
+/** Замечание по пункту 1 (факт не из документов): такой черновик клиенту не уходит. */
 function fact(text: string): RawReviewProblem {
-  return { kind: 'fact', text };
+  return { rule: '1', text };
 }
 
-/** Замечание о стиле разговора: повтор вопроса, два вопроса, тон. */
+/** Замечание по пункту 12 (повтор вопроса): о стиле разговора. */
 function style(text: string): RawReviewProblem {
-  return { kind: 'style', text };
+  return { rule: '12', text };
 }
 const LEFT_ANGLE = String.fromCharCode(0x2039);
 const RIGHT_ANGLE = String.fromCharCode(0x203a);
@@ -124,9 +126,12 @@ describe('createAgent: reviewDraft, запрос', () => {
     expect(schema.safeParse({ ok: false, problems: [fact('Назван срок')] }).success).toBe(true);
     expect(schema.safeParse({ ok: false, problems: [style('Два вопроса')] }).success).toBe(true);
     expect(schema.safeParse({ ok: false, problems: ['Назван срок'] }).success).toBe(false);
-    expect(schema.safeParse({ ok: false, problems: [{ kind: 'tone', text: 'Тон' }] }).success).toBe(
+    expect(schema.safeParse({ ok: false, problems: [{ rule: '14', text: 'Тон' }] }).success).toBe(
       false,
     );
+    expect(
+      schema.safeParse({ ok: false, problems: [{ kind: 'style', text: 'Тон' }] }).success,
+    ).toBe(false);
     expect(schema.safeParse(PASSED).success).toBe(true);
     expect(schema.safeParse({ ok: true }).success).toBe(false);
     expect(schema.safeParse({ ok: 'да', problems: [] }).success).toBe(false);
@@ -249,6 +254,21 @@ describe('normalizeReview', () => {
     expect(
       normalizeReview({ ok: false, problems: [style('Вопрос повторён'), fact('Обещание')] }),
     ).toEqual({ ok: false, problems: ['Вопрос повторён', 'Обещание'] });
+  });
+
+  it('вид замечания решает код по номеру пункта: только 11 и 12 о стиле', () => {
+    for (const rule of REVIEW_RULES) {
+      expect(problemKindOf(rule)).toBe(rule === '11' || rule === '12' ? 'style' : 'fact');
+    }
+    expect(
+      normalizeReview({
+        ok: false,
+        problems: [{ rule: '11', text: 'Два вопроса' }, style('Повтор')],
+      }),
+    ).toEqual({ ok: false, problems: ['Два вопроса', 'Повтор'], styleOnly: true });
+    expect(
+      normalizeReview({ ok: false, problems: [{ rule: '7', text: 'Тон: обещание результата' }] }),
+    ).toEqual({ ok: false, problems: ['Тон: обещание результата'] });
   });
 
   it('styleOnly fail-closed: пустое замечание о фактах и шестое замечание о фактах тоже считаются', () => {

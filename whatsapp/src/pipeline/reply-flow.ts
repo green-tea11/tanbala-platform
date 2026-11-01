@@ -317,6 +317,7 @@ function afterCheckFailed(flow: Flow): ReplyVerdict {
       botTexts: botTextsOf(context.history),
       lastStage: context.progress?.lastStage ?? null,
       handedOff: context.progress?.handedOff === true || context.note != null,
+      profileStale: context.profileStale === true,
     },
     gate.signals.priceAsked,
   );
@@ -342,12 +343,21 @@ function sendQuestion(flow: Flow, question: SafeQuestion): SendVerdict {
   const reaction = reactionOf({
     before: flow.before,
     after: flow.gate.profile,
-    botWrote: lastBotTextOf(flow.context.history) !== null,
+    botWrote: someoneWrote(flow.context),
   });
   const { text, companyQuestion } = withReaction(question, reaction, flow.gate.signals.priceAsked);
   return companyQuestion === undefined
     ? { kind: 'send', text }
     : { kind: 'send', text, companyQuestion };
+}
+
+/**
+ * Клиенту уже писали: бот или человек (с телефона или из панели) в окне истории, или бот уже отвечал раньше окна
+ * (этап последнего ответа). Тогда перед готовым вопросом не приветствие (ревью 01.11.2026).
+ */
+function someoneWrote(context: ConversationContext): boolean {
+  const wrote = context.history.some((message) => message.author !== 'client');
+  return wrote || context.progress?.lastStage != null;
 }
 
 /** Последнее сообщение бота клиенту в окне истории; нет => null. */
@@ -523,12 +533,16 @@ async function judge(flow: Flow, draft: ReplyDraft, attempt: Attempt): Promise<J
 
 /**
  * Текст черновика для проверок и клиента: normalizeDraft, затем без номеров сильных сторон (F1–F10): их код убирает
- * сам, а не отклоняет черновик (пункт 2 задания 01.11.2026). Номер внутри названия компании клиента остаётся. Убрал =>
+ * сам, а не отклоняет черновик (пункт 2 задания 01.11.2026). Номер внутри названия компании клиента и номер, который
+ * клиент писал сам, остаются; вырезка с обрывком фразы не делается (stripFactNumbers). Убрал =>
  * в лог только ID чата.
  */
 function draftTextOf(flow: Flow, raw: string): NormalizedText {
   const normalized = normalizeDraft(raw);
-  const text = stripFactNumbers(normalized, companyNameOf(flow.context.company));
+  const text = stripFactNumbers(normalized, {
+    companyName: companyNameOf(flow.context.company),
+    clientText: clientTextOf(flow.context.history),
+  });
   if (text !== normalized) {
     const { chatId } = flow.context;
     flow.deps.logger.info(

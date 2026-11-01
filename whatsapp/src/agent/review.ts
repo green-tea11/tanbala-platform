@@ -10,10 +10,43 @@ const MAX_PROBLEM_CHARS = 300;
 const GENERAL_PROBLEM =
   'Проверка не пройдена, причина не названа. Перепиши ответ строго по документам: без цен, сроков, скидок, количества оборудования, моделей и обещаний.';
 
+/** Номера пунктов инструкции проверки (agent/prompts.ts, REVIEW_INSTRUCTION): по ним код решает вид замечания. */
+export const REVIEW_RULES = [
+  '1',
+  '2',
+  '3',
+  '4',
+  '5',
+  '6',
+  '7',
+  '8',
+  '9',
+  '10',
+  '11',
+  '12',
+  '13',
+] as const;
+
+export type ReviewRule = (typeof REVIEW_RULES)[number];
+
+/**
+ * Пункты о стиле разговора: 11 (несколько вопросов подряд) и 12 (повтор вопроса, вопрос о том, что клиент уже сказал).
+ * Остальные пункты о фактах, обещаниях, цене, сроках и компании клиента.
+ */
+const STYLE_RULES: ReadonlySet<ReviewRule> = new Set<ReviewRule>(['11', '12']);
+
+/**
+ * Вид замечания по номеру пункта (ревью 01.11.2026): решает код, а не модель, поэтому обещание, названное «тоном»,
+ * стилем не станет. Только пункты 11 и 12 style, любой другой fact.
+ */
+export function problemKindOf(rule: ReviewRule): ReviewProblemKind {
+  return STYLE_RULES.has(rule) ? 'style' : 'fact';
+}
+
 /**
  * Схема ответа проверки: плоский объект, все поля обязательны (structured outputs вместо запрещённого prefill).
- * Без transform: вход и выход совпадают. Противоречия в ответе снимает normalizeReview. У каждого замечания вид
- * (пункт 3 задания 01.11.2026): fact или style.
+ * Без transform: вход и выход совпадают. Противоречия в ответе снимает normalizeReview. У каждого замечания номер
+ * пункта инструкции, по нему код определяет вид замечания (пункт 3 задания 01.11.2026, problemKindOf).
  */
 export const reviewSchema = z.object({
   ok: z
@@ -24,11 +57,9 @@ export const reviewSchema = z.object({
   problems: z
     .array(
       z.object({
-        kind: z
-          .enum(['fact', 'style'])
-          .describe(
-            'fact: факт не из документов, обещание, цена или срок, утверждение о компании клиента, запретная тема; style: повтор вопроса, несколько вопросов подряд, тон. Сомневаешься: fact.',
-          ),
+        rule: z
+          .enum(REVIEW_RULES)
+          .describe('Номер пункта из списка нарушений в инструкции, который нарушен.'),
         text: z.string().describe('Что не так и как исправить, одной фразой.'),
       }),
     )
@@ -37,7 +68,7 @@ export const reviewSchema = z.object({
 
 /** Одно замечание модели до нормализации. */
 export interface RawReviewProblem {
-  readonly kind: ReviewProblemKind;
+  readonly rule: ReviewRule;
   readonly text: string;
 }
 
@@ -51,7 +82,7 @@ export interface RawReview {
  * Нормализует ответ проверки один раз и fail-closed: замечания главнее флага. Есть замечания => ok false, даже если
  * модель написала ok true. ok false без замечаний => одно общее замечание (вида fact). Замечания после cleanLine: одна
  * строка, не длиннее 300 знаков, не больше пяти. ok true остаётся только без единого замечания. styleOnly: все замечания
- * модели вида style, считая пустые и не вошедшие в пять (любое fact снимает пометку).
+ * модели вида style (problemKindOf), считая пустые и не вошедшие в пять (любое fact снимает пометку).
  */
 export function normalizeReview(raw: RawReview): ReviewResult {
   const problems = raw.problems
@@ -59,7 +90,7 @@ export function normalizeReview(raw: RawReview): ReviewResult {
     .filter((problem) => problem !== '')
     .slice(0, MAX_PROBLEMS);
   if (problems.length > 0) {
-    const styleOnly = raw.problems.every((problem) => problem.kind === 'style');
+    const styleOnly = raw.problems.every((problem) => problemKindOf(problem.rule) === 'style');
     return styleOnly ? { ok: false, problems, styleOnly } : { ok: false, problems };
   }
   return raw.ok ? { ok: true } : { ok: false, problems: [GENERAL_PROBLEM] };

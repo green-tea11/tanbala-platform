@@ -1566,7 +1566,7 @@ describe('checkFactNumbers: номера сильных сторон не ухо
 
 describe('stripFactNumbers: номера сильных сторон убирает код (пункт 2 задания 01.11.2026)', () => {
   function strip(text: string, companyName?: string | null): string {
-    return stripFactNumbers(normalizeDraft(text), companyName);
+    return stripFactNumbers(normalizeDraft(text), { companyName });
   }
 
   it.each([
@@ -1612,6 +1612,40 @@ describe('stripFactNumbers: номера сильных сторон убира�
 
   it('текст из одних номеров становится пустым', () => {
     expect(strip(' F3, F4 ')).toBe('');
+  });
+
+  it('перечень через дефис уходит целиком, без висящего дефиса', () => {
+    expect(strip('Мы показываем это на F1-F3 сразу.')).toBe('Мы показываем это на сразу.');
+    expect(strip('Это видно сразу F1–F3, без пересчёта.')).toBe('Это видно сразу, без пересчёта.');
+  });
+
+  it.each([
+    'Как в F1, метка дешёвая.',
+    'Это (F3, например) важно.',
+    'Сканер видит всё сразу, как F4.',
+    'Это работает и F2.',
+  ])('после вырезки остался бы обрывок: «%s» не меняется, и его ловит fact_number', (text) => {
+    const normalized = normalizeDraft(text);
+
+    expect(stripFactNumbers(normalized)).toBe(normalized);
+    expect(codes(run(text)).has('fact_number')).toBe(true);
+  });
+
+  it('следы, которые были до вырезки («и, если нужно»), не мешают', () => {
+    expect(strip('Интеграцию с 1С делаем и, если нужно, обучаем F8 сотрудников.')).toBe(
+      'Интеграцию с 1С делаем и, если нужно, обучаем сотрудников.',
+    );
+  });
+
+  it('номер вида F1–F10 клиент писал сам: текст не меняется', () => {
+    const normalized = normalizeDraft('Модели F1 и F2 у вас подойдут.');
+
+    expect(stripFactNumbers(normalized, { clientText: 'У нас ридеры модели F1 и F2' })).toBe(
+      normalized,
+    );
+    expect(stripFactNumbers(normalized, { clientText: 'Склад в Алматы' })).toBe(
+      'Модели у вас подойдут.',
+    );
   });
 });
 

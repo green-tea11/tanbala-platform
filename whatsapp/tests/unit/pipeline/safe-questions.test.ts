@@ -213,6 +213,12 @@ describe('pipeline/safe-questions: недостающее можно спрос�
     expect(nextSafeQuestion(fixed, false)).toBeNull();
   });
 
+  it('выжимка старая (оценка не получилась): повтора нет, клиент мог ответить как раз сейчас', () => {
+    const stale = input(WAREHOUSE, { ...DETAILS, botTexts: [MODEL_ASKED], profileStale: true });
+
+    expect(nextSafeQuestion(stale, false)).toBeNull();
+  });
+
   it('незаданный вопрос по-прежнему первым, повтор только когда незаданных нет', () => {
     const profile = { ...WAREHOUSE, city: null };
     const question = nextSafeQuestion(
