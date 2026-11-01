@@ -149,3 +149,61 @@ def test_two_glued_copies_of_one_address_become_one(db_conn):
     maintenance.fix_emails(db_conn, dry_run=False)
 
     assert [email for email, _, _ in emails_of(db_conn, company_id)] == ["info@erdaholding.com"]
+
+
+# reset-companies: чистый лист (решение владельца 01.11.2026)
+
+def add_full_company(conn, name):
+    run_id = conn.execute("INSERT INTO runs (city, query, max_companies, status) VALUES ('almaty', 'склад', 1, 'done')"
+                          " RETURNING id").fetchone()[0]
+    company_id, (contact_id,) = add_company_with_emails(conn, name, ["info@example.kz"])
+    conn.execute("UPDATE companies SET run_id = %s WHERE id = %s", (run_id, company_id))
+    conn.execute("INSERT INTO qualifications (company_id, fit, score, segment, reason, pains, model)"
+                 " VALUES (%s, 'yes', 70, 'Другое', 'Есть склад', '[]', 'test')", (company_id,))
+    draft_id = conn.execute("INSERT INTO drafts (company_id, contact_id, subject, body) VALUES (%s, %s, 'Тема', 'Текст')"
+                            " RETURNING id", (company_id, contact_id)).fetchone()[0]
+    conn.execute("INSERT INTO llm_calls (task, model, run_id, company_id, input_tokens, output_tokens)"
+                 " VALUES ('qualify', 'test', %s, %s, 10, 5)", (run_id, company_id))
+    return company_id, draft_id
+
+
+def count_rows(conn, table):
+    return conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+
+
+def test_reset_companies_dry_run_counts_and_deletes_nothing(db_conn):
+    add_full_company(db_conn, "Склад Один")
+
+    lines = maintenance.reset_companies(db_conn, dry_run=True)
+
+    assert "компаний 1" in lines[0] and "писем 1" in lines[0] and "запусков 1" in lines[0]
+    assert lines[-1] == maintenance.DRY_RUN_NOTE
+    assert count_rows(db_conn, "companies") == 1
+
+
+def test_reset_companies_deletes_everything_but_spend_and_keeps_numbering(db_conn):
+    old_id, _ = add_full_company(db_conn, "Склад Один")
+
+    assert maintenance.reset_companies(db_conn, dry_run=False)[-1] == maintenance.RESET_DONE_NOTE
+
+    for table, _ in maintenance.RESET_TABLES:
+        assert count_rows(db_conn, table) == 0, table
+    assert db_conn.execute("SELECT run_id, company_id FROM llm_calls").fetchall() == [(None, None)]
+    new_id, _ = add_company_with_emails(db_conn, "Новая", [])
+    assert new_id > old_id
+
+
+def test_reset_companies_waits_for_active_run(db_conn):
+    add_full_company(db_conn, "Склад Один")
+    db_conn.execute("INSERT INTO runs (city, query, max_companies, status) VALUES ('almaty', 'склад', 1, 'running')")
+
+    assert maintenance.reset_companies(db_conn, dry_run=False)[-1] == maintenance.RESET_ACTIVE_NOTE
+    assert count_rows(db_conn, "companies") == 1
+
+
+def test_reset_companies_keeps_protective_lists(db_conn):
+    company_id, _ = add_full_company(db_conn, "Склад Один")
+    db_conn.execute("INSERT INTO do_not_contact (company_id, reason) VALUES (%s, 'manual')", (company_id,))
+
+    assert maintenance.reset_companies(db_conn, dry_run=False)[-1] == maintenance.RESET_PROTECTED_NOTE
+    assert count_rows(db_conn, "companies") == 1

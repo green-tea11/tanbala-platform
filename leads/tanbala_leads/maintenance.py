@@ -6,6 +6,7 @@
 from dataclasses import dataclass
 
 import psycopg
+from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
@@ -214,3 +215,50 @@ def fix_emails(conn: psycopg.Connection, *, dry_run: bool) -> list[str]:
         return [*lines, RUN_ACTIVE_NOTE]
     apply_email_fixes(conn, fixes)
     return [*lines, SAVED_NOTE]
+
+
+# Чистый лист (решение владельца 01.11.2026): все компании и всё о них, запуски и проверки из WhatsApp. Порядок —
+# от зависимых к главным. Остаются расход Claude (llm_calls: ссылки на компании и запуски станут NULL) и списки
+# «уже писали» и «не писать». Номера компаний и запусков не начинаются заново: старые ссылки в боте и в журнале
+# консоли не укажут на новую компанию.
+RESET_TABLES = (
+    ("test_sends", "тестовых отправок"),
+    ("drafts", "писем"),
+    ("qualifications", "оценок"),
+    ("contacts", "почт"),
+    ("research_jobs", "проверок из WhatsApp"),
+    ("companies", "компаний"),
+    ("runs", "запусков"),
+)
+ACTIVE_WORK_SQL = """
+SELECT EXISTS (SELECT 1 FROM runs WHERE status IN ('queued', 'running'))
+    OR EXISTS (SELECT 1 FROM research_jobs WHERE status IN ('queued', 'running'))
+"""
+# Списки защищают от повторного письма: ссылку на компанию в них команда сама не снимает.
+PROTECTED_LINKS_SQL = """
+SELECT (SELECT count(*) FROM contact_history WHERE company_id IS NOT NULL)
+     + (SELECT count(*) FROM do_not_contact WHERE company_id IS NOT NULL)
+"""
+RESET_ACTIVE_NOTE = "Идёт запуск поиска или проверка из WhatsApp: ничего не удалено. Повторите, когда они закончатся."
+RESET_PROTECTED_NOTE = ("В списках «уже писали» или «не писать» есть ссылки на компании: ничего не удалено. "
+                        "Эти списки защищают от повторных писем, решите о них отдельно.")
+RESET_DONE_NOTE = "Удалено. Можно начинать поиск заново."
+
+
+def reset_companies(conn: psycopg.Connection, *, dry_run: bool) -> list[str]:
+    """Команда reset-companies: удалить все компании и всё о них; с dry_run только посчитать."""
+    counts = {table: conn.execute(sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(table))).fetchone()[0]
+              for table, _ in RESET_TABLES}
+    kept = conn.execute("SELECT count(*) FROM llm_calls").fetchone()[0]
+    lines = ["Будет удалено: " + ", ".join(f"{label} {counts[table]}" for table, label in RESET_TABLES) + ".",
+             f"Остаётся расход Claude: записей {kept}; списки «уже писали» и «не писать» не меняются."]
+    if dry_run:
+        return [*lines, DRY_RUN_NOTE]
+    if conn.execute(ACTIVE_WORK_SQL).fetchone()[0]:
+        return [*lines, RESET_ACTIVE_NOTE]
+    if conn.execute(PROTECTED_LINKS_SQL).fetchone()[0]:
+        return [*lines, RESET_PROTECTED_NOTE]
+    with conn.transaction():
+        for table, _ in RESET_TABLES:
+            conn.execute(sql.SQL("DELETE FROM {}").format(sql.Identifier(table)))
+    return [*lines, RESET_DONE_NOTE]

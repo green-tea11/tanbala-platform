@@ -5,6 +5,7 @@
     search --query склад [--city almaty] [--limit 5]   запуск поиска без интерфейса
     recheck-pains [--dry-run]       перепроверить сохранённые боли по правилу 01.11.2026, без вызова API
     fix-emails [--dry-run]          снять прилипшую подпись с сохранённых почт (e-mailinfo@… → info@…)
+    reset-companies [--dry-run]     удалить все компании и всё о них, запуски и проверки из WhatsApp (чистый лист)
 """
 
 import argparse
@@ -36,11 +37,15 @@ def _parser() -> argparse.ArgumentParser:
     fix = commands.add_parser("fix-emails", help="снять прилипшую подпись с сохранённых почт (e-mailinfo@… → info@…);"
                                                  " почты с письмом не трогаются")
     fix.add_argument("--dry-run", action="store_true", help="только показать, что изменится")
+    reset = commands.add_parser("reset-companies", help="удалить все компании, почты, оценки, письма, запуски и"
+                                                         " проверки из WhatsApp; расход Claude и списки остаются")
+    reset.add_argument("--dry-run", action="store_true", help="только посчитать, что будет удалено")
     return parser
 
 
 # Разовые исправления данных: функция получает соединение и dry_run, возвращает строки отчёта.
-MAINTENANCE = {"recheck-pains": maintenance.recheck_pains, "fix-emails": maintenance.fix_emails}
+MAINTENANCE = {"recheck-pains": maintenance.recheck_pains, "fix-emails": maintenance.fix_emails,
+               "reset-companies": maintenance.reset_companies}
 
 
 def _maintenance(dsn: str, command: str, dry_run: bool) -> int:
