@@ -133,6 +133,16 @@ def test_fix_emails_dry_run_then_apply(db_conn):
     assert db_conn.execute("SELECT count(*) FROM drafts").fetchone()[0] == 1
 
 
+def test_fix_emails_waits_for_an_active_run(db_conn):
+    company_id, _ = add_company_with_emails(db_conn, "Erda Holding", ["e-mailinfo@erdaholding.com"])
+    db_conn.execute("INSERT INTO runs (city, query, max_companies, status) VALUES ('almaty', 'склад', 1, 'running')")
+
+    lines = maintenance.fix_emails(db_conn, dry_run=False)
+
+    assert lines[-1] == maintenance.RUN_ACTIVE_NOTE
+    assert [email for email, _, _ in emails_of(db_conn, company_id)] == ["e-mailinfo@erdaholding.com"]
+
+
 def test_two_glued_copies_of_one_address_become_one(db_conn):
     company_id, _ = add_company_with_emails(db_conn, "Erda", ["e-mailinfo@erdaholding.com", "mailinfo@erdaholding.com"])
 

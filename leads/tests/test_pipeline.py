@@ -451,6 +451,21 @@ def test_broken_export_of_one_industry_does_not_stop_the_run(db_conn, dsn, tmp_p
     assert (status, new) == ("done", 2) and "«склад»" in error and "JSONDecodeError" in error
 
 
+def test_stuck_parser_stops_the_run_without_starting_the_next_industry(db_conn, dsn, tmp_path):
+    calls = []
+
+    def stuck_parser(url, out, max_records):
+        calls.append(url)
+        raise collect.ParserStuck("parser-2gis не уложился в 1200 с и не остановился")
+
+    run_id = pipeline.create_run(db_conn, "almaty", "склад, логистика", 2)
+
+    pipeline.execute_run(dsn, run_id, make_deps(tmp_path, run_parser=stuck_parser))
+
+    status, error = db_conn.execute("SELECT status, error FROM runs WHERE id = %s", (run_id,)).fetchone()
+    assert status == "failed" and "не остановился" in error and len(calls) == 1
+
+
 def test_run_fails_only_when_every_industry_failed(db_conn, dsn, tmp_path):
     def broken_parser(url, out, max_records):
         raise collect.ParserError("Chrome не запустился")

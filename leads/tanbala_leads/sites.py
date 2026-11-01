@@ -91,8 +91,9 @@ TEMPORARY_HTTP_CODES = frozenset({408, 425, 429})
 # сервере). Перед подписью бывает и хвост телефона: «355-10-20E-mailinfo@…». Кириллица («Почта», «Эл. почта»)
 # не прилипает: EMAIL_RE берёт адрес только из латиницы и цифр.
 GLUED_LABEL_RE = re.compile(r"^[0-9._-]*?(e-?mail|mail)(?=[a-z0-9])")
-# После «e-mail»/«email» остаток от 3 символов с буквы — уже адрес (ivanov@). После «mail» только общий ящик
-# (info@, sales@) или адрес, который есть на той же странице: mailbox@ и mailer@ бывают настоящими.
+# После «e-mail» с дефисом остаток от 3 символов с буквы — уже адрес (ivanov@): с дефисом настоящих адресов не бывает.
+# После «email» и «mail» только общий ящик (info@, sales@) или адрес с той же страницы: emailbox@, emailing@, mailbox@
+# и mailer@ бывают настоящими (ревью 01.11.2026).
 MIN_GLUED_REST_CHARS = 3
 
 Resolver = Callable[..., list]
@@ -214,8 +215,8 @@ def without_glued_label(email: str, known: set[str] | frozenset[str] = frozenset
     """Адрес без прилипшей подписи: e-mailinfo@erdaholding.com → info@erdaholding.com.
 
     Подпись снимается, только если остаток похож на адрес: общий ящик (info, sales), адрес из known (он есть на той же
-    странице или у той же компании) или, после «e-mail»/«email», от MIN_GLUED_REST_CHARS символов с буквы.
-    Иначе адрес как был: mailbox@pel.kz и email@pel.kz настоящие.
+    странице или у той же компании) или, после «e-mail» с дефисом, от MIN_GLUED_REST_CHARS символов с буквы.
+    Иначе адрес как был: mailbox@pel.kz, emailbox@pel.kz и email@pel.kz настоящие.
     """
     local, _, domain = email.rpartition("@")
     match = GLUED_LABEL_RE.match(local)
@@ -227,7 +228,7 @@ def without_glued_label(email: str, known: set[str] | frozenset[str] = frozenset
         return email
     if candidate in known or is_role_address(candidate):
         return candidate
-    if match.group(1) != "mail" and len(rest) >= MIN_GLUED_REST_CHARS and rest[0].isalpha():
+    if match.group(1) == "e-mail" and len(rest) >= MIN_GLUED_REST_CHARS and rest[0].isalpha():
         return candidate
     return email
 
@@ -372,12 +373,16 @@ async def crawl_site(url: str, *, max_pages: int = 6, page_timeout_ms: int = 20_
     return SiteCrawl(start_url=start, pages=tuple(page for page, _, _ in fetched), emails=emails)
 
 
+PERMANENT_LOAD_ERROR_RE = re.compile(r"ERR_NAME_NOT_RESOLVED|ERR_CERT_|ERR_SSL_")
+
+
 def is_temporary_error(error: str) -> bool:
     """Ошибка страницы из _fetch временная: время вышло, не загрузилась, ответ 5xx или 408/429, сбой браузера.
 
-    Постоянные: адрес не публичный (или переадресует туда) и прочие ответы 4xx (404, 403, 410).
+    Постоянные: адрес не публичный (или переадресует туда), прочие ответы 4xx (404, 403, 410), домена нет и сломанный
+    сертификат или SSL: такие сайты в 2ГИС частые, повторять их три запуска незачем (ревью 01.11.2026).
     """
-    if error in (NOT_PUBLIC_ERROR, REDIRECT_NOT_PUBLIC_ERROR):
+    if error in (NOT_PUBLIC_ERROR, REDIRECT_NOT_PUBLIC_ERROR) or PERMANENT_LOAD_ERROR_RE.search(error):
         return False
     match = HTTP_ERROR_RE.match(error)
     return match is None or int(match.group(1)) >= 500 or int(match.group(1)) in TEMPORARY_HTTP_CODES

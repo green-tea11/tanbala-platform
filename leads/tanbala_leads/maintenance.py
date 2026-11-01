@@ -154,14 +154,18 @@ def apply_email_fixes(conn: psycopg.Connection, fixes: list[EmailFix]) -> None:
 
     Компания «Почта проверена» без письма возвращается в «Подходит», чтобы запуск проверил новый адрес до письма.
     """
+    # NOT EXISTS: письмо могло появиться после выборки; удаление унесло бы черновик (ON DELETE CASCADE), а правка
+    # сменила бы адрес живого письма.
     with conn.transaction():
         for fix in fixes:
             if fix.action == "delete":
-                conn.execute("DELETE FROM contacts WHERE id = %s", (fix.contact_id,))
+                conn.execute("DELETE FROM contacts WHERE id = %s AND NOT EXISTS"
+                             " (SELECT 1 FROM drafts d WHERE d.contact_id = contacts.id)", (fix.contact_id,))
             elif fix.action == "update":
                 conn.execute(
                     "UPDATE contacts SET email = %s, is_role = %s, verify_result = NULL, verify_raw = NULL,"
-                    " is_catch_all = NULL, verified_at = NULL WHERE id = %s",
+                    " is_catch_all = NULL, verified_at = NULL WHERE id = %s"
+                    " AND NOT EXISTS (SELECT 1 FROM drafts d WHERE d.contact_id = contacts.id)",
                     (fix.fixed, sites.is_role_address(fix.fixed), fix.contact_id),
                 )
                 conn.execute("UPDATE companies SET status = 'qualified' WHERE id = %s AND status = 'verified'",
@@ -182,6 +186,8 @@ def describe_email_fixes(fixes: list[EmailFix], checked: int) -> list[str]:
 
 
 DRY_RUN_NOTE = "Пробный прогон (--dry-run): в базе ничего не изменено."
+RUN_ACTIVE_NOTE = "Идёт запуск поиска: почты не исправлены. Повторите, когда он закончится."
+ACTIVE_RUN_SQL = "SELECT 1 FROM runs WHERE status IN ('queued', 'running') LIMIT 1"
 SAVED_NOTE = "Записано."
 
 
@@ -203,5 +209,8 @@ def fix_emails(conn: psycopg.Connection, *, dry_run: bool) -> list[str]:
     lines = describe_email_fixes(fixes, checked)
     if dry_run:
         return [*lines, DRY_RUN_NOTE]
+    # Запуск пишет почты и черновики: правка поверх него могла бы задеть только что созданное письмо.
+    if conn.execute(ACTIVE_RUN_SQL).fetchone() is not None:
+        return [*lines, RUN_ACTIVE_NOTE]
     apply_email_fixes(conn, fixes)
     return [*lines, SAVED_NOTE]

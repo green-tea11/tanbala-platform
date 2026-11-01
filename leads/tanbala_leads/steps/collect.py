@@ -47,6 +47,10 @@ class ParserError(RuntimeError):
     """parser-2gis не отработал."""
 
 
+class ParserStuck(ParserError):
+    """parser-2gis не уложился и не остановился: его Chrome может жить, второй запускать нельзя (2 ГБ на сервере)."""
+
+
 # Строка лога parser-2gis уровня ERROR или CRITICAL: «12:00:00.000 | ERROR    | Ошибка получения ответа сервера.»
 PARSER_LOG_ERROR_RE = re.compile(r"\|\s*(?:ERROR|CRITICAL)\s*\|([^\n]*)")
 
@@ -127,7 +131,7 @@ def run_parser(search_url: str, output_path: Path, max_records: int, parser_bin:
         try:
             process.wait(timeout=KILL_WAIT_SECONDS)
         except subprocess.TimeoutExpired:
-            raise ParserError(f"parser-2gis не уложился в {timeout_seconds} с и не остановился") from None
+            raise ParserStuck(f"parser-2gis не уложился в {timeout_seconds} с и не остановился") from None
         raise ParserError(f"parser-2gis не уложился в {timeout_seconds} с") from None
     if process.returncode != 0 or not output_path.exists():
         tail = (stderr or stdout or "").strip()[-500:]

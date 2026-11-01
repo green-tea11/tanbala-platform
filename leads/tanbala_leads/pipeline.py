@@ -327,6 +327,10 @@ def _collect(conn: psycopg.Connection, run_id: int, run: dict, deps: Deps) -> tu
             deps.run_parser(collect.build_search_url(run["city"], query), export, max_records)
             result = collect.load_companies(conn, export, run_id=run_id, limit=run["max_companies"],
                                             search_query=query)
+        except collect.ParserStuck:
+            # Зависший parser-2gis со своим Chrome мог остаться жить: следующая отрасль запустила бы второй Chrome
+            # на 2 ГБ памяти. Запуск останавливается, как до ревью 01.11.2026.
+            raise
         except INDUSTRY_ERRORS as exc:
             # Одна отрасль не нашлась (таймаут, сбой Chrome, битая выгрузка): остальные ищем дальше (ревью 01.11.2026).
             logger.warning("Запуск %s: поиск в 2ГИС по отрасли %s из %s не удался: %s", run_id, index, len(queries),

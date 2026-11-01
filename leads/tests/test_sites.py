@@ -315,7 +315,7 @@ def test_extract_emails_strips_glued_label(text, expected):
 @pytest.mark.parametrize(
     "email",
     ["mailbox@pel.kz", "mailer@pel.kz", "email@pel.kz", "mail@pel.kz", "e-mail@pel.kz", "emailme@pel.kz",
-     "mail.info@pel.kz", "email-1@pel.kz", "mailtech@pel.kz"],
+     "mail.info@pel.kz", "email-1@pel.kz", "mailtech@pel.kz", "emailbox@pel.kz", "emailing@pel.kz"],
 )
 def test_real_addresses_that_start_with_mail_are_kept(email):
     assert extract_emails(f"Почта: {email}") == {email}
@@ -1001,6 +1001,9 @@ def test_crawl_site_homepage_timeout_is_an_error(monkeypatch):
         ("ответ HTTP 404", False),
         ("ответ HTTP 403", False),
         ("адрес не публичный", False),
+        ("не загрузилась: net::ERR_NAME_NOT_RESOLVED at http://old-site.kz/", False),
+        ("не загрузилась: net::ERR_CERT_DATE_INVALID at https://old-site.kz/", False),
+        ("не загрузилась: net::ERR_SSL_PROTOCOL_ERROR at https://old-site.kz/", False),
         ("переадресация на непубличный адрес", False),
     ],
 )
