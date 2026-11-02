@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest';
 import { createAgent } from '../../../src/agent/agent.js';
 import { buildSystem } from '../../../src/agent/prompts.js';
 import {
+  hasSingleQuestion,
   normalizeReview,
   problemKindOf,
+  questionCount,
   REVIEW_RULES,
   reviewCallData,
   type RawReview,
@@ -282,6 +284,129 @@ describe('normalizeReview', () => {
     expect(emptyFact).toEqual({ ok: false, problems: ['Повтор'] });
     expect(sixthFact).toEqual({ ok: false, problems: ['1', '2', '3', '4', '5'] });
     expect(general.ok || general.styleOnly === true).toBe(false);
+  });
+});
+
+describe('замечание «несколько вопросов» при одном вопросе снимает код (просьба владельца 02.11.2026)', () => {
+  // Черновики из живого теста 02.11.2026: проверка отклоняла их по пункту 11, а вопрос в них один.
+  const ONE_QUESTION =
+    'Конечно. На каждую вещь на хранении клеится метка, антенны на входе и выходе сами отмечают, что пришло и что ушло. Asklad, Алматы, верно?';
+  const TWO_QUESTIONS = 'Данные уходят в 1С. Asklad, Алматы, верно? И какая у вас 1С?';
+  const QUESTION_AND_ASK =
+    'Всё просто. Аксенгер, Алматы, верно? Расскажите, что у вас лежит на хранении и как сейчас проходит проверка.';
+  const severalQuestions: RawReviewProblem = { rule: '11', text: 'Два вопроса подряд' };
+
+  it.each([
+    [ONE_QUESTION, 1],
+    [TWO_QUESTIONS, 2],
+    [QUESTION_AND_ASK, 2],
+    ['Спасибо! Расскажите, сколько проходов нужно учитывать?', 1],
+    ['Метка клеится на товар. Данные уходят в 1С.', 0],
+    // Ревью 02.11.2026: просьба в середине предложения, «?» перед кавычкой, скобкой и без пробела, перевод строки.
+    ['Asklad, Алматы, верно? И расскажите, что у вас лежит на хранении.', 2],
+    ['Asklad, Алматы, верно? Если удобно, расскажите, что у вас хранится.', 2],
+    ['Asklad, Алматы, верно? А подскажите, какая у вас 1С.', 2],
+    ['«Asklad, Алматы, верно?» Расскажите, что у вас хранится.', 2],
+    ['Asklad, Алматы, верно?) Расскажите, что у вас хранится.', 2],
+    ['Asklad, Алматы, верно?Расскажите, что у вас хранится.', 2],
+    ['Asklad, Алматы, верно?\nРасскажите, что у вас хранится', 2],
+    ['Қоймада не сақталады? Айтыңызшы, айына қанша тауар келеді.', 2],
+  ])('questionCount(%j) = %i: знак вопроса и просьба «Расскажите» считаются', (text, count) => {
+    expect(questionCount(text)).toBe(count);
+  });
+
+  it.each([
+    [ONE_QUESTION, true],
+    ['Подскажите, в каком городе находится склад?', true],
+    ['Метка клеится на товар. Данные уходят в 1С.', false],
+    [TWO_QUESTIONS, false],
+    ['Расскажите, что у вас на хранении, сколько этого примерно и какая у вас 1С?', false],
+    ['Asklad, Алматы, верно, и знаете ли вы, как работает RFID?', false],
+    ['Расскажите, сколько проходов нужно учитывать и какая у вас 1С?', false],
+  ])(
+    'hasSingleQuestion(%j) = %s: только одно предложение-вопрос с одним вопросительным словом',
+    (text, single) => {
+      expect(hasSingleQuestion(text)).toBe(single);
+    },
+  );
+
+  it.each([
+    'Расскажите, что у вас на хранении, сколько этого примерно и какая у вас 1С?',
+    'Для расчёта коллеге нужно знать, что у вас хранится, сколько этого и какая у вас 1С.',
+  ])('анкета в одном предложении или без вопроса (%j): замечание пункта 11 остаётся', (draft) => {
+    expect(normalizeReview({ ok: false, problems: [severalQuestions] }, draft)).toEqual({
+      ok: false,
+      problems: ['Два вопроса подряд'],
+      styleOnly: true,
+    });
+  });
+
+  it('вопрос один и шесть замечаний: пункт 11 снимается до обрезки, замечание о фактах доходит', () => {
+    const result = normalizeReview(
+      {
+        ok: false,
+        problems: [severalQuestions, ...['1', '2', '3', '4'].map(style), fact('Цена')],
+      },
+      ONE_QUESTION,
+    );
+
+    expect(result).toEqual({ ok: false, problems: ['1', '2', '3', '4', 'Цена'] });
+  });
+
+  it('вопрос один: замечание пункта 11 снимается, без других замечаний проверка пройдена', () => {
+    expect(normalizeReview({ ok: false, problems: [severalQuestions] }, ONE_QUESTION)).toEqual({
+      ok: true,
+    });
+  });
+
+  it('вопрос один: замечание о фактах остаётся, пометки styleOnly нет', () => {
+    expect(
+      normalizeReview({ ok: false, problems: [severalQuestions, fact('Обещание')] }, ONE_QUESTION),
+    ).toEqual({ ok: false, problems: ['Обещание'] });
+  });
+
+  it('вопрос один: замечание о повторе (пункт 12) не снимается', () => {
+    expect(
+      normalizeReview({ ok: false, problems: [severalQuestions, style('Повтор')] }, ONE_QUESTION),
+    ).toEqual({ ok: false, problems: ['Повтор'], styleOnly: true });
+  });
+
+  it.each([TWO_QUESTIONS, QUESTION_AND_ASK])(
+    'вопросов два (%j): замечание пункта 11 остаётся',
+    (draft) => {
+      expect(normalizeReview({ ok: false, problems: [severalQuestions] }, draft)).toEqual({
+        ok: false,
+        problems: ['Два вопроса подряд'],
+        styleOnly: true,
+      });
+    },
+  );
+
+  it('без текста черновика замечание пункта 11 не снимается', () => {
+    expect(normalizeReview({ ok: false, problems: [severalQuestions] })).toEqual({
+      ok: false,
+      problems: ['Два вопроса подряд'],
+      styleOnly: true,
+    });
+  });
+
+  it('снятое замечание и пустое замечание о фактах: fail-closed, общее замечание', () => {
+    const result = normalizeReview(
+      { ok: false, problems: [severalQuestions, fact('  ')] },
+      ONE_QUESTION,
+    );
+
+    expect(result.ok).toBe(false);
+    expect(problemsOf(result)).toHaveLength(1);
+  });
+
+  it('reviewDraft передаёт черновик: при одном вопросе замечание пункта 11 не доходит', async () => {
+    const { result } = await review(
+      { ok: true, value: { ok: false, problems: [severalQuestions] } },
+      ONE_QUESTION,
+    );
+
+    expect(result).toEqual({ ok: true, value: { ok: true } });
   });
 });
 

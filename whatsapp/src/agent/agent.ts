@@ -282,7 +282,10 @@ function replyCallData(
   const remarks =
     problems.length === 0
       ? null
-      : ['Замечания проверки к прошлому черновику, исправь их:', ...numbered].join('\n');
+      : [
+          'Замечания проверки к прошлому черновику, исправь их по смыслу (слова замечаний клиенту не переноси):',
+          ...numbered,
+        ].join('\n');
   const parts = [
     context.profileStale === true ? STALE_PROFILE_LINE : null,
     stageData(context),
@@ -369,7 +372,8 @@ function createAsk(deps: AgentDeps): Ask {
  * ReplyDraft.
  * reviewDraft: модель models.review, данные вызова: что допустимо о компании клиента, выжимка и недостающее для расчёта
  * (reviewProfileData) и текст черновика (не репликой assistant); схема reviewSchema с видом каждого замечания (fact или
- * style), противоречия снимает normalizeReview. Пустой черновик не проходит и LLM не вызывает.
+ * style), противоречия и замечание «несколько вопросов» при одном вопросе снимает normalizeReview. Пустой черновик не
+ * проходит и LLM не вызывает.
  * В блоке о компании ответа и проверки до трёх болей справки, как их отдал сервис компании (без цифр).
  * assessInterest: модель models.interest, данные вызова: текущий уровень, выжимка и вопрос «Вы из компании X?»;
  * схема interestSchema, normalizeInterest чистит поля и сохраняет известное раньше.
@@ -403,7 +407,7 @@ export function createAgent(deps: AgentDeps): Agent {
         reviewProfileData(context),
       );
       const result = await ask('review', reviewSchema, context, callData);
-      return result.ok ? { ok: true, value: normalizeReview(result.value) } : result;
+      return result.ok ? { ok: true, value: normalizeReview(result.value, draftText) } : result;
     },
     async assessInterest(context: ConversationContext): Promise<LlmResult<InterestAssessment>> {
       const callData = interestCallData(context.profile, context.level, context.company);

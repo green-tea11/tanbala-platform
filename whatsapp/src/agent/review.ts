@@ -43,6 +43,41 @@ export function problemKindOf(rule: ReviewRule): ReviewProblemKind {
   return STYLE_RULES.has(rule) ? 'style' : 'fact';
 }
 
+/** Пункт «несколько вопросов подряд»: его замечание код проверяет сам по числу вопросов черновика. */
+const SEVERAL_QUESTIONS_RULE: ReviewRule = '11';
+
+/** Просьба рассказать в любом месте предложения тоже вопрос, даже с точкой: «Если удобно, расскажите, что…» */
+const ASK_WORD =
+  /(?<!\p{L})(?:расскажите|подскажите|скажите|уточните|напишите|поделитесь|опишите|айтыңыз\p{L}*|айтып\s{1,3}беріңіз|жазыңыз\p{L}*)(?!\p{L})/iu;
+
+/** Предложение с концом: «?» перед кавычкой, скобкой или без пробела («верно?Расскажите») тоже конец. */
+const SENTENCE = /[^.!?…\n]+[.!?…]*/gu;
+
+/** Вопросительные слова: два в одном предложении значит, что в нём, возможно, два вопроса. */
+const QUESTION_WORD =
+  /(?<!\p{L})(?:что|чем|как\p{L}{0,3}|сколько|где|когда|кто|зачем|почему|откуда|куда|ли|верно|правильно|қанша|қандай|қай\p{L}*|ма|ме|ба|бе|па|пе)(?!\p{L})/giu;
+
+/** Предложения-вопросы текста: со знаком вопроса или с просьбой рассказать. */
+function questionSentences(text: string): readonly string[] {
+  return (text.match(SENTENCE) ?? []).filter(
+    (sentence) => sentence.includes('?') || ASK_WORD.test(sentence),
+  );
+}
+
+/** Сколько в тексте предложений-вопросов. */
+export function questionCount(text: string): number {
+  return questionSentences(text).length;
+}
+
+/**
+ * Вопрос в тексте точно один: одно предложение-вопрос и в нём не больше одного вопросительного слова («Asklad,
+ * Алматы, верно?»). Два вопроса в одном предложении, три и вопрос о компании вместе с другим решает проверка.
+ */
+export function hasSingleQuestion(text: string): boolean {
+  const questions = questionSentences(text);
+  return questions.length === 1 && (questions[0]?.match(QUESTION_WORD)?.length ?? 0) <= 1;
+}
+
 /**
  * Схема ответа проверки: плоский объект, все поля обязательны (structured outputs вместо запрещённого prefill).
  * Без transform: вход и выход совпадают. Противоречия в ответе снимает normalizeReview. У каждого замечания номер
@@ -83,16 +118,23 @@ export interface RawReview {
  * модель написала ok true. ok false без замечаний => одно общее замечание (вида fact). Замечания после cleanLine: одна
  * строка, не длиннее 300 знаков, не больше пяти. ok true остаётся только без единого замечания. styleOnly: все замечания
  * модели вида style (problemKindOf), считая пустые и не вошедшие в пять (любое fact снимает пометку).
+ * draftText (просьба владельца 02.11.2026, проверка придиралась к «двум вопросам» при одном): если вопрос в черновике
+ * точно один (hasSingleQuestion), замечания пункта 11 снимаются; сняты все замечания => проверка пройдена.
  */
-export function normalizeReview(raw: RawReview): ReviewResult {
-  const problems = raw.problems
+export function normalizeReview(raw: RawReview, draftText: string | null = null): ReviewResult {
+  const kept =
+    draftText !== null && hasSingleQuestion(draftText)
+      ? raw.problems.filter((problem) => problem.rule !== SEVERAL_QUESTIONS_RULE)
+      : raw.problems;
+  const problems = kept
     .map((problem) => cleanLine(problem.text, MAX_PROBLEM_CHARS))
     .filter((problem) => problem !== '')
     .slice(0, MAX_PROBLEMS);
   if (problems.length > 0) {
-    const styleOnly = raw.problems.every((problem) => problemKindOf(problem.rule) === 'style');
+    const styleOnly = kept.every((problem) => problemKindOf(problem.rule) === 'style');
     return styleOnly ? { ok: false, problems, styleOnly } : { ok: false, problems };
   }
+  if (kept.length === 0 && raw.problems.length > 0) return { ok: true };
   return raw.ok ? { ok: true } : { ok: false, problems: [GENERAL_PROBLEM] };
 }
 
