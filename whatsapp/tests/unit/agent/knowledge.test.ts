@@ -1,16 +1,10 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { loadKnowledge } from '../../../src/agent/knowledge.js';
 import { SafeError } from '../../../src/shared/safe-error.js';
 
-const PATHS = {
-  owner: 'C:/tanbala/knowledge/tanbala-agent.md',
-  whatsapp: 'C:/tanbala/knowledge/whatsapp.md',
-  consult: 'C:/tanbala/knowledge/consult.md',
-} as const;
-
-const OWNER = '\uFEFF# Tanbala: что должен знать агент\n\nРаздел 11. Строго нельзя.\n\n';
-const WHATSAPP = '# Tanbala в WhatsApp\n\n- Длина ответа: одна или две фразы.\n';
-const CONSULT = '# Tanbala в WhatsApp: как консультировать\n\n- Сначала боль, потом плюс.\n';
+const PATH = 'C:/tanbala/knowledge/bot.md';
+const TEXT = '\uFEFF# Tanbala: что знает бот в WhatsApp\n\n## Нельзя\n\n- цены;\n\n';
 
 function reader(files: Readonly<Record<string, string>>) {
   const read: string[] = [];
@@ -24,65 +18,76 @@ function reader(files: Readonly<Record<string, string>>) {
   return { read, readText };
 }
 
-async function versionOf(
-  owner: string,
-  whatsapp: string,
-  consult: string = CONSULT,
-): Promise<string> {
-  const { readText } = reader({
-    [PATHS.owner]: owner,
-    [PATHS.whatsapp]: whatsapp,
-    [PATHS.consult]: consult,
-  });
-  return (await loadKnowledge(PATHS, readText)).version;
+async function versionOf(text: string): Promise<string> {
+  return (await loadKnowledge(PATH, reader({ [PATH]: text }).readText)).version;
 }
 
-const ALL_FILES = { [PATHS.owner]: OWNER, [PATHS.whatsapp]: WHATSAPP, [PATHS.consult]: CONSULT };
-
 describe('loadKnowledge', () => {
-  it('читает все три файла целиком, байт в байт, без обрезки', async () => {
-    const { read, readText } = reader(ALL_FILES);
+  it('читает файл знаний целиком, байт в байт, без обрезки', async () => {
+    const { read, readText } = reader({ [PATH]: TEXT });
 
-    const knowledge = await loadKnowledge(PATHS, readText);
+    const knowledge = await loadKnowledge(PATH, readText);
 
-    expect(knowledge.owner).toBe(OWNER);
-    expect(knowledge.whatsapp).toBe(WHATSAPP);
-    expect(knowledge.consult).toBe(CONSULT);
-    expect([...read].sort()).toEqual([PATHS.owner, PATHS.whatsapp, PATHS.consult].sort());
+    expect(knowledge.text).toBe(TEXT);
+    expect(read).toEqual([PATH]);
   });
 
-  it('version: sha256 всех трёх текстов; меняется при любой правке и от перестановки файлов', async () => {
-    const version = await versionOf(OWNER, WHATSAPP);
+  it('version: sha256 текста; меняется при любой правке', async () => {
+    const version = await versionOf(TEXT);
 
     expect(version).toMatch(/^[0-9a-f]{64}$/);
-    expect(await versionOf(OWNER, WHATSAPP)).toBe(version);
-    expect(await versionOf(`${OWNER} `, WHATSAPP)).not.toBe(version);
-    expect(await versionOf(OWNER, `${WHATSAPP}.`)).not.toBe(version);
-    expect(await versionOf(OWNER, WHATSAPP, `${CONSULT}.`)).not.toBe(version);
-    expect(await versionOf(WHATSAPP, OWNER)).not.toBe(version);
-    expect(await versionOf(OWNER, CONSULT, WHATSAPP)).not.toBe(version);
-    expect(await versionOf('ab', 'c')).not.toBe(await versionOf('a', 'bc'));
+    expect(await versionOf(TEXT)).toBe(version);
+    expect(await versionOf(`${TEXT} `)).not.toBe(version);
   });
 
   it.each([
     ['пустой', ''],
     ['из одних пробелов', ' \n\t\n'],
   ])('%s файл знаний => понятная ошибка с именем файла', async (_name, empty) => {
-    const { readText } = reader({ ...ALL_FILES, [PATHS.consult]: empty });
-
-    const failure = loadKnowledge(PATHS, readText);
+    const failure = loadKnowledge(PATH, reader({ [PATH]: empty }).readText);
 
     await expect(failure).rejects.toBeInstanceOf(SafeError);
-    await expect(failure).rejects.toThrow('consult.md');
+    await expect(failure).rejects.toThrow('bot.md');
   });
 
   it('отсутствующий файл => понятная ошибка с именем файла, причина сохранена в cause', async () => {
-    const { readText } = reader({ [PATHS.whatsapp]: WHATSAPP, [PATHS.consult]: CONSULT });
-
-    const error = await loadKnowledge(PATHS, readText).catch((caught: unknown) => caught);
+    const error = await loadKnowledge(PATH, reader({}).readText).catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(SafeError);
-    expect((error as Error).message).toContain('tanbala-agent.md');
+    expect((error as Error).message).toContain('bot.md');
     expect((error as Error).cause).toMatchObject({ code: 'ENOENT' });
+  });
+});
+
+describe('knowledge/bot.md (просьба владельца 03.11.2026: коротко и по делу)', () => {
+  const text = readFileSync(new URL('../../../knowledge/bot.md', import.meta.url), 'utf8');
+
+  it('не длиннее 6000 знаков: вместе с инструкцией ответа не больше 10 тысяч', () => {
+    expect([...text].length).toBeLessThanOrEqual(6000);
+  });
+
+  it('сильные стороны F1–F10 по номерам: по ним система отмечает рассказанное', () => {
+    for (let n = 1; n <= 10; n += 1) expect(text).toMatch(new RegExp(`^- F${n}\\. `, 'mu'));
+  });
+
+  it('то, что владелец просил рассказать: 1С есть или нет, веб-интерфейс, антенны, сканер, прибор для записи', () => {
+    expect(text).toContain(
+      'Если 1С у клиента есть, подключаемся к ней, детали зависят от конфигурации. Если нет, поставим её.',
+    );
+    expect(text).toContain('веб-интерфейс, где видно, что пришло, что ушло и что где лежит');
+    expect(text).toContain('Антенны на входе и выходе сами отмечают, что пришло и что ушло');
+    expect(text).toContain('со сканером проходит за пару часов');
+    expect(text).toContain('прибор записывает его код в метку');
+  });
+
+  it('запреты на месте: цены, сроки, обещания за другого, решение под клиента, модели, гарантии', () => {
+    expect(text).toContain('- цены, скидки, акции, «бесплатно», пробный период, образцы');
+    expect(text).toContain('- сроки внедрения и поставки, время ответа;');
+    expect(text).toContain('- обещать за другого человека');
+    expect(text).toContain(
+      '- решение под клиента: какие метки и оборудование, сколько и где ставить',
+    );
+    expect(text).toContain('- модели, бренды, частоты, виды меток');
+    expect(text).toContain('- гарантии');
   });
 });

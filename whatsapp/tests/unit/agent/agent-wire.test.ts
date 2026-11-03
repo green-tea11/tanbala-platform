@@ -118,7 +118,7 @@ function setup() {
 }
 
 describe('агент с настоящим адаптером Anthropic', () => {
-  it('три вызова: блок знаний с точкой кэша в теле запроса один и тот же байт в байт, effort low, свои схемы', async () => {
+  it('ответ и проверка: блок знаний с точкой кэша один и тот же байт в байт; оценка без знаний; effort low, свои схемы', async () => {
     const { sent, agent } = setup();
 
     await agent.draftReply(context());
@@ -127,15 +127,14 @@ describe('агент с настоящим адаптером Anthropic', () => 
 
     expect(sent).toHaveLength(3);
     expect(sent.map((body) => body.model)).toEqual([REPLY_MODEL, CHECK_MODEL, CHECK_MODEL]);
-    const knowledgeBlocks = sent.map((body) => JSON.stringify(body.system[0]));
-    expect(knowledgeBlocks[1]).toBe(knowledgeBlocks[0]);
-    expect(knowledgeBlocks[2]).toBe(knowledgeBlocks[0]);
+    expect(JSON.stringify(sent[1]?.system[0])).toBe(JSON.stringify(sent[0]?.system[0]));
     expect(sent[0]?.system[0]).toMatchObject({ cache_control: { type: 'ephemeral' } });
-    expect(sent.map((body) => body.system[1]?.['cache_control'])).toEqual([
+    expect(sent.map((body) => body.system.at(-1)?.['cache_control'])).toEqual([
       undefined,
       undefined,
       undefined,
     ]);
+    expect(sent[2]?.system).toHaveLength(1);
     expect(sent.map((body) => body.output_config.effort)).toEqual(['low', 'low', 'low']);
     expect(sent.map((body) => body.output_config.format.schema)).toEqual([
       expect.objectContaining({

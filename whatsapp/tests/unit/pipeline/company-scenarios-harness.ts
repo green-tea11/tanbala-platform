@@ -240,9 +240,7 @@ export interface Scenario {
 function configOf(options: ScenarioOptions): AppConfig {
   const root = useTempDir().path;
   mkdirSync(join(root, 'knowledge'));
-  for (const name of ['tanbala-agent.md', 'whatsapp.md', 'consult.md']) {
-    copyFileSync(join(PROJECT_ROOT, 'knowledge', name), join(root, 'knowledge', name));
-  }
+  copyFileSync(join(PROJECT_ROOT, 'knowledge', 'bot.md'), join(root, 'knowledge', 'bot.md'));
   const company =
     options.api === null
       ? {}

@@ -23,13 +23,7 @@ import type {
 } from '../domain/types.js';
 import { HANDOFF_TEXT, HOT_PRICE_HANDOFF_TEXT } from '../messaging/outbox.js';
 import { answerPartOf, clientAsksNow } from './answer-part.js';
-import {
-  decideAction,
-  styleOnly,
-  type Decision,
-  type DraftGate,
-  type TextDraft,
-} from './decide.js';
+import { decideAction, type Decision, type DraftGate, type TextDraft } from './decide.js';
 import {
   earlyHotFallback,
   earlyHotRemark,
@@ -101,7 +95,7 @@ export type ReplyVerdict =
   SendVerdict | HandoffVerdict | { readonly kind: 'limit'; readonly scope: BudgetScope };
 
 /**
- * Своего номера в ответах у бота нет: knowledge/whatsapp.md запрещает вставлять номер WhatsApp. Пустой «наш номер»
+ * Своего номера в ответах у бота нет: номер WhatsApp в ответ не вставляется. Пустой «наш номер»
  * не равен ни одному номеру из текста, поэтому checks/code-checks.checkContacts отклоняет любой номер телефона.
  * Служебное значение на границе бренда PhoneDigits, настоящим номером оно не является.
  */
@@ -526,7 +520,6 @@ async function judge(flow: Flow, draft: ReplyDraft, attempt: Attempt): Promise<J
     attempt,
   });
   logDroppedText(flow, draft, decision);
-  logStyleOnly(flow, checked.gate, decision);
   if (draft.outcome !== 'answer') return judgementOf(decision, keep);
   return judgementOf(decision, keep, draft.companyQuestion, marksOf(draft));
 }
@@ -638,17 +631,6 @@ function keepOf(draft: TextDraft): ReplyVerdict | null {
 /** Повод передачи по исходу ответа; aboutPrice остаётся только у hot (фраза о цене) и только если true. */
 function replyNotice(reason: ReplyHandoffOutcome, aboutPrice: boolean | undefined): HandoffNotice {
   return reason === 'hot' && aboutPrice === true ? { reason, aboutPrice } : { reason };
-}
-
-/** Второй ответ с замечаниями проверки только о стиле уходит клиенту (decide.styleOnly): в лог ID чата и число замечаний. */
-function logStyleOnly(flow: Flow, gate: DraftGate, decision: Decision): void {
-  if (decision.kind !== 'send' || !styleOnly(gate)) return;
-  const { chatId } = flow.context;
-  const problems = gate.kind === 'reviewed' && !gate.review.ok ? gate.review.problems.length : 0;
-  flow.deps.logger.info(
-    { chatId, problems },
-    `Замечания проверки только о стиле, ответ уходит клиенту: чат #${chatId}`,
-  );
 }
 
 /** Текст модели при исходе передачи не прошёл проверки: пишется причина, клиенту уйдёт фиксированная фраза. */

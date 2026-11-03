@@ -6,9 +6,7 @@ import type { ChatId, ClientProfile, LlmResult, StoredMessage } from '../../../s
 // Общие заглушки тестов агента: без сети, диска и реального LLM.
 
 export const KNOWLEDGE: Knowledge = {
-  owner: '# Tanbala: что должен знать агент\n',
-  whatsapp: '# Tanbala в WhatsApp\n',
-  consult: '# Tanbala в WhatsApp: как консультировать\n',
+  text: '# Tanbala: что знает бот в WhatsApp\n',
   version: 'v1',
 };
 

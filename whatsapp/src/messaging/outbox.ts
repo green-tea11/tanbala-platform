@@ -167,7 +167,7 @@ const HOUR_MS = 60 * 60 * 1000;
 /** Варианты фразы: хотя бы один. */
 type Variants = readonly [string, ...string[]];
 
-// Фразы передачи (knowledge/whatsapp.md, «Что писать клиенту»): один голос «Уточню у коллеги и вернусь к вам», без тире
+// Фразы передачи (инструкция ответа, agent/prompts.ts): один голос «Уточню у коллеги и вернусь к вам», без тире
 // и без времени. Варианты остались только у извинения при жалобе.
 const ONE_VOICE: Variants = [HANDOFF_TEXT];
 const APOLOGY_PASSED: Variants = [

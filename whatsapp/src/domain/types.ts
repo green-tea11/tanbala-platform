@@ -1,4 +1,4 @@
-// Общий словарь проекта: только типы, без кода. Значения из docs/PLAN.md и knowledge/whatsapp.md.
+// Общий словарь проекта: только типы, без кода. Значения из docs/PLAN.md и knowledge/bot.md.
 // Брендированные ID не дают перепутать числа и строки разного смысла. Приводить к ним можно только
 // на границе: в src/db (ID из базы), src/whatsapp/jid.ts (адреса и номера) и src/config (номер менеджера).
 // Компания клиента и её определение: domain/company.ts.
@@ -204,7 +204,7 @@ export const PROFILE_FACTS: readonly ProfileFact[] = [
 ];
 
 /**
- * Этап разговора (knowledge/consult.md, раздел 5; решение владельца 30.10.2026): знакомство, крючок (боль и плюс, вопрос
+ * Этап разговора (knowledge/bot.md, «Ход разговора»; решение владельца 30.10.2026): знакомство, крючок (боль и плюс, вопрос
  * о RFID), как это работает, боли и детали для расчёта, финал (сводка и передача коллеге).
  */
 export type ConversationStage = 'intro' | 'hook' | 'explain' | 'details' | 'final';
@@ -218,7 +218,7 @@ export const CONVERSATION_STAGES: readonly ConversationStage[] = [
   'final',
 ];
 
-/** Номер сильной стороны Tanbala из knowledge/consult.md (раздел 2): нужен системе, клиенту не пишется. */
+/** Номер сильной стороны Tanbala из knowledge/bot.md («Что умеем»): нужен системе, клиенту не пишется. */
 export type StrengthId = 'F1' | 'F2' | 'F3' | 'F4' | 'F5' | 'F6' | 'F7' | 'F8' | 'F9' | 'F10';
 
 /** Номера сильных сторон по порядку: так они хранятся и показываются. */
@@ -461,7 +461,7 @@ export type ReplyDraft =
       readonly aboutPrice?: boolean;
       /** Этап разговора, на котором написан text; нет поля => модель не назвала (подделки LLM в тестах). */
       readonly stage?: ConversationStage;
-      /** Сильные стороны (consult.md), которые есть в text, без дублей; нет поля => ни одной. */
+      /** Сильные стороны (knowledge/bot.md), которые есть в text, без дублей; нет поля => ни одной. */
       readonly usedFacts?: readonly StrengthId[];
     }
   | {
@@ -474,27 +474,14 @@ export type ReplyDraft =
       readonly aboutPrice?: boolean;
       /** Этап разговора, на котором написан text; нет поля => модель не назвала. */
       readonly stage?: ConversationStage;
-      /** Сильные стороны (consult.md), которые есть в text, без дублей; нет поля => ни одной. */
+      /** Сильные стороны (knowledge/bot.md), которые есть в text, без дублей; нет поля => ни одной. */
       readonly usedFacts?: readonly StrengthId[];
     }
   | { readonly outcome: Extract<HandoffReason, 'complaint'>; readonly stopRequested: boolean };
 
-/**
- * Вид замечания проверки (пункт 3 задания 01.11.2026). fact: утверждение не из документов, обещание, цена и сроки,
- * утверждение о компании клиента, запретная тема; такой черновик клиенту не уходит никогда. style: повтор вопроса,
- * два вопроса подряд, тон; второй черновик только с такими замечаниями уходит, если прошёл проверки кодом.
- */
-export type ReviewProblemKind = 'fact' | 'style';
-
-/** Итог проверки черновика вторым вызовом LLM: нет ли фактов не из знаний, цен, скидок, сроков, объёмов. */
+/** Итог проверки черновика вторым вызовом LLM: нет ли неправды, цены и обещаний (просьба владельца 03.11.2026). */
 export type ReviewResult =
-  | { readonly ok: true }
-  | {
-      readonly ok: false;
-      readonly problems: readonly string[];
-      /** Все замечания вида style; нет поля => есть замечание о фактах (fail-closed). */
-      readonly styleOnly?: boolean;
-    };
+  { readonly ok: true } | { readonly ok: false; readonly problems: readonly string[] };
 
 /** Оценка интереса клиента и обновлённая выжимка (третий вызов LLM). */
 export interface InterestAssessment {

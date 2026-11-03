@@ -120,25 +120,26 @@ describe('draftReply: компания клиента', () => {
 });
 
 describe('reviewDraft и assessInterest: компания клиента', () => {
-  it('проверка получает, что допустимо о компании, перед черновиком; черновик последним', async () => {
+  it('проверка получает, что известно о компании, перед черновиком; черновик последним', async () => {
     const { requests, agent } = agentWith({ ok: true, value: { ok: true, problems: [] } });
 
     await agent.reviewDraft(context({ company: CANDIDATE }), 'Вы из компании Альфа, правильно?');
 
     const data = lastTurn(requests);
-    expect(data).toContain('из компании ли клиент «Альфа» (Алматы), допустим');
-    expect(data.indexOf('допустим')).toBeLessThan(data.indexOf('Черновик ответа клиенту'));
+    expect(data).toContain('Возможно, он из компании «Альфа» (Алматы), но это не подтверждено');
+    expect(data.indexOf('Возможно')).toBeLessThan(data.indexOf('Черновик ответа клиенту'));
     expect(data.trimEnd().endsWith('Вы из компании Альфа, правильно?\n</данные>')).toBe(true);
   });
 
-  it('проверка без компании: блока о компании нет, данные с недостающего для расчёта', async () => {
+  it('проверка без компании и выжимки: в данных только черновик', async () => {
     const { requests, agent } = agentWith({ ok: true, value: { ok: true, problems: [] } });
 
     await agent.reviewDraft(context(), 'Добрый день.');
 
     const turn = lastTurn(requests);
-    expect(turn).toContain('<данные>\nДля расчёта ещё не хватает: чем занимается клиент');
-    expect(turn).toContain('\n\nЧерновик ответа клиенту, его нужно проверить:\nДобрый день.');
+    expect(turn).toContain(
+      '<данные>\nЧерновик ответа клиенту (чат остаётся у бота), его нужно проверить:\nДобрый день.',
+    );
     expect(turn).not.toMatch(/компани[ия] клиента/u);
   });
 
@@ -314,7 +315,7 @@ describe('readLogo: название компании с фото профиля
     expect(request.image).toBe(PHOTO);
     expect(request.system).toHaveLength(1);
     expect(request.system[0]?.cache).toBe(false);
-    expect(request.system[0]?.text).not.toContain(KNOWLEDGE.owner.trim());
+    expect(request.system[0]?.text).not.toContain(KNOWLEDGE.text.trim());
     expect(request.turns).toEqual([
       {
         role: 'user',

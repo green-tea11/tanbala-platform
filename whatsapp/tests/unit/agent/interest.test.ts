@@ -214,19 +214,17 @@ describe('createAgent: assessInterest, запрос', () => {
     expect(schema.safeParse({ ...full, companyAliases: ['Т-Банк', 'Tinkoff'] }).success).toBe(true);
   });
 
-  it('варианты названия: список строк (не nullable) с описанием, в инструкции пример со старым брендом', async () => {
+  it('варианты названия: список строк (не nullable) с описанием и примером со старым брендом', async () => {
     const { requests } = await assess({ ok: true, value: NOTHING_NEW });
     const request = onlyRequest(requests);
     const json = zodOutputFormat(request.schema).schema;
     const properties = json['properties'] as Record<string, Record<string, unknown>>;
-    const instruction = request.system.map((block) => block.text).join(' ');
 
     expect(properties['companyAliases']).toMatchObject({ type: 'array' });
     expect(properties['companyAliases']).not.toHaveProperty('anyOf');
-    expect(String(properties['companyAliases']?.['description'])).toContain('Т-Банк');
-    expect(instruction).toContain('companyAliases');
-    expect(instruction).toContain('«Тинькофф»');
-    expect(instruction).toContain('«Т-Банк»');
+    expect(String(properties['companyAliases']?.['description'])).toContain(
+      'Тинькофф: Т-Банк, Tinkoff',
+    );
   });
 
   it('схема оценки: новые поля для расчёта (30.10.2026) строками с описанием; вещи это то, что на хранении', async () => {

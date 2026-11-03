@@ -50,9 +50,7 @@ describe('.gitignore', () => {
     'CLAUDE.md',
     'src/cli.ts',
     'config/models.json',
-    'knowledge/whatsapp.md',
-    'knowledge/tanbala-agent.md',
-    'knowledge/consult.md',
+    'knowledge/bot.md',
     'docs/PLAN.md',
   ])('не прячет файлы проекта: %s', (path) => {
     expect(isIgnored(path)).toBe(false);

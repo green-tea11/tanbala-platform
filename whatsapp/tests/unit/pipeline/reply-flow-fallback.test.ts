@@ -293,52 +293,22 @@ describe('pipeline/reply-flow: два провала проверок дают �
   });
 });
 
-describe('pipeline/reply-flow: второй черновик с замечаниями только о стиле (пункт 3 задания 01.11.2026)', () => {
-  const STYLE: ReviewResult = {
-    ok: false,
-    problems: ['Вопрос о новом в месяц уже задавался прошлым сообщением'],
-    styleOnly: true,
-  };
+describe('pipeline/reply-flow: второй черновик с замечанием проверки (03.11.2026: только неправда, цена, обещания)', () => {
   const FACT: ReviewResult = {
     ok: false,
-    problems: ['«Расхождения видны сразу» нет в документах'],
+    problems: ['«Расхождения видны сразу» нет в знаниях'],
   };
   const SECOND = 'Остатки в 1С часто расходятся с полками. Сколько нового приходит за месяц?';
 
-  it('«склад»: первый с замечанием о фактах, второй только о стиле => второй уходит клиенту', async () => {
-    const r = await run({ drafts: [CLEAN, SECOND], reviews: [FACT, STYLE] });
+  it('оба черновика с замечанием => не уходит ни один: готовый вопрос с реакцией', async () => {
+    const r = await run({ drafts: [CLEAN, SECOND], reviews: [FACT, FACT] });
 
-    expect(r.verdict).toEqual({ kind: 'send', text: SECOND });
+    expect(r.verdict).toEqual({ kind: 'send', text: greeted(INTRO_BUSINESS_QUESTION) });
     expect(r.reviews()).toBe(2);
-    expect(r.logs).toContainEqual({
-      context: { chatId: CHAT_ID, problems: 1 },
-      message: `Замечания проверки только о стиле, ответ уходит клиенту: чат #${CHAT_ID}`,
-    });
   });
 
-  it('оба раза только о стиле => уходит второй черновик, а не первый', async () => {
-    const r = await run({ drafts: [CLEAN, SECOND], reviews: [STYLE, STYLE] });
-
-    expect(r.verdict).toEqual({ kind: 'send', text: SECOND });
-  });
-
-  it('второй с замечанием о фактах => не уходит: готовый вопрос с реакцией', async () => {
-    const r = await run({ drafts: [CLEAN, SECOND], reviews: [STYLE, FACT] });
-
-    expect(r.verdict).toEqual({ kind: 'send', text: greeted(INTRO_BUSINESS_QUESTION) });
-  });
-
-  it('замечание проверки без пометки вида считается замечанием о фактах (fail-closed)', async () => {
-    const r = await run({
-      drafts: [CLEAN, SECOND],
-      reviews: [STYLE, { ok: false, problems: ['Повтор вопроса'] }],
-    });
-
-    expect(r.verdict).toEqual({ kind: 'send', text: greeted(INTRO_BUSINESS_QUESTION) });
-  });
-
-  it('второй не прошёл проверки кодом => до проверки не доходит и не уходит, даже если первый был только о стиле', async () => {
-    const r = await run({ drafts: [CLEAN, PRICED], reviews: [STYLE] });
+  it('второй не прошёл проверки кодом => до проверки не доходит и не уходит', async () => {
+    const r = await run({ drafts: [CLEAN, PRICED], reviews: [FACT] });
 
     expect(r.verdict).toEqual({ kind: 'send', text: greeted(INTRO_BUSINESS_QUESTION) });
     expect(r.reviews()).toBe(1);

@@ -64,15 +64,14 @@ export type Decision =
 
 /** Замечание повтору, когда проверка не пройдена, а причин не назвала: иначе повтор был бы слепым. */
 const GENERIC_FEEDBACK =
-  'Проверка не пройдена. Перепиши ответ строго по документам: без цен, сроков, обещаний и фактов, которых в них нет';
+  'Проверка не пройдена. Перепиши ответ строго по знаниям: без цен, обещаний и того, чего в них нет';
 
 /**
  * Развилка шагов с 3 по 5 плана. Чистая функция: все ветки покрываются юнит-тестами без LLM.
  * Решение о передаче принимает вызов ответа (исход черновика), а не оценка интереса: уровень интереса здесь не
  * участвует. handoff_outcome: complaint (со stopRequested) и исходы передачи без текста передаются по своей причине
  * с фиксированной фразой. text: проверки кодом или второй вызов не пройдены: попытка 1 => retry с замечаниями
- * (нарушения кода или замечания проверки), попытка 2 => для ответа handoff check_failed (но ответ, у которого проверки
- * кодом пройдены, а замечания проверки только о стиле, styleOnly, уходит клиенту), для исхода передачи та же
+ * (нарушения кода или замечания проверки), попытка 2 => для ответа handoff check_failed, для исхода передачи та же
  * причина без текста (клиенту уйдёт фиксированная фраза, причина не меняется). Проверки пройдены => answer даёт
  * send, исход передачи даёт handoff с этим текстом вместо фиксированной фразы. Здесь и только здесь текст
  * приводится к ReviewedText. Без ревью текст не отправляется никогда. Передача hot без текста с aboutPrice черновика
@@ -83,16 +82,7 @@ export function decideAction(input: DecisionInput): Decision {
   const { draft, gate, attempt } = input;
   const feedback = feedbackOf(gate);
   if (feedback === null) return passed(draft);
-  if (attempt === 1) return { kind: 'retry', feedback };
-  return draft.outcome === 'answer' && styleOnly(gate) ? passed(draft) : exhausted(draft);
-}
-
-/**
- * Проверки кодом пройдены, а у проверки только замечания о стиле разговора (повтор вопроса, два вопроса, тон): такой
- * второй ответ уходит клиенту (пункт 3 задания 01.11.2026). Замечание о фактах или нарушение кода => нет.
- */
-export function styleOnly(gate: DraftGate): boolean {
-  return gate.kind === 'reviewed' && !gate.review.ok && gate.review.styleOnly === true;
+  return attempt === 1 ? { kind: 'retry', feedback } : exhausted(draft);
 }
 
 function handoffFor(draft: Exclude<ReplyDraft, { readonly outcome: 'answer' }>): Decision {

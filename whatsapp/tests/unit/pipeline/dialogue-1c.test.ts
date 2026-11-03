@@ -47,7 +47,7 @@ const MODEL_TEXT =
   'Да, мы проводим интеграцию с вашей 1С, детали решаем по вашей конфигурации. Стоимость зависит от вашей задачи, уточню у коллеги и вернусь к вам.';
 
 const KNOWLEDGE_ANSWER =
-  'Да, мы проводим интеграцию с вашей 1С. Детали решаем по вашей конфигурации.';
+  'Если 1С у клиента есть, подключаемся к ней, детали зависят от конфигурации. Если нет, поставим её.';
 
 const MODELS: unknown = JSON.parse(
   readFileSync(join(PROJECT_ROOT, 'config', 'models.json'), 'utf8'),
@@ -72,9 +72,7 @@ type Storage = ResponderStorage & ServicesStorage & { readonly chatCompanies: Ch
 function configOfProject(): AppConfig {
   const root = useTempDir().path;
   mkdirSync(join(root, 'knowledge'));
-  for (const name of ['tanbala-agent.md', 'whatsapp.md', 'consult.md']) {
-    copyFileSync(join(PROJECT_ROOT, 'knowledge', name), join(root, 'knowledge', name));
-  }
+  copyFileSync(join(PROJECT_ROOT, 'knowledge', 'bot.md'), join(root, 'knowledge', 'bot.md'));
   const env = {
     TEST_MODE: 'true',
     TEST_ALLOWLIST: CLIENT_PHONE,
@@ -277,14 +275,14 @@ describe('диалог про 1С и цену (живой случай): Sonnet 
     expect(review).toMatch(/сообщения о передаче чата коллеге/);
   });
 
-  it('модель видит вопрос клиента и ответ про 1С в знаниях (раздел 9, вопрос 11)', async () => {
+  it('модель ответа видит вопрос клиента и ответ про 1С в знаниях (F6)', async () => {
     const d = await runDialogue({
       replies: [HOT_REPLY],
       level: 'warm',
       interests: MINIMUM_COLLECTED,
     });
 
-    const reply = d.llm.requests[0];
+    const reply = d.llm.requests.find((request) => request.purpose === 'reply');
     expect(reply?.turns.at(-1)?.text).toContain(CLIENT_QUESTION);
     expect(reply?.system[0]?.text).toContain(KNOWLEDGE_ANSWER);
   });

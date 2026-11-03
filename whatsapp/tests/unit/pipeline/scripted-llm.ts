@@ -66,12 +66,8 @@ export interface LlmScript {
   readonly reviews?: readonly (readonly ReviewProblemScript[])[];
 }
 
-/**
- * Замечание проверки: строка (вид fact) или вид и текст. Модель возвращает номер пункта: fact идёт пунктом 1, style
- * пунктом 12 (повтор вопроса), вид по номеру решает код.
- */
-export type ReviewProblemScript =
-  string | { readonly kind: 'fact' | 'style'; readonly text: string };
+/** Замечание проверки: текст; модель возвращает его пунктом 1 (неправда). */
+export type ReviewProblemScript = string;
 
 /** Запрос без схемы: то, что тест может сравнить. */
 export type RecordedRequest = Pick<
@@ -178,11 +174,7 @@ export function scriptedLlm(script: LlmScript): ScriptedLlm {
         reviewCalls += 1;
         return {
           ok: problems.length === 0,
-          problems: problems.map((problem) =>
-            typeof problem === 'string'
-              ? { rule: '1', text: problem }
-              : { rule: problem.kind === 'style' ? '12' : '1', text: problem.text },
-          ),
+          problems: problems.map((problem) => ({ rule: '1', text: problem })),
         };
       }
       case 'interest': {

@@ -14,7 +14,7 @@ export const ESTIMATE_LATER = 'Ориентир коллега назовёт, �
 export type CalcField =
   'business' | 'items' | 'itemCount' | 'monthlyIntake' | 'passages' | 'has1C' | 'city';
 
-/** Поля для расчёта в порядке разговора (knowledge/consult.md, раздел 5). */
+/** Поля для расчёта в порядке разговора (knowledge/bot.md, «Ход разговора»). */
 export const CALC_FIELDS: readonly CalcField[] = [
   'business',
   'items',
@@ -37,7 +37,7 @@ export const CALC_LABELS: Readonly<Record<CalcField, string>> = {
 };
 
 /**
- * Короткие названия сильных сторон (knowledge/consult.md, раздел 2) для менеджера: уведомление и панель (решение
+ * Короткие названия сильных сторон (knowledge/bot.md, «Что умеем») для менеджера: уведомление и панель (решение
  * владельца 30.10.2026). Клиенту номера и эти названия не пишутся.
  */
 export const STRENGTH_LABELS: Readonly<Record<StrengthId, string>> = {

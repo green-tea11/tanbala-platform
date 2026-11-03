@@ -1,7 +1,7 @@
 import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { createAgent, type Agent } from '../agent/agent.js';
-import { loadKnowledge, type Knowledge, type KnowledgePaths } from '../agent/knowledge.js';
+import { loadKnowledge, type Knowledge } from '../agent/knowledge.js';
 import type { AppConfig } from '../config/env.js';
 import type { LogoReader } from '../domain/company.js';
 import type {
@@ -37,12 +37,8 @@ export const NO_CLAUDE_KEY_WARNING =
 
 const HOUR_MS = 60 * 60 * 1000;
 
-/** Файлы знаний в папке knowledge/: документ владельца, правила WhatsApp и как вести разговор. */
-const KNOWLEDGE_FILES = {
-  owner: 'tanbala-agent.md',
-  whatsapp: 'whatsapp.md',
-  consult: 'consult.md',
-} as const;
+/** Файл знаний бота в папке knowledge/ (просьба владельца 03.11.2026: один короткий файл вместо трёх). */
+const KNOWLEDGE_FILE = 'bot.md';
 
 /** Подключение WhatsApp для конвейера: «печатает», прочтение и голосовые (отправку ведёт общий outbox). */
 export type ResponderConnection = MessageSender & Pick<WhatsAppInbox, 'markRead' | 'downloadAudio'>;
@@ -113,7 +109,7 @@ export async function assembleResponder(context: ResponderContext): Promise<Resp
     logger.warn({}, NO_CLAUDE_KEY_WARNING);
     return null;
   }
-  const knowledge = await loadKnowledge(knowledgePaths(config.knowledgeDir), (path) =>
+  const knowledge = await loadKnowledge(join(config.knowledgeDir, KNOWLEDGE_FILE), (path) =>
     readFile(path, 'utf8'),
   );
   const parts = responderParts(context, config.anthropicKey, knowledge);
@@ -207,14 +203,6 @@ function transcriberOf(
 
 function allowlistOf(config: AppConfig): ReadonlySet<PhoneDigits> | null {
   return config.testMode.enabled ? config.testMode.allowlist : null;
-}
-
-function knowledgePaths(dir: string): KnowledgePaths {
-  return {
-    owner: join(dir, KNOWLEDGE_FILES.owner),
-    whatsapp: join(dir, KNOWLEDGE_FILES.whatsapp),
-    consult: join(dir, KNOWLEDGE_FILES.consult),
-  };
 }
 
 /** Строка лога расхода (уже с переводом строки) в конец файла; папка создаётся при первой записи. */

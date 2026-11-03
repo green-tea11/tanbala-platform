@@ -854,9 +854,10 @@ describe('main: ответы клиентам, службы этапа 5 и ве
 
   function writeKnowledge(root: string): void {
     mkdirSync(join(root, 'knowledge'));
-    writeFileSync(join(root, 'knowledge', 'tanbala-agent.md'), 'Учёт вещей на RFID-метках.');
-    writeFileSync(join(root, 'knowledge', 'whatsapp.md'), 'Отвечай коротко.');
-    writeFileSync(join(root, 'knowledge', 'consult.md'), 'Сначала боль, потом плюс.');
+    writeFileSync(
+      join(root, 'knowledge', 'bot.md'),
+      'Учёт вещей на RFID-метках. Сначала боль, потом плюс.',
+    );
   }
 
   function llmOf(structured: () => Promise<LlmResult<never>>): () => LlmClient {

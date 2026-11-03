@@ -88,9 +88,7 @@ interface Rig {
 function configOf(testMode: 'true' | 'false'): AppConfig {
   const root = useTempDir().path;
   mkdirSync(join(root, 'knowledge'));
-  for (const name of ['tanbala-agent.md', 'whatsapp.md', 'consult.md']) {
-    copyFileSync(join(PROJECT_ROOT, 'knowledge', name), join(root, 'knowledge', name));
-  }
+  copyFileSync(join(PROJECT_ROOT, 'knowledge', 'bot.md'), join(root, 'knowledge', 'bot.md'));
   const env = {
     TEST_MODE: testMode,
     TEST_ALLOWLIST: TESTER_PHONE,

@@ -21,7 +21,7 @@ Node.js 22, TypeScript 6, Baileys 7, Anthropic SDK (Claude Sonnet и Haiku), SQL
 
 ```
 config/models.json   модели Claude для ответа, проверки и оценки интереса
-knowledge/           знания агента: tanbala-agent.md (документ владельца) и whatsapp.md
+knowledge/           знания агента: bot.md
 docs/                план и решения (adr/)
 src/cli.ts           точка входа
 src/main.ts          сборка приложения

@@ -291,7 +291,7 @@ describe('createAgent: draftReply, запрос', () => {
         }).success,
       ).toBe(true);
     }
-    expect(schema.properties.text.description).toMatch(/hot, no_answer и asked_human/);
+    expect(schema.properties.text.description).toMatch(/при complaint пустая строка/);
   });
 
   it('поле aboutPrice: true, если клиент в последних сообщениях спрашивал цену или стоимость', async () => {
@@ -307,7 +307,7 @@ describe('createAgent: draftReply, запрос', () => {
     });
   });
 
-  it('поля stage и usedFacts (30.10.2026): этап разговора и номера сильных сторон из consult.md', async () => {
+  it('поля stage и usedFacts (30.10.2026): этап разговора и номера сильных сторон из знаний', async () => {
     const { request } = await draft({ ok: true, value: ANSWER });
 
     const schema = zodOutputFormat(request.schema).schema as {
@@ -316,13 +316,14 @@ describe('createAgent: draftReply, запрос', () => {
     // SDK пишет варианты enum в описание поля.
     expect(schema.properties['stage']).toMatchObject({ type: 'string' });
     const stage = JSON.stringify(schema.properties['stage']);
-    expect(stage).toContain('Этап разговора, на котором написан text');
+    expect(stage).toContain('Этап text: intro 1 знакомство, hook 2 крючок');
     for (const value of ['intro', 'hook', 'explain', 'details', 'final']) {
       expect(stage).toContain(value);
     }
     expect(schema.properties['usedFacts']).toMatchObject({
       type: 'array',
-      description: 'Номера сильных сторон из consult.md, которые есть в text; иначе пустой список',
+      description:
+        'Номера сильных сторон из знаний, которые ты в text сам подаёшь клиенту как новое; ответ на вопрос клиента сюда не входит; иначе пустой список',
     });
     expect(JSON.stringify(zodOutputFormat(request.schema).schema)).toContain('F10');
   });
@@ -490,7 +491,7 @@ describe('createAgent: draftReply, нормализация ответа мод�
 });
 
 describe('createAgent: три вызова', () => {
-  it('первый блок system (знания с кэшем) одинаков байт в байт у ответа, проверки и оценки интереса', async () => {
+  it('первый блок system (знания с кэшем) одинаков байт в байт у ответа и проверки; оценка интереса без знаний', async () => {
     const { requests, llm } = fakeLlm({ ok: false, failure: 'disabled' });
     const agent = createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS });
 
@@ -502,12 +503,11 @@ describe('createAgent: три вызова', () => {
     const knowledgeBlocks = requests.map(({ system }) => system[0]);
     expect(knowledgeBlocks[0]?.cache).toBe(true);
     expect(knowledgeBlocks[1]).toEqual(knowledgeBlocks[0]);
-    expect(knowledgeBlocks[2]).toEqual(knowledgeBlocks[0]);
-    expect(knowledgeBlocks[1]?.text).toBe(knowledgeBlocks[0]?.text);
-    expect(knowledgeBlocks[2]?.text).toBe(knowledgeBlocks[0]?.text);
+    expect(knowledgeBlocks[2]?.cache).toBe(false);
+    expect(knowledgeBlocks[2]?.text).not.toContain(KNOWLEDGE.text.trim());
   });
 
-  it('после знаний у каждого вызова своя инструкция без кэша', async () => {
+  it('у каждого вызова своя инструкция без кэша последним блоком', async () => {
     const { requests, llm } = fakeLlm({ ok: false, failure: 'disabled' });
     const agent = createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS });
 
@@ -515,9 +515,9 @@ describe('createAgent: три вызова', () => {
     await agent.reviewDraft(context(), 'Какой у вас бизнес?');
     await agent.assessInterest(context());
 
-    expect(requests.every(({ system }) => system.length === 2)).toBe(true);
-    expect(requests.every(({ system }) => system[1]?.cache === false)).toBe(true);
-    expect(new Set(requests.map(({ system }) => system[1]?.text)).size).toBe(3);
+    expect(requests.map(({ system }) => system.length)).toEqual([2, 2, 1]);
+    expect(requests.every(({ system }) => system.at(-1)?.cache === false)).toBe(true);
+    expect(new Set(requests.map(({ system }) => system.at(-1)?.text)).size).toBe(3);
   });
 });
 

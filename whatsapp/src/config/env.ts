@@ -72,7 +72,7 @@ export interface AppConfig {
   readonly databasePath: string;
   /** TOKEN_LOG_PATH: лог расхода API. */
   readonly tokenLogPath: string;
-  /** Папка knowledge/ с двумя файлами знаний. */
+  /** Папка knowledge/ с файлом знаний бота bot.md. */
   readonly knowledgeDir: string;
   /** Копия счётчика попыток привязки по QR: .pairing-attempts.json в корне проекта, вне data/. */
   readonly pairingMirrorPath: string;

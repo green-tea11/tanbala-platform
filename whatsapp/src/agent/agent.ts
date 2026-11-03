@@ -25,13 +25,7 @@ import { interestCallData, interestSchema, normalizeInterest } from './interest.
 import type { Knowledge } from './knowledge.js';
 import { profileText } from './profile.js';
 import { buildSystem, buildTurns, noteBlock } from './prompts.js';
-import {
-  CALC_LABELS,
-  calcMissing,
-  recommendStage,
-  stageReplyData,
-  taskUnderstood,
-} from './stage.js';
+import { recommendStage, stageReplyData, taskUnderstood } from './stage.js';
 import {
   EMPTY_DRAFT_REVIEW,
   normalizeReview,
@@ -139,19 +133,15 @@ const INVALID_OUTPUT = { ok: false, failure: 'invalid_output' } as const;
 export const replyDraftSchema = z.object({
   outcome: z
     .enum(['answer', 'hot', 'no_answer', 'asked_human', 'complaint'])
-    .describe('Исход: answer, hot, no_answer, asked_human или complaint.'),
-  text: z
-    .string()
-    .describe(
-      'Текст сообщения клиенту при answer, hot, no_answer и asked_human; при complaint пустая строка.',
-    ),
+    .describe('Исход ответа.'),
+  text: z.string().describe('Текст сообщения клиенту; при complaint пустая строка.'),
   stopRequested: z
     .boolean()
     .describe('true только при complaint, если клиент просит больше не писать; иначе false.'),
   companyQuestion: z
     .enum(['none', 'confirm', 'name'])
     .describe(
-      'О чём из компании ты спросил в text: confirm, если спросил, из той ли компании клиент; name, если спросил, из какой он компании; иначе none.',
+      'Вопрос о компании в text: confirm, из той ли компании клиент; name, из какой он компании; иначе none.',
     ),
   aboutPrice: z
     .boolean()
@@ -160,10 +150,14 @@ export const replyDraftSchema = z.object({
     ),
   stage: z
     .enum(CONVERSATION_STAGES as [ConversationStage, ...ConversationStage[]])
-    .describe('Этап разговора, на котором написан text'),
+    .describe(
+      'Этап text: intro 1 знакомство, hook 2 крючок, explain 3 как это работает, details 4 боли и детали, final 5 финал',
+    ),
   usedFacts: z
     .array(z.enum(STRENGTH_IDS as [StrengthId, ...StrengthId[]]))
-    .describe('Номера сильных сторон из consult.md, которые есть в text; иначе пустой список'),
+    .describe(
+      'Номера сильных сторон из знаний, которые ты в text сам подаёшь клиенту как новое; ответ на вопрос клиента сюда не входит; иначе пустой список',
+    ),
 });
 
 type RawReplyDraft = z.infer<typeof replyDraftSchema>;
@@ -302,21 +296,15 @@ const REVIEW_STALE_LINE =
 
 /**
  * Выжимка о клиенте для проверки (пункт 3 задания 01.11.2026): переписка в вызове только из последних сообщений, а
- * выжимка собрана по всему разговору, поэтому проверка не считает выдумкой сказанное раньше и видит, чего ещё не
- * хватает для расчёта (такой вопрос можно один раз повторить другими словами). Строки системы раньше значений из слов
- * клиента, как в данных ответа.
+ * выжимка собрана по всему разговору, поэтому проверка не считает выдумкой сказанное раньше. Строка о старой выжимке
+ * раньше значений из слов клиента, как в данных ответа.
  */
-function reviewProfileData(context: ConversationContext): string {
-  const missing = calcMissing(context.profile).map((field) => CALC_LABELS[field]);
-  return [
+function reviewProfileData(context: ConversationContext): string | null {
+  const lines = [
     context.profileStale === true ? REVIEW_STALE_LINE : null,
-    missing.length === 0
-      ? 'Для расчёта известно всё.'
-      : `Для расчёта ещё не хватает: ${missing.join(', ')}. Если клиент на прошлый вопрос об этом не ответил, один раз спросить снова другими словами не нарушение.`,
     profileText(context.profile),
-  ]
-    .filter((line) => line !== null)
-    .join('\n');
+  ].filter((line) => line !== null);
+  return lines.length === 0 ? null : lines.join('\n');
 }
 
 /** Один вызов LLM: что в нём общее для трёх назначений (история, лимит токенов, чат) и что своё (модель, инструкция). */
@@ -338,8 +326,9 @@ function systemOf(
 }
 
 /**
- * system строится один раз на назначение: блок знаний у трёх вызовов один и тот же (кэш общий), после него
- * инструкция вызова, а у ответа и проверки при заметке для бота ещё блок указания коллеги (после точки кэша). Модель
+ * system строится один раз на назначение: у ответа и проверки блок знаний один и тот же (кэш общий), после него
+ * инструкция вызова, а при заметке для бота ещё блок указания коллеги (после точки кэша); у оценки интереса и logo только
+ * инструкция. Модель
  * берётся из конфига по назначению.
  */
 function createAsk(deps: AgentDeps): Ask {
@@ -364,16 +353,15 @@ function createAsk(deps: AgentDeps): Ask {
 /**
  * Создаёт агента поверх LlmClient. Модели из config/models.json: ответ, проверка и оценка интереса на Sonnet, logo на
  * Haiku.
- * Все вызовы: system = buildSystem(knowledge, purpose) (знания с кэшем, затем инструкция вызова без кэша; блок
- * знаний у трёх вызовов один и тот же, поэтому кэш общий); turns = buildTurns(history, HISTORY_MESSAGES, данные
+ * Все вызовы: system = buildSystem(knowledge, purpose) (у ответа и проверки знания с кэшем, затем инструкция вызова
+ * без кэша; у оценки интереса только инструкция); turns = buildTurns(history, HISTORY_MESSAGES, данные
  * вызова): данные в последней реплике user в блоке «данные». Сбой LLM возвращается как есть, значением.
  * draftReply: модель models.reply, данные вызова: строки об этапе (этап, недостающее для расчёта, рассказанное, вопросы
  * цены), блок о компании, текущая выжимка и замечания проверки (feedback); схема replyDraftSchema, ответ нормализуется в
  * ReplyDraft.
- * reviewDraft: модель models.review, данные вызова: что допустимо о компании клиента, выжимка и недостающее для расчёта
- * (reviewProfileData) и текст черновика (не репликой assistant); схема reviewSchema с видом каждого замечания (fact или
- * style), противоречия и замечание «несколько вопросов» при одном вопросе снимает normalizeReview. Пустой черновик не
- * проходит и LLM не вызывает.
+ * reviewDraft: модель models.review, данные вызова: что известно о компании клиента, выжимка (reviewProfileData) и
+ * текст черновика (не репликой assistant); схема reviewSchema с номером пункта у каждого замечания, противоречия снимает
+ * normalizeReview. Пустой черновик не проходит и LLM не вызывает.
  * В блоке о компании ответа и проверки до трёх болей справки, как их отдал сервис компании (без цифр).
  * assessInterest: модель models.interest, данные вызова: текущий уровень, выжимка и вопрос «Вы из компании X?»;
  * схема interestSchema, normalizeInterest чистит поля и сохраняет известное раньше.
@@ -407,7 +395,7 @@ export function createAgent(deps: AgentDeps): Agent {
         reviewProfileData(context),
       );
       const result = await ask('review', reviewSchema, context, callData);
-      return result.ok ? { ok: true, value: normalizeReview(result.value, draftText) } : result;
+      return result.ok ? { ok: true, value: normalizeReview(result.value) } : result;
     },
     async assessInterest(context: ConversationContext): Promise<LlmResult<InterestAssessment>> {
       const callData = interestCallData(context.profile, context.level, context.company);

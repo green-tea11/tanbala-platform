@@ -3,10 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { createAgent } from '../../../src/agent/agent.js';
 import { buildSystem } from '../../../src/agent/prompts.js';
 import {
-  hasSingleQuestion,
   normalizeReview,
-  problemKindOf,
-  questionCount,
   REVIEW_RULES,
   reviewCallData,
   type RawReview,
@@ -29,14 +26,14 @@ const DRAFT = 'Цена зависит от задачи. Какой у вас �
 const HANDOFF_DRAFT = 'Да, проводим интеграцию с вашей 1С. Уточню у коллеги и вернусь к вам.';
 const PASSED: RawReview = { ok: true, problems: [] };
 
-/** Замечание по пункту 1 (факт не из документов): такой черновик клиенту не уходит. */
+/** Замечание по пункту 1 (неправда): такой черновик клиенту не уходит. */
 function fact(text: string): RawReviewProblem {
   return { rule: '1', text };
 }
 
-/** Замечание по пункту 12 (повтор вопроса): о стиле разговора. */
-function style(text: string): RawReviewProblem {
-  return { rule: '12', text };
+/** Замечание по пункту 3 (обещание). */
+function promise(text: string): RawReviewProblem {
+  return { rule: '3', text };
 }
 const LEFT_ANGLE = String.fromCharCode(0x2039);
 const RIGHT_ANGLE = String.fromCharCode(0x203a);
@@ -116,7 +113,7 @@ describe('createAgent: reviewDraft, запрос', () => {
     );
   });
 
-  it('схема проверки: плоский объект ok и problems, у замечания вид и текст, все поля обязательны', async () => {
+  it('схема проверки: плоский объект ok и problems, у замечания номер пункта и текст, все поля обязательны', async () => {
     const { requests } = await review({ ok: true, value: PASSED });
     const { schema } = onlyRequest(requests);
 
@@ -126,9 +123,11 @@ describe('createAgent: reviewDraft, запрос', () => {
       required: ['ok', 'problems'],
     });
     expect(schema.safeParse({ ok: false, problems: [fact('Назван срок')] }).success).toBe(true);
-    expect(schema.safeParse({ ok: false, problems: [style('Два вопроса')] }).success).toBe(true);
+    expect(schema.safeParse({ ok: false, problems: [promise('Обещан звонок')] }).success).toBe(
+      true,
+    );
     expect(schema.safeParse({ ok: false, problems: ['Назван срок'] }).success).toBe(false);
-    expect(schema.safeParse({ ok: false, problems: [{ rule: '14', text: 'Тон' }] }).success).toBe(
+    expect(schema.safeParse({ ok: false, problems: [{ rule: '4', text: 'Тон' }] }).success).toBe(
       false,
     );
     expect(
@@ -164,13 +163,13 @@ describe('createAgent: reviewDraft, результат', () => {
       ok: true,
       value: {
         ok: false,
-        problems: [fact('Назван срок внедрения'), style('Два вопроса подряд')],
+        problems: [fact('Назван срок внедрения'), promise('Обещан звонок')],
       },
     });
 
     expect(result).toEqual({
       ok: true,
-      value: { ok: false, problems: ['Назван срок внедрения', 'Два вопроса подряд'] },
+      value: { ok: false, problems: ['Назван срок внедрения', 'Обещан звонок'] },
     });
   });
 
@@ -207,7 +206,7 @@ describe('normalizeReview', () => {
     ],
     [
       'ok true и только пустые замечания',
-      { ok: true, problems: [fact('  '), style('\n')] },
+      { ok: true, problems: [fact('  '), promise('\n')] },
       { ok: true },
     ],
     [
@@ -223,7 +222,7 @@ describe('normalizeReview', () => {
 
   it.each([
     ['пустой список', []],
-    ['только пустые строки', [style('  '), style('\n\t')]],
+    ['только пустые строки', [promise('  '), promise('\n\t')]],
   ])('ok false без замечаний (%s) => одно общее замечание', (_name, problems) => {
     const result = normalizeReview({ ok: false, problems });
 
@@ -249,169 +248,13 @@ describe('normalizeReview', () => {
     expect(problems.slice(2)).toEqual(['три', 'четыре', 'пять']);
   });
 
-  it('все замечания о стиле: styleOnly; хоть одно о фактах: нет (пункт 3 задания 01.11.2026)', () => {
-    expect(
-      normalizeReview({ ok: false, problems: [style('Вопрос повторён'), style('Два вопроса')] }),
-    ).toEqual({ ok: false, problems: ['Вопрос повторён', 'Два вопроса'], styleOnly: true });
-    expect(
-      normalizeReview({ ok: false, problems: [style('Вопрос повторён'), fact('Обещание')] }),
-    ).toEqual({ ok: false, problems: ['Вопрос повторён', 'Обещание'] });
-  });
-
-  it('вид замечания решает код по номеру пункта: только 11 и 12 о стиле', () => {
-    for (const rule of REVIEW_RULES) {
-      expect(problemKindOf(rule)).toBe(rule === '11' || rule === '12' ? 'style' : 'fact');
-    }
-    expect(
-      normalizeReview({
-        ok: false,
-        problems: [{ rule: '11', text: 'Два вопроса' }, style('Повтор')],
-      }),
-    ).toEqual({ ok: false, problems: ['Два вопроса', 'Повтор'], styleOnly: true });
-    expect(
-      normalizeReview({ ok: false, problems: [{ rule: '7', text: 'Тон: обещание результата' }] }),
-    ).toEqual({ ok: false, problems: ['Тон: обещание результата'] });
-  });
-
-  it('styleOnly fail-closed: пустое замечание о фактах и шестое замечание о фактах тоже считаются', () => {
-    const emptyFact = normalizeReview({ ok: false, problems: [style('Повтор'), fact('  ')] });
-    const sixthFact = normalizeReview({
-      ok: false,
-      problems: [...['1', '2', '3', '4', '5'].map(style), fact('Цена')],
-    });
-    const general = normalizeReview({ ok: false, problems: [] });
-
-    expect(emptyFact).toEqual({ ok: false, problems: ['Повтор'] });
-    expect(sixthFact).toEqual({ ok: false, problems: ['1', '2', '3', '4', '5'] });
-    expect(general.ok || general.styleOnly === true).toBe(false);
-  });
-});
-
-describe('замечание «несколько вопросов» при одном вопросе снимает код (просьба владельца 02.11.2026)', () => {
-  // Черновики из живого теста 02.11.2026: проверка отклоняла их по пункту 11, а вопрос в них один.
-  const ONE_QUESTION =
-    'Конечно. На каждую вещь на хранении клеится метка, антенны на входе и выходе сами отмечают, что пришло и что ушло. Asklad, Алматы, верно?';
-  const TWO_QUESTIONS = 'Данные уходят в 1С. Asklad, Алматы, верно? И какая у вас 1С?';
-  const QUESTION_AND_ASK =
-    'Всё просто. Аксенгер, Алматы, верно? Расскажите, что у вас лежит на хранении и как сейчас проходит проверка.';
-  const severalQuestions: RawReviewProblem = { rule: '11', text: 'Два вопроса подряд' };
-
-  it.each([
-    [ONE_QUESTION, 1],
-    [TWO_QUESTIONS, 2],
-    [QUESTION_AND_ASK, 2],
-    ['Спасибо! Расскажите, сколько проходов нужно учитывать?', 1],
-    ['Метка клеится на товар. Данные уходят в 1С.', 0],
-    // Ревью 02.11.2026: просьба в середине предложения, «?» перед кавычкой, скобкой и без пробела, перевод строки.
-    ['Asklad, Алматы, верно? И расскажите, что у вас лежит на хранении.', 2],
-    ['Asklad, Алматы, верно? Если удобно, расскажите, что у вас хранится.', 2],
-    ['Asklad, Алматы, верно? А подскажите, какая у вас 1С.', 2],
-    ['«Asklad, Алматы, верно?» Расскажите, что у вас хранится.', 2],
-    ['Asklad, Алматы, верно?) Расскажите, что у вас хранится.', 2],
-    ['Asklad, Алматы, верно?Расскажите, что у вас хранится.', 2],
-    ['Asklad, Алматы, верно?\nРасскажите, что у вас хранится', 2],
-    ['Қоймада не сақталады? Айтыңызшы, айына қанша тауар келеді.', 2],
-  ])('questionCount(%j) = %i: знак вопроса и просьба «Расскажите» считаются', (text, count) => {
-    expect(questionCount(text)).toBe(count);
-  });
-
-  it.each([
-    [ONE_QUESTION, true],
-    ['Подскажите, в каком городе находится склад?', true],
-    ['Метка клеится на товар. Данные уходят в 1С.', false],
-    [TWO_QUESTIONS, false],
-    ['Расскажите, что у вас на хранении, сколько этого примерно и какая у вас 1С?', false],
-    ['Asklad, Алматы, верно, и знаете ли вы, как работает RFID?', false],
-    ['Расскажите, сколько проходов нужно учитывать и какая у вас 1С?', false],
-  ])(
-    'hasSingleQuestion(%j) = %s: только одно предложение-вопрос с одним вопросительным словом',
-    (text, single) => {
-      expect(hasSingleQuestion(text)).toBe(single);
-    },
-  );
-
-  it.each([
-    'Расскажите, что у вас на хранении, сколько этого примерно и какая у вас 1С?',
-    'Для расчёта коллеге нужно знать, что у вас хранится, сколько этого и какая у вас 1С.',
-  ])('анкета в одном предложении или без вопроса (%j): замечание пункта 11 остаётся', (draft) => {
-    expect(normalizeReview({ ok: false, problems: [severalQuestions] }, draft)).toEqual({
-      ok: false,
-      problems: ['Два вопроса подряд'],
-      styleOnly: true,
-    });
-  });
-
-  it('вопрос один и шесть замечаний: пункт 11 снимается до обрезки, замечание о фактах доходит', () => {
-    const result = normalizeReview(
-      {
-        ok: false,
-        problems: [severalQuestions, ...['1', '2', '3', '4'].map(style), fact('Цена')],
-      },
-      ONE_QUESTION,
-    );
-
-    expect(result).toEqual({ ok: false, problems: ['1', '2', '3', '4', 'Цена'] });
-  });
-
-  it('вопрос один: замечание пункта 11 снимается, без других замечаний проверка пройдена', () => {
-    expect(normalizeReview({ ok: false, problems: [severalQuestions] }, ONE_QUESTION)).toEqual({
-      ok: true,
-    });
-  });
-
-  it('вопрос один: замечание о фактах остаётся, пометки styleOnly нет', () => {
-    expect(
-      normalizeReview({ ok: false, problems: [severalQuestions, fact('Обещание')] }, ONE_QUESTION),
-    ).toEqual({ ok: false, problems: ['Обещание'] });
-  });
-
-  it('вопрос один: замечание о повторе (пункт 12) не снимается', () => {
-    expect(
-      normalizeReview({ ok: false, problems: [severalQuestions, style('Повтор')] }, ONE_QUESTION),
-    ).toEqual({ ok: false, problems: ['Повтор'], styleOnly: true });
-  });
-
-  it.each([TWO_QUESTIONS, QUESTION_AND_ASK])(
-    'вопросов два (%j): замечание пункта 11 остаётся',
-    (draft) => {
-      expect(normalizeReview({ ok: false, problems: [severalQuestions] }, draft)).toEqual({
-        ok: false,
-        problems: ['Два вопроса подряд'],
-        styleOnly: true,
-      });
-    },
-  );
-
-  it('без текста черновика замечание пункта 11 не снимается', () => {
-    expect(normalizeReview({ ok: false, problems: [severalQuestions] })).toEqual({
-      ok: false,
-      problems: ['Два вопроса подряд'],
-      styleOnly: true,
-    });
-  });
-
-  it('снятое замечание и пустое замечание о фактах: fail-closed, общее замечание', () => {
-    const result = normalizeReview(
-      { ok: false, problems: [severalQuestions, fact('  ')] },
-      ONE_QUESTION,
-    );
-
-    expect(result.ok).toBe(false);
-    expect(problemsOf(result)).toHaveLength(1);
-  });
-
-  it('reviewDraft передаёт черновик: при одном вопросе замечание пункта 11 не доходит', async () => {
-    const { result } = await review(
-      { ok: true, value: { ok: false, problems: [severalQuestions] } },
-      ONE_QUESTION,
-    );
-
-    expect(result).toEqual({ ok: true, value: { ok: true } });
+  it('пункты проверки (просьба владельца 03.11.2026): 1 неправда, 2 цена, 3 обещание', () => {
+    expect(REVIEW_RULES).toEqual(['1', '2', '3']);
   });
 });
 
 describe('createAgent: reviewDraft видит выжимку (пункт 3 задания 01.11.2026)', () => {
-  it('недостающее для расчёта и выжимка идут перед черновиком: сказанное раньше окна переписки не выдумка', async () => {
+  it('выжимка идёт перед черновиком: сказанное раньше окна переписки не выдумка', async () => {
     const { requests, llm } = fakeLlm({ ok: true, value: PASSED });
     const agent = createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS });
     const profile = { ...EMPTY_PROFILE, business: 'склад', city: 'Астана', has1C: true };
@@ -419,9 +262,8 @@ describe('createAgent: reviewDraft видит выжимку (пункт 3 за�
     await agent.reviewDraft(context({ profile }), DRAFT);
 
     const data = onlyRequest(requests).turns.at(-1)?.text.split('<данные>\n')[1] ?? '';
-    expect(data).toMatch(
-      /^Для расчёта ещё не хватает: что лежит на хранении, сколько этого примерно, сколько нового приходит в месяц, сколько проходов нужно учитывать\. Если клиент на прошлый вопрос об этом не ответил, один раз спросить снова другими словами не нарушение\.\nЧто клиент рассказал о себе/u,
-    );
+    expect(data).toMatch(/^Что клиент рассказал о себе/u);
+    expect(data).not.toContain('Для расчёта');
     expect(data).toContain('Бизнес: склад\nГород: Астана');
     expect(data).toContain('1С: есть, конфигурация не выяснена');
     expect(data.indexOf('Город: Астана')).toBeLessThan(data.indexOf(`Черновик ответа клиенту`));
@@ -435,28 +277,7 @@ describe('createAgent: reviewDraft видит выжимку (пункт 3 за�
     await agent.reviewDraft(context({ profileStale: true }), DRAFT);
 
     expect(onlyRequest(requests).turns.at(-1)?.text).toContain(
-      '<данные>\nВыжимка ниже собрана до последнего сообщения клиента: что он назвал в нём, в ней может не быть.\nДля расчёта ещё не хватает',
-    );
-  });
-
-  it('для расчёта известно всё: так и сказано', async () => {
-    const { requests, llm } = fakeLlm({ ok: true, value: PASSED });
-    const agent = createAgent({ llm, knowledge: KNOWLEDGE, models: MODELS });
-    const profile = {
-      ...EMPTY_PROFILE,
-      business: 'склад',
-      items: 'техника',
-      itemCount: '3000',
-      monthlyIntake: '200',
-      passages: 'два въезда',
-      has1C: false,
-      city: 'Астана',
-    };
-
-    await agent.reviewDraft(context({ profile }), DRAFT);
-
-    expect(onlyRequest(requests).turns.at(-1)?.text).toContain(
-      '<данные>\nДля расчёта известно всё.\nЧто клиент рассказал о себе',
+      '<данные>\nВыжимка ниже собрана до последнего сообщения клиента: что он назвал в нём, в ней может не быть.\n\nЧерновик',
     );
   });
 });
@@ -464,10 +285,10 @@ describe('createAgent: reviewDraft видит выжимку (пункт 3 за�
 describe('reviewCallData', () => {
   it('блок о компании, затем выжимка, черновик последним', () => {
     expect(reviewCallData('Вопрос?', 'answer', 'Компания', 'Выжимка')).toBe(
-      'Компания\n\nВыжимка\n\nЧерновик ответа клиенту, его нужно проверить:\nВопрос?',
+      'Компания\n\nВыжимка\n\nЧерновик ответа клиенту (чат остаётся у бота), его нужно проверить:\nВопрос?',
     );
     expect(reviewCallData('Вопрос?', 'answer', null, 'Выжимка')).toBe(
-      'Выжимка\n\nЧерновик ответа клиенту, его нужно проверить:\nВопрос?',
+      'Выжимка\n\nЧерновик ответа клиенту (чат остаётся у бота), его нужно проверить:\nВопрос?',
     );
   });
 

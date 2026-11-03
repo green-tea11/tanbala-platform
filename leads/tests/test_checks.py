@@ -112,12 +112,17 @@ def test_example_letter_passes_every_check(key):
     assert failed_checks(subject, body) == {}
 
 
-def test_whatsapp_copy_of_document_has_same_text():
-    """Бот читает свою копию документа: текст тот же, у нас окончания строк CRLF, у бота LF."""
-    copy = KNOWLEDGE.parents[2] / "whatsapp" / "knowledge" / "tanbala-agent.md"
-    if not copy.exists():
+@pytest.mark.parametrize(
+    "fact",
+    ["БИН 250740007924", "Алматы, микрорайон Коктем-3, 17", "от сантиметров до 20 метров"],
+)
+def test_bot_knowledge_has_same_key_facts(fact):
+    """С 03.11.2026 у бота свой короткий файл знаний (whatsapp/knowledge/bot.md): ключевые факты те же, что в документе."""
+    bot = KNOWLEDGE.parents[2] / "whatsapp" / "knowledge" / "bot.md"
+    if not bot.exists():
         pytest.skip("папки whatsapp рядом нет")
-    assert KNOWLEDGE.read_bytes().replace(b"\r\n", b"\n") == copy.read_bytes()
+    assert fact in KNOWLEDGE.read_text(encoding="utf-8")
+    assert fact in bot.read_text(encoding="utf-8")
 
 
 def test_document_signature_is_sign_off_and_name_only():
